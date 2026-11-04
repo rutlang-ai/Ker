@@ -36,6 +36,7 @@
 #include <sys/stat.h>
 
 #include "nginx-cycle-wire.h"
+#include "nginx-owner-ready.h"
 #include <time.h>
 #include <unistd.h>
 
@@ -56,6 +57,30 @@ static bool respawn_plan_pending;
 static bool worker_prepared;
 static bool candidate_mode;
 static bool delegated_initial_mode;
+static bool owner_ready_configured;
+static struct ker_nginx_owner_ready_sender owner_ready;
+static int owner_ready_master_init(void)
+{
+    const char *value = getenv("KER_NGINX_OWNER_READY_FD");
+    if (!value) return 0;
+    char *end = NULL;
+    errno = 0;
+    long fd = strtol(value, &end, 10);
+    if (errno || *value < '0' || *value > '9' || *end || fd < 3 || fd > INT_MAX) {
+        errno = EINVAL; return -1;
+    }
+    int status = ker_nginx_owner_ready_sender_init(&owner_ready, (int)fd, getppid());
+    if (status) { errno = -status; return -1; }
+    owner_ready_configured = true;
+    return 0;
+}
+int ker_fstack_nginx_owner_activation_worker_ready(void)
+{
+    if (!owner_ready_configured) return 0;
+    if (!worker_prepared || ngx_process != NGX_PROCESS_WORKER) return -EPERM;
+    return ker_nginx_owner_ready_sender_send(&owner_ready);
+}
+
 #ifdef KER_NGINX_OWNER_TEST_ALIAS
 #include <ngx_event.h>
 static int test_initial_alias_slot = -1;
@@ -855,7 +880,12 @@ failed:
 int
 ker_fstack_nginx_owner_activation_respawn_prepare(void)
 {
-    if (candidate_mode || delegated_initial_mode) { errno = EOPNOTSUPP; return -1; }
+    if (candidate_mode || delegated_initial_mode) {
+        trace_line("NGINX_DELEGATED_RESPAWN_UNSUPPORTED pid=%ld candidate=%d\n",
+            (long)getpid(), candidate_mode);
+        errno = EOPNOTSUPP;
+        return -1;
+    }
     /* The serial controller owns one watch per full HUP cycle. Nginx's
      * worker-crash respawn path does not pass through module_init, so it
      * cannot create a successor watch or obtain a matching outer receipt.
@@ -959,11 +989,13 @@ module_init(ngx_cycle_t *cycle)
         candidate_mode = candidate_fd != NULL;
         delegated_initial_mode = initial_fd != NULL;
         current_slot = (int)slot;
+        if (owner_ready_master_init()) return NGX_ERROR;
         trace_line(candidate_mode ? "NGINX_CANDIDATE_MASTER_READY pid=%ld\n" :
             "NGINX_INITIAL_DELEGATED_MASTER_READY pid=%ld\n", (long)getpid());
         return NGX_OK;
     }
     if (ngx_test_config) return NGX_OK;
+    if (!owner_ready_configured && owner_ready_master_init()) return NGX_ERROR;
     if (cycle_control_init() < 0) {
         ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
             "C22 invalid serial-cycle control endpoint/profile");
@@ -1034,6 +1066,10 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
         errno = error;
         return -1;
     }
+    if (owner_ready_configured) {
+        int status = ker_nginx_owner_ready_sender_bind(&owner_ready, slot, candidate_mode ? 1 : 0);
+        if (status) { errno = -status; return -1; }
+    }
 #ifdef KER_NGINX_OWNER_TEST_ALIAS
     if (getenv("KER_NGINX_TEST_INITIAL_ALIAS_SOCKET")) {
         test_initial_alias_slot = (int)syscall(SYS_fcntl, slot,
@@ -1073,6 +1109,7 @@ int ker_fstack_nginx_owner_activation_worker_commit(void)
 static void
 module_exit_master(ngx_cycle_t *cycle)
 {
+    ker_nginx_owner_ready_sender_close(&owner_ready);
     if ((current_plan >= 0 || retiring_census >= 0) && broker_open)
         (void)drain_previous_cycle(cycle->log);
     if (retiring_census >= 0) {

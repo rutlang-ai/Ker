@@ -32,20 +32,32 @@ def validate_source_lc(checker, text, returncode, abort):
     return checker.summary('lc', text, '' if abort else 'perf')
 
 
+def retry_lc_progress(text, min_elapsed, previous_requests):
+    rows = list(re.finditer(r'^LC_PROGRESS elapsed=([0-9.]+) n=(\d+) fail=(\d+)$', text, re.MULTILINE))
+    require(all(int(row[3]) == 0 for row in rows), 'LC failure during the aborted-round interval')
+    qualifying = [row for row in rows if float(row[1]) >= min_elapsed and int(row[2]) > previous_requests]
+    return qualifying[0][0] if qualifying else None
+
+
 def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     transfer, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     controller = None
     processes, caps, pidfds = [], [], []
+    ready_endpoints = []
     held = None
     held_alias = None
     alias_listener = None
     evidence = {'status': 'RUNNING', 'outcome': 'abort-retry-commit' if args.nginx_overlap_retry else 'abort' if args.nginx_overlap_abort else 'commit', 'events': []}
+    if args.nginx_overlap_owner_death:
+        evidence['outcome'] = 'owner-death-' + args.nginx_overlap_owner_death
     source_probe = None
     source_output = None
     source_started = None
     source_key = 'source_lc' if args.nginx_overlap_source_lc else 'source_stream'
     source_log_name = 'source-lc.log' if args.nginx_overlap_source_lc else 'source-stream.log'
     source_budget = 240 if args.nginx_overlap_source_lc else 300
+    source_rt24 = args.nginx_overlap_retry and args.nginx_overlap_source_lc
+    lc_duration = '30' if source_rt24 else '180'
     census_command = 'ACTIVE0' if args.nginx_overlap_source_lc else 'STREAMS0'
     stream_payload = bytes(8 * 1024 * 1024) if args.nginx_overlap_source_streams else None
 
@@ -90,6 +102,9 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
         with socket.create_connection(('198.18.0.2', 4108), timeout=10) as connection:
             connection.settimeout(10); http(connection, body, True)
 
+    ready_spec = importlib.util.spec_from_file_location('nginx_worker_ready', ROOT / 'tests/posix/nginx-owner-ready.py')
+    ready_protocol = importlib.util.module_from_spec(ready_spec); ready_spec.loader.exec_module(ready_protocol)
+
     def start_nginx(label, slot, candidate):
         prefix = root / label
         (prefix / 'logs').mkdir(parents=True); (prefix / 'html').mkdir()
@@ -113,7 +128,7 @@ fstack_conf "fstack.ini"; timer_resolution 1ms;
 pid {prefix}/logs/nginx.pid; error_log {prefix}/logs/error.log notice;
 env LD_PRELOAD; env KER_SOCKET_BROKER_PATH; env KER_FSTACK_NGINX_INI;
 env KER_FSTACK_RUNTIME_TRACE; env KER_NGINX_TEST_INITIAL_ALIAS_SOCKET;
-env KER_NGINX_TEST_REARM_TRIGGER;
+env KER_NGINX_TEST_REARM_TRIGGER; env KER_NGINX_OWNER_READY_FD;
 events {{ worker_connections 256; use epoll; }}
 http {{ access_log off; sendfile off; keepalive_timeout 300; keepalive_requests 100000;
 server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index index.html; }} }}
@@ -127,24 +142,39 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             env['KER_NGINX_TEST_INITIAL_ALIAS_SOCKET'] = str(root / 'initial-alias.sock')
             if args.nginx_overlap_successor or args.nginx_overlap_retry:
                 env['KER_NGINX_TEST_REARM_TRIGGER'] = str(root / 'rearm.trigger')
-        process = subprocess.Popen([str(args.nginx_candidate_binary), '-p', str(prefix) + '/',
-            '-c', str(config)], pass_fds=(slot,), env=env, start_new_session=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        ready, delegated_ready = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        ready.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        ready_endpoints.append(ready)
+        ready_cookie = ready_protocol.cookie(delegated_ready)
+        env['KER_NGINX_OWNER_READY_FD'] = str(delegated_ready.fileno())
+        slot_identity = os.fstat(slot)
+        try:
+            process = subprocess.Popen([str(args.nginx_candidate_binary), '-p', str(prefix) + '/',
+                '-c', str(config)], pass_fds=(slot, delegated_ready.fileno()), env=env, start_new_session=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        finally:
+            delegated_ready.close()
         processes.append(process)
         deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            text = trace.read_text() if trace.exists() else ''
-            if re.search(r'name=ff_listen .*result=0\b', text):
-                if not candidate or 'NGINX_CANDIDATE_TASK_READY' in text: break
+        while True:
             if process.poll() is not None:
-                raise RuntimeError(f'{label} Nginx exited: {process.communicate()!r}, '
-                    f'{(prefix / "logs/error.log").read_text()!r}; {text!r}')
+                text = trace.read_text() if trace.exists() else ''
+                raise RuntimeError(f'{label} Nginx exited: {process.communicate()!r}; {text!r}')
+            worker_pids = Path(f'/proc/{process.pid}/task/{process.pid}/children').read_text().split()
+            if worker_pids: break
+            require(time.monotonic() < deadline, f'{label} did not fork a worker')
             time.sleep(.01)
-        else:
-            raise RuntimeError(f'{label} did not listen: {text!r}; {(prefix / "logs/error.log").read_text()!r}')
-        worker_pids = Path(f'/proc/{process.pid}/task/{process.pid}/children').read_text().split()
         require(len(worker_pids) == 1, f'{label} has unexpected children {worker_pids!r}')
-        worker_fd = os.pidfd_open(int(worker_pids[0])); pidfds.append(worker_fd)
+        worker_pid = int(worker_pids[0])
+        worker_fd = os.pidfd_open(worker_pid); pidfds.append(worker_fd)
+        report = ready_protocol.receive(ready, timeout=max(.01, deadline - time.monotonic()),
+            pid=worker_pid, pidfd=worker_fd, slot_identity=slot_identity,
+            endpoint_cookie=ready_cookie, role=1 if candidate else 0)
+        evidence.setdefault('worker_ready', {})[label] = report
+        text = trace.read_text()
+        require(re.search(r'name=ff_listen .*result=0\b', text), 'worker READY preceded listener publication')
+        require(not candidate or 'NGINX_CANDIDATE_TASK_READY' in text,
+            'worker READY preceded candidate admission setup')
         record(label.upper() + '_NGINX_READY', master=process.pid, worker=int(worker_pids[0]))
         return process, body, prefix, worker_fd
 
@@ -182,6 +212,104 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         require(select.select([worker_fd], [], [], 0)[0], f'{label} worker is still alive')
         record(label.upper() + '_NGINX_RETIRED')
 
+    def qualify_owner_death(old, old_body, old_fd, new, new_prefix, new_fd):
+        nonlocal held
+        queued = None
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            if args.nginx_overlap_owner_death == 'prepared':
+                command('BEGIN'); record('CUTOVER_PREPARED')
+                queued = executor.submit(socket.create_connection, ('198.18.0.2', 4108), 5)
+                command('QUEUED')
+                require(not queued.done(), 'SYN completed before candidate death')
+                record('SYN_QUEUED_BEFORE_CANDIDATE_DEATH')
+            # Freeze only the master to make worker death/reap distinct and
+            # ensure no respawn changes the identity under observation.
+            new.send_signal(signal.SIGSTOP)
+            deadline = time.monotonic() + 5
+            while Path(f'/proc/{new.pid}/stat').read_text().rsplit(')', 1)[1].split()[0] != 'T':
+                require(new.poll() is None and time.monotonic() < deadline, 'candidate master did not stop')
+                time.sleep(.001)
+            signal.pidfd_send_signal(new_fd, signal.SIGKILL)
+            require(select.select([new_fd], [], [], 5)[0], 'candidate death was not confirmed by pidfd')
+            require(new.poll() is None, 'candidate master unexpectedly exited')
+            record('READY_CANDIDATE_WORKER_KILLED', worker=evidence['worker_ready']['new']['pid'])
+            if args.nginx_overlap_owner_death == 'prepared':
+                command('DEAD_CUTOVER')
+                rows = getattr(controller, '_ker_recent_lines', [])
+                proof = next((row for row in rows if row.startswith('DEAD_OWNER_QUARANTINED ')), None)
+                require(proof is not None, 'missing broker-confirmed quarantine evidence')
+                record('KERNEL_QUARANTINE_CONFIRMED', proof=proof)
+                try:
+                    connection = queued.result(timeout=8)
+                except TimeoutError:
+                    require(queued.done(), 'queued client did not finish its timeout probe')
+                    record('QUEUED_CONNECTION_TIMED_OUT_WITHOUT_REPLAY')
+                else:
+                    connection.close()
+                    raise RuntimeError('quarantined queued connection unexpectedly completed')
+                with socket.socket() as probe:
+                    probe.settimeout(.3)
+                    require(probe.connect_ex(('198.18.0.2', 4108)) in (errno.EAGAIN, errno.ETIMEDOUT),
+                        'quarantined port admitted a fresh connection')
+                record('QUARANTINED_PORT_REJECTED_FRESH_CONNECTION')
+            else:
+                command('DEAD_BEGIN')
+                fresh(old_body); record('OLD_HTTP_SURVIVED_PRE_CUTOVER_CANDIDATE_DEATH')
+            http(held, old_body); record('OLD_KEEPALIVE_SURVIVED_CANDIDATE_DEATH')
+            new.send_signal(signal.SIGCONT)
+            deadline = time.monotonic() + 5
+            while 'NGINX_DELEGATED_RESPAWN_UNSUPPORTED' not in (new_prefix / 'runtime.trace').read_text():
+                require(new.poll() is None and time.monotonic() < deadline,
+                    'master did not refuse delegated worker respawn')
+                time.sleep(.01)
+            children = Path(f'/proc/{new.pid}/task/{new.pid}/children').read_text().split()
+            require(not children, f'dead delegated worker unexpectedly respawned: {children!r}')
+            record('DELEGATED_RESPAWN_REFUSED')
+        held.close(); held = None
+        stop_nginx(new, new_fd, 'new')
+        stop_nginx(old, old_fd, 'old')
+        for cap in caps: os.close(cap)
+        caps.clear()
+        command('RELEASE')
+
+    def finish():
+        command_text = b'STOP\n'; controller.stdin.write(command_text); controller.stdin.flush()
+        _, errors = controller.communicate(timeout=10)
+        require(controller.returncode == 0, f'coordinator cleanup failed: {errors!r}')
+        for cap in caps: os.close(cap)
+        caps.clear()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+            stop.sendto(b'STOP', str(stop_path))
+        broker.wait(timeout=35)
+        for reader in broker_readers: reader.join(timeout=2)
+        require(all(not reader.is_alive() for reader in broker_readers),
+            'broker output remained open after process exit')
+        errors = broker_logs['stderr'].read_text(errors='replace')
+        report = json.loads(stats.read_text())
+        require(broker.returncode == 0 and report.get('outstanding') == 0,
+            f'broker did not settle: {errors!r}; {report!r}')
+        if args.nginx_overlap_owner_death:
+            require(report.get('rx', 0) > 0 and report.get('tx', 0) > 0, 'missing native packet evidence')
+        record('BROKER_SETTLED')
+        evidence.update(status='PASS', stats=report, logs={
+            label: {'trace': (prefix / 'runtime.trace').read_text(),
+                'error_log': (prefix / 'logs/error.log').read_text()}
+            for label in ('old', 'new', 'next', 'retry') if (prefix := root / label).exists()})
+        if not args.nginx_overlap_abort and not args.nginx_overlap_owner_death:
+            for label in (('new', 'next') if args.nginx_overlap_successor else ('new',)):
+                require('private candidate admission: allowed=1 created=1' in
+                    evidence['logs'][label]['error_log'],
+                    label + ' Nginx did not consume original-map admission')
+        if args.nginx_overlap_retry:
+            require('private candidate admission: allowed=1 created=1' in
+                evidence['logs']['retry']['error_log'], 'retry owner did not consume original-map admission')
+        print('NGINX_OVERLAP_PASS outcome=' + evidence['outcome'] +
+            ' successor=' + str(args.nginx_overlap_successor).lower() +
+            ' retry=' + str(args.nginx_overlap_retry).lower() +
+            ' queued_syn=' + str(args.nginx_overlap_owner_death != 'before-begin').lower() +
+            ' old_keepalive=true old_exit=true outstanding=0')
+        return 0
+
     try:
         controller = subprocess.Popen([str(args.nginx_overlap_controller), str(rpc_path),
             str(child.fileno())], pass_fds=(child.fileno(),), stdin=subprocess.PIPE,
@@ -213,7 +341,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             if args.nginx_overlap_source_lc:
                 source_command = [sys.executable, str(source_script),
                     '--server', '198.18.0.2', '--port', '4108', '--conns', '12',
-                    '--interval', '0.1', '--duration', '180', '--fresh', '0.5', '--timeout', '2']
+                    '--interval', '0.1', '--duration', lc_duration, '--fresh', '0.5', '--timeout', '2']
             else:
                 source_command = [sys.executable, str(source_script),
                     '--server', '198.18.0.2', '--port', '4108', '--path', '/dl/big.bin',
@@ -230,7 +358,8 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             evidence[source_key] = {'command': source_command,
                 'source_hashes': {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
                     for path in (probe_file, source_script,
-                        probe_file.parent.parent / 'reload_checks.py')}}
+                        probe_file.parent.parent / 'reload_checks.py',
+                        probe_file.parent.parent.parent / 'test_graceful_reload.sh')}}
             if args.nginx_overlap_source_lc:
                 deadline = time.monotonic() + 60
                 while True:
@@ -260,6 +389,9 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             receive_alias()
         command('CENSUS1'); command('EARLY_RETIRE'); command('WRONG_RETIRE'); fresh(old_body)
         record('BOTH_NGINX_LIVE_SELECTOR_ZERO')
+        if args.nginx_overlap_owner_death:
+            qualify_owner_death(old, old_body, old_fd, new, new_prefix, new_fd)
+            return finish()
         command('BEGIN'); record('CUTOVER_PREPARED')
         with ThreadPoolExecutor(max_workers=1) as executor:
             queued = executor.submit(socket.create_connection, ('198.18.0.2', 4108), 10)
@@ -308,6 +440,23 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 record('DEAD_REJECTED_CANDIDATE_ALIAS_BLOCKED_NEW_SLOT')
                 http(held, old_body); fresh(old_body)
                 os.close(held_alias); held_alias = None
+            if source_rt24:
+                aborted_at = next(event['monotonic_ns'] / 1e9 for event in evidence['events']
+                    if event['event'] == 'CUTOVER_ABORTED_WITH_QUEUED_SYN')
+                minimum_elapsed = aborted_at - source_started + 5
+                previous_requests = int(evidence[source_key]['anchor'].split('n=')[1].split()[0])
+                deadline = time.monotonic() + 20
+                while True:
+                    require(source_probe.poll() is None, 'rt24 LC probe exited before retry')
+                    interval = retry_lc_progress(source_file.read_text(), minimum_elapsed, previous_requests)
+                    if interval is not None: break
+                    require(time.monotonic() < deadline, 'no source progress after five-second abort interval')
+                    time.sleep(.01)
+                command('ACTIVE0')
+                evidence[source_key]['after_abort'] = interval
+                evidence[source_key]['source_case'] = 'rt24 traffic probe; explicit broker abort/retry'
+                record('RT24_ABORT_INTERVAL_WITHOUT_LC_FAILURE', line=interval,
+                    minimum_elapsed=minimum_elapsed)
             command('RETRY_SLOT'); command('CLOSED_REJECTED')
             retry_slot = receive_candidate_slot()
             retry, retry_body, retry_prefix, retry_fd = start_nginx('retry', retry_slot, True)
@@ -328,8 +477,14 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             del caps[:2]
             http(held, old_body); record('OLD_KEEPALIVE_SURVIVED_ABORT_AND_RETRY_COMMIT')
             held.close(); held = None
+            retirement_started = time.monotonic()
             stop_nginx(old, old_fd, 'old')
             command('RETIRE0'); command('CLOSED0')
+            if source_rt24:
+                retirement_ms = (time.monotonic() - retirement_started) * 1000
+                require(retirement_ms <= 15000, 'old owner exit/listener retirement exceeded rt24 bound')
+                record('RT24_OLD_OWNER_EXIT_AND_LISTENER_RETIREMENT', elapsed_ms=retirement_ms,
+                    bound_ms=15000, qualification='not an original FSM drain receipt')
             fresh(retry_body); record('RETRY_HTTP_AFTER_INITIAL_OWNER_EXIT')
             new, new_body, new_prefix, new_fd = retry, retry_body, retry_prefix, retry_fd
         elif args.nginx_overlap_abort:
@@ -413,18 +568,22 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             source_output.flush()
             text = source_file.read_text()
             evidence[source_key].update(returncode=source_probe.returncode, output=text)
+            require({relative: hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
+                for relative in evidence[source_key]['source_hashes']} == evidence[source_key]['source_hashes'],
+                'imported source probe/oracle changed during qualification')
             checker_file = probe_file.parent.parent / 'reload_checks.py'
             check_spec = importlib.util.spec_from_file_location('nginx_overlap_source_checks', checker_file)
             checker = importlib.util.module_from_spec(check_spec); check_spec.loader.exec_module(checker)
             if args.nginx_overlap_source_lc:
-                fields = validate_source_lc(checker, text, source_probe.returncode, args.nginx_overlap_abort)
+                fields = validate_source_lc(checker, text, source_probe.returncode,
+                    args.nginx_overlap_abort and not args.nginx_overlap_retry)
                 retired_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']
-                    if e['event'] == ('NEW_NGINX_RETIRED' if args.nginx_overlap_abort else 'OLD_NGINX_RETIRED')) - source_started
+                    if e['event'] == ('NEW_NGINX_RETIRED' if args.nginx_overlap_abort and not args.nginx_overlap_retry else 'OLD_NGINX_RETIRED')) - source_started
                 progress = list(re.finditer(r'^LC_PROGRESS elapsed=([0-9.]+) n=(\d+) fail=(\d+)$', text, re.MULTILINE))
                 anchor_count = int(evidence[source_key]['anchor'].split('n=')[1].split()[0])
                 later = next((row for row in progress if float(row[1]) > retired_at + 1 and int(row[2]) > anchor_count), None)
                 require(later is not None, 'LC requests did not progress after owner retirement')
-                evidence[source_key].update(summary=fields, oracle_mode='' if args.nginx_overlap_abort else 'perf',
+                evidence[source_key].update(summary=fields, oracle_mode='' if args.nginx_overlap_abort and not args.nginx_overlap_retry else 'perf',
                     post_retirement_progress=later[0])
                 record('ORIGINAL_LC_ORACLE_PASS', reqs=int(fields['reqs']), fresh_n=int(fields['fresh_n']),
                     strict_probe_returncode=source_probe.returncode, elapsed=time.monotonic() - source_started)
@@ -440,7 +599,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 cutover_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']
                     if e['event'] == 'CUTOVER_PREPARED') - source_started
                 retired_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']
-                    if e['event'] == ('NEW_NGINX_RETIRED' if args.nginx_overlap_abort else 'OLD_NGINX_RETIRED')) - source_started
+                    if e['event'] == ('NEW_NGINX_RETIRED' if args.nginx_overlap_abort and not args.nginx_overlap_retry else 'OLD_NGINX_RETIRED')) - source_started
                 require({int(row[1]) for row in rows if float(row[5]) < cutover_at < float(row[6])}
                     == set(range(12)), 'not all source workers crossed cutover in-flight')
                 require({int(row[1]) for row in rows if float(row[6]) > retired_at and int(row[2]) >= 2}
@@ -459,39 +618,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             command('RELEASE'); command('CLOSED0')
         else:
             stop_nginx(new, new_fd, 'next' if args.nginx_overlap_successor else 'new'); command('CLOSED1')
-        command_text = b'STOP\n'; controller.stdin.write(command_text); controller.stdin.flush()
-        _, errors = controller.communicate(timeout=10)
-        require(controller.returncode == 0, f'coordinator cleanup failed: {errors!r}')
-        for cap in caps: os.close(cap)
-        caps.clear()
-        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
-            stop.sendto(b'STOP', str(stop_path))
-        broker.wait(timeout=35)
-        for reader in broker_readers: reader.join(timeout=2)
-        require(all(not reader.is_alive() for reader in broker_readers),
-            'broker output remained open after process exit')
-        errors = broker_logs['stderr'].read_text(errors='replace')
-        report = json.loads(stats.read_text())
-        require(broker.returncode == 0 and report.get('outstanding') == 0,
-            f'broker did not settle: {errors!r}; {report!r}')
-        record('BROKER_SETTLED')
-        evidence.update(status='PASS', stats=report, logs={
-            label: {'trace': (prefix / 'runtime.trace').read_text(),
-                'error_log': (prefix / 'logs/error.log').read_text()}
-            for label in ('old', 'new', 'next', 'retry') if (prefix := root / label).exists()})
-        if not args.nginx_overlap_abort:
-            for label in (('new', 'next') if args.nginx_overlap_successor else ('new',)):
-                require('private candidate admission: allowed=1 created=1' in
-                    evidence['logs'][label]['error_log'],
-                    label + ' Nginx did not consume original-map admission')
-        if args.nginx_overlap_retry:
-            require('private candidate admission: allowed=1 created=1' in
-                evidence['logs']['retry']['error_log'], 'retry owner did not consume original-map admission')
-        print('NGINX_OVERLAP_PASS outcome=' + evidence['outcome'] +
-            ' successor=' + str(args.nginx_overlap_successor).lower() +
-            ' retry=' + str(args.nginx_overlap_retry).lower() +
-            ' queued_syn=true old_keepalive=true old_exit=true outstanding=0')
-        return 0
+        return finish()
     except BaseException as error:
         evidence.update(status='FAIL', error=repr(error))
         raise
@@ -517,6 +644,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             controller.kill(); controller.communicate()
         for cap in caps: os.close(cap)
         for fd in pidfds: os.close(fd)
+        for endpoint in ready_endpoints: endpoint.close()
         transfer.close(); child.close()
         if broker.poll() is None:
             try:

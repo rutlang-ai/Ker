@@ -288,6 +288,9 @@ int ker_socket_client_owner_group_retry_plan(struct ker_socket_client *client,
  * plan. begin starts asynchronous gate setup and can return in STARTING; poll
  * until PREPARED before treating the freeze as armed. Commit or abort only
  * requests work, which the broker advances incrementally. Poll is nonblocking.
+ * Request success is acknowledgement only: owner death before the decision
+ * completes can still lead to QUARANTINED. Observe COMMITTED/ABORTED by poll
+ * before claiming traffic was replayed.
  * Call commit only after the caller's own READY policy barrier; this API does
  * not establish application readiness. A group permits only one 0-to-1
  * attempt. QUARANTINING is unconfirmed; QUARANTINED is kernel-confirmed.

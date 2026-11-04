@@ -16,5 +16,10 @@
     "wrapperSha256": "@ker_nginx_candidate_wrapper_sha256@",
     "originalFlowMapSha256": "@ker_nginx_candidate_flow_map_sha256@"
   },
+  "workerReady": {
+    "scope": "optional host seqpacket report after FF owner loop entry; slot and worker identity; no FSM activation",
+    "transportSha256": "@ker_nginx_ready_source_sha256@",
+    "wireSha256": "@ker_nginx_ready_header_sha256@"
+  },
   "reloadContract": "pinned legacy HUP with expected service interruption; graceful reload is not qualified"
 }

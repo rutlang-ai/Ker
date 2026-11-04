@@ -745,3 +745,122 @@ HUP/USR2 orchestration and the complete generation FSM/fault matrix remain
 outstanding; no imported upstream source is modified. Migration inventory stays
 at 362 scenario-adapted, 0 partial and 1 blocked
 (`test_graceful_reload.sh::entrypoint`).
+
+### Original rt24 traffic probe across abort and retry
+
+`native-nginx-abort-retry-source-lc-tap` runs the unchanged `m4_lc.py` and
+`http_probe.py` used by the source shell's `case_rt24`: 12 persistent connections,
+0.1-second interval, 30-second duration, a fresh connection every 0.5 seconds
+and a two-second timeout. The source shell's `launch_probe ... 240` is its outer
+command budget, not the probe duration. The native profile substitutes only its
+own server address/listen port. The probe, HTTP helper, original summary checker
+and source shell are hashed before and after the run.
+
+The first native cutover aborts after an actual queued SYN. An observed source
+`LC_PROGRESS` line establishes the original three-second startup anchor. Before
+replacement startup, another source progress line must lie at least five seconds
+after the confirmed abort, show increasing request count and have no failures
+anywhere in the aborted-round interval. A native census confirms all 12 source
+connections and the independent held connection still belong to the original
+owner. The rejected candidate exits, a fresh retry candidate starts and another
+queued SYN crosses a committed cutover. Old keepalive is checked before old-owner
+shutdown; source request progress must continue after its exit and listener
+retirement.
+
+The original `reload_checks.py` perf LC oracle judges the final summary, matching
+`case_rt24`'s allowance of one old-connection closure/reconnect per connection
+and zero fresh failures even when the strict probe exits 1. A pure abort retains
+its stronger zero-failure/exit-0 requirement. The native profile additionally
+measures old-owner exit plus listener retirement against 15000ms; this is not
+presented as the original FSM's T3 drain receipt.
+
+Recorded evidence: `LC_PROGRESS elapsed=3.0 n=360 fail=0` at startup and
+`LC_PROGRESS elapsed=9.0 n=1080 fail=0` after the abort interval. The complete
+30-second run recorded 3600 persistent request attempts, 12 closures/reconnects,
+60 fresh requests, `fresh_fail=0`, all 13 workers active/done and zero worker
+errors. Strict probe exit 1 is accepted by the unchanged original perf checker.
+Old-owner exit/listener retirement took about 15ms and final broker outstanding
+I/O was zero. The phase/oracle controls reject stale progress, no request growth,
+failures during the aborted interval, excess final closures, fresh failures,
+missing workers and abnormal process exits.
+
+This qualifies the original rt24 traffic probe over explicit broker abort/retry
+coordination. It does not run source `FF_FAULT=flip_fail_once`, send the two HUPs
+to one master, or manufacture original FSM completion/drain logs. Those source
+case assertions and production HUP/USR2 orchestration remain outstanding; the
+full shell entrypoint stays blocked and the migration inventory is unchanged.
+
+### Authenticated worker event-loop READY
+
+The explicit owner-overlap profiles now wait for a host Unix seqpacket READY
+record emitted from the pinned worker's `ff_run`, after owner-loop entry and its
+first successful owner pump. Listener/admission trace lines remain diagnostic
+checks; they no longer authorize the controller to advance. This covers initial,
+candidate, successor and abort/retry workers without modifying upstream Nginx.
+
+The caller optionally passes `KER_NGINX_OWNER_READY_FD` (a connected host
+`AF_UNIX/SOCK_SEQPACKET` endpoint, also retained by Nginx's `env` directive).
+The module authenticates the master parent's PID/UID/GID using `SO_PEERCRED`
+and obtains `SO_PEERPIDFD`. A forked worker binds its report only after the
+broker-authenticated slot claim. The fixed 64-byte, same-host native-endian
+version-1 record contains role, slot pipe device/inode, worker PID/start ticks
+and endpoint `SO_COOKIE`; reserved fields must be zero. The test coordinator
+checks kernel `SCM_CREDENTIALS`, the exact delegated slot and socket cookie,
+`/proc` start ticks and the expected worker's live pidfd before accepting it.
+Unexpected ancillary data, rights, truncation, stale identities and exited
+workers fail closed. Received rights are closed, including on truncated frames.
+
+The sender rechecks endpoint/pidfd identity, detects coordinator death or
+endpoint closure, and retries nonblocking queue pressure only until a five-second
+monotonic deadline. Successful send is idempotent and closes the worker's
+transport copies; descendants cannot reuse its bound report. Identity-guarded
+cleanup preserves unrelated descriptors that reused those fd numbers. The master
+retains its own endpoint copy until exit; the endpoint is close-on-exec, so this
+contract does not claim USR2 inheritance. With no optional fd, existing runtime
+and serial-cycle profiles retain their behavior.
+
+`native-nginx-worker-ready-transport` exercises the production sender across
+master/worker forks, credential rejection, slot binding, descendant rejection,
+idempotent delivery, fd reuse, queue pressure/deadline and disconnected peer.
+Receiver checks cover every wire identity field, credential/frame rejection,
+actual truncated rights without leaks and a dead worker. The real overlap profile
+also has a validation mutation: suppressing the runtime notification leaves its
+listener trace intact but fails with `worker loop READY timed out`.
+
+This is a cooperative pinned-caller report of loop entry, not isolation from
+same-process code, a future health guarantee, or an original shared-FSM READY
+transition. Broker cutover still independently validates owner capabilities.
+Same-master original HUP/USR2 FSM integration and the complete source shell
+entrypoint remain outstanding; inventory stays **362 scenario-adapted, 0 partial,
+1 blocked**.
+
+### READY does not survive candidate worker death
+
+Two real pinned-Nginx profiles now kill the authenticated READY candidate worker
+with `pidfd_send_signal(SIGKILL)`, while its master is confirmed stopped. This
+separates broker liveness checks from Nginx reaping and respawn. Both masters
+remain the original processes; after the observation the candidate master resumes,
+reaps its worker and refuses delegated-slot respawn before any new worker forks.
+The shim/module does not silently reuse the dead worker's authority.
+
+- `native-nginx-ready-owner-death-before-begin-tap`: the dead candidate cannot
+  begin a cutover or obtain a retry plan. No ingress lease was armed; both a new
+  HTTP request and the held keepalive still reach the unchanged initial owner.
+- `native-nginx-ready-owner-death-prepared-tap`: a real SYN is observed in q88
+  before killing the candidate. Broker polling must reach **QUARANTINED** with a
+  negative error, at least one received packet and zero accepted/replayed packets.
+  A COMMIT request after the death proof must never become COMMITTED: request
+  acknowledgement alone is not completion. Subsequent COMMIT and ABORT reject the terminal state with `EALREADY`; retry rejects it
+  with `ECANCELED`. The queued client and another fresh client time out, while
+  the preexisting old-owner keepalive still works. Kernel quarantine retains the
+  fail-closed ingress gate; it is not an abort receipt or restored fresh service.
+
+Both profiles require the worker's pidfd death proof, no replacement children,
+clean Nginx master shutdown, kernel-confirmed quarantine where applicable and
+broker `outstanding=0`. READY credentials establish only past loop entry; the
+broker's independent owner/capability validation remains necessary at cutover.
+The test injects a real process death, not a forged READY/FSM status or upstream
+`FF_FAULT` implementation. This expands native fault qualification without
+claiming an original shell case or increasing migration counts. Recovery from a
+quarantined cutover, the original same-master HUP/USR2 FSM and the full source
+entrypoint remain outstanding (362 scenario-adapted, 0 partial, 1 blocked).
