@@ -43,6 +43,7 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     transfer, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     controller = None
     processes, caps, pidfds = [], [], []
+    ready_endpoints = []
     held = None
     held_alias = None
     alias_listener = None
@@ -99,6 +100,9 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
         with socket.create_connection(('198.18.0.2', 4108), timeout=10) as connection:
             connection.settimeout(10); http(connection, body, True)
 
+    ready_spec = importlib.util.spec_from_file_location('nginx_worker_ready', ROOT / 'tests/posix/nginx-owner-ready.py')
+    ready_protocol = importlib.util.module_from_spec(ready_spec); ready_spec.loader.exec_module(ready_protocol)
+
     def start_nginx(label, slot, candidate):
         prefix = root / label
         (prefix / 'logs').mkdir(parents=True); (prefix / 'html').mkdir()
@@ -122,7 +126,7 @@ fstack_conf "fstack.ini"; timer_resolution 1ms;
 pid {prefix}/logs/nginx.pid; error_log {prefix}/logs/error.log notice;
 env LD_PRELOAD; env KER_SOCKET_BROKER_PATH; env KER_FSTACK_NGINX_INI;
 env KER_FSTACK_RUNTIME_TRACE; env KER_NGINX_TEST_INITIAL_ALIAS_SOCKET;
-env KER_NGINX_TEST_REARM_TRIGGER;
+env KER_NGINX_TEST_REARM_TRIGGER; env KER_NGINX_OWNER_READY_FD;
 events {{ worker_connections 256; use epoll; }}
 http {{ access_log off; sendfile off; keepalive_timeout 300; keepalive_requests 100000;
 server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index index.html; }} }}
@@ -136,24 +140,39 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             env['KER_NGINX_TEST_INITIAL_ALIAS_SOCKET'] = str(root / 'initial-alias.sock')
             if args.nginx_overlap_successor or args.nginx_overlap_retry:
                 env['KER_NGINX_TEST_REARM_TRIGGER'] = str(root / 'rearm.trigger')
-        process = subprocess.Popen([str(args.nginx_candidate_binary), '-p', str(prefix) + '/',
-            '-c', str(config)], pass_fds=(slot,), env=env, start_new_session=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        ready, delegated_ready = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        ready.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        ready_endpoints.append(ready)
+        ready_cookie = ready_protocol.cookie(delegated_ready)
+        env['KER_NGINX_OWNER_READY_FD'] = str(delegated_ready.fileno())
+        slot_identity = os.fstat(slot)
+        try:
+            process = subprocess.Popen([str(args.nginx_candidate_binary), '-p', str(prefix) + '/',
+                '-c', str(config)], pass_fds=(slot, delegated_ready.fileno()), env=env, start_new_session=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        finally:
+            delegated_ready.close()
         processes.append(process)
         deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            text = trace.read_text() if trace.exists() else ''
-            if re.search(r'name=ff_listen .*result=0\b', text):
-                if not candidate or 'NGINX_CANDIDATE_TASK_READY' in text: break
+        while True:
             if process.poll() is not None:
-                raise RuntimeError(f'{label} Nginx exited: {process.communicate()!r}, '
-                    f'{(prefix / "logs/error.log").read_text()!r}; {text!r}')
+                text = trace.read_text() if trace.exists() else ''
+                raise RuntimeError(f'{label} Nginx exited: {process.communicate()!r}; {text!r}')
+            worker_pids = Path(f'/proc/{process.pid}/task/{process.pid}/children').read_text().split()
+            if worker_pids: break
+            require(time.monotonic() < deadline, f'{label} did not fork a worker')
             time.sleep(.01)
-        else:
-            raise RuntimeError(f'{label} did not listen: {text!r}; {(prefix / "logs/error.log").read_text()!r}')
-        worker_pids = Path(f'/proc/{process.pid}/task/{process.pid}/children').read_text().split()
         require(len(worker_pids) == 1, f'{label} has unexpected children {worker_pids!r}')
-        worker_fd = os.pidfd_open(int(worker_pids[0])); pidfds.append(worker_fd)
+        worker_pid = int(worker_pids[0])
+        worker_fd = os.pidfd_open(worker_pid); pidfds.append(worker_fd)
+        report = ready_protocol.receive(ready, timeout=max(.01, deadline - time.monotonic()),
+            pid=worker_pid, pidfd=worker_fd, slot_identity=slot_identity,
+            endpoint_cookie=ready_cookie, role=1 if candidate else 0)
+        evidence.setdefault('worker_ready', {})[label] = report
+        text = trace.read_text()
+        require(re.search(r'name=ff_listen .*result=0\b', text), 'worker READY preceded listener publication')
+        require(not candidate or 'NGINX_CANDIDATE_TASK_READY' in text,
+            'worker READY preceded candidate admission setup')
         record(label.upper() + '_NGINX_READY', master=process.pid, worker=int(worker_pids[0]))
         return process, body, prefix, worker_fd
 
@@ -554,6 +573,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             controller.kill(); controller.communicate()
         for cap in caps: os.close(cap)
         for fd in pidfds: os.close(fd)
+        for endpoint in ready_endpoints: endpoint.close()
         transfer.close(); child.close()
         if broker.poll() is None:
             try:
