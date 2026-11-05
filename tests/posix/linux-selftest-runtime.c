@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include <lkl.h>
 
-static atomic_ulong operations[KER_TEST_FINALIZE + 1];
+static atomic_ulong operations[KER_TEST_OPERATION_COUNT];
 static void report_operations(void);
 
 static long export_file(long native, enum ker_fd_kind kind, int flags)
@@ -27,11 +27,12 @@ long ker_linux_selftest_call(unsigned operation, const unsigned long a[6])
         return ker_native_finalize();
     }
     if (!ker_native_ready()) return -ENETDOWN;
-    if (operation > KER_TEST_FINALIZE) return -EINVAL;
+    if (operation >= KER_TEST_OPERATION_COUNT) return -EINVAL;
     atomic_fetch_add_explicit(&operations[operation], 1, memory_order_relaxed);
     struct ker_fd *entry;
     long result;
     switch (operation) {
+    case KER_TEST_IF_UP: return lkl_if_up((int)a[0]);
     case KER_TEST_UNSHARE: return lkl_sys_unshare(a[0]);
     case KER_TEST_SETNS:
     case KER_TEST_FD_NUMBER:

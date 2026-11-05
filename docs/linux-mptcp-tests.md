@@ -35,4 +35,9 @@ native 诊断读取原始 Linux `MPTcpExt` MIB，并导出 MP_CAPABLE SYN/SYNACK
 ctest --test-dir build-native-on -R '^linux-original-mptcp-' --output-on-failure
 ```
 
-本批使用一条数据路径和一个子流。上游 10 个 shell 入口的完整拓扑/参数矩阵仍未完整迁移，包括多地址 PM、MP_JOIN、多子流恢复、故障注入、动态 endpoint/limits、诊断和重复连接等；不能由本批单子流 MP_CAPABLE/DSS 通过推断这些能力完成。独立宿主对端需要支持 MPTCP；不支持时测试失败，不用普通 TCP 成功替代。
+本批使用一条数据路径和一个子流。除[已接入的原版 pm_netlink.sh 默认入口](linux-mptcp-pm-tests.md)外，上游剩余 9 个 shell 入口的完整拓扑/参数矩阵仍未完整迁移，包括多地址 PM、MP_JOIN、多子流恢复、故障注入、动态 endpoint/limits、诊断和重复连接等；不能由本批单子流 MP_CAPABLE/DSS 通过推断这些能力完成。独立宿主对端需要支持 MPTCP；不支持时测试失败，不用普通 TCP 成功替代。
+
+
+## 原版路径管理脚本
+
+[pm_netlink.sh 默认入口](linux-mptcp-pm-tests.md)已在常驻导入内核上通过全部 23 项检查，保留原版脚本与工具。其控制面覆盖与本页的数据传输配置分别记录。尚未完整迁移的注册入口为 `mptcp_connect.sh`、`mptcp_connect_mmap.sh`、`mptcp_connect_sendfile.sh`、`mptcp_connect_checksum.sh`、`mptcp_join.sh`、`diag.sh`、`simult_flows.sh`、`mptcp_sockopt.sh`、`userspace_pm.sh`。
