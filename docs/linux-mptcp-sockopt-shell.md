@@ -2,7 +2,7 @@
 
 直接执行固定 Linux stable 6.12.113 revision `7fdb7c1824a1f9979d648d7ae28ac446bcee9c6e` 的完整默认 `tools/testing/selftests/net/mptcp/mptcp_sockopt.sh`，保留脚本、库、helper 的源码、拓扑、等待、随机数据和全部断言。11 项 TAP 检查均必须通过，不接受 skip、IGNORE、TODO 或不完整计划。
 
-覆盖 IPv4/IPv6 双向传输与 packet mark、两个 SOL_MPTCP socket option 配置，以及五个原版 TCP_INQ 配置。本批补齐完整 shell 入口，既有 helper 配置继续独立记录；完整注册 shell 入口剩余 7 个。TCP-AO 的 24 个注册入口已接入，仍作为内核回归测试执行，其 6 个已知上游 XFAIL 单列、不计通过。
+覆盖 IPv4/IPv6 双向传输与 packet mark、两个 SOL_MPTCP socket option 配置，以及五个原版 TCP_INQ 配置。本批补齐完整 shell 入口，既有 helper 配置继续独立记录；完整注册 shell 入口剩余 6 个。TCP-AO 的 24 个注册入口已接入，仍作为内核回归测试执行，其 6 个已知上游 XFAIL 单列、不计通过。
 
 ## 实际内核拓扑与过滤
 

@@ -190,7 +190,18 @@ __attribute__((constructor)) static void initialize(void)
     device->id = result;
     result = ker_extra_interfaces_register(getenv("KER_PACKET_INTERFACES"));
     if (result) fail("additional interface registration", result);
-    result = lkl_start_kernel("%s", "mem=64M");
+    unsigned long memory_mb = 64;
+#ifdef KER_LINUX_SELFTEST_RUNTIME
+    /* Resource provisioning for the unchanged throughput selftests. Let Linux
+     * derive its own memory-dependent limits; never tune protocol sysctls here.
+     * This override is absent from production tests-OFF libraries. */
+    const char *test_memory = getenv("KER_LINUX_SELFTEST_MEMORY_MB");
+    if (test_memory) {
+        memory_mb = (unsigned long)parse_number(test_memory, 1024);
+        if (memory_mb < 64) fail("selftest kernel memory below 64 MiB", -EINVAL);
+    }
+#endif
+    result = lkl_start_kernel("mem=%luM", memory_mb);
     if (result) fail("kernel boot", result);
     result = ker_native_seed_entropy();
     if (result) fail("native entropy initialization", result);

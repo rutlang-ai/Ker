@@ -117,6 +117,17 @@ int __wrap_socket(int domain, int type, int protocol)
     }
     return remember(fd);
 }
+unsigned __wrap_if_nametoindex(const char *name)
+{
+    const char *ns = getenv("KER_MPTCP_SOCKET_NAMESPACE"); if (!ns) ns = "";
+    if (!name || strlen(name) >= IFNAMSIZ || strlen(ns) >= 64) { errno = EINVAL; return 0; }
+    int fd = open_channel(); if (fd < 0) return 0;
+    unsigned char data[MS_MAX]; strcpy((char *)data, ns); strcpy((char *)data + strlen(ns) + 1, name);
+    struct ms_message m = {.operation = MS_IFINDEX, .length = (uint32_t)(strlen(ns) + strlen(name) + 2)};
+    long result = exchange(fd, &m, data, NULL); int error = errno; syscall(SYS_close, fd); errno = error;
+    return result < 0 ? 0 : (unsigned)result;
+}
+
 static int address_call(int fd, unsigned op, const struct sockaddr *address, socklen_t length)
 {
     if (!is_network(fd)) { errno = EBADF; return -1; }
