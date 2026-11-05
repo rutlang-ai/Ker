@@ -2131,6 +2131,39 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                         actor_pids=dict(actor_pid_values))
                     print('KER_SESSION_FRAME_RECOVERY_FAILURE ' +
                         json.dumps(diagnostic, sort_keys=True), flush=True)
+                if mode == 'frame-death-queued' and original_error is not None:
+                    try:
+                        latest_stats = None
+                        try: latest_stats = json.loads(stats_path.read_text())
+                        except (OSError, json.JSONDecodeError): pass
+                        runner_out, runner_err = cleanup_outputs.get('launcher', (b'', b''))
+                        try:
+                            runner_stderr = (runner_stderr_path.read_text(errors='replace')
+                                if runner_stderr_path.exists() else '')
+                        except OSError as error:
+                            runner_stderr = f'<capture failed: {type(error).__name__}: {error}>'
+                        identity_failure = locals().get('handoff_identity_evidence')
+                        producer_exit = (latest_stats or {}).get('handoff_barrier_producer_exit')
+                        diagnostic = dict(
+                            reason=f'{type(original_error).__name__}: {str(original_error)[:4096]}',
+                            checks=(identity_failure or {}).get('checks'),
+                            pidfd_readable=(identity_failure or {}).get('pidfd_readable'),
+                            stats_stage=(latest_stats or {}).get('stage'),
+                            producer_exit=producer_exit,
+                            runner_returncode=runner.returncode if runner is not None else None,
+                            runner_stdout=_decode_captured_pipe_output(runner_out),
+                            runner_stderr_pipe=_decode_captured_pipe_output(runner_err),
+                            runner_stderr='\n'.join(runner_stderr.splitlines()[-40:]))
+                        print('KER_SESSION_QUEUED_DEATH_BARRIER_FAILURE ' +
+                            json.dumps(diagnostic, sort_keys=True), flush=True)
+                    except Exception as diagnostic_error:
+                        try:
+                            print('KER_SESSION_QUEUED_DEATH_BARRIER_FAILURE ' + json.dumps(dict(
+                                reason=f'{type(original_error).__name__}: {str(original_error)[:4096]}',
+                                capture_error=f'{type(diagnostic_error).__name__}: {str(diagnostic_error)[:512]}'),
+                                sort_keys=True), flush=True)
+                        except Exception:
+                            pass
                 if finalization_errors:
                     raise RuntimeError('handoff actor/pipe cleanup failed before hugepage cleanup: ' +
                         repr([str(error) for error in finalization_errors]))
