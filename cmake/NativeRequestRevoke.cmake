@@ -638,6 +638,7 @@ if(BUILD_TESTING)
                 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
         endif()
 
+        if(NOT ker_native_mptcp_sockopt_profile)
         add_test(NAME native-c28-broker-owned-cutover-tap
             COMMAND "${Python3_EXECUTABLE}"
                 "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
@@ -692,6 +693,7 @@ if(BUILD_TESTING)
         set_tests_properties(native-c28-cutover-start-cancel-destroy-retry PROPERTIES
             TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;wire;reuseport;cutover;quarantine"
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;LD_LIBRARY_PATH=${ker_c28_dpdk_library_path}")
+        endif()
 
         add_test(NAME native-c28-cutover-prearm-failure-cleanup
             COMMAND "${Python3_EXECUTABLE}"

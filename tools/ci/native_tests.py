@@ -32,8 +32,11 @@ LINUX_MPTCP_SELFTESTS = (
     "linux-original-mptcp-pm-netlink",
     "linux-original-mptcp-sockopt-ipv4", "linux-original-mptcp-sockopt-ipv6",
     "linux-original-mptcp-inq-ipv4", "linux-original-mptcp-inq-ipv6",
-    "linux-original-mptcp-diag", "linux-original-mptcp-sockopt-shell",
+    "linux-original-mptcp-diag",
+    "native-c24-ingress-freeze-tap", "native-c28-broker-owned-cutover-tap",
+    "native-c28-broker-owned-cutover-abort-tap", "native-c28-cutover-start-cancel-destroy-retry",
 )
+LINUX_MPTCP_SOCKOPT_PROFILE_TEST = "linux-original-mptcp-sockopt-shell"
 
 LINUX_TCP_AO_SELFTESTS = tuple(
     f"linux-original-tcp-ao-{program}-ipv{family}"
@@ -244,6 +247,11 @@ def summary(message: str) -> None:
             stream.write(f"\n{message}\n")
 
 
+def require(value: bool, message: str) -> None:
+    if not value:
+        raise RuntimeError(message)
+
+
 def ctest_inventory(build: Path) -> list[dict]:
     result = subprocess.run(
         ["ctest", "--test-dir", str(build), "--show-only=json-v1"],
@@ -351,6 +359,7 @@ def run_full_ctest(build: Path, junit: Path) -> None:
     inventory = ctest_inventory(build)
     by_name = {item["name"]: item for item in inventory}
     names = set(by_name)
+    validate_default_profile_inventory(names)
     missing = sorted((set(HOSTED_SAFE) | set(NOHUGE_EAL) | set(NOHUGE_TAP) |
                       set(REQUIRED_SOFTWARE_DATAPATH) | set(LINUX_PROTOCOL_SELFTESTS) |
                       set(LINUX_AF_UNIX_SELFTESTS) | set(LINUX_MPTCP_SELFTESTS) | set(LINUX_TCP_AO_SELFTESTS) |
@@ -379,6 +388,63 @@ def run_full_ctest(build: Path, junit: Path) -> None:
         raise RuntimeError("full CTest graph did not produce JUnit output")
     report_junit(junit, expected=expected, required=required, ctest_returncode=result.returncode)
     summary(f"Full native CTest graph: {len(expected)} registered tests; {len(required)} mandatory hosted/session/software-datapath tests; unreviewed skips fail.")
+
+
+def run_sockopt_profile(build: Path, junit: Path) -> None:
+    inventory = ctest_inventory(build)
+    names = {item["name"] for item in inventory}
+    validate_sockopt_profile_inventory(inventory)
+
+    cache = (build / "CMakeCache.txt").read_text()
+    native_build = next((line.split("=", 1)[1] for line in cache.splitlines()
+                         if line.startswith("KER_NATIVE_LINUX_BUILD:PATH=")), None)
+    require(native_build, "sockopt profile build has no native kernel artifact path")
+    manifest_path = Path(native_build) / "native-linux.json"
+    manifest = json.loads(manifest_path.read_text())
+    require(manifest.get("config_fragment") == "config/native-linux-mptcp-sockopt.config",
+            "sockopt test did not use the dedicated netfilter kernel profile")
+    config = (Path(manifest["kernel"]) / ".config").read_text().splitlines()
+    required_options = {"CONFIG_NETFILTER_XTABLES=y", "CONFIG_NETFILTER_XT_MATCH_MARK=y",
+                        "CONFIG_IP_NF_IPTABLES=y", "CONFIG_IP_NF_FILTER=y",
+                        "CONFIG_IP6_NF_IPTABLES=y", "CONFIG_IP6_NF_FILTER=y"}
+    require(required_options.issubset(set(config)), "sockopt profile kernel is missing required netfilter options")
+
+    result = subprocess.run(
+        ["ctest", "--test-dir", str(build), "--no-tests=error", "--output-on-failure",
+         "--output-junit", str(junit), "--parallel", "1", "-R",
+         "^" + re.escape(LINUX_MPTCP_SOCKOPT_PROFILE_TEST) + "$"], check=False)
+    if not junit.is_file():
+        raise RuntimeError("sockopt profile CTest did not produce JUnit output")
+    report_junit(junit, expected={LINUX_MPTCP_SOCKOPT_PROFILE_TEST},
+                 required={LINUX_MPTCP_SOCKOPT_PROFILE_TEST}, ctest_returncode=result.returncode)
+    evidence_path = build / "linux-original-mptcp-sockopt-shell.json"
+    evidence = json.loads(evidence_path.read_text())
+    require(evidence.get("status") == "PASS_IMPORTED_LINUX" and evidence.get("returncode") == 0 and
+            len(evidence.get("cases", [])) == 11,
+            "sockopt profile did not complete every original shell assertion")
+    require(evidence.get("fingerprint") == manifest.get("fingerprint"),
+            "sockopt evidence fingerprint differs from its kernel manifest")
+    summary("Original MPTCP sockopt shell profile: PASS " + manifest["fingerprint"])
+
+
+def validate_default_profile_inventory(names: set[str]) -> None:
+    require(LINUX_MPTCP_SOCKOPT_PROFILE_TEST not in names,
+            "sockopt shell test must run in its fingerprinted netfilter profile")
+    required = {"native-c24-ingress-freeze-tap", "native-c28-broker-owned-cutover-tap",
+                "native-c28-broker-owned-cutover-abort-tap",
+                "native-c28-cutover-start-cancel-destroy-retry"}
+    require(required.issubset(names),
+            "missing required tests from default ingress-freeze profile")
+
+
+def validate_sockopt_profile_inventory(inventory: list[dict]) -> None:
+    names = {item["name"] for item in inventory}
+    require(sum(item["name"] == LINUX_MPTCP_SOCKOPT_PROFILE_TEST for item in inventory) == 1,
+            "sockopt profile CTest inventory must contain the original shell test exactly once")
+    excluded = {"native-c24-ingress-freeze-tap", "native-c28-broker-owned-cutover-tap",
+                "native-c28-broker-owned-cutover-abort-tap",
+                "native-c28-cutover-start-cancel-destroy-retry"}
+    require(not names.intersection(excluded), "sockopt profile unexpectedly includes admission hook-inventory tests")
 
 
 def _literal_profile_tuple(node: ast.AST) -> set[str] | None:
@@ -693,8 +759,8 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
-        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
         if len(argv) != 2:
@@ -733,6 +799,11 @@ def main(argv: list[str]) -> int:
         if len(argv) != 4:
             raise RuntimeError("full-ctest requires build directory and JUnit output path")
         run_full_ctest(build, Path(argv[3]))
+        return 0
+    if group == "sockopt-profile":
+        if len(argv) != 4:
+            raise RuntimeError("sockopt-profile requires build directory and JUnit output path")
+        run_sockopt_profile(build, Path(argv[3]))
         return 0
     if group == "report-junit":
         report_junit(build)

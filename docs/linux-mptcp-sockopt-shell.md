@@ -10,7 +10,7 @@
 
 系统原版 `iptables-legacy` / `ip6tables-legacy` 使用测试专用 preload，将真实 netfilter socket option 操作送入同一个导入内核。只有进程间嵌套的 `ipt_replace`/`ip6t_replace` counters 指针需要搬运；规则、匹配、DROP、TCP mark 传播与计数都来自原版 Linux。xtables 锁文件放在本次私有临时目录，防止触碰宿主全局锁。工具版本与二进制 SHA-256 写入证据。
 
-native 配置启用原版 xtables、mark match、IPv4/IPv6 filter；没有修改 Linux 源码。私有 raw socket 创建入口仅存在于 tests-ON runtime，不安装为公共 API。普通 facade 的权限边界保持原样。
+测试专用的 `config/native-linux-mptcp-sockopt.config` profile 启用原版 xtables、mark match、IPv4/IPv6 filter；生产/default native 配置不启用这些额外 hook registrant，因此不会削弱 ingress-freeze queue 的编译期和运行时 hook-inventory guard。profile fragment、Linux/LKL revisions、kernel config hash 和 library hash 均写入独立 fingerprint manifest；没有修改 Linux 源码。私有 raw socket 创建入口仅存在于 tests-ON runtime，不安装为公共 API。普通 facade 的权限边界保持原样。
 
 原版脚本执行完后，在独立对照 namespace 里分别安装 IPv4/IPv6 mark-zero DROP 规则，发送真实未标记的非阻塞 MPTCP SYN。两者均必须使真实 DROP counter 增加，防止将零 DROP 误当作过滤根本没有生效。对照不计入原版 11 项用例。
 
@@ -22,10 +22,14 @@ native 配置启用原版 xtables、mark match、IPv4/IPv6 filter；没有修改
 
 ## 重现
 
-使用当前 native defconfig 构建新的 Linux/LKL fingerprint；旧内核缺少所需 netfilter 配置，不得复用其 provenance。安装原版 legacy iptables 工具，并使用既有 pinned iproute2 diag tools：
+使用专用 netfilter profile 构建新的 Linux/LKL fingerprint；不得把 profile 配置放进生产/default defconfig，也不得复用不同 fingerprint 的 manifest。安装原版 legacy iptables 工具，并使用既有 pinned iproute2 diag tools：
 
 ```bash
-ctest --test-dir build-native-on -R '^linux-original-mptcp-sockopt-shell$' --output-on-failure
+python3 tools/build-native-linux.py --build /tmp/native-linux-sockopt \
+  --config-fragment config/native-linux-mptcp-sockopt.config
+cmake -S . -B build-native-sockopt -DKER_NATIVE_LINUX_BUILD=/tmp/native-linux-sockopt \
+  -DKER_BUILD_LINUX_PROTOCOL_SELFTESTS=ON -DBUILD_TESTING=ON
+ctest --test-dir build-native-sockopt -R '^linux-original-mptcp-sockopt-shell$' --output-on-failure
 ```
 
-CI 强制要求该入口出现在 inventory 与 JUnit 中且通过；既有 AF_UNIX、MPTCP、TCP-AO 原版测试继续回归。
+CI 在保留 default profile 全量 CTest（包括 C24/C28 ingress-freeze tests）的同时，单独配置此 profile 并强制要求原版 shell entry 出现在 CTest inventory 与 JUnit 中且通过。两个 profile 的证据分别上传；sockopt test 的 JSON fingerprint 必须匹配专用 manifest。既有 AF_UNIX、MPTCP、TCP-AO 原版测试继续在 default profile 回归。

@@ -69,6 +69,7 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
             --evidence "${PROJECT_BINARY_DIR}/linux-original-mptcp-diag.json")
     set_tests_properties(linux-original-mptcp-diag PROPERTIES TIMEOUT 300
         LABELS "linux-upstream;original-linux;mptcp;protocol-selftest;dpdk" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    if(ker_native_mptcp_sockopt_profile)
     add_test(NAME linux-original-mptcp-sockopt-shell
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-mptcp-diag-selftest.py"
             --suite sockopt --server "$<TARGET_FILE:ker-linux-mptcp-socket-server>"
@@ -80,4 +81,5 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
             --evidence "${PROJECT_BINARY_DIR}/linux-original-mptcp-sockopt-shell.json")
     set_tests_properties(linux-original-mptcp-sockopt-shell PROPERTIES TIMEOUT 300
         LABELS "linux-upstream;original-linux;mptcp;protocol-selftest;dpdk" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    endif()
 endif()
