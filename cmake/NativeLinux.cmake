@@ -829,6 +829,7 @@ if(BUILD_TESTING)
     include("${PROJECT_SOURCE_DIR}/cmake/LinuxMptcpSelftests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/LinuxTcpAoSelftests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/LinuxMptcpPmSelftest.cmake")
+    include("${PROJECT_SOURCE_DIR}/cmake/LinuxMptcpSocketSelftests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/NativeAdmissionRequestIdentity.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/NativeIngressFreezeTests.cmake")
     add_executable(ker-socket-broker-inherited-group-client
