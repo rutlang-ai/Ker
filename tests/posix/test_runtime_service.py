@@ -433,6 +433,12 @@ class RuntimeServiceActorGrantTest(unittest.TestCase):
                 self.assertEqual(service.active_count, 0)
                 self.assertTrue(service.wait_for_release(0.1))
 
+                def wait_client_count(count):
+                    deadline = time.monotonic() + 2
+                    while len(service._connection_threads) != count and time.monotonic() < deadline:
+                        time.sleep(0.005)
+                    self.assertEqual(len(service._connection_threads), count)
+
                 # A consumed direct ticket must be rejected before waiting for
                 # a now-absent Popen binding. This models a client retry after
                 # RELEASE or confirmed actor death, with the service still up.
@@ -459,13 +465,8 @@ class RuntimeServiceActorGrantTest(unittest.TestCase):
                 self.assertFalse(binding_wait_calls,
                     'consumed direct CLAIM waited for an absent actor binding')
                 stale.close()
+                wait_client_count(0)
                 service._wait_actor_binding_locked = original_binding_wait
-
-                def wait_client_count(count):
-                    deadline = time.monotonic() + 2
-                    while len(service._connection_threads) != count and time.monotonic() < deadline:
-                        time.sleep(0.005)
-                    self.assertEqual(len(service._connection_threads), count)
 
                 held = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
                 held.settimeout(2)

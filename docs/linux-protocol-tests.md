@@ -47,3 +47,7 @@ native CI 显式启用该构建选项，构建全部目标并运行完整 CTest 
 当前固定 native 内核配置未启用 `CONFIG_KUNIT`；没有把 KUnit 结果算作通过。固定 Linux 源码中的 `tools/testing/selftests/net/packetdrill` 尚未接入 Ker 执行。Linux 完整 networking selftests 也尚未跑完。
 
 TCP 握手、ACK/窗口、重传、拥塞控制以及 FIN/RST 状态转换的原版测试覆盖仍需继续补齐。已有 F-Stack 回归、Ker 自编互通和本页首批原版 selftests 不能消除此缺口。
+
+## TCP-AO 原版目录
+
+[TCP-AO selftests](linux-tcp-ao-tests.md)已接入全部 24 个 IPv4/IPv6 入口。两个密钥管理入口保留原版已知 XFAIL，单独报告，不计为通过断言。对端均位于导入内核的原版网络命名空间/veth 内，本批不宣称外部 DPDK TCP-AO 互通资格。
