@@ -46,7 +46,7 @@ native CI 显式启用该构建选项，构建全部目标并运行完整 CTest 
 
 ## 仍未覆盖
 
-当前固定 native 内核配置未启用 `CONFIG_KUNIT`；没有把 KUnit 结果算作通过。固定 Linux 源码中的 `tools/testing/selftests/net/packetdrill` 尚未接入 Ker 执行。Linux 完整 networking selftests 也尚未跑完。
+生产 native 内核配置继续关闭 `CONFIG_KUNIT`。单独的测试内核现已运行[原版 MPTCP KUnit 的 2 个 suite、5 个用例](linux-mptcp-kunit-tests.md)，与本页 userspace selftests 分开统计。固定 Linux 源码中的 `tools/testing/selftests/net/packetdrill` 尚未接入 Ker 执行。Linux 完整 networking selftests 也尚未跑完。
 
 TCP 握手、ACK/窗口、重传、拥塞控制以及 FIN/RST 状态转换的原版测试覆盖仍需继续补齐。已有 F-Stack 回归、Ker 自编互通和本页首批原版 selftests 不能消除此缺口。
 
