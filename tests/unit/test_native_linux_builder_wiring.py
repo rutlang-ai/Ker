@@ -21,6 +21,22 @@ class NativeLinuxBuilderWiringTests(unittest.TestCase):
         makefile.write_text('obj-y = setup.o misc.o \\\n\tconsole.o\n')
         self.makefile = makefile
 
+    def test_kernel_config_fragment_has_distinct_fingerprint(self):
+        (self.root / 'config').mkdir()
+        (self.root / 'config/native-linux.json').write_text('{}\n')
+        (self.root / 'config/native-linux.defconfig').write_text('CONFIG_INET=y\n')
+        (self.root / 'config/netfilter.config').write_text('CONFIG_NETFILTER_XTABLES=y\n')
+        (self.root / 'src/posix/lkl-overlay').mkdir(parents=True)
+        default = builder.source_fingerprint(self.root)
+        profile = builder.source_fingerprint(self.root, 'config/netfilter.config')
+        self.assertNotEqual(default, profile)
+        self.assertEqual(profile, builder.source_fingerprint(
+            self.root, self.root / 'config/netfilter.config'))
+        self.assertEqual(profile, builder.source_fingerprint(self.root, 'config/netfilter.config'))
+        outside = self.root.parent / 'outside.config'; outside.write_text('CONFIG_X=y\n')
+        with self.assertRaisesRegex(ValueError, 'must be tracked under'):
+            builder.source_fingerprint(self.root, outside)
+
     def test_adds_exact_separate_builtin_objects_after_continued_list(self):
         with mock.patch.object(builder, 'git') as git:
             builder.wire_ker_builtin_adapters(self.root)

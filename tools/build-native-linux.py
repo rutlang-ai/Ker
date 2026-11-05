@@ -15,12 +15,30 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def source_fingerprint(root=ROOT):
+def tracked_config_fragment(root, config_fragment):
+    if config_fragment is None:
+        return None
+    root = Path(root).resolve()
+    path = Path(config_fragment)
+    if not path.is_absolute():
+        path = root / path
+    try:
+        return path.resolve(strict=True).relative_to(root).as_posix()
+    except ValueError as error:
+        raise ValueError('kernel config fragment must be tracked under the source root') from error
+
+
+def source_fingerprint(root=ROOT, config_fragment=None):
     root = Path(root)
     manifest_path = root / 'config/native-linux.json'
     defconfig_path = root / 'config/native-linux.defconfig'
     overlay = root / 'src/posix/lkl-overlay'
     digest = hashlib.sha256(manifest_path.read_bytes() + defconfig_path.read_bytes())
+    if config_fragment:
+        fragment = tracked_config_fragment(root, config_fragment)
+        fragment_path = root / fragment
+        digest.update(fragment.encode())
+        digest.update(fragment_path.read_bytes())
     # The builder controls how these inputs become an artifact. Include the
     # exact script being executed so changes to that process invalidate proofs.
     digest.update(Path(__file__).resolve().read_bytes())
@@ -115,13 +133,15 @@ def main():
         default=Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'ker/native-linux.git')
     parser.add_argument('--build', type=Path, default=ROOT / 'build-native-linux')
     parser.add_argument('--jobs', type=int, default=min(os.cpu_count() or 1, 16))
+    parser.add_argument('--config-fragment', type=Path,
+        help='additional tracked kernel options for an isolated test profile')
     parser.add_argument('--print-fingerprint', action='store_true',
         help='print the input fingerprint without reading or changing build artifacts')
     parser.add_argument('--fingerprint-root', type=Path, default=ROOT,
         help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.print_fingerprint:
-        print(source_fingerprint(args.fingerprint_root))
+        print(source_fingerprint(args.fingerprint_root, args.config_fragment))
         return
     if platform.system() != 'Linux' or platform.machine() != 'x86_64':
         parser.error('the native POSIX backend currently supports x86_64 Linux')
@@ -132,10 +152,12 @@ def main():
 
 
 def build_artifacts(args):
+    if args.config_fragment:
+        args.config_fragment = Path(tracked_config_fragment(ROOT, args.config_fragment))
     manifest_path = ROOT / 'config/native-linux.json'
     manifest = json.loads(manifest_path.read_text())
     overlay = ROOT / 'src/posix/lkl-overlay'
-    fingerprint = source_fingerprint(ROOT)
+    fingerprint = source_fingerprint(ROOT, args.config_fragment)
     cache = args.cache.resolve()
     build = args.build.resolve()
     build.mkdir(parents=True, exist_ok=True)
@@ -179,6 +201,11 @@ def build_artifacts(args):
     run(['make', '-C', source / 'tools/lkl', 'conf'], env=env)
     if not (kernel / '.config').exists():
         seed = (ROOT / 'config/native-linux.defconfig').read_bytes()
+        if args.config_fragment:
+            fragment_path = args.config_fragment
+            if not fragment_path.is_absolute():
+                fragment_path = ROOT / fragment_path
+            seed += b'\n' + fragment_path.read_bytes()
         host = (kernel / 'tools/lkl/kernel.config').read_bytes()
         (kernel / '.config').write_bytes(seed + b'\n' + host)
     run(['make', '-C', source, 'ARCH=lkl', 'O=' + str(kernel), 'olddefconfig'])
@@ -198,6 +225,8 @@ def build_artifacts(args):
         'include_net_tree': output(cache, 'rev-parse', linux['revision'] + ':include/net'),
         'config_sha256': hashlib.sha256((kernel / '.config').read_bytes()).hexdigest(),
         'library_sha256': hashlib.sha256((tools / 'liblkl.a').read_bytes()).hexdigest()}
+    if args.config_fragment:
+        proof['config_fragment'] = args.config_fragment.as_posix()
     (build / 'native-linux.json').write_text(json.dumps(proof, indent=2) + '\n')
     print('Native Linux artifacts and protocol provenance:', build / 'native-linux.json')
 

@@ -49,6 +49,12 @@ long ker_linux_selftest_call(unsigned operation, const unsigned long a[6])
     case KER_TEST_MOUNT:
         return lkl_sys_mount((char *)a[0], (char *)a[1], (char *)a[2], a[3], (void *)a[4]);
     case KER_TEST_UMOUNT: return lkl_sys_umount((char *)a[0], 0);
+    case KER_TEST_RAW_SOCKET:
+        /* Only the private upstream netfilter tools fixture uses these. */
+        if ((a[0] != LKL_AF_INET && a[0] != LKL_AF_INET6) ||
+            (a[1] & ~O_CLOEXEC) != LKL_SOCK_RAW || a[2] != LKL_IPPROTO_RAW) return -EOPNOTSUPP;
+        return export_file(lkl_sys_socket((int)a[0], (int)a[1], (int)a[2]), KER_FD_SOCKET,
+                           (a[1] & O_CLOEXEC) ? O_CLOEXEC : 0);
     case KER_TEST_NETLINK:
         /* Administrative setup belongs only to this uninstalled test fixture.
          * Ordinary exported netlink sockets retain their capability guards. */

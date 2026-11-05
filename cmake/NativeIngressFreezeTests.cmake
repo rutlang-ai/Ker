@@ -23,6 +23,7 @@ if(BUILD_TESTING)
 	target_compile_options(ker-c24-ingress-freeze-tap-client PRIVATE -Wall -Wextra -Werror)
 	target_link_libraries(ker-c24-ingress-freeze-tap-client PRIVATE
 		ker-posix-member-census-test-runtime)
+	if(NOT ker_native_mptcp_sockopt_profile)
 	add_test(NAME native-c24-ingress-freeze-tap
 		COMMAND "${Python3_EXECUTABLE}"
 			"${PROJECT_SOURCE_DIR}/tests/posix/c24-ingress-freeze-tap-wire.py"
@@ -34,6 +35,7 @@ if(BUILD_TESTING)
 	set_tests_properties(native-c24-ingress-freeze-tap PROPERTIES
 		TIMEOUT 120 LABELS "native-tcp;ingress-freeze;original-linux;tap;wire"
 		ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+	endif()
 
 	add_executable(ker-ff-ingress-freeze-state-test
 		"${PROJECT_SOURCE_DIR}/tests/posix/ff-ingress-freeze-state-test.c"

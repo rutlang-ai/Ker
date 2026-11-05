@@ -1,4 +1,6 @@
 #define _GNU_SOURCE
+#include <netinet/in.h>
+#include <net/if.h>
 #include "linux-mptcp-socket-wire.h"
 #include <errno.h>
 #include <dlfcn.h>
@@ -9,7 +11,8 @@
 #include <time.h>
 #include <linux/mptcp.h>
 #include <linux/tcp.h>
-#include <netinet/in.h>
+#include <linux/netfilter_ipv4/ip_tables.h>
+#include <linux/netfilter_ipv6/ip6_tables.h>
 #include <stddef.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -95,9 +98,11 @@ static int open_channel(void)
 }
 int __wrap_socket(int domain, int type, int protocol)
 {
-    int netlink = domain == AF_NETLINK && (type & ~SOCK_CLOEXEC) == SOCK_RAW &&
-                  (protocol == NETLINK_SOCK_DIAG || protocol == NETLINK_ROUTE);
-    if (!netlink && ((domain != AF_INET && domain != AF_INET6) || type != SOCK_STREAM ||
+    int netlink = domain == AF_NETLINK && ((type & ~SOCK_CLOEXEC) == SOCK_RAW || (type & ~SOCK_CLOEXEC) == SOCK_DGRAM) &&
+                  (protocol == NETLINK_SOCK_DIAG || protocol == NETLINK_ROUTE || protocol == NETLINK_GENERIC);
+    int raw = (domain == AF_INET || domain == AF_INET6) &&
+              (type & ~SOCK_CLOEXEC) == SOCK_RAW && protocol == IPPROTO_RAW;
+    if (!netlink && !raw && ((domain != AF_INET && domain != AF_INET6) || type != SOCK_STREAM ||
         (protocol != IPPROTO_MPTCP && protocol != IPPROTO_TCP && protocol != 0))) { errno = EOPNOTSUPP; return -1; }
     int fd = open_channel();
     if (fd < 0) return -1;
@@ -165,8 +170,26 @@ int __wrap_setsockopt(int fd, int level, int option, const void *value, socklen_
     if (!is_network(fd)) { errno = EBADF; return -1; }
     if (length > MS_MAX) { errno = EOPNOTSUPP; return -1; }
     unsigned char data[MS_MAX]; memcpy(data, value, length);
+    int replace = (level == IPPROTO_IP || level == IPPROTO_IPV6) && option == IPT_SO_SET_REPLACE;
+    struct xt_counters *counters = NULL;
+    size_t count = 0;
+    if (replace) {
+        size_t offset = level == IPPROTO_IP ? offsetof(struct ipt_replace, counters) : offsetof(struct ip6t_replace, counters);
+        size_t number = level == IPPROTO_IP ? offsetof(struct ipt_replace, num_counters) : offsetof(struct ip6t_replace, num_counters);
+        if (length < offset + sizeof(counters)) { errno = EINVAL; return -1; }
+        unsigned n; memcpy(&n, data + number, sizeof(n)); count = n;
+        if (count > (MS_MAX - length) / sizeof(*counters)) { errno = EMSGSIZE; return -1; }
+        memcpy(&counters, data + offset, sizeof(counters));
+        if (count && !counters) { errno = EFAULT; return -1; }
+        memset(data + offset, 0, sizeof(counters));
+    }
     struct ms_message m = {.operation = MS_SETOPT, .length = length, .a = level, .b = option};
-    return (int)exchange(fd, &m, data, NULL);
+    int result = (int)exchange(fd, &m, data, NULL);
+    if (result >= 0 && replace) {
+        if (m.length != count * sizeof(*counters)) { errno = EPROTO; return -1; }
+        if (count) memcpy(counters, data, m.length);
+    }
+    return result;
 }
 int __wrap_getsockopt(int fd, int level, int option, void *value, socklen_t *length)
 {

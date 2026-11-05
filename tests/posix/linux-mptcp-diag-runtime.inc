@@ -6,7 +6,7 @@ static pthread_mutex_t namespace_lock = PTHREAD_MUTEX_INITIALIZER;
 static int root_namespace;
 static long (*raw_native_call)(unsigned, const unsigned long[6]);
 static atomic_uint namespaces_created, namespaces_deleted, diag_netlinks, max_live;
-static atomic_ulong diag_sends, diag_receives;
+static atomic_ulong diag_sends, diag_receives, join_syn_rx, join_ack_rx;
 static long native_call(unsigned op, unsigned long a, unsigned long b, unsigned long c)
 {
     unsigned long args[6] = {a, b, c, 0, 0, 0};
@@ -44,6 +44,38 @@ static int select_namespace(const char *name, size_t length, int *index)
     pthread_mutex_unlock(&namespace_lock);
     return result;
 }
+/* Snapshot real namespace MIBs before deleting its last pin. No protocol
+ * state is inferred from the shell exit code or reconstructed in the fixture. */
+static int namespace_mptcp_counters(void)
+{
+    int fd = (int)native_call(KER_TEST_OPEN, (unsigned long)"/proc/thread-self/net/netstat", O_RDONLY, 0);
+    if (fd < 0) return -1;
+    char text[16384]; size_t used = 0; ssize_t got;
+    while (used < sizeof(text) - 1 && (got = read(fd, text + used, sizeof(text) - 1 - used)) > 0) used += (size_t)got;
+    int error = errno; close(fd); errno = error;
+    if (got < 0) return -1;
+    if (used == sizeof(text) - 1) { errno = EOVERFLOW; return -1; }
+    text[used] = 0;
+    char *header = strstr(text, "MPTcpExt:"), *values = header ? strchr(header, '\n') : NULL;
+    if (!values) { errno = EPROTO; return -1; }
+    *values++ = 0;
+    char *end = strchr(values, '\n'); if (end) *end = 0;
+    if (strncmp(values, "MPTcpExt:", 9)) { errno = EPROTO; return -1; }
+    char *names_state = NULL, *values_state = NULL;
+    char *name = strtok_r(header + 9, " \t", &names_state);
+    char *value = strtok_r(values + 9, " \t", &values_state);
+    unsigned found = 0;
+    while (name && value) {
+        if (!strcmp(name, "MPJoinSynRx") || !strcmp(name, "MPJoinAckRx")) {
+            char *tail; errno = 0; unsigned long count = strtoul(value, &tail, 10);
+            if (errno || *tail) { errno = EPROTO; return -1; }
+            atomic_fetch_add(!strcmp(name, "MPJoinSynRx") ? &join_syn_rx : &join_ack_rx, count); found++;
+        }
+        name = strtok_r(NULL, " \t", &names_state); value = strtok_r(NULL, " \t", &values_state);
+    }
+    if (name || value || found != 2) { errno = EPROTO; return -1; }
+    return 0;
+}
 static long namespace_change(unsigned op, const char *name)
 {
     if (!*name || strlen(name) >= 64) { errno = EINVAL; return -1; }
@@ -51,7 +83,12 @@ static long namespace_change(unsigned op, const char *name)
     int index = namespace_index(name);
     long result = -1;
     if (op == MS_DELNS) {
-        if (index >= 0 && !(result = close(diag_namespaces[index].fd))) {
+        /* Leave the dying namespace before dropping its pin: veth teardown
+         * must run from a task in the root namespace, not the retiring one. */
+        if (index >= 0 && !native_call(KER_TEST_SETNS, diag_namespaces[index].fd, CLONE_NEWNET, 0) &&
+            !namespace_mptcp_counters() &&
+            !native_call(KER_TEST_SETNS, root_namespace, CLONE_NEWNET, 0) &&
+            !(result = close(diag_namespaces[index].fd))) {
             diag_namespaces[index].fd = -1; atomic_fetch_add(&namespaces_deleted, 1);
         }
     } else if (index >= 0) errno = EEXIST;
@@ -72,7 +109,7 @@ static long namespace_change(unsigned op, const char *name)
 }
 static int diag_control(struct ms_message *m, unsigned char *data, size_t input, long *result)
 {
-    if (m->operation < MS_NEWNS || m->operation > MS_LISTNS) return 0;
+    if (m->operation < MS_NEWNS || m->operation > MS_FILE_CHUNK) return 0;
     *result = -1;
     if (!input || data[input - 1]) { errno = EINVAL; return 1; }
     char *name = (char *)data;
@@ -116,6 +153,17 @@ static int diag_control(struct ms_message *m, unsigned char *data, size_t input,
         pthread_mutex_unlock(&clients_lock);
         m->length = (uint32_t)used; *result = 0; return 1;
     }
+    if (m->operation == MS_NS_FD) {
+        if (input != length || index < 0) { errno = EINVAL; return 1; }
+        pthread_mutex_lock(&namespace_lock);
+        *result = native_call(KER_TEST_FD_NUMBER, diag_namespaces[index].fd, 0, 0);
+        pthread_mutex_unlock(&namespace_lock); return 1;
+    }
+    if (m->operation == MS_IFINDEX) {
+        const char *device = (char *)data + length;
+        if (input <= length || strlen(device) + length + 1 != input) { errno = EINVAL; return 1; }
+        unsigned value = if_nametoindex(device); *result = value ? (long)value : -1; return 1;
+    }
     char path[192];
     if (m->operation == MS_SYSCTL) {
         char *setting = (char *)data + length;
@@ -136,11 +184,11 @@ static int diag_control(struct ms_message *m, unsigned char *data, size_t input,
         else if (count >= 0) errno = EIO;
         return 1;
     }
-    if (m->operation == MS_FILE) {
+    if (m->operation == MS_FILE || m->operation == MS_FILE_CHUNK) {
         const char *file = (char *)data + length;
         if (input <= length || strlen(file) + length + 1 != input) { errno = EINVAL; return 1; }
         const char *allowed[] = {"/proc/net/tcp", "/proc/net/tcp6", "/proc/net/protocols", "/proc/net/netstat",
-            "/proc/net/snmp", "/proc/net/snmp6", "/proc/sys/net/mptcp/enabled"};
+            "/proc/net/snmp", "/proc/net/snmp6", "/proc/sys/net/mptcp/enabled", "/proc/kallsyms"};
         int found = 0;
         for (unsigned i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++) if (!strcmp(file, allowed[i])) found = 1;
         if (!found) { errno = EOPNOTSUPP; return 1; }
@@ -152,6 +200,12 @@ static int diag_control(struct ms_message *m, unsigned char *data, size_t input,
         else strcpy(path, file);
         int fd = (int)native_call(KER_TEST_OPEN, (unsigned long)path, O_RDONLY, 0);
         if (fd < 0) return 1;
+        if (m->operation == MS_FILE_CHUNK) {
+            if (lseek(fd, m->a, SEEK_SET) < 0) { int error = errno; close(fd); errno = error; return 1; }
+            ssize_t got = read(fd, data, MS_MAX); int error = errno; close(fd); errno = error;
+            if (got >= 0) { m->length = (uint32_t)got; *result = 0; }
+            return 1;
+        }
         size_t used = 0; ssize_t got;
         while (used < MS_MAX && (got = read(fd, data + used, MS_MAX - used)) > 0) used += (size_t)got;
         int error = errno; close(fd); errno = error;

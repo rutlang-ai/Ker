@@ -2,7 +2,7 @@
 
 直接执行固定 Linux stable 6.12.113 revision `7fdb7c1824a1f9979d648d7ae28ac446bcee9c6e` 的完整 `tools/testing/selftests/net/mptcp/diag.sh`。脚本、库、`mptcp_connect.c`、参数、循环次数和断言均保持原样，全部 **29 项 TAP 检查**必须通过，禁止 skip、IGNORE、TODO 和不完整计划。
 
-覆盖监听 socket 的目标/源端口与地址过滤，MP_CAPABLE 握手、remote key、TCP fallback，最后收发/ACK 时间，MPTCP in-use 与 established 计数、清理，以及原版的 100 组并发连接和 100 个 listener。helper、KUnit 和完整脚本分开统计；本批完成一个注册 shell 入口，剩余 **8 个**。
+覆盖监听 socket 的目标/源端口与地址过滤，MP_CAPABLE 握手、remote key、TCP fallback，最后收发/ACK 时间，MPTCP in-use 与 established 计数、清理，以及原版的 100 组并发连接和 100 个 listener。helper、KUnit 和完整脚本分开统计；本批完成一个注册 shell 入口，剩余 **7 个**。
 
 ## 实际内核与工具
 
