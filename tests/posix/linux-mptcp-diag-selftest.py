@@ -49,25 +49,76 @@ def kill_tree(pid):
     handles = []
     deadline = time.monotonic() + 3
 
-    def freeze(target):
+    def process_stat(target):
+        try:
+            fields = Path(f'/proc/{target}/stat').read_text().rsplit(') ', 1)[1].split()
+        except FileNotFoundError:
+            return None
+        # Fields after comm start at state (field 3): PPID is 1 and starttime
+        # is 19. starttime prevents a reused PID from being mistaken for a child.
+        return fields[0], int(fields[1]), fields[19]
+
+    def direct_children(target):
+        children_path = Path(f'/proc/{target}/task/{target}/children')
+        try:
+            pids = children_path.read_text().split()
+        except FileNotFoundError:
+            # Some proc mounts omit task/*/children. The frozen parent cannot
+            # create more children, so recover its direct children by PPID.
+            pids = []
+            for entry in Path('/proc').iterdir():
+                require(time.monotonic() < deadline, 'process discovery exceeded cleanup deadline')
+                if not entry.name.isdecimal():
+                    continue
+                try:
+                    fields = (entry / 'stat').read_text().rsplit(') ', 1)[1].split()
+                except (FileNotFoundError, PermissionError):
+                    continue
+                if int(fields[1]) == target:
+                    pids.append((entry.name, fields[19]))
+        else:
+            pids = [(child, None) for child in pids]
+
+        result = []
+        for child, starttime in pids:
+            info = process_stat(int(child))
+            if info is None or info[1] != target:
+                continue
+            if starttime is not None and info[2] != starttime:
+                continue
+            result.append((int(child), info[2]))
+        return result
+
+    def freeze(target, expected_starttime=None, expected_parent=None):
         try:
             handle = os.pidfd_open(target)
         except ProcessLookupError:
             return
-        handles.append(handle)
+        registered = False
         try:
+            identity = process_stat(target)
+            if identity is None or (expected_starttime is not None and identity[2] != expected_starttime) or \
+                    (expected_parent is not None and identity[1] != expected_parent):
+                return
+            handles.append(handle)
+            registered = True
             signal.pidfd_send_signal(handle, signal.SIGSTOP)
             while True:
-                state = Path(f'/proc/{target}/stat').read_text().rsplit(') ', 1)[1].split()[0]
+                identity = process_stat(target)
+                if identity is None:
+                    return
+                state = identity[0]
                 if state in ('T', 't', 'Z'):
                     break
                 require(time.monotonic() < deadline, 'owned test process did not stop for cleanup')
                 time.sleep(0.001)
-            children = Path(f'/proc/{target}/task/{target}/children').read_text().split()
-        except (ProcessLookupError, FileNotFoundError):
+        except ProcessLookupError:
             return
-        for child in children:
-            freeze(int(child))
+        finally:
+            if not registered:
+                os.close(handle)
+        for child, starttime in direct_children(target):
+            freeze(child, expected_starttime=starttime, expected_parent=target)
 
     try:
         freeze(pid)
@@ -79,6 +130,21 @@ def kill_tree(pid):
                 pass
             finally:
                 os.close(handle)
+
+
+def bounded_communicate(process, timeout):
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return stdout, stderr, False
+    except subprocess.TimeoutExpired as error:
+        def text(value):
+            if isinstance(value, bytes):
+                return value.decode(errors='replace')
+            return value or ''
+
+        stdout, stderr = text(error.output), text(error.stderr)
+        process.stdout.close(); process.stderr.close()
+        return stdout, stderr, True
 
 
 def main():
@@ -178,7 +244,13 @@ def main():
                 try:
                     stdout, stderr = result.communicate(timeout=220)
                 except BaseException:
-                    kill_tree(result.pid); stdout, stderr = result.communicate()
+                    try:
+                        kill_tree(result.pid)
+                    finally:
+                        stdout, stderr, capture_timed_out = bounded_communicate(result, timeout=5)
+                        report.update(stdout=stdout, stderr=stderr)
+                        if capture_timed_out:
+                            raise RuntimeError('diagnostic output remained open after bounded process cleanup')
                     report.update(stdout=stdout, stderr=stderr); raise
                 finally:
                     finished.set(); observer.join(timeout=7)

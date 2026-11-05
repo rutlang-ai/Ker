@@ -19,6 +19,17 @@ wire = runner.transport
 
 
 class OriginalDiagEvidenceTests(unittest.TestCase):
+    def test_bounded_capture_decodes_partial_bytes_and_closes_pipes(self):
+        process = mock.Mock()
+        process.communicate.side_effect = subprocess.TimeoutExpired(['bash'], 5, output=b'partial\xff', stderr=b'open')
+        stdout, stderr, timed_out = runner.bounded_communicate(process, timeout=5)
+        self.assertEqual(stdout, 'partial\ufffd')
+        self.assertEqual(stderr, 'open')
+        self.assertTrue(timed_out)
+        process.communicate.assert_called_once_with(timeout=5)
+        process.stdout.close.assert_called_once_with()
+        process.stderr.close.assert_called_once_with()
+
     def complete(self):
         return 'TAP version 13\n1..29\n' + ''.join(f'ok {i} - diag: check {i} # time=1ms\n' for i in range(1, 30))
 
@@ -80,6 +91,33 @@ class OriginalDiagEvidenceTests(unittest.TestCase):
             self.assertEqual(parent.wait(timeout=3), -signal.SIGKILL)
             poll = select.poll(); poll.register(child, select.POLLIN)
             self.assertTrue(poll.poll(3000), 'descendant escaped timeout cleanup')
+        finally:
+            if parent.poll() is None: runner.kill_tree(parent.pid); parent.wait(timeout=3)
+            try: signal.pidfd_send_signal(child, signal.SIGKILL)
+            except ProcessLookupError: pass
+            os.close(child); parent.stdout.close()
+
+    def test_timeout_cleanup_falls_back_when_proc_children_is_missing(self):
+        code = 'import subprocess,sys,time; p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"],start_new_session=True); print(p.pid,flush=True); time.sleep(60)'
+        parent = subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE, text=True, start_new_session=True)
+        child_pid = int(parent.stdout.readline())
+        child = os.pidfd_open(child_pid)
+        read_text = Path.read_text
+        unreadable_pid = os.getpid()
+
+        def without_children(path, *args, **kwargs):
+            if path.name == 'children':
+                raise FileNotFoundError(path)
+            if path == Path(f'/proc/{unreadable_pid}/stat'):
+                raise PermissionError(path)
+            return read_text(path, *args, **kwargs)
+
+        try:
+            with mock.patch.object(Path, 'read_text', new=without_children):
+                runner.kill_tree(parent.pid)
+            self.assertEqual(parent.wait(timeout=3), -signal.SIGKILL)
+            poll = select.poll(); poll.register(child, select.POLLIN)
+            self.assertTrue(poll.poll(3000), 'descendant escaped cleanup without proc children interface')
         finally:
             if parent.poll() is None: runner.kill_tree(parent.pid); parent.wait(timeout=3)
             try: signal.pidfd_send_signal(child, signal.SIGKILL)
