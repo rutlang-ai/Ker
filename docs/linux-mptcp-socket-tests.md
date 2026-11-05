@@ -33,4 +33,4 @@ ctest --test-dir build-native-on -R '^linux-original-mptcp-(sockopt|inq)-ipv' --
 
 CI 强制检查这 4 个 CTest 的 inventory 和 JUnit，不允许跳过；`linux-original-mptcp-*.json` 保留源码与二进制哈希、Linux revision、内核指纹、每次原版执行结果及实际 native 计数。
 
-两个 helper 在上游均属于 `TEST_GEN_FILES`。**本批不代表完整 `mptcp_sockopt.sh` 已迁移**：该脚本还包含多地址拓扑和 packet mark/iptables 路径。本批后仍有 9 个完整注册 shell 入口待迁移；已完成的完整入口仍是 `pm_netlink.sh` 默认模式。TCP-AO 的 24 个入口和已记录的 6 个上游 XFAIL 独立统计，不与 MPTCP helper 配置混算。
+两个 helper 在上游均属于 `TEST_GEN_FILES`。**本批不代表完整 `mptcp_sockopt.sh` 已迁移**：该脚本还包含多地址拓扑和 packet mark/iptables 路径。当前仍有 8 个完整注册 shell 入口待迁移；已完成的完整入口为 `pm_netlink.sh` 默认模式和 `diag.sh`。TCP-AO 的 24 个入口和已记录的 6 个上游 XFAIL 独立统计，不与 MPTCP helper 配置混算。

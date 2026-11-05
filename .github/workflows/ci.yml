@@ -285,6 +285,10 @@ jobs:
             --cache "$RUNNER_TEMP/native-linux.git" --jobs 2 \
             --production-manifest "$RUNNER_TEMP/native-linux-build/native-linux.json"
 
+      - name: Build pinned original iproute2 diagnostic tools
+        if: steps.native.outputs.present == 'true'
+        run: bash tools/ci/build_iproute2_diag.sh "$RUNNER_TEMP/iproute2-diag"
+
       - name: Configure native Linux testing build
         if: steps.native.outputs.present == 'true'
         env:
@@ -295,6 +299,7 @@ jobs:
           PKG_CONFIG_PATH="$pkgconfig_dir" cmake -S . -B build-native-on -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DKER_BUILD_EXAMPLES=ON \
             -DKER_BUILD_LINUX_PROTOCOL_SELFTESTS=ON \
+            -DKER_MPTCP_DIAG_TOOLS_DIR="$RUNNER_TEMP/iproute2-diag" \
             -DKER_WITH_DPDK=ON -DKER_WITH_NATIVE_TCP=ON \
             -DKER_DPDK_PKGCONFIG_DIR="$pkgconfig_dir" \
             -DKER_NATIVE_LINUX_BUILD="$RUNNER_TEMP/native-linux-build" \

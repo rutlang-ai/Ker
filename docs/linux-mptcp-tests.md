@@ -35,12 +35,12 @@ native 诊断读取原始 Linux `MPTcpExt` MIB，并导出 MP_CAPABLE SYN/SYNACK
 ctest --test-dir build-native-on -R '^linux-original-mptcp-' --output-on-failure
 ```
 
-本批使用一条数据路径和一个子流。除[已接入的原版 pm_netlink.sh 默认入口](linux-mptcp-pm-tests.md)外，上游剩余 9 个 shell 入口的完整拓扑/参数矩阵仍未完整迁移，包括多地址 PM、MP_JOIN、多子流恢复、故障注入、动态 endpoint/limits、诊断和重复连接等；不能由本批单子流 MP_CAPABLE/DSS 通过推断这些能力完成。独立宿主对端需要支持 MPTCP；不支持时测试失败，不用普通 TCP 成功替代。
+本批使用一条数据路径和一个子流。除[已接入的原版 pm_netlink.sh 默认入口](linux-mptcp-pm-tests.md)和[完整 diag.sh](linux-mptcp-diag-tests.md)外，上游剩余 8 个 shell 入口的完整拓扑/参数矩阵仍未完整迁移，包括多地址 PM、MP_JOIN、多子流恢复、故障注入、动态 endpoint/limits 和重复连接等；不能由本批单子流 MP_CAPABLE/DSS 通过推断这些能力完成。独立宿主对端需要支持 MPTCP；不支持时测试失败，不用普通 TCP 成功替代。
 
 
 ## 原版路径管理脚本
 
-[pm_netlink.sh 默认入口](linux-mptcp-pm-tests.md)已在常驻导入内核上通过全部 23 项检查，保留原版脚本与工具。其控制面覆盖与本页的数据传输配置分别记录。尚未完整迁移的注册入口为 `mptcp_connect.sh`、`mptcp_connect_mmap.sh`、`mptcp_connect_sendfile.sh`、`mptcp_connect_checksum.sh`、`mptcp_join.sh`、`diag.sh`、`simult_flows.sh`、`mptcp_sockopt.sh`、`userspace_pm.sh`。
+[pm_netlink.sh 默认入口](linux-mptcp-pm-tests.md)已在常驻导入内核上通过全部 23 项检查，保留原版脚本与工具。其控制面覆盖与本页的数据传输配置分别记录。尚未完整迁移的注册入口为 `mptcp_connect.sh`、`mptcp_connect_mmap.sh`、`mptcp_connect_sendfile.sh`、`mptcp_connect_checksum.sh`、`mptcp_join.sh`、`simult_flows.sh`、`mptcp_sockopt.sh`、`userspace_pm.sh`。
 
 ## 原版 socket 信息与 INQ helper
 
@@ -48,4 +48,8 @@ ctest --test-dir build-native-on -R '^linux-original-mptcp-' --output-on-failure
 
 ## 原版内核内部测试
 
-[MPTCP KUnit](linux-mptcp-kunit-tests.md)在独立测试内核中运行原版 crypto/token 两个 suite，共 5 个用例，覆盖密码学校验与 token 创建、转交、查找、销毁和引用计数边界。生产内核继续关闭 KUnit；这些用例也不抵扣剩余 9 个完整 shell 入口。
+[MPTCP KUnit](linux-mptcp-kunit-tests.md)在独立测试内核中运行原版 crypto/token 两个 suite，共 5 个用例，覆盖密码学校验与 token 创建、转交、查找、销毁和引用计数边界。生产内核继续关闭 KUnit；这些用例也不抵扣剩余 8 个完整 shell 入口。
+
+## 完整原版诊断脚本
+
+[diag.sh](linux-mptcp-diag-tests.md)直接执行完整原版脚本的 29 项检查，使用真实 native Netlink 与 proc 数据验证监听过滤、协商/回退、时间戳、MPTCP 计数、100 组并发连接和清理。当前完整注册脚本剩余 8 个，详见上方清单。
