@@ -45,3 +45,7 @@ ctest --test-dir build-native-on -R '^linux-original-mptcp-' --output-on-failure
 ## 原版 socket 信息与 INQ helper
 
 [mptcp_sockopt / mptcp_inq](linux-mptcp-socket-tests.md)直接保留原版进程与断言，在同一导入内核执行 IPv4/IPv6 socket 信息、队列、控制消息和 FIN 测试，共 10 个 helper 配置。它们不抵扣上面的完整 shell 入口数量。
+
+## 原版内核内部测试
+
+[MPTCP KUnit](linux-mptcp-kunit-tests.md)在独立测试内核中运行原版 crypto/token 两个 suite，共 5 个用例，覆盖密码学校验与 token 创建、转交、查找、销毁和引用计数边界。生产内核继续关闭 KUnit；这些用例也不抵扣剩余 9 个完整 shell 入口。

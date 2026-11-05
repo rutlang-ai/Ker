@@ -277,6 +277,14 @@ jobs:
             --build "$RUNNER_TEMP/native-linux-build" \
             --cache "$RUNNER_TEMP/native-linux.git" --jobs 2
 
+      - name: Run original MPTCP KUnit suites in a separate test kernel
+        if: steps.native.outputs.present == 'true'
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 tools/run-linux-mptcp-kunit.py \
+            --build "$RUNNER_TEMP/native-linux-mptcp-kunit" \
+            --cache "$RUNNER_TEMP/native-linux.git" --jobs 2 \
+            --production-manifest "$RUNNER_TEMP/native-linux-build/native-linux.json"
+
       - name: Configure native Linux testing build
         if: steps.native.outputs.present == 'true'
         env:
@@ -388,6 +396,9 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/native-full-ctest.xml
+            ${{ runner.temp }}/native-linux-mptcp-kunit/linux-original-mptcp-kunit.json
+            ${{ runner.temp }}/native-linux-mptcp-kunit/native-linux.json
+            ${{ runner.temp }}/native-linux-mptcp-kunit/mptcp-kunit*.log
             build-native-on/linux-original-*.json
             build-native-on/linux-original-mptcp-*-captures/
             ${{ runner.temp }}/session-native-packets.log
