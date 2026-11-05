@@ -79,7 +79,7 @@ def main():
         program = os.environ['KER_MPTCP_DIAG_REAL_IP']; os.execv(program, [program, *args])
     if len(args) == 3 and args[:2] in (['netns', 'add'], ['netns', 'delete']):
         rpc(NEWNS if args[1] == 'add' else DELNS, args[2]); return 0
-    if args == ['netns', 'list']:
+    if args[:2] == ['netns', 'list']:
         sys.stdout.buffer.write(rpc(LISTNS)); return 0
     if len(args) == 3 and args[:2] == ['netns', 'pids']:
         sys.stdout.buffer.write(rpc(PIDS, args[2])); return 0

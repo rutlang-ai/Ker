@@ -51,6 +51,14 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
         target_link_options(ker-linux-mptcp-diag-connect PRIVATE "-Wl,--wrap=${wrap}")
         target_compile_definitions(ker-linux-mptcp-diag-preload PRIVATE "__wrap_${wrap}=${wrap}")
     endforeach()
+    add_executable(ker-linux-mptcp-sockopt-pm "${mptcp_root}/pm_nl_ctl.c"
+        $<TARGET_OBJECTS:ker-linux-mptcp-socket-proxy>)
+    target_include_directories(ker-linux-mptcp-sockopt-pm PRIVATE "${ao_headers}")
+    target_compile_options(ker-linux-mptcp-sockopt-pm PRIVATE -Wno-error -UNDEBUG)
+    target_link_libraries(ker-linux-mptcp-sockopt-pm PRIVATE ${CMAKE_DL_LIBS})
+    foreach(wrap IN LISTS diag_wraps)
+        target_link_options(ker-linux-mptcp-sockopt-pm PRIVATE "-Wl,--wrap=${wrap}")
+    endforeach()
     set(KER_MPTCP_DIAG_TOOLS_DIR "" CACHE PATH "Pinned iproute2 ss/nstat directory for original MPTCP diagnostics")
     add_test(NAME linux-original-mptcp-diag
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-mptcp-diag-selftest.py"
@@ -60,5 +68,16 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
             --worker "$<TARGET_FILE:ker-io-worker>" --pmd-dir "${ker_session_pmd_dir}" --manifest "${ker_native_manifest}"
             --evidence "${PROJECT_BINARY_DIR}/linux-original-mptcp-diag.json")
     set_tests_properties(linux-original-mptcp-diag PROPERTIES TIMEOUT 300
+        LABELS "linux-upstream;original-linux;mptcp;protocol-selftest;dpdk" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_test(NAME linux-original-mptcp-sockopt-shell
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-mptcp-diag-selftest.py"
+            --suite sockopt --server "$<TARGET_FILE:ker-linux-mptcp-socket-server>"
+            --binary "$<TARGET_FILE:ker-linux-mptcp-diag-connect>" --sockopt "$<TARGET_FILE:ker-linux-mptcp-sockopt>"
+            --inq "$<TARGET_FILE:ker-linux-mptcp-inq>" --pm "$<TARGET_FILE:ker-linux-mptcp-sockopt-pm>"
+            --preload "$<TARGET_FILE:ker-linux-mptcp-diag-preload>" --tools "${KER_MPTCP_DIAG_TOOLS_DIR}"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --pmd-dir "${ker_session_pmd_dir}" --manifest "${ker_native_manifest}"
+            --evidence "${PROJECT_BINARY_DIR}/linux-original-mptcp-sockopt-shell.json")
+    set_tests_properties(linux-original-mptcp-sockopt-shell PROPERTIES TIMEOUT 300
         LABELS "linux-upstream;original-linux;mptcp;protocol-selftest;dpdk" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 endif()

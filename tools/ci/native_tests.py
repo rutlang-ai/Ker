@@ -32,7 +32,7 @@ LINUX_MPTCP_SELFTESTS = (
     "linux-original-mptcp-pm-netlink",
     "linux-original-mptcp-sockopt-ipv4", "linux-original-mptcp-sockopt-ipv6",
     "linux-original-mptcp-inq-ipv4", "linux-original-mptcp-inq-ipv6",
-    "linux-original-mptcp-diag",
+    "linux-original-mptcp-diag", "linux-original-mptcp-sockopt-shell",
 )
 
 LINUX_TCP_AO_SELFTESTS = tuple(

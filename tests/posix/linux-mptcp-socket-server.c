@@ -1,4 +1,6 @@
 #define _GNU_SOURCE
+#include <netinet/in.h>
+#include <net/if.h>
 #include "linux-mptcp-socket-wire.h"
 #include "linux-selftest-runtime.h"
 #include <dlfcn.h>
@@ -8,8 +10,8 @@
 #include <sched.h>
 #include <linux/mptcp.h>
 #include <linux/tcp.h>
-#include <net/if.h>
-#include <netinet/in.h>
+#include <linux/netfilter_ipv4/ip_tables.h>
+#include <linux/netfilter_ipv6/ip6_tables.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stddef.h>
@@ -32,7 +34,7 @@ static unsigned clients_count;
 static pthread_mutex_t clients_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint stopping, live, sockets_count, mptcp_count, accepts_count;
 static atomic_ulong reads_count, writes_count, received_bytes, sent_bytes, infos_count, full_count, inq_count;
-static atomic_uint negotiated_count, fallback_count;
+static atomic_uint negotiated_count, fallback_count, raw_count, filter_sets, filter_gets;
 static atomic_uint fallback_info_unsupported, fallback_info_no_proto;
 
 static int observe_connection(int fd)
@@ -78,17 +80,20 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     long control_result;
     if (diag_control(m, data, input, &control_result)) return control_result;
     if (m->operation == MS_SOCKET) {
-        int netlink = m->a == AF_NETLINK && (m->b & ~SOCK_CLOEXEC) == SOCK_RAW &&
-                      (m->c == NETLINK_SOCK_DIAG || m->c == NETLINK_ROUTE);
-        if (fd >= 0 || (!netlink && ((m->a != AF_INET && m->a != AF_INET6) || m->b != SOCK_STREAM ||
+        int netlink = m->a == AF_NETLINK && ((m->b & ~SOCK_CLOEXEC) == SOCK_RAW || (m->b & ~SOCK_CLOEXEC) == SOCK_DGRAM) &&
+                      (m->c == NETLINK_SOCK_DIAG || m->c == NETLINK_ROUTE || m->c == NETLINK_GENERIC);
+        int raw = (m->a == AF_INET || m->a == AF_INET6) &&
+                  (m->b & ~SOCK_CLOEXEC) == SOCK_RAW && m->c == IPPROTO_RAW;
+        if (fd >= 0 || (!netlink && !raw && ((m->a != AF_INET && m->a != AF_INET6) || m->b != SOCK_STREAM ||
             (m->c != IPPROTO_MPTCP && m->c != IPPROTO_TCP && m->c != 0)))) { errno = EOPNOTSUPP; return -1; }
         if (select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
-        client->native = netlink ? (int)native_call(KER_TEST_NETLINK, m->b, m->c, 0) : socket((int)m->a, (int)m->b, (int)m->c);
+        client->native = raw ? (int)native_call(KER_TEST_RAW_SOCKET, m->a, m->b, m->c) : netlink ? (int)native_call(KER_TEST_NETLINK, m->b, m->c, 0) : socket((int)m->a, (int)m->b, (int)m->c);
         if (client->native < 0) return -1;
         int (*kind)(int) = dlsym(RTLD_DEFAULT, "ker_posix_descriptor_kind");
         if (!kind || kind(client->native) != (netlink ? 3 : 1)) { close(client->native); client->native = -1; errno = ENOTSUP; return -1; }
         atomic_fetch_add(&sockets_count, 1); mark_active(client);
         if (netlink) atomic_fetch_add(&diag_netlinks, 1);
+        if (raw) atomic_fetch_add(&raw_count, 1);
         if (!netlink && m->c == IPPROTO_MPTCP) atomic_fetch_add(&mptcp_count, 1);
         return 0;
     }
@@ -119,7 +124,23 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         atomic_fetch_add(&accepts_count, 1);
         *pass_fd = pair[1]; return 0;
     }
-    case MS_SETOPT: return setsockopt(fd, (int)m->a, (int)m->b, data, (socklen_t)input);
+    case MS_SETOPT: {
+        int replace = (m->a == IPPROTO_IP || m->a == IPPROTO_IPV6) && m->b == IPT_SO_SET_REPLACE;
+        size_t count = 0;
+        if (replace) {
+            size_t offset = m->a == IPPROTO_IP ? offsetof(struct ipt_replace, counters) : offsetof(struct ip6t_replace, counters);
+            size_t number = m->a == IPPROTO_IP ? offsetof(struct ipt_replace, num_counters) : offsetof(struct ip6t_replace, num_counters);
+            if (input < offset + sizeof(void *)) { errno = EINVAL; return -1; }
+            unsigned n; void *old; memcpy(&n, data + number, sizeof(n)); memcpy(&old, data + offset, sizeof(old)); count = n;
+            if (old || count > (MS_MAX - input) / sizeof(struct xt_counters)) { errno = EINVAL; return -1; }
+            void *counters = data + input; memset(counters, 0, count * sizeof(struct xt_counters));
+            memcpy(data + offset, &counters, sizeof(counters));
+        }
+        long result = setsockopt(fd, (int)m->a, (int)m->b, data, (socklen_t)input);
+        if (replace && !result) { m->length = (uint32_t)(count * sizeof(struct xt_counters)); memmove(data, data + input, m->length); }
+        if (!result && (m->a == IPPROTO_IP || m->a == IPPROTO_IPV6) && m->b >= IPT_BASE_CTL) atomic_fetch_add(&filter_sets, 1);
+        return result;
+    }
     case MS_GETOPT: {
         socklen_t length = m->c;
         size_t capacity = (int)length < 0 ? 0 : length;
@@ -138,6 +159,7 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         }
         long result = getsockopt(fd, (int)m->a, (int)m->b, data, &length);
         int error = errno;
+        if (!result && (m->a == IPPROTO_IP || m->a == IPPROTO_IPV6) && m->b >= IPT_BASE_CTL) atomic_fetch_add(&filter_gets, 1);
         if (nested) { full->subflow_info = 0; full->tcp_info = 0; }
         m->length = (uint32_t)input; m->c = length;
         if (!result && m->a == SOL_MPTCP) {
@@ -284,13 +306,15 @@ int main(int argc, char **argv)
         "\"infos\":%lu,\"full_info\":%lu,\"inq\":%lu,\"negotiated\":%u,\"fallback\":%u,"
         "\"fallback_info_eopnotsupp\":%u,\"fallback_info_enoprotoopt\":%u,"
         "\"namespaces_created\":%u,\"namespaces_deleted\":%u,\"netlinks\":%u,"
-        "\"diag_sends\":%lu,\"diag_receives\":%lu,\"max_live\":%u}\n",
+        "\"diag_sends\":%lu,\"diag_receives\":%lu,\"max_live\":%u,\"raw_sockets\":%u,\"filter_sets\":%u,\"filter_gets\":%u,\"mp_join_syn_rx\":%lu,\"mp_join_ack_rx\":%lu}\n",
         atomic_load(&sockets_count), atomic_load(&mptcp_count), atomic_load(&accepts_count), atomic_load(&live),
         atomic_load(&reads_count), atomic_load(&writes_count), atomic_load(&received_bytes), atomic_load(&sent_bytes),
         atomic_load(&infos_count), atomic_load(&full_count), atomic_load(&inq_count),
         atomic_load(&negotiated_count), atomic_load(&fallback_count),
         atomic_load(&fallback_info_unsupported), atomic_load(&fallback_info_no_proto),
         atomic_load(&namespaces_created), atomic_load(&namespaces_deleted), atomic_load(&diag_netlinks),
-        atomic_load(&diag_sends), atomic_load(&diag_receives), atomic_load(&max_live));
+        atomic_load(&diag_sends), atomic_load(&diag_receives), atomic_load(&max_live),
+        atomic_load(&raw_count), atomic_load(&filter_sets), atomic_load(&filter_gets),
+        atomic_load(&join_syn_rx), atomic_load(&join_ack_rx));
     return fclose(stats) ? 9 : 0;
 }

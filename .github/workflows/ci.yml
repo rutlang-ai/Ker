@@ -268,7 +268,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             bc bison flex libcap-dev libelf-dev liblz4-dev libncurses-dev \
-            libssl-dev libz-dev libzstd-dev rsync
+            libssl-dev libz-dev libzstd-dev rsync iptables
 
       - name: Build the pinned Linux/LKL runtime
         if: steps.native.outputs.present == 'true'
