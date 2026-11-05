@@ -39,6 +39,13 @@ def command(args, work, environment):
     return subprocess.run(args, cwd=work, env=environment, capture_output=True, text=True, timeout=10)
 
 
+def write_ip_shim(directory):
+    """Create the PATH shim in an already allocated executable directory."""
+    shim = Path(directory) / 'ip'
+    shim.write_text('#!' + sys.executable + '\n' + Path(__file__).with_name('linux-mptcp-pm-ip.py').read_text())
+    shim.chmod(0o700)
+
+
 def run_script(args, work, environment, timeout):
     process = subprocess.Popen(args, cwd=work, env=environment, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, start_new_session=True)
@@ -78,7 +85,9 @@ def main():
                   binary_sha256=hashlib.sha256(args.binary.read_bytes()).hexdigest(),
                   library_sha256=hashlib.sha256(args.library.read_bytes()).hexdigest(),
                   server_sha256=hashlib.sha256(args.server.read_bytes()).hexdigest())
+    bin_dir = None
     try:
+        bin_dir = Path(tempfile.mkdtemp(prefix='ker-mptcp-pm-bin-', dir=args.binary.resolve().parent))
         for cmd in (['ip', 'link', 'set', 'lo', 'up'],
             ['ip', 'link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink'],
             ['ip', 'tuntap', 'add', 'dev', 'kerpeer', 'mode', 'tap', 'multi_queue'],
@@ -95,10 +104,8 @@ def main():
             for name, data in originals.items():
                 path = root / 'net' / name; path.write_bytes(data)
             (work / 'pm_nl_ctl').symlink_to(args.binary)
-            bin_dir = root / 'bin'; bin_dir.mkdir()
-            shim = bin_dir / 'ip'
-            shim.write_text('#!' + sys.executable + '\n' + Path(__file__).with_name('linux-mptcp-pm-ip.py').read_text())
-            shim.chmod(0o700)
+            # Keep executable test helpers off /dev/shm, which can be mounted noexec.
+            write_ip_shim(bin_dir)
             environment.update(KER_MPTCP_PM_REAL_IP=shutil.which('ip'), KER_MPTCP_PM_SOCKET=str(root / 'pm.sock'),
                                PATH=str(bin_dir) + os.pathsep + environment['PATH'])
             os.environ['KER_MPTCP_PM_SOCKET'] = environment['KER_MPTCP_PM_SOCKET']
@@ -188,6 +195,8 @@ def main():
         report['error'] = str(error)
         raise
     finally:
+        if bin_dir is not None:
+            shutil.rmtree(bin_dir, ignore_errors=True)
         args.evidence.write_text(json.dumps(report, indent=2) + '\n')
 
 

@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import socket
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -14,6 +15,16 @@ wire = runner.scaffold
 
 
 class OriginalPmEvidenceTests(unittest.TestCase):
+    def test_ip_shim_is_executable_beside_the_binary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / 'build'; parent.mkdir()
+            runner.write_ip_shim(parent)
+            shim = parent / 'ip'
+            self.assertTrue(shim.stat().st_mode & 0o111)
+            result = subprocess.run([str(shim), 'unsupported'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('unsupported upstream PM fixture ip command', result.stderr)
+
     def complete(self):
         return 'TAP version 13\n1..23\n' + ''.join(
             f'ok {i} - pm_netlink: assertion {i} # time=1ms\n' for i in range(1, 24))
