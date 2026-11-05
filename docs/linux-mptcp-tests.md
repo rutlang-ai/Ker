@@ -41,3 +41,7 @@ ctest --test-dir build-native-on -R '^linux-original-mptcp-' --output-on-failure
 ## 原版路径管理脚本
 
 [pm_netlink.sh 默认入口](linux-mptcp-pm-tests.md)已在常驻导入内核上通过全部 23 项检查，保留原版脚本与工具。其控制面覆盖与本页的数据传输配置分别记录。尚未完整迁移的注册入口为 `mptcp_connect.sh`、`mptcp_connect_mmap.sh`、`mptcp_connect_sendfile.sh`、`mptcp_connect_checksum.sh`、`mptcp_join.sh`、`diag.sh`、`simult_flows.sh`、`mptcp_sockopt.sh`、`userspace_pm.sh`。
+
+## 原版 socket 信息与 INQ helper
+
+[mptcp_sockopt / mptcp_inq](linux-mptcp-socket-tests.md)直接保留原版进程与断言，在同一导入内核执行 IPv4/IPv6 socket 信息、队列、控制消息和 FIN 测试，共 10 个 helper 配置。它们不抵扣上面的完整 shell 入口数量。

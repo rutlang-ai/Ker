@@ -42,6 +42,8 @@ native CI 显式启用该构建选项，构建全部目标并运行完整 CTest 
 
 [原版 mptcp_connect 在导入内核上的执行](linux-mptcp-tests.md)覆盖 IPv4/IPv6 客户端和服务端、三种 I/O 模式，以及拒绝把普通 TCP 回退计为 MPTCP 的对照。[原版 pm_netlink.sh 默认入口](linux-mptcp-pm-tests.md)另已接入全部 23 项检查；其余 9 个完整上游 shell 入口仍单独记录为未完成。
 
+[原版 mptcp_sockopt 与 mptcp_inq](linux-mptcp-socket-tests.md)新增 10 个 helper 配置，保留真实 fork 和上游断言，验证导入内核的 socket 信息、队列、控制消息和 FIN；不能抵扣完整 shell 入口数量。
+
 ## 仍未覆盖
 
 当前固定 native 内核配置未启用 `CONFIG_KUNIT`；没有把 KUnit 结果算作通过。固定 Linux 源码中的 `tools/testing/selftests/net/packetdrill` 尚未接入 Ker 执行。Linux 完整 networking selftests 也尚未跑完。
