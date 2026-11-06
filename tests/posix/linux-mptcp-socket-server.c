@@ -27,11 +27,13 @@
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NETWORK_SELFTEST)
+#include <sys/epoll.h>
+#endif
 #ifdef KER_PACKETDRILL_SELFTEST
 #include <linux/sockios.h>
 #include <linux/if_tun.h>
 #include <linux/filter.h>
-#include <sys/epoll.h>
 #endif
 
 /* A thread per socket preserves blocking accept/connect/read on one original
@@ -48,7 +50,12 @@ static unsigned clients_count;
 static atomic_ulong channels_opened;
 #ifdef KER_PACKETDRILL_SELFTEST
 static atomic_ulong packetdrill_tuns, packetdrill_offloads, packetdrill_timestamps;
-static atomic_ulong packetdrill_epoll_creates, packetdrill_epoll_controls, packetdrill_epoll_waits;
+#endif
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NETWORK_SELFTEST)
+static atomic_ulong native_epoll_creates, native_epoll_controls, native_epoll_waits;
+#endif
+#ifdef KER_NETWORK_SELFTEST
+static atomic_uint udp_count;
 #endif
 static pthread_mutex_t clients_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint stopping, live, sockets_count, mptcp_count, accepts_count;
@@ -117,15 +124,6 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         strcpy(client->proc_path, path);
         mark_active(client); return 0;
     }
-    if (m->operation == MS_EPOLL_OPEN) {
-        if (fd >= 0 || select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
-        client->native = epoll_create((int)m->a);
-        if (client->native < 0) return -1;
-        int (*kind)(int) = dlsym(RTLD_DEFAULT, "ker_posix_descriptor_kind");
-        if (!kind || kind(client->native) != 2) { close(client->native); client->native = -1; errno = ENOTSUP; return -1; }
-        atomic_fetch_add(&packetdrill_epoll_creates, 1);
-        mark_active(client); return client->native;
-    }
     if (m->operation == MS_TUN_OPEN) {
         if (fd >= 0 || select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
         client->native = (int)native_call(KER_TEST_OPEN_TUN, 0, 0, 0);
@@ -134,6 +132,17 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         if (!kind || kind(client->native) != 3) { close(client->native); client->native = -1; errno = ENOTSUP; return -1; }
         atomic_fetch_add(&packetdrill_tuns, 1);
         mark_active(client); return 0;
+    }
+#endif
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NETWORK_SELFTEST)
+    if (m->operation == MS_EPOLL_OPEN) {
+        if (fd >= 0 || select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
+        client->native = epoll_create((int)m->a);
+        if (client->native < 0) return -1;
+        int (*kind)(int) = dlsym(RTLD_DEFAULT, "ker_posix_descriptor_kind");
+        if (!kind || kind(client->native) != 2) { close(client->native); client->native = -1; errno = ENOTSUP; return -1; }
+        atomic_fetch_add(&native_epoll_creates, 1);
+        mark_active(client); return client->native;
     }
 #endif
     if (m->operation == MS_SOCKET) {
@@ -150,7 +159,13 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
                  ((m->b & ~SOCK_CLOEXEC) == SOCK_DGRAM &&
                    (m->c == 0 || (m->a == AF_INET && m->c == IPPROTO_ICMP) ||
                     (m->a == AF_INET6 && m->c == IPPROTO_ICMPV6))));
-        if (fd >= 0 || (!packet && !netlink && !raw && ((m->a != AF_INET && m->a != AF_INET6) || m->b != SOCK_STREAM ||
+        int udp = 0;
+#ifdef KER_NETWORK_SELFTEST
+        udp = (m->a == AF_INET || m->a == AF_INET6) && m->b == SOCK_DGRAM &&
+              (m->c == 0 || m->c == IPPROTO_UDP);
+        if (udp) raw = 0;
+#endif
+        if (fd >= 0 || (!udp && !packet && !netlink && !raw && ((m->a != AF_INET && m->a != AF_INET6) || m->b != SOCK_STREAM ||
             (m->c != IPPROTO_MPTCP && m->c != IPPROTO_TCP && m->c != 0)))) { errno = EOPNOTSUPP; return -1; }
         if (select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
         client->native = raw ? (int)native_call(KER_TEST_RAW_SOCKET, m->a, m->b, m->c) : netlink ? (int)native_call(KER_TEST_NETLINK, m->b, m->c, 0) : socket((int)m->a, (int)m->b, (int)m->c);
@@ -158,6 +173,9 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         int (*kind)(int) = dlsym(RTLD_DEFAULT, "ker_posix_descriptor_kind");
         if (!kind || kind(client->native) != ((packet || netlink) ? 3 : 1)) { close(client->native); client->native = -1; errno = ENOTSUP; return -1; }
         atomic_fetch_add(&sockets_count, 1); mark_active(client);
+#ifdef KER_NETWORK_SELFTEST
+        if (udp) atomic_fetch_add(&udp_count, 1);
+#endif
         if (netlink) atomic_fetch_add(&diag_netlinks, 1);
         if (raw || packet) atomic_fetch_add(&raw_count, 1);
         if (!netlink && m->c == IPPROTO_MPTCP) atomic_fetch_add(&mptcp_count, 1);
@@ -175,7 +193,7 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         }
         return result;
     }
-#ifdef KER_PACKETDRILL_SELFTEST
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NETWORK_SELFTEST)
     case MS_EPOLL_CTL: {
         struct epoll_event event;
         if (input && input != sizeof(event)) { errno = EINVAL; return -1; }
@@ -183,19 +201,21 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         /* The target socket owns this RPC channel and cannot be recycled
          * while its request is being dispatched. No frontend fd is used. */
         int result = epoll_ctl((int)m->a, (int)m->b, fd, input ? &event : NULL);
-        if (!result) atomic_fetch_add(&packetdrill_epoll_controls, 1);
+        if (!result) atomic_fetch_add(&native_epoll_controls, 1);
         return result;
     }
     case MS_EPOLL_WAIT: {
-        if (input || m->a > 64 || !m->a || m->b > 1000) { errno = EINVAL; return -1; }
+        if (input || m->a > 64 || !m->a || (m->b > 1000 && m->b != UINT32_MAX)) { errno = EINVAL; return -1; }
         struct epoll_event events[64];
         long result = epoll_wait(fd, events, (int)m->a, (int)m->b);
         if (result >= 0) {
             m->length = (uint32_t)result * sizeof(events[0]); memcpy(data, events, m->length);
-            atomic_fetch_add(&packetdrill_epoll_waits, 1);
+            atomic_fetch_add(&native_epoll_waits, 1);
         }
         return result;
     }
+#endif
+#ifdef KER_PACKETDRILL_SELFTEST
     case MS_PACKET_SENDV:
         return packetdrill_send_vectors(fd, m->a, data, input);
 #endif
@@ -603,8 +623,16 @@ int main(int argc, char **argv)
         ",\"tun_opens\":%lu,\"tun_offloads\":%lu,\"packet_timestamps\":%lu,"
         "\"epoll_creates\":%lu,\"epoll_controls\":%lu,\"epoll_waits\":%lu",
         atomic_load(&packetdrill_tuns), atomic_load(&packetdrill_offloads), atomic_load(&packetdrill_timestamps),
-        atomic_load(&packetdrill_epoll_creates), atomic_load(&packetdrill_epoll_controls), atomic_load(&packetdrill_epoll_waits));
+        atomic_load(&native_epoll_creates), atomic_load(&native_epoll_controls), atomic_load(&native_epoll_waits));
     extra = packetdrill_counts;
+#endif
+#ifdef KER_NETWORK_SELFTEST
+    char network_counts[256];
+    snprintf(network_counts, sizeof(network_counts),
+        ",\"udp_sockets\":%u,\"epoll_creates\":%lu,\"epoll_controls\":%lu,\"epoll_waits\":%lu",
+        atomic_load(&udp_count), atomic_load(&native_epoll_creates),
+        atomic_load(&native_epoll_controls), atomic_load(&native_epoll_waits));
+    extra = network_counts;
 #endif
     fprintf(stats, "{\"sockets\":%u,\"mptcp\":%u,\"accepts\":%u,\"live\":%u,"
         "\"reads\":%lu,\"writes\":%lu,\"received\":%lu,\"sent\":%lu,"

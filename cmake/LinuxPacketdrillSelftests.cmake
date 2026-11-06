@@ -19,7 +19,7 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_packetdri
     target_include_directories(ker-linux-packetdrill-preload PRIVATE "${ao_headers}")
     target_compile_options(ker-linux-packetdrill-preload PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-linux-packetdrill-preload PRIVATE ${CMAKE_DL_LIBS})
-    foreach(wrap IN LISTS diag_wraps)
+    foreach(wrap IN LISTS diag_wraps ITEMS epoll_create epoll_ctl epoll_wait)
         target_compile_definitions(ker-linux-packetdrill-preload PRIVATE "__wrap_${wrap}=${wrap}")
     endforeach()
     add_test(NAME linux-original-packetdrill

@@ -27,11 +27,13 @@
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NETWORK_SELFTEST)
+#include <sys/epoll.h>
+#endif
 #ifdef KER_PACKETDRILL_SELFTEST
 #include <linux/sockios.h>
 #include <linux/if_tun.h>
 #include <linux/filter.h>
-#include <sys/epoll.h>
 #include <sys/wait.h>
 #endif
 
@@ -41,7 +43,7 @@
  * Upstream creates every network fd after fork; inheriting network fds is not
  * supported by this deliberately narrow fixture. There is no host IP fallback. */
 static unsigned char network_fds[4096];
-#ifdef KER_PACKETDRILL_SELFTEST
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NETWORK_SELFTEST)
 static int remote_epoll[4096];
 #endif
 static struct stat imported_inputs[4096];
@@ -135,7 +137,13 @@ int __wrap_socket(int domain, int type, int protocol)
                ((type & ~SOCK_CLOEXEC) == SOCK_DGRAM &&
                  (protocol == 0 || (domain == AF_INET && protocol == IPPROTO_ICMP) ||
                   (domain == AF_INET6 && protocol == IPPROTO_ICMPV6))));
-    if (!packet && !netlink && !raw && ((domain != AF_INET && domain != AF_INET6) || type != SOCK_STREAM ||
+    int udp = 0;
+#ifdef KER_NETWORK_SELFTEST
+    udp = (domain == AF_INET || domain == AF_INET6) && type == SOCK_DGRAM &&
+          (protocol == 0 || protocol == IPPROTO_UDP);
+    if (udp) raw = 0;
+#endif
+    if (!udp && !packet && !netlink && !raw && ((domain != AF_INET && domain != AF_INET6) || type != SOCK_STREAM ||
         (protocol != IPPROTO_MPTCP && protocol != IPPROTO_TCP && protocol != 0))) { errno = EOPNOTSUPP; return -1; }
     int fd = open_channel();
     if (fd < 0) return -1;
@@ -691,6 +699,8 @@ int __wrap_close(int fd)
         network_fds[fd] = 0; has_input[fd] = 0;
         return (int)syscall(SYS_close, fd);
     }
+#endif
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NETWORK_SELFTEST)
     if (is_network(fd)) remote_epoll[fd] = 0;
 #endif
     if (is_network(fd)) {
@@ -706,6 +716,42 @@ int __wrap_close(int fd)
     }
     return (int)syscall(SYS_close, fd);
 }
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NETWORK_SELFTEST)
+int __wrap_epoll_create(int size)
+{
+    const char *ns = getenv("KER_MPTCP_SOCKET_NAMESPACE"); if (!ns) ns = "";
+    if (strlen(ns) >= 64) { errno = EINVAL; return -1; }
+    int fd = open_channel(); if (fd < 0) return -1;
+    unsigned char data[MS_MAX]; strcpy((char *)data, ns);
+    struct ms_message m = {.operation = MS_EPOLL_OPEN, .a = (uint32_t)size, .length = (uint32_t)strlen(ns) + 1};
+    long result = exchange(fd, &m, data, NULL);
+    if (result < 0) { int error = errno; syscall(SYS_close, fd); errno = error; return -1; }
+    if (remember(fd) < 0) return -1;
+    remote_epoll[fd] = (int)result; return fd;
+}
+int __wrap_epoll_ctl(int epoll, int operation, int target, struct epoll_event *event)
+{
+    if (!is_network(epoll) && !is_network(target)) return (int)syscall(SYS_epoll_ctl, epoll, operation, target, event);
+    if (!is_network(epoll) || !remote_epoll[epoll] || !is_network(target)) { errno = EBADF; return -1; }
+    unsigned char data[MS_MAX];
+    struct ms_message m = {.operation = MS_EPOLL_CTL, .a = (uint32_t)remote_epoll[epoll], .b = (uint32_t)operation};
+    if (event) { memcpy(data, event, sizeof(*event)); m.length = sizeof(*event); }
+    return (int)exchange(target, &m, data, NULL);
+}
+int __wrap_epoll_wait(int epoll, struct epoll_event *events, int maximum, int timeout)
+{
+    if (!is_network(epoll)) return (int)syscall(SYS_epoll_wait, epoll, events, maximum, timeout);
+    if (!remote_epoll[epoll] || maximum <= 0 || maximum > 64 || timeout < -1 || timeout > 1000) { errno = EOPNOTSUPP; return -1; }
+    unsigned char data[MS_MAX];
+    struct ms_message m = {.operation = MS_EPOLL_WAIT, .a = (uint32_t)maximum, .b = (uint32_t)timeout};
+    long result = exchange(epoll, &m, data, NULL);
+    if (result >= 0) {
+        if (result > maximum || m.length != (size_t)result * sizeof(*events)) { errno = EPROTO; return -1; }
+        memcpy(events, data, m.length);
+    }
+    return (int)result;
+}
+#endif
 #ifdef KER_MPTCP_DIAG_PRELOAD
 #ifdef KER_PACKETDRILL_SELFTEST
 /* The original sysctl helper emits simple echo redirections and a bash
@@ -724,40 +770,6 @@ int system(const char *command)
     int status;
     while (waitpid(child, &status, 0) < 0) { if (errno != EINTR) return -1; }
     return status;
-}
-int epoll_create(int size)
-{
-    const char *ns = getenv("KER_MPTCP_SOCKET_NAMESPACE"); if (!ns) ns = "";
-    if (strlen(ns) >= 64) { errno = EINVAL; return -1; }
-    int fd = open_channel(); if (fd < 0) return -1;
-    unsigned char data[MS_MAX]; strcpy((char *)data, ns);
-    struct ms_message m = {.operation = MS_EPOLL_OPEN, .a = (uint32_t)size, .length = (uint32_t)strlen(ns) + 1};
-    long result = exchange(fd, &m, data, NULL);
-    if (result < 0) { int error = errno; syscall(SYS_close, fd); errno = error; return -1; }
-    if (remember(fd) < 0) return -1;
-    remote_epoll[fd] = (int)result; return fd;
-}
-int epoll_ctl(int epoll, int operation, int target, struct epoll_event *event)
-{
-    if (!is_network(epoll) && !is_network(target)) return (int)syscall(SYS_epoll_ctl, epoll, operation, target, event);
-    if (!is_network(epoll) || !remote_epoll[epoll] || !is_network(target)) { errno = EBADF; return -1; }
-    unsigned char data[MS_MAX];
-    struct ms_message m = {.operation = MS_EPOLL_CTL, .a = (uint32_t)remote_epoll[epoll], .b = (uint32_t)operation};
-    if (event) { memcpy(data, event, sizeof(*event)); m.length = sizeof(*event); }
-    return (int)exchange(target, &m, data, NULL);
-}
-int epoll_wait(int epoll, struct epoll_event *events, int maximum, int timeout)
-{
-    if (!is_network(epoll)) return (int)syscall(SYS_epoll_wait, epoll, events, maximum, timeout);
-    if (!remote_epoll[epoll] || maximum <= 0 || maximum > 64 || timeout < 0 || timeout > 1000) { errno = EOPNOTSUPP; return -1; }
-    unsigned char data[MS_MAX];
-    struct ms_message m = {.operation = MS_EPOLL_WAIT, .a = (uint32_t)maximum, .b = (uint32_t)timeout};
-    long result = exchange(epoll, &m, data, NULL);
-    if (result >= 0) {
-        if (result > maximum || m.length != (size_t)result * sizeof(*events)) { errno = EPROTO; return -1; }
-        memcpy(events, data, m.length);
-    }
-    return (int)result;
 }
 ssize_t writev(int fd, const struct iovec *vectors, int count)
 {
