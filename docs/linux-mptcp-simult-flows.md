@@ -20,7 +20,7 @@ native 配置启用原版 NET_SCHED/NET_SCH_NETEM；Linux 源码不变。协议�
 
 `linux-original-mptcp-simult-flows.json` 包含完整原版输出、10 项结果、工具/源码/内核 provenance、真实 qdisc 回读、内核资源和实际 native 活动。必须完成 20 个协商端点、10 次 accept、至少 10 次 MP_JOIN SYN 与 10 次 ACK 接收，且没有 TCP fallback；数据量、socket 归零、四个 namespace pin（含保留供原版清理检查的独立 namespace）回收和 packet outstanding 均检查。
 
-本批完成一个完整 shell 入口，其后 [`userspace_pm.sh`](linux-mptcp-userspace-pm.md) 完成 37 项检查，MPTCP 剩余 5 个：`mptcp_connect.sh`、`mptcp_connect_mmap.sh`、`mptcp_connect_sendfile.sh`、`mptcp_connect_checksum.sh`、`mptcp_join.sh`。TCP-AO 的 24 个注册入口保持独立回归，6 个已知上游 XFAIL 不计通过断言。
+本批完成一个完整 shell 入口，其后 [`userspace_pm.sh`](linux-mptcp-userspace-pm.md) 完成 37 项检查，四个 [connect 完整入口](linux-mptcp-connect-shells.md)已各自通过全部 68 项检查，MPTCP 剩余 `mptcp_join.sh` 完整故障矩阵。TCP-AO 的 24 个注册入口保持独立回归，6 个已知上游 XFAIL 不计通过断言。
 
 流量在导入内核内部 veth/loopback 上运行；不推断外部 DPDK 多路径验证已完成。CI 强制检查本入口在 inventory/JUnit 中存在并通过。
 

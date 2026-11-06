@@ -4,11 +4,13 @@
 #include "lifecycle.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <lkl.h>
+#include <lkl/linux/in6.h>
 
 static atomic_ulong operations[KER_TEST_OPERATION_COUNT];
 static void report_operations(void);
@@ -36,9 +38,12 @@ long ker_linux_selftest_call(unsigned operation, const unsigned long a[6])
     case KER_TEST_UNSHARE: return lkl_sys_unshare(a[0]);
     case KER_TEST_SETNS:
     case KER_TEST_FD_NUMBER:
+    case KER_TEST_GETDENTS:
         entry = ker_fd_get((int)a[0]);
         if (!entry) return -EBADF;
-        result = operation == KER_TEST_SETNS ? lkl_sys_setns(entry->native, (int)a[1]) : entry->native;
+        if (operation == KER_TEST_SETNS) result = lkl_sys_setns(entry->native, (int)a[1]);
+        else if (operation == KER_TEST_GETDENTS) result = lkl_sys_getdents64(entry->native, (struct lkl_linux_dirent64 *)a[1], a[2]);
+        else result = entry->native;
         ker_fd_put(entry);
         return result;
     case KER_TEST_OPEN:
@@ -50,9 +55,15 @@ long ker_linux_selftest_call(unsigned operation, const unsigned long a[6])
         return lkl_sys_mount((char *)a[0], (char *)a[1], (char *)a[2], a[3], (void *)a[4]);
     case KER_TEST_UMOUNT: return lkl_sys_umount((char *)a[0], 0);
     case KER_TEST_RAW_SOCKET:
-        /* Only the private upstream netfilter tools fixture uses these. */
+        /* Uninstalled upstream tools need native ICMP and device ioctls too.
+         * Keep this administrative boundary out of the public socket API. */
         if ((a[0] != LKL_AF_INET && a[0] != LKL_AF_INET6) ||
-            (a[1] & ~O_CLOEXEC) != LKL_SOCK_RAW || a[2] != LKL_IPPROTO_RAW) return -EOPNOTSUPP;
+            !(((a[1] & ~O_CLOEXEC) == LKL_SOCK_RAW &&
+               (a[2] == LKL_IPPROTO_RAW || (a[0] == LKL_AF_INET && a[2] == LKL_IPPROTO_ICMP) ||
+                (a[0] == LKL_AF_INET6 && a[2] == IPPROTO_ICMPV6))) ||
+              ((a[1] & ~O_CLOEXEC) == LKL_SOCK_DGRAM &&
+               (a[2] == 0 || (a[0] == LKL_AF_INET && a[2] == LKL_IPPROTO_ICMP) ||
+                (a[0] == LKL_AF_INET6 && a[2] == IPPROTO_ICMPV6))))) return -EOPNOTSUPP;
         return export_file(lkl_sys_socket((int)a[0], (int)a[1], (int)a[2]), KER_FD_SOCKET,
                            (a[1] & O_CLOEXEC) ? O_CLOEXEC : 0);
     case KER_TEST_NETLINK:

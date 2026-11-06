@@ -106,4 +106,29 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
             --evidence "${PROJECT_BINARY_DIR}/linux-original-mptcp-userspace-pm.json")
     set_tests_properties(linux-original-mptcp-userspace-pm PROPERTIES TIMEOUT 300
         LABELS "linux-upstream;original-linux;mptcp;protocol-selftest;dpdk" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    if(ker_native_mptcp_connect_profile)
+        set(mptcp_shell_suites connect mmap sendfile checksum)
+        if(ker_native_mptcp_join_profile)
+            list(APPEND mptcp_shell_suites join)
+        endif()
+        foreach(suite IN LISTS mptcp_shell_suites)
+            if(suite STREQUAL join)
+                set(mptcp_shell_test linux-original-mptcp-join)
+            else()
+                set(mptcp_shell_test linux-original-mptcp-connect-${suite})
+            endif()
+            add_test(NAME ${mptcp_shell_test}
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-mptcp-diag-selftest.py"
+                    --suite ${suite} --server "$<TARGET_FILE:ker-linux-mptcp-socket-server>"
+                    --binary "$<TARGET_FILE:ker-linux-mptcp-diag-connect>" --sockopt "$<TARGET_FILE:ker-linux-mptcp-sockopt>"
+                    --inq "$<TARGET_FILE:ker-linux-mptcp-inq>" --pm "$<TARGET_FILE:ker-linux-mptcp-sockopt-pm>"
+                    --preload "$<TARGET_FILE:ker-linux-mptcp-diag-preload>" --tools "${KER_MPTCP_DIAG_TOOLS_DIR}"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>" --pmd-dir "${ker_session_pmd_dir}" --manifest "${ker_native_manifest}"
+                    --evidence "${PROJECT_BINARY_DIR}/${mptcp_shell_test}.json")
+            set_tests_properties(${mptcp_shell_test} PROPERTIES TIMEOUT 3700
+                RUN_SERIAL TRUE LABELS "linux-upstream;original-linux;mptcp;protocol-selftest;dpdk"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+        endforeach()
+    endif()
 endif()

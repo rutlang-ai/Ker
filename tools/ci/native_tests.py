@@ -38,6 +38,10 @@ LINUX_MPTCP_SELFTESTS = (
     "linux-original-mptcp-simult-flows", "linux-original-mptcp-userspace-pm",
 )
 LINUX_MPTCP_SOCKOPT_PROFILE_TEST = "linux-original-mptcp-sockopt-shell"
+LINUX_MPTCP_JOIN_PROFILE_TEST = "linux-original-mptcp-join"
+LINUX_MPTCP_JOIN_EXPECTED_CASES = 126
+LINUX_MPTCP_CONNECT_PROFILE_TESTS = {"linux-original-mptcp-connect-" + suite
+                                     for suite in ("connect", "mmap", "sendfile", "checksum")}
 
 LINUX_TCP_AO_SELFTESTS = tuple(
     f"linux-original-tcp-ao-{program}-ipv{family}"
@@ -428,9 +432,74 @@ def run_sockopt_profile(build: Path, junit: Path) -> None:
     summary("Original MPTCP sockopt shell profile: PASS " + manifest["fingerprint"])
 
 
+def run_connect_profile(build: Path, junit: Path) -> None:
+    inventory = ctest_inventory(build)
+    validate_sockopt_profile_inventory(inventory)
+    for name in LINUX_MPTCP_CONNECT_PROFILE_TESTS:
+        require(sum(item["name"] == name for item in inventory) == 1,
+                "connect profile must contain each original shell entry exactly once: " + name)
+    cache = (build / "CMakeCache.txt").read_text()
+    native_build = next((line.split("=", 1)[1] for line in cache.splitlines()
+                         if line.startswith("KER_NATIVE_LINUX_BUILD:PATH=")), None)
+    require(native_build, "connect profile build has no native kernel artifact path")
+    manifest = json.loads((Path(native_build) / "native-linux.json").read_text())
+    require(manifest.get("config_fragment") == "config/native-linux-mptcp-connect.config",
+            "connect shells did not use their dedicated netfilter kernel profile")
+    config = set((Path(manifest["kernel"]) / ".config").read_text().splitlines())
+    require({"CONFIG_NF_TABLES=y", "CONFIG_NF_TABLES_INET=y", "CONFIG_NFT_SOCKET=y",
+             "CONFIG_NFT_TPROXY=y"}.issubset(config), "connect kernel lacks real nftables transparent proxy support")
+    pattern = "^(" + "|".join(re.escape(name) for name in sorted(LINUX_MPTCP_CONNECT_PROFILE_TESTS)) + ")$"
+    result = subprocess.run(["ctest", "--test-dir", str(build), "--no-tests=error", "--output-on-failure",
+                             "--output-junit", str(junit), "--parallel", "1", "-R", pattern], check=False)
+    require(junit.is_file(), "connect profile CTest did not produce JUnit output")
+    report_junit(junit, expected=LINUX_MPTCP_CONNECT_PROFILE_TESTS,
+                 required=LINUX_MPTCP_CONNECT_PROFILE_TESTS, ctest_returncode=result.returncode)
+    for name in sorted(LINUX_MPTCP_CONNECT_PROFILE_TESTS):
+        evidence = json.loads((build / (name + ".json")).read_text())
+        require(evidence.get("status") == "PASS_IMPORTED_LINUX" and evidence.get("returncode") == 0 and
+                len(evidence.get("cases", [])) == 68, "incomplete original connect shell: " + name)
+        require(evidence.get("fingerprint") == manifest.get("fingerprint"), "connect evidence kernel fingerprint differs")
+    summary("Original MPTCP connect/mmap/sendfile/checksum shells: PASS " + manifest["fingerprint"])
+
+
+def run_join_profile(build: Path, junit: Path) -> None:
+    inventory = ctest_inventory(build)
+    validate_sockopt_profile_inventory(inventory)
+    require(sum(item["name"] == LINUX_MPTCP_JOIN_PROFILE_TEST for item in inventory) == 1,
+            "join profile must contain the original full shell exactly once")
+    cache = (build / "CMakeCache.txt").read_text()
+    native_build = next((line.split("=", 1)[1] for line in cache.splitlines()
+                         if line.startswith("KER_NATIVE_LINUX_BUILD:PATH=")), None)
+    require(native_build, "join profile build has no native kernel artifact path")
+    manifest = json.loads((Path(native_build) / "native-linux.json").read_text())
+    require(manifest.get("config_fragment") == "config/native-linux-mptcp-join.config",
+            "join shell did not use its dedicated fault-injection kernel profile")
+    config = set((Path(manifest["kernel"]) / ".config").read_text().splitlines())
+    required = {"CONFIG_" + name + "=y" for name in ("IP_NF_MANGLE", "IP6_NF_MANGLE", "NETFILTER_XT_MARK",
+                "NETFILTER_XT_MATCH_BPF", "NETFILTER_XT_MATCH_LENGTH", "NETFILTER_XT_MATCH_STATISTIC",
+                "IP_NF_TARGET_REJECT", "IP6_NF_TARGET_REJECT", "NET_SCH_INGRESS", "NET_CLS_FW",
+                "NET_CLS_ACT", "NET_ACT_PEDIT", "NET_ACT_CSUM")}
+    require(required.issubset(config), "join kernel lacks native fault-injection modules")
+    result = subprocess.run(["ctest", "--test-dir", str(build), "--no-tests=error", "--output-on-failure",
+                             "--output-junit", str(junit), "--parallel", "1", "-R",
+                             "^" + re.escape(LINUX_MPTCP_JOIN_PROFILE_TEST) + "$"], check=False)
+    require(junit.is_file(), "join profile CTest did not produce JUnit output")
+    report_junit(junit, expected={LINUX_MPTCP_JOIN_PROFILE_TEST}, required={LINUX_MPTCP_JOIN_PROFILE_TEST},
+                 ctest_returncode=result.returncode)
+    evidence = json.loads((build / (LINUX_MPTCP_JOIN_PROFILE_TEST + ".json")).read_text())
+    require(evidence.get("status") == "PASS_IMPORTED_LINUX" and evidence.get("returncode") == 0 and
+            len(evidence.get("cases", [])) == LINUX_MPTCP_JOIN_EXPECTED_CASES,
+            "incomplete original join shell matrix")
+    require(evidence.get("fingerprint") == manifest.get("fingerprint"), "join evidence kernel fingerprint differs")
+    summary("Original complete MPTCP join shell: PASS " + manifest["fingerprint"])
+
+
 def validate_default_profile_inventory(names: set[str]) -> None:
     require(LINUX_MPTCP_SOCKOPT_PROFILE_TEST not in names,
             "sockopt shell test must run in its fingerprinted netfilter profile")
+    require(LINUX_MPTCP_JOIN_PROFILE_TEST not in names, "join shell requires its fingerprinted fault-injection profile")
+    require(not names.intersection(LINUX_MPTCP_CONNECT_PROFILE_TESTS),
+            "connect shells must run in their fingerprinted netfilter profile")
     required = {"native-c24-ingress-freeze-tap", "native-c28-broker-owned-cutover-tap",
                 "native-c28-broker-owned-cutover-abort-tap",
                 "native-c28-cutover-start-cancel-destroy-retry"}
@@ -760,8 +829,8 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
-        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
         if len(argv) != 2:
@@ -800,6 +869,16 @@ def main(argv: list[str]) -> int:
         if len(argv) != 4:
             raise RuntimeError("full-ctest requires build directory and JUnit output path")
         run_full_ctest(build, Path(argv[3]))
+        return 0
+    if group == "join-profile":
+        if len(argv) != 4:
+            raise RuntimeError("join-profile requires build directory and JUnit output path")
+        run_join_profile(build, Path(argv[3]))
+        return 0
+    if group == "connect-profile":
+        if len(argv) != 4:
+            raise RuntimeError("connect-profile requires build directory and JUnit output path")
+        run_connect_profile(Path(argv[2]), Path(argv[3]))
         return 0
     if group == "sockopt-profile":
         if len(argv) != 4:

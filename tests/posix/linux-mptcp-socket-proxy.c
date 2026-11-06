@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <linux/netlink.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <time.h>
 #include <linux/mptcp.h>
@@ -32,7 +33,16 @@
  * Upstream creates every network fd after fork; inheriting network fds is not
  * supported by this deliberately narrow fixture. There is no host IP fallback. */
 static unsigned char network_fds[4096];
+static struct stat imported_inputs[4096];
+static unsigned char has_input[4096];
 static int interrupted;
+static ssize_t write_result(ssize_t result, int flags)
+{
+    if (result < 0 && errno == EPIPE && !(flags & MSG_NOSIGNAL)) {
+        raise(SIGPIPE); errno = EPIPE;
+    }
+    return result;
+}
 static int is_network(int fd) { return fd >= 0 && fd < 4096 && network_fds[fd]; }
 static int remember(int fd)
 {
@@ -102,9 +112,14 @@ static int open_channel(void)
 int __wrap_socket(int domain, int type, int protocol)
 {
     int netlink = domain == AF_NETLINK && ((type & ~SOCK_CLOEXEC) == SOCK_RAW || (type & ~SOCK_CLOEXEC) == SOCK_DGRAM) &&
-                  (protocol == NETLINK_SOCK_DIAG || protocol == NETLINK_ROUTE || protocol == NETLINK_GENERIC);
+                  (protocol == NETLINK_SOCK_DIAG || protocol == NETLINK_ROUTE || protocol == NETLINK_GENERIC || protocol == NETLINK_NETFILTER);
     int raw = (domain == AF_INET || domain == AF_INET6) &&
-              (type & ~SOCK_CLOEXEC) == SOCK_RAW && protocol == IPPROTO_RAW;
+              (((type & ~SOCK_CLOEXEC) == SOCK_RAW &&
+                 (protocol == IPPROTO_RAW || (domain == AF_INET && protocol == IPPROTO_ICMP) ||
+                  (domain == AF_INET6 && protocol == IPPROTO_ICMPV6))) ||
+               ((type & ~SOCK_CLOEXEC) == SOCK_DGRAM &&
+                 (protocol == 0 || (domain == AF_INET && protocol == IPPROTO_ICMP) ||
+                  (domain == AF_INET6 && protocol == IPPROTO_ICMPV6))));
     if (!netlink && !raw && ((domain != AF_INET && domain != AF_INET6) || type != SOCK_STREAM ||
         (protocol != IPPROTO_MPTCP && protocol != IPPROTO_TCP && protocol != 0))) { errno = EOPNOTSUPP; return -1; }
     int fd = open_channel();
@@ -261,10 +276,12 @@ ssize_t __wrap_read(int fd, void *buffer, size_t length)
 ssize_t __wrap_write(int fd, const void *buffer, size_t length)
 {
     if (!is_network(fd)) return syscall(SYS_write, fd, buffer, length);
-    if (length > MS_MAX) { errno = EOPNOTSUPP; return -1; }
+    /* The original mmap helper writes the whole mapped file at once. A
+     * bounded native short write preserves normal stream syscall semantics. */
+    if (length > MS_MAX) length = MS_MAX;
     unsigned char data[MS_MAX]; memcpy(data, buffer, length);
     struct ms_message m = {.operation = MS_WRITE, .length = (uint32_t)length};
-    return exchange(fd, &m, data, NULL);
+    return write_result(exchange(fd, &m, data, NULL), 0);
 }
 int __wrap_ioctl(int fd, unsigned long request, ...)
 {
@@ -309,7 +326,8 @@ static ssize_t message_call(int fd, struct msghdr *message, int flags, int sendi
     struct ms_message m = {.operation = sending ? MS_SENDMSG : MS_RECVMSG,
         .length = (uint32_t)(sizeof(io) + (sending ? capacity + control + name : 0))};
     long result = exchange(fd, &m, data, NULL);
-    if (result < 0 || sending) return result;
+    if (sending) return write_result(result, flags);
+    if (result < 0) return result;
     if (m.length < sizeof(io)) { errno = EPROTO; return -1; }
     memcpy(&io, data, sizeof(io));
     if (io.data > capacity || io.control > control || io.name > name ||
@@ -423,32 +441,51 @@ int __wrap_select(int nfds, fd_set *reads, fd_set *writes, fd_set *excepts, stru
     errno = EIO; return -1;
 }
 
-/* Narrow immutable input fixture: copy the original small regular file into
- * native Linux, then execute its real sendfile. Production cross-kernel file
- * descriptors remain unsupported. No socket data is sent over a host IP path. */
+/* Import the unchanged input through bounded host-only chunks. The resident
+ * kernel owns a sealed native file and executes every sendfile operation. */
+static int same_input(const struct stat *a, const struct stat *b)
+{
+    return a->st_dev == b->st_dev && a->st_ino == b->st_ino && a->st_size == b->st_size &&
+        a->st_mtim.tv_sec == b->st_mtim.tv_sec && a->st_mtim.tv_nsec == b->st_mtim.tv_nsec &&
+        a->st_ctim.tv_sec == b->st_ctim.tv_sec && a->st_ctim.tv_nsec == b->st_ctim.tv_nsec;
+}
 ssize_t __wrap_sendfile(int out, int in, off_t *offset, size_t count)
 {
     if (!is_network(out)) return syscall(SYS_sendfile, out, in, offset, count);
     if (is_network(in)) { errno = EOPNOTSUPP; return -1; }
     struct stat st;
     if (syscall(SYS_fstat, in, &st)) return -1;
-    if (!S_ISREG(st.st_mode) || st.st_size < 0 || (uint64_t)st.st_size > MS_MAX - sizeof(int64_t) || count > MS_MAX) {
+    if (!S_ISREG(st.st_mode) || st.st_size < 0 || (uint64_t)st.st_size > MS_INPUT_MAX || count > UINT32_MAX) {
         errno = EOPNOTSUPP; return -1;
     }
     off_t position = offset ? *offset : (off_t)syscall(SYS_lseek, in, 0, SEEK_CUR);
     if (position < 0) { errno = EINVAL; return -1; }
-    unsigned char data[MS_MAX]; int64_t wire_offset = position;
-    memcpy(data, &wire_offset, sizeof(wire_offset));
-    size_t size = (size_t)st.st_size, done = 0;
-    while (done < size) {
-        ssize_t got = syscall(SYS_pread64, in, data + sizeof(wire_offset) + done, size - done, done);
-        if (got < 0 && errno == EINTR) continue;
-        if (got <= 0) { if (!got) errno = EIO; return -1; }
-        done += (size_t)got;
+    unsigned char data[MS_MAX];
+    if (!has_input[out] || !same_input(&st, &imported_inputs[out])) {
+        has_input[out] = 0;
+        struct ms_message start = {.operation = MS_INPUT_START, .a = (uint32_t)st.st_size};
+        if (exchange(out, &start, data, NULL) < 0) return -1;
+        for (off_t done = 0; done < st.st_size;) {
+            size_t chunk = (size_t)(st.st_size - done);
+            if (chunk > MS_MAX) chunk = MS_MAX;
+            ssize_t got = syscall(SYS_pread64, in, data, chunk, done);
+            if (got < 0 && errno == EINTR) continue;
+            if (got <= 0) { if (!got) errno = EIO; return -1; }
+            struct ms_message write = {.operation = MS_INPUT_WRITE, .length = (uint32_t)got};
+            if (exchange(out, &write, data, NULL) < 0) return -1;
+            done += got;
+        }
+        struct stat after;
+        if (syscall(SYS_fstat, in, &after)) return -1;
+        if (!same_input(&st, &after)) { errno = ESTALE; return -1; }
+        struct ms_message finish = {.operation = MS_INPUT_END};
+        if (exchange(out, &finish, data, NULL) < 0) return -1;
+        imported_inputs[out] = st; has_input[out] = 1;
     }
-    struct ms_message m = {.operation = MS_SENDFILE, .length = (uint32_t)(sizeof(wire_offset) + size), .a = (uint32_t)count};
+    int64_t wire_offset = position; memcpy(data, &wire_offset, sizeof(wire_offset));
+    struct ms_message m = {.operation = MS_SENDFILE, .length = sizeof(wire_offset), .a = (uint32_t)count, .b = 1};
     long result = exchange(out, &m, data, NULL);
-    if (result < 0) return -1;
+    if (result < 0) return write_result(result, 0);
     if (m.length != sizeof(wire_offset)) { errno = EPROTO; return -1; }
     memcpy(&wire_offset, data, sizeof(wire_offset));
     if (offset) *offset = (off_t)wire_offset;
@@ -503,7 +540,7 @@ FILE *__wrap_fopen(const char *path, const char *mode)
 }
 int __wrap_close(int fd)
 {
-    if (is_network(fd)) network_fds[fd] = 0;
+    if (is_network(fd)) { network_fds[fd] = 0; has_input[fd] = 0; }
     return (int)syscall(SYS_close, fd);
 }
 #ifdef KER_MPTCP_DIAG_PRELOAD

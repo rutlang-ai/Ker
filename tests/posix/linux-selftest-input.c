@@ -15,7 +15,7 @@ int ker_linux_selftest_input(int host)
     if (!ker_native_ready()) { errno = ENETDOWN; return -1; }
     struct stat info;
     if (syscall(SYS_fstat, host, &info)) return -1;
-    if (!S_ISREG(info.st_mode) || info.st_size < 0 || info.st_size > 1024 * 1024) {
+    if (!S_ISREG(info.st_mode) || info.st_size < 0 || info.st_size > 32 * 1024 * 1024) {
         errno = EINVAL;
         return -1;
     }

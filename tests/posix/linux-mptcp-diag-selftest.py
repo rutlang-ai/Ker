@@ -167,17 +167,21 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('server', 'binary', 'preload', 'tools', 'launcher', 'library', 'worker', 'pmd_dir', 'manifest', 'evidence'):
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
-    parser.add_argument('--suite', choices=('diag', 'sockopt', 'simult', 'userspace'), default='diag')
+    parser.add_argument('--suite', choices=('diag', 'sockopt', 'simult', 'userspace', 'connect', 'mmap', 'sendfile', 'checksum', 'join'), default='diag')
     for name in ('sockopt', 'inq', 'pm'):
         parser.add_argument('--' + name, type=Path)
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), *sys.argv[1:], '--inside']).returncode
+    join_suite = args.suite == 'join'
+    connect_suite = args.suite in ('connect', 'mmap', 'sendfile', 'checksum', 'join')
     manifest = json.loads(args.manifest.read_text())
     source = Path(manifest['source']) / 'tools/testing/selftests/net'
-    script = {'diag':'diag.sh', 'sockopt':'mptcp_sockopt.sh', 'simult':'simult_flows.sh', 'userspace':'userspace_pm.sh'}[args.suite]
+    script = {'diag':'diag.sh', 'sockopt':'mptcp_sockopt.sh', 'simult':'simult_flows.sh', 'userspace':'userspace_pm.sh', 'connect':'mptcp_connect.sh', 'mmap':'mptcp_connect_mmap.sh', 'sendfile':'mptcp_connect_sendfile.sh', 'checksum':'mptcp_connect_checksum.sh', 'join':'mptcp_join.sh'}[args.suite]
     extra = () if args.suite == 'diag' else ('mptcp/mptcp_sockopt.c', 'mptcp/mptcp_inq.c', 'mptcp/pm_nl_ctl.c')
+    if connect_suite and not join_suite and script != 'mptcp_connect.sh':
+        extra += ('mptcp/mptcp_connect.sh',)
     originals = {}
     for name in extra + ('mptcp/' + script, 'mptcp/mptcp_lib.sh', 'mptcp/mptcp_connect.c', 'mptcp/Makefile', 'lib.sh', 'net_helper.sh'):
         original = subprocess.check_output(['git', '-C', manifest['source'], 'show', manifest['linux']['revision'] + ':tools/testing/selftests/net/' + name])
@@ -196,8 +200,10 @@ def main():
         tools = json.loads((args.tools / 'provenance.json').read_text())
         require(tools['version'] == '6.12.0' and tools['archive_sha256'] ==
                 'bbd141ef7b5d0127cc2152843ba61f274dc32814fa3e0f13e7d07a080bef53d9', 'wrong iproute2 pin')
-        for name in (('ss', 'nstat', 'tc') if args.suite == 'simult' else ('ss', 'nstat')):
+        for name in (('ss', 'nstat', 'tc') if args.suite == 'simult' or connect_suite else ('ss', 'nstat')):
             require(hashlib.sha256((args.tools / name).read_bytes()).hexdigest() == tools['binaries'][name], 'modified iproute2 binary')
+        if join_suite:
+            require(hashlib.sha256((args.tools / 'ip').read_bytes()).hexdigest() == tools['binaries']['ip'], 'modified pinned iproute2 ip binary')
         report['iproute2'] = tools
         for command in (['ip', 'link', 'set', 'lo', 'up'],
             ['ip', 'link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink'],
@@ -210,23 +216,31 @@ def main():
         environment = {k: v for k, v in os.environ.items() if k != 'LD_PRELOAD' and
             not k.startswith(('KER_', 'PROC_', 'NSTAT_', 'SELFTESTS_MPTCP_', 'MPTCP_LIB_', 'XTABLES_')) and k != 'TCPDIAG_FILE'}
         environment.update(SELFTESTS_MPTCP_LIB_EXPECT_ALL_FEATURES='1', SELFTESTS_MPTCP_LIB_OVERRIDE_FLAKY='1', NO_COLOR='1')
-        if args.suite == 'simult':
-            environment['KER_LINUX_SELFTEST_MEMORY_MB'] = '512'
+        if args.suite == 'simult' or connect_suite:
+            environment['KER_LINUX_SELFTEST_MEMORY_MB'] = '1024' if join_suite else '512'
+        if connect_suite:
+            environment['KER_LINUX_SELFTEST_REPORT_EXIT'] = '1'
         bins = Path(tempfile.mkdtemp(prefix='ker-mptcp-diag-bin-', dir=args.binary.resolve().parent))
-        shim = Path(__file__).with_name({'diag':'linux-mptcp-diag-shim.py', 'sockopt':'linux-mptcp-sockopt-ip.py', 'simult':'linux-mptcp-simult-ip.py', 'userspace':'linux-mptcp-sockopt-ip.py'}[args.suite]).read_text()
-        for name in {'diag':('ip', 'ss'), 'sockopt':('ip', 'grep'), 'simult':('ip', 'grep', 'tc'), 'userspace':('ip', 'grep')}[args.suite]:
+        shim = Path(__file__).with_name('linux-mptcp-join-ip.py' if join_suite else 'linux-mptcp-connect-ip.py' if connect_suite else {'diag':'linux-mptcp-diag-shim.py', 'sockopt':'linux-mptcp-sockopt-ip.py', 'simult':'linux-mptcp-simult-ip.py', 'userspace':'linux-mptcp-sockopt-ip.py'}[args.suite]).read_text()
+        for name in (('ip', 'ss', 'grep', 'tc', 'cmp', 'nstat') if connect_suite else {'diag':('ip', 'ss'), 'sockopt':('ip', 'grep'), 'simult':('ip', 'grep', 'tc'), 'userspace':('ip', 'grep')}[args.suite]):
             (bins / name).write_text('#!' + sys.executable + '\n' + shim)
             (bins / name).chmod(0o700)
-        with tempfile.TemporaryDirectory(prefix='ker-mptcp-diag-', dir='/dev/shm') as temporary:
+        with tempfile.TemporaryDirectory(prefix='ker-mptcp-diag-', dir='/tmp' if connect_suite else '/dev/shm') as temporary:
             root = Path(temporary); work = root / 'net/mptcp'; work.mkdir(parents=True)
+            if connect_suite:
+                (root / 'files').mkdir()
+                environment['TMPDIR'] = str(root / 'files')
             for name, data in originals.items(): (root / 'net' / name).write_bytes(data)
+            if connect_suite:
+                for name in originals:
+                    if name.endswith('.sh'): (root / 'net' / name).chmod(0o700)
             (work / 'mptcp_connect').symlink_to(args.binary)
             if args.suite != 'diag':
                 for name, binary in (('mptcp_sockopt', args.sockopt), ('mptcp_inq', args.inq), ('pm_nl_ctl', args.pm)):
                     (work / name).symlink_to(binary)
             channel, stats, counts_file = root / 'socket', root / 'stats.json', root / 'counts.json'
             environment.update(KER_MPTCP_SOCKET_CHANNEL=str(channel), KER_MPTCP_DIAG_PRELOAD=str(args.preload),
-                KER_MPTCP_DIAG_SS=str(args.tools / 'ss'), KER_MPTCP_DIAG_NSTAT=str(args.tools / 'nstat'),
+                KER_MPTCP_DIAG_SS=str(args.tools / 'ss'), KER_MPTCP_DIAG_NSTAT=str(args.tools / 'nstat'), KER_MPTCP_DIAG_IP=str(args.tools / 'ip'),
                 KER_MPTCP_DIAG_REAL_IP=shutil.which('ip'), PATH=str(bins) + os.pathsep + environment['PATH'])
             if args.suite != 'diag':
                 environment.update(KER_MPTCP_IPTABLES=shutil.which('iptables-legacy'), KER_MPTCP_IP6TABLES=shutil.which('ip6tables-legacy'),
@@ -240,6 +254,18 @@ def main():
                     version = subprocess.check_output([program, '--version'], text=True).strip()
                     require('(legacy)' in version, 'expected original legacy netfilter tool')
                     report['netfilter_tools'][name] = dict(path=program, version=version, sha256=hashlib.sha256(Path(program).read_bytes()).hexdigest())
+            if connect_suite:
+                environment['KER_MPTCP_CONNECT_LOG'] = str(root / 'connect-tools.jsonl')
+                environment['KER_MPTCP_CONNECT_CMP'] = shutil.which('cmp')
+                report['connect_tools'] = {}
+                for name in ('ping', 'ethtool', 'nft'):
+                    program = Path(shutil.which(name)).resolve()
+                    # Copy unchanged bytes so ping file capabilities cannot suppress
+                    # the fixture preload when entering the isolated user namespace.
+                    target = bins / ('original-' + name)
+                    shutil.copyfile(program, target); target.chmod(0o700)
+                    environment['KER_MPTCP_CONNECT_' + name.upper()] = str(target)
+                    report['connect_tools'][name] = dict(path=str(program), sha256=hashlib.sha256(target.read_bytes()).hexdigest())
             os.environ['KER_MPTCP_SOCKET_CHANNEL'] = str(channel)
             out = (root / 'server.stdout').open('w+'); err = (root / 'server.stderr').open('w+')
             process = subprocess.Popen([sys.executable, str(args.launcher), '--library', str(args.library),
@@ -260,7 +286,7 @@ def main():
                 # No namespace listing or diagnostic result is synthesized.
                 report['native_boot_resources'] = {path: transport.rpc(transport.FILE, '', path).decode() for path in
                         ('/proc/meminfo', '/proc/sys/net/ipv4/tcp_wmem', '/proc/sys/net/ipv4/tcp_rmem')}
-                requested_mb = 512 if args.suite == 'simult' else 64
+                requested_mb = 1024 if join_suite else 512 if args.suite == 'simult' or connect_suite else 64
                 actual_kb = int(re.search(r'^MemTotal:\s+(\d+) kB$', report['native_boot_resources']['/proc/meminfo'], re.M).group(1))
                 require(requested_mb * 1024 * 0.8 < actual_kb <= requested_mb * 1024, 'native kernel memory provisioning differs from request')
                 report['native_boot_resources']['requested_memory_mb'] = requested_mb
@@ -287,31 +313,58 @@ def main():
                     except BaseException as error:
                         errors.append(str(error))
 
-                result = subprocess.Popen(['bash', './' + script], cwd=work, env=environment, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, text=True, start_new_session=True)
+                shell_out = (root / 'shell.stdout').open('w+', errors='backslashreplace') if connect_suite else None
+                shell_err = (root / 'shell.stderr').open('w+', errors='backslashreplace') if connect_suite else None
+                result = subprocess.Popen(['bash', './' + script], cwd=work, env=environment,
+                    stdout=shell_out if connect_suite else subprocess.PIPE,
+                    stderr=shell_err if connect_suite else subprocess.PIPE, text=True, start_new_session=True)
                 observer = threading.Thread(target=observe_isolation)
                 if args.suite == 'diag':
                     observer.start()
                 try:
-                    stdout, stderr = result.communicate(timeout=220)
+                    if connect_suite:
+                        deadline = time.monotonic() + 3600
+                        while result.poll() is None:
+                            require(process.poll() is None, 'resident kernel exited during original shell')
+                            require(time.monotonic() < deadline, 'original shell exceeded fixture deadline')
+                            try:
+                                result.wait(timeout=0.5)
+                            except subprocess.TimeoutExpired:
+                                pass
+                        shell_out.seek(0); shell_err.seek(0)
+                        stdout, stderr = shell_out.read(), shell_err.read()
+                    else:
+                        stdout, stderr = result.communicate(timeout=220)
                 except BaseException:
                     try:
                         kill_tree(result.pid)
                     finally:
                         stdout, stderr, capture_timed_out = bounded_communicate(result, timeout=5)
+                        if connect_suite:
+                            shell_out.seek(0); shell_err.seek(0)
+                            stdout, stderr = shell_out.read(), shell_err.read()
                         report.update(stdout=stdout, stderr=stderr)
                         if capture_timed_out:
                             raise RuntimeError('diagnostic output remained open after bounded process cleanup')
                     report.update(stdout=stdout, stderr=stderr); raise
                 finally:
                     finished.set()
+                    if connect_suite:
+                        tool_log = root / 'connect-tools.jsonl'
+                        if tool_log.exists():
+                            report['native_connect_operations'] = [json.loads(line) for line in tool_log.read_text().splitlines()]
+                        for suffix in ('stdout', 'stderr'):
+                            raw = (root / ('shell.' + suffix)).read_bytes()
+                            args.evidence.with_suffix('.' + suffix).write_bytes(raw)
+                            report[suffix + '_sha256'] = hashlib.sha256(raw).hexdigest()
+                        shell_out.close(); shell_err.close()
                     if args.suite == 'diag':
                         observer.join(timeout=7)
                 report.update(returncode=result.returncode, stdout=stdout, stderr=stderr)
                 report['namespace_isolation_control'] = observation
                 require(not observer.is_alive() and not errors and (observation or args.suite != 'diag'), 'namespace isolation control failed: ' + repr(errors))
                 require(result.returncode == 0, 'original ' + script + ' failed: ' + stdout + stderr)
-                report['cases'] = tap_result(stdout, {'diag':29, 'sockopt':11, 'simult':10, 'userspace':37}[args.suite])
+                report['cases'] = tap_result(stdout, {'diag':29, 'sockopt':11, 'simult':10, 'userspace':37, 'connect':68, 'mmap':68, 'sendfile':68, 'checksum':68, 'join':126}[args.suite])
                 if args.suite == 'sockopt':
                     require(not stderr.strip(), 'original topology/helper errors: ' + stderr)
                     topology = [json.loads(line) for line in (root / 'topology.jsonl').read_text().splitlines()]
@@ -359,6 +412,23 @@ def main():
                     topology = [json.loads(line) for line in (root / 'topology.jsonl').read_text().splitlines()]
                     report['acknowledged_native_topology'] = topology
                     validate_userspace_counts(counts, topology)
+                elif join_suite:
+                    require(counts['live'] == 0 and counts['namespaces_created'] == counts['namespaces_deleted'], 'join namespace/socket cleanup incomplete')
+                    require(counts['mp_join_syn_rx'] > 0 and counts['mp_join_ack_rx'] > 0 and counts['filter_sets'] > 0, 'native join/fault-injection activity missing')
+                elif connect_suite:
+                    report['native_connect_operations'] = [json.loads(line) for line in (root / 'connect-tools.jsonl').read_text().splitlines()]
+                    require(counts['live'] == 0 and counts['namespaces_created'] == counts['namespaces_deleted'] == 6, 'connect namespace/socket cleanup incomplete')
+                    require(counts['mptcp'] > 100 and counts['negotiated'] > 80 and counts['fallback'] > 0, 'connect/fallback native socket matrix missing')
+                    require(sum(x.get('tool') == 'ping' and x['returncode'] == 0 for x in report['native_connect_operations']) == 48, 'complete original ICMP connectivity matrix missing')
+                    operations = report['native_connect_operations']
+                    comparisons = [x for x in operations if x.get('tool') == 'cmp']
+                    require(len(comparisons) == 132 and all(x['returncode'] == 0 for x in comparisons), 'original bidirectional file comparisons incomplete')
+                    filters = [x for x in operations if x.get('tool') == 'nft']
+                    require(len(filters) == 4 and all(x['returncode'] == 0 for x in filters), 'native IPv4/IPv6 tproxy rules were not installed and removed')
+                    require(sum('acknowledged_policy' in x for x in operations) == 8, 'native tproxy policy routing matrix incomplete')
+                    require(counts['channels_opened'] > 4096 and counts['channel_slots'] < 64, 'complete shell did not exercise bounded native task reuse')
+                    if args.suite == 'sendfile':
+                        require(counts['sendfile_calls'] > 0 and counts['imported_files'] > 0, 'native sendfile input transport missing')
                 else:
                     require(counts['live'] == 0 and counts['namespaces_created'] == counts['namespaces_deleted'] == 4,
                         'simultaneous-flows cleanup incomplete')

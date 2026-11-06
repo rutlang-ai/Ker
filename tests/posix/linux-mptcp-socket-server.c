@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <linux/netlink.h>
 #include <sched.h>
+#include <signal.h>
 #include <linux/mptcp.h>
 #include <linux/tcp.h>
 #include <linux/netfilter_ipv4/ip_tables.h>
@@ -30,9 +31,11 @@
 /* A thread per socket preserves blocking accept/connect/read on one original
  * kernel. Only the harness transport runs in the host; all IP socket syscalls
  * below go through the real POSIX facade. No fork occurs in the kernel owner. */
-struct client { int host, native, ns; pid_t pid; atomic_int active; pthread_t thread; };
+struct client { int host, native, ns, input, upload; size_t input_size, uploaded;
+    pid_t pid; atomic_int active, finished; pthread_t thread; pthread_cond_t work; };
 static struct client clients[4096];
 static unsigned clients_count;
+static atomic_ulong channels_opened;
 static pthread_mutex_t clients_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint stopping, live, sockets_count, mptcp_count, accepts_count;
 static atomic_ulong reads_count, writes_count, received_bytes, sent_bytes, infos_count, full_count, inq_count;
@@ -84,9 +87,14 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     if (diag_control(m, data, input, &control_result)) return control_result;
     if (m->operation == MS_SOCKET) {
         int netlink = m->a == AF_NETLINK && ((m->b & ~SOCK_CLOEXEC) == SOCK_RAW || (m->b & ~SOCK_CLOEXEC) == SOCK_DGRAM) &&
-                      (m->c == NETLINK_SOCK_DIAG || m->c == NETLINK_ROUTE || m->c == NETLINK_GENERIC);
+                  (m->c == NETLINK_SOCK_DIAG || m->c == NETLINK_ROUTE || m->c == NETLINK_GENERIC || m->c == NETLINK_NETFILTER);
         int raw = (m->a == AF_INET || m->a == AF_INET6) &&
-                  (m->b & ~SOCK_CLOEXEC) == SOCK_RAW && m->c == IPPROTO_RAW;
+                (((m->b & ~SOCK_CLOEXEC) == SOCK_RAW &&
+                   (m->c == IPPROTO_RAW || (m->a == AF_INET && m->c == IPPROTO_ICMP) ||
+                    (m->a == AF_INET6 && m->c == IPPROTO_ICMPV6))) ||
+                 ((m->b & ~SOCK_CLOEXEC) == SOCK_DGRAM &&
+                   (m->c == 0 || (m->a == AF_INET && m->c == IPPROTO_ICMP) ||
+                    (m->a == AF_INET6 && m->c == IPPROTO_ICMPV6))));
         if (fd >= 0 || (!netlink && !raw && ((m->a != AF_INET && m->a != AF_INET6) || m->b != SOCK_STREAM ||
             (m->c != IPPROTO_MPTCP && m->c != IPPROTO_TCP && m->c != 0)))) { errno = EOPNOTSUPP; return -1; }
         if (select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
@@ -102,7 +110,47 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     }
     if (fd < 0) { errno = ENOTCONN; return -1; }
     switch (m->operation) {
+    case MS_INPUT_START:
+        if (input || m->a > MS_INPUT_MAX) { errno = EINVAL; return -1; }
+        if (client->input >= 0) { close(client->input); client->input = -1; }
+        if (client->upload >= 0) syscall(SYS_close, client->upload);
+        client->upload = (int)syscall(SYS_memfd_create, "mptcp-sendfile-input", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+        client->input_size = m->a; client->uploaded = 0;
+        return client->upload < 0 ? -1 : 0;
+    case MS_INPUT_WRITE: {
+        if (client->upload < 0 || input > client->input_size - client->uploaded) { errno = EINVAL; return -1; }
+        size_t done = 0;
+        while (done < input) {
+            ssize_t n = syscall(SYS_write, client->upload, data + done, input - done);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) { if (!n) errno = EIO; return -1; }
+            done += (size_t)n; client->uploaded += (size_t)n;
+        }
+        return 0;
+    }
+    case MS_INPUT_END: {
+        if (input || client->upload < 0 || client->uploaded != client->input_size) { errno = EINVAL; return -1; }
+        int (*import_input)(int) = dlsym(RTLD_DEFAULT, "ker_linux_selftest_input");
+        if (!import_input) { errno = EOPNOTSUPP; return -1; }
+        if (syscall(SYS_fcntl, client->upload, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL)) return -1;
+        client->input = import_input(client->upload); int error = errno;
+        syscall(SYS_close, client->upload); client->upload = -1;
+        if (client->input < 0) { errno = error; return -1; }
+        atomic_fetch_add(&imported_files, 1); return 0;
+    }
     case MS_SENDFILE: {
+        if (m->b == 1) {
+            if (input != sizeof(int64_t) || client->input < 0) { errno = EINVAL; return -1; }
+            int64_t position; memcpy(&position, data, sizeof(position));
+            if (position < 0) { errno = EINVAL; return -1; }
+            off_t offset = (off_t)position;
+            ssize_t result = sendfile(fd, client->input, &offset, m->a);
+            atomic_fetch_add(&sendfile_calls, 1);
+            if (result < 0) return -1;
+            atomic_fetch_add(&sent_bytes, (unsigned long)result);
+            position = offset; memcpy(data, &position, sizeof(position)); m->length = sizeof(position);
+            return result;
+        }
         if (input < sizeof(int64_t) || m->a > MS_MAX) { errno = EINVAL; return -1; }
         int64_t position; memcpy(&position, data, sizeof(position));
         if (position < 0) { errno = EINVAL; return -1; }
@@ -146,6 +194,9 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         if (input < sizeof(sa_family_t) || input > sizeof(struct sockaddr_storage)) { errno = EINVAL; return -1; }
         if (m->operation == MS_BIND) return bind(fd, (void *)data, (socklen_t)input);
         if (connect(fd, (void *)data, (socklen_t)input)) return -1;
+        /* AF_UNSPEC is the original helper's full disconnect operation.
+         * Its successful return does not describe an established connection. */
+        if (((struct sockaddr *)data)->sa_family == AF_UNSPEC) return 0;
         return observe_connection(fd);
     case MS_LISTEN: return listen(fd, (int)m->a);
     case MS_ACCEPT: {
@@ -262,12 +313,16 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     default: errno = EOPNOTSUPP; return -1;
     }
 }
-static void *serve(void *argument)
+static void serve_channel(struct client *client)
 {
-    struct client *client = argument;
+    /* Signals belong to the original caller, not the shared kernel owner.
+     * Return the real EPIPE; the proxy delivers SIGPIPE in that caller. */
+    sigset_t blocked; sigemptyset(&blocked); sigaddset(&blocked, SIGPIPE);
+    if (pthread_sigmask(SIG_BLOCK, &blocked, NULL)) abort();
     struct { struct ms_message h; unsigned char data[MS_MAX]; } packet;
     for (;;) {
         ssize_t n = syscall(SYS_recvfrom, client->host, &packet, sizeof(packet), MSG_TRUNC, NULL, NULL);
+        if (n < 0 && errno == EINTR) continue;
         if (n < (ssize_t)sizeof(packet.h) || n > (ssize_t)sizeof(packet) ||
             packet.h.magic != MS_MAGIC || packet.h.length != (size_t)n - sizeof(packet.h)) break;
         int pass_fd = -1;
@@ -292,19 +347,54 @@ static void *serve(void *argument)
         atomic_store_explicit(&client->active, 0, memory_order_release); atomic_fetch_sub(&live, 1);
     }
     close(client->host);
-    return NULL;
+    if (client->input >= 0) close(client->input);
+    if (client->upload >= 0) syscall(SYS_close, client->upload);
+    /* A persistent native task must leave the retired namespace before its
+     * next channel, so idle workers cannot pin the shell's deleted topology. */
+    if (native_call(KER_TEST_SETNS, root_namespace, CLONE_NEWNET, 0)) {
+        perror("mptcp fixture worker namespace release"); abort();
+    }
+}
+static void *serve(void *argument)
+{
+    struct client *client = argument;
+    for (;;) {
+        serve_channel(client);
+        pthread_mutex_lock(&clients_lock);
+        client->host = -1;
+        atomic_store_explicit(&client->finished, 1, memory_order_release);
+        while (client->host < 0 && !atomic_load(&stopping))
+            pthread_cond_wait(&client->work, &clients_lock);
+        int done = client->host < 0;
+        pthread_mutex_unlock(&clients_lock);
+        if (done) return NULL;
+    }
 }
 static int start_client(int host, int native, int ns, pid_t pid)
 {
     pthread_mutex_lock(&clients_lock);
     int error = EMFILE;
-    if (clients_count < 4096) {
-        struct client *client = &clients[clients_count];
-        *client = (struct client){.host = host, .native = native, .ns = ns, .pid = pid};
+    unsigned index;
+    for (index = 0; index < clients_count; index++)
+        if (atomic_load_explicit(&clients[index].finished, memory_order_acquire)) break;
+    if (index < 4096) {
+        struct client *client = &clients[index];
+        int created = index == clients_count;
+        /* Keep each native host task alive across channels. Creating and
+         * destroying thousands of LKL host tasks can reenter its scheduler
+         * through TLS retirement; unrelated channels need no new task. */
+        client->host = host; client->native = native; client->ns = ns;
+        client->input = -1; client->upload = -1;
+        client->uploaded = 0; client->input_size = 0; client->pid = pid;
+        atomic_store_explicit(&client->finished, 0, memory_order_release);
         if (native >= 0) mark_active(client);
-        error = pthread_create(&client->thread, NULL, serve, client);
-        if (!error) clients_count++;
-        else if (native >= 0) atomic_fetch_sub(&live, 1);
+        error = created ? pthread_cond_init(&client->work, NULL) : 0;
+        if (!error && created) error = pthread_create(&client->thread, NULL, serve, client);
+        if (!error) {
+            atomic_fetch_add(&channels_opened, 1);
+            if (created) clients_count++;
+            else pthread_cond_signal(&client->work);
+        } else if (native >= 0) atomic_fetch_sub(&live, 1);
     }
     pthread_mutex_unlock(&clients_lock);
     if (error) { errno = error; return -1; }
@@ -312,6 +402,7 @@ static int start_client(int host, int native, int ns, pid_t pid)
 }
 int main(int argc, char **argv)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (argc != 3 || strlen(argv[1]) >= sizeof(((struct sockaddr_un *)0)->sun_path)) return 2;
     long (*call)(unsigned, const unsigned long[6]) = dlsym(RTLD_DEFAULT, "ker_linux_selftest_call");
     if (!call) return 3;
@@ -323,22 +414,29 @@ int main(int argc, char **argv)
     while (!atomic_load(&stopping)) {
         struct pollfd p = {.fd = listener, .events = POLLIN};
         int result = poll(&p, 1, 100);
-        if (result < 0) return 6;
+        if (result < 0 && errno == EINTR) continue;
+        if (result < 0) { perror("mptcp fixture listener poll"); return 6; }
         if (!result) continue;
         int host = accept(listener, NULL, NULL);
         struct ucred peer; socklen_t size = sizeof(peer);
         if (host < 0 || syscall(SYS_getsockopt, host, SOL_SOCKET, SO_PEERCRED, &peer, &size) ||
-            start_client(host, -1, -1, peer.pid)) return 7;
+            start_client(host, -1, -1, peer.pid)) { perror("mptcp fixture client start"); return 7; }
     }
     close(listener); unlink(argv[1]);
-    for (unsigned i = 0; i < clients_count; i++) pthread_join(clients[i].thread, NULL);
+    pthread_mutex_lock(&clients_lock);
+    for (unsigned i = 0; i < clients_count; i++) pthread_cond_signal(&clients[i].work);
+    pthread_mutex_unlock(&clients_lock);
+    for (unsigned i = 0; i < clients_count; i++) {
+        pthread_join(clients[i].thread, NULL);
+        pthread_cond_destroy(&clients[i].work);
+    }
     if (close(root_namespace)) return 10;
     FILE *stats = fopen(argv[2], "w");
     if (!stats) return 8;
     fprintf(stats, "{\"sockets\":%u,\"mptcp\":%u,\"accepts\":%u,\"live\":%u,"
         "\"reads\":%lu,\"writes\":%lu,\"received\":%lu,\"sent\":%lu,"
         "\"infos\":%lu,\"full_info\":%lu,\"inq\":%lu,\"negotiated\":%u,\"fallback\":%u,"
-        "\"fallback_info_eopnotsupp\":%u,\"fallback_info_enoprotoopt\":%u,"
+        "\"fallback_info_eopnotsupp\":%u,\"fallback_info_enoprotoopt\":%u,\"channel_slots\":%u,\"channels_opened\":%lu,"
         "\"namespaces_created\":%u,\"namespaces_deleted\":%u,\"netlinks\":%u,"
         "\"diag_sends\":%lu,\"diag_receives\":%lu,\"max_live\":%u,\"raw_sockets\":%u,\"filter_sets\":%u,\"filter_gets\":%u,\"mp_join_syn_rx\":%lu,\"mp_join_ack_rx\":%lu,\"sendfile_calls\":%lu,\"imported_files\":%lu}\n",
         atomic_load(&sockets_count), atomic_load(&mptcp_count), atomic_load(&accepts_count), atomic_load(&live),
@@ -346,6 +444,7 @@ int main(int argc, char **argv)
         atomic_load(&infos_count), atomic_load(&full_count), atomic_load(&inq_count),
         atomic_load(&negotiated_count), atomic_load(&fallback_count),
         atomic_load(&fallback_info_unsupported), atomic_load(&fallback_info_no_proto),
+        clients_count, atomic_load(&channels_opened),
         atomic_load(&namespaces_created), atomic_load(&namespaces_deleted), atomic_load(&diag_netlinks),
         atomic_load(&diag_sends), atomic_load(&diag_receives), atomic_load(&max_live),
         atomic_load(&raw_count), atomic_load(&filter_sets), atomic_load(&filter_gets),
