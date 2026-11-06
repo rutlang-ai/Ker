@@ -642,9 +642,6 @@ int __wrap_open(const char *path, int flags, ...)
         struct ms_message m = {.operation = MS_PROC_OPEN, .a = (uint32_t)flags,
             .length = (uint32_t)(strlen(ns) + strlen(path) + 2)};
         if (exchange(fd, &m, data, NULL) < 0) { int e = errno; syscall(SYS_close, fd); errno = e; return -1; }
-        if (setenv("KER_PACKETDRILL_PROC_TARGET", path, 1)) {
-            int error = errno; syscall(SYS_close, fd); errno = error; return -1;
-        }
         int result = remember(fd);
         /* Bash duplicates this administrative transport onto stdout. Its
          * native proc file belongs to the last host channel reference, not

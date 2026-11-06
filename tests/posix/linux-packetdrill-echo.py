@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 HEADER = struct.Struct('=IIIIIIq')
-MAGIC, WRITE, LIMIT = 0x4b4d5331, 9, 131072
+MAGIC, WRITE, LIMIT, PROC_TARGET = 0x4b4d5331, 9, 131072, 0x50524f43
 
 
 def main():
@@ -29,14 +29,23 @@ def main():
         if len(data) > LIMIT:
             raise RuntimeError('sysctl echo exceeds fixture message limit')
         channel.settimeout(5)
-        channel.sendall(HEADER.pack(MAGIC, WRITE, len(data), 0, 0, 0, 0) + data)
+        channel.sendall(HEADER.pack(MAGIC, WRITE, len(data), PROC_TARGET, 0, 0, 0) + data)
         packet, _, flags, _ = channel.recvmsg(HEADER.size + LIMIT)
-        if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(packet) != HEADER.size:
+        if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(packet) < HEADER.size:
             raise RuntimeError('invalid native sysctl write response')
-        magic, operation, length, _, _, _, count = HEADER.unpack(packet)
-        if (magic, operation, length) != (MAGIC, WRITE, 0) or count != len(data):
+        magic, operation, length, _, _, _, count = HEADER.unpack_from(packet)
+        target_data = packet[HEADER.size:]
+        if (magic, operation) != (MAGIC, WRITE) or length != len(target_data):
+            raise RuntimeError('invalid native sysctl write response')
+        if count < 0:
             raise RuntimeError('native sysctl write failed: ' + (os.strerror(-count) if count < 0 else 'short write'))
-        target = os.environ['KER_PACKETDRILL_PROC_TARGET']
+        if not target_data or count != len(data):
+            raise RuntimeError('invalid native sysctl write response')
+        if not target_data.endswith(b'\0') or b'\0' in target_data[:-1]:
+            raise RuntimeError('invalid native proc target response')
+        target = target_data[:-1].decode()
+        if not target.startswith('/proc/sys/net/'):
+            raise RuntimeError('invalid native proc target: ' + target)
         spec = importlib.util.spec_from_file_location('native_proc', Path(__file__).with_name('linux-mptcp-diag-shim.py'))
         wire = importlib.util.module_from_spec(spec); spec.loader.exec_module(wire)
         namespace = os.environ['KER_MPTCP_SOCKET_NAMESPACE']

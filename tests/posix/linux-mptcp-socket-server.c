@@ -38,7 +38,11 @@
  * kernel. Only the harness transport runs in the host; all IP socket syscalls
  * below go through the real POSIX facade. No fork occurs in the kernel owner. */
 struct client { int host, native, ns, input, upload, retire; size_t input_size, uploaded;
-    pid_t pid; atomic_int active, finished; pthread_t thread; pthread_cond_t work; };
+    pid_t pid; atomic_int active, finished; pthread_t thread; pthread_cond_t work;
+#ifdef KER_PACKETDRILL_SELFTEST
+    char proc_path[129];
+#endif
+};
 static struct client clients[4096];
 static unsigned clients_count;
 static atomic_ulong channels_opened;
@@ -104,11 +108,13 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         size_t prefix = strlen((char *)data) + 1;
         if (prefix >= input) { errno = EINVAL; return -1; }
         const char *path = (char *)data + prefix;
-        if (strlen(path) + prefix + 1 != input || strncmp(path, "/proc/sys/net/", 14) || strstr(path, "..") ||
+        if (strlen(path) + prefix + 1 != input || strlen(path) >= sizeof(client->proc_path) ||
+            strncmp(path, "/proc/sys/net/", 14) || strstr(path, "..") ||
             (m->a & O_ACCMODE) != O_WRONLY || (m->a & ~(O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC))) { errno = EINVAL; return -1; }
         if (select_namespace((char *)data, prefix, &client->ns)) return -1;
         client->native = (int)native_call(KER_TEST_OPEN, (unsigned long)path, m->a, 0);
         if (client->native < 0) return -1;
+        strcpy(client->proc_path, path);
         mark_active(client); return 0;
     }
     if (m->operation == MS_EPOLL_OPEN) {
@@ -356,8 +362,19 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         atomic_fetch_add(&reads_count, 1); return result;
     }
     case MS_WRITE: {
+#ifndef KER_PACKETDRILL_SELFTEST
+        if (m->a == MS_WRITE_PROC_TARGET) { errno = EOPNOTSUPP; return -1; }
+#else
+        if (m->a == MS_WRITE_PROC_TARGET && !client->proc_path[0]) { errno = EINVAL; return -1; }
+#endif
         ssize_t result = write(fd, data, input);
         if (result >= 0) atomic_fetch_add(&sent_bytes, (unsigned long)result);
+#ifdef KER_PACKETDRILL_SELFTEST
+        if (result >= 0 && m->a == MS_WRITE_PROC_TARGET) {
+            m->length = (uint32_t)strlen(client->proc_path) + 1;
+            memcpy(data, client->proc_path, m->length);
+        }
+#endif
         atomic_fetch_add(&writes_count, 1); return result;
     }
     case MS_IOCTL: {
@@ -514,6 +531,9 @@ static int start_client(int host, int native, int ns, pid_t pid)
          * through TLS retirement; unrelated channels need no new task. */
         client->host = host; client->native = native; client->ns = ns;
         client->input = -1; client->upload = -1;
+#ifdef KER_PACKETDRILL_SELFTEST
+        client->proc_path[0] = '\0';
+#endif
         client->uploaded = 0; client->input_size = 0; client->pid = pid;
         atomic_store_explicit(&client->finished, 0, memory_order_release);
         if (native >= 0) mark_active(client);
