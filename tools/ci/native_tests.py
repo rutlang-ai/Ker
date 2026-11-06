@@ -20,6 +20,7 @@ LINUX_PROTOCOL_SELFTESTS = (
     "linux-original-tcp-inq-ipv6", "linux-original-reject-host-only",
     "linux-original-net-reuseaddr_conflict", "linux-original-net-sk_bind_sendto_listen",
     "linux-original-net-bind_timewait", "linux-original-net-bind_wildcard",
+    "linux-original-net-reuseport_dualstack", "linux-original-net-sk_so_peek_off",
 )
 
 LINUX_AF_UNIX_SELFTESTS = (

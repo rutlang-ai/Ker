@@ -1,4 +1,4 @@
-"""Run original binding selftests against the shared native socket fixture."""
+"""Run original socket selftests against the shared native socket fixture."""
 import argparse
 import errno
 import hashlib
@@ -33,7 +33,24 @@ CONTRACTS = {
     # calls plus one accept() in each of the two original variants.
     'bind_timewait': (2, 6, 2),
     'bind_wildcard': (132, 1056, 0),
+    'reuseport_dualstack': (None, 110, 2),
+    'sk_so_peek_off': (None, 12, 2),
 }
+
+
+def validate_original(program, result):
+    """An exit code alone permits sk_so_peek_off's all-unsupported path."""
+    if program == 'sk_so_peek_off':
+        expected = [f'{protocol}/IPv{family} with MSG_PEEK_OFF works correctly'
+                    for protocol in ('TCP', 'UDP') for family in (4, 6)]
+        require(result['stdout'].splitlines() == expected and not result['stderr'],
+                'missing original TCP/UDP IPv4/IPv6 peek-offset assertion matrix')
+    elif program == 'reuseport_dualstack':
+        expected = [f'---- {protocol} IPv{first} created before IPv{second}{suffix} ----'
+                    for protocol, suffix in (('UDP', ''), ('UDP', ' (large)'), ('TCP', ''))
+                    for first, second in ((4, 6), (6, 4))]
+        require(not result['stdout'] and result['stderr'].splitlines() == [*expected, 'SUCCESS'],
+                'incomplete original dual-stack reuseport groups')
 
 
 def main():
@@ -79,6 +96,17 @@ def main():
             require(report['missing_backend_control']['returncode'] == 0 and
                     report['missing_backend_control']['stdout'].strip() == 'MISSING_BACKEND_REJECTED',
                     'unavailable native backend was not rejected')
+            if args.program in ('reuseport_dualstack', 'sk_so_peek_off'):
+                missing = fixture.run_helper([args.binary], environment)
+                report['original_missing_backend_control'] = missing
+                completed = False
+                if missing['returncode'] == 0:
+                    try:
+                        validate_original(args.program, missing)
+                        completed = True
+                    except RuntimeError:
+                        pass
+                require(not completed, 'original matrix passed without the imported kernel')
             with (root / 'server.stdout').open('w+') as out, (root / 'server.stderr').open('w+') as err:
                 process = subprocess.Popen([sys.executable, str(args.launcher), '--library', str(args.library),
                     '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal', eal,
@@ -100,6 +128,7 @@ def main():
                     result = dict(returncode=child.returncode, stdout=stdout, stderr=stderr)
                     report['original'] = result
                     require(child.returncode == 0, 'original selftest failed: ' + stdout + stderr)
+                    validate_original(args.program, result)
                     expected_tap, sockets, accepts = CONTRACTS[args.program]
                     if expected_tap is not None:
                         result['cases'] = tap.tap_result(result)
@@ -117,7 +146,15 @@ def main():
                     report['native_fixture'] = native
                     require(native['sockets'] == sockets and native['accepts'] == accepts and native['live'] == 0,
                             'original native socket matrix or cleanup differs')
-                    require(native['mptcp'] == 0, 'unexpected protocol substitution')
+                    require(native['mptcp'] == 0 and native['raw_sockets'] == 0,
+                            'unexpected protocol substitution')
+                    expected_udp = {'reuseport_dualstack': 88, 'sk_so_peek_off': 6}.get(args.program, 0)
+                    require(native['udp_sockets'] == expected_udp, 'incomplete native UDP matrix')
+                    expected_epoll = (6, 104, 6) if args.program == 'reuseport_dualstack' else (0, 0, 0)
+                    require(tuple(native[key] for key in ('epoll_creates', 'epoll_controls', 'epoll_waits')) == expected_epoll,
+                            'original readiness checks did not reach native epoll')
+                    require(native['namespaces_created'] == native['namespaces_deleted'] == 0,
+                            'unexpected namespace lifetime')
                     report['stats'] = json.loads(stats.read_text())
                     require(report['stats'].get('outstanding') == 0, 'packet ownership did not settle')
                     require(report['stats'].get('worker_exit_code') == 0 and

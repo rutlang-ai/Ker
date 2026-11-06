@@ -4,7 +4,7 @@
 
 | collection | 默认注册入口 | 当前接入范围 |
 | --- | ---: | --- |
-| `net` | 106 | `sk_connect_zero_addr` 及本批四个完整 binding 程序 |
+| `net` | 106 | `sk_connect_zero_addr`、四个完整 binding 程序，以及 `reuseport_dualstack`、`sk_so_peek_off` |
 | `net/af_unix` | 5 | 全部接入 host-backed IPC 兼容性测试，与 imported Linux 分开统计 |
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-## 本批完整 binding 程序
+## 完整 socket 程序
 
 | 原版程序 / CTest 后缀 | 完整运行结果 | 验证范围 |
 | --- | --- | --- |
@@ -26,6 +26,8 @@
 | `sk_bind_sendto_listen` | 原版程序退出成功 | 两个 IPv6 socket 的 bind、零长 Fast Open sendto 及后续 listen |
 | `bind_timewait` | 2/2 TAP | localhost 与 wildcard 两组真实 TCP 连接关闭后的 EADDRINUSE |
 | `bind_wildcard` | 132/132 TAP | 44 组 IPv4、IPv6、v4-mapped 地址组合，各执行 plain、REUSEADDR、REUSEPORT |
+| `reuseport_dualstack` | 原版全部六组及 SUCCESS | UDP 小/大 reuseport group 和 TCP，交换双栈创建顺序，断言 IPv4 数据优先进入 IPv4 socket |
+| `sk_so_peek_off` | 原版四个明确成功输出 | TCP/UDP 的 IPv4/IPv6，保留 MSG_PEEK、MSG_TRUNC 与 SO_PEEK_OFF 的全部偏移断言 |
 
 源文件、`kselftest.h`、`kselftest_harness.h` 和 Makefile 在执行前后与 pinned Git blob 逐字节核对，编译保留原版断言。原版 harness 的 fork 与宿主 IPC 保留；IP socket 操作经已验证的私有 fixture 进入同一个常驻 Linux，内核 owner 不 fork。binding 判定、端口表、TIME_WAIT 和原版 errno 均来自 Linux，本批没有增加协议实现或修改生产 API。
 
@@ -33,7 +35,9 @@
 
 四个 CTest 均使用默认 native 内核配置，本地完整通过。fixture 分别记录 5、2、6、1056 次实际 native socket() 创建；TIME_WAIT 的两次 accept 单独计数，并要求 Linux ActiveOpens/PassiveOpens 均为 2。每次成功创建都验证 native descriptor 类型，缺失 backend 的对照必须拒绝。所有 native socket、packet outstanding 均归零，worker 正常关闭。两个非 TAP 程序按完整程序退出状态记录，不伪造断言计数。
 
-`linux-original-net-*.json` 包括原版输出、TAP、源码与二进制 hash、内核 fingerprint、native socket/accept 计数和清理结果。CI 的完整 default CTest graph 必须包含这四项及其 JUnit 结果，不能跳过。
+新增的两个完整程序使用同一个私有 native fixture。UDP 通过真实 POSIX facade 创建并验证 descriptor kind；epoll_create/ctl/wait 直接使用导入 Linux 的 epoll，保留原版 `timeout=-1` 阻塞等待与 event.data，不在宿主生成 readiness。`reuseport_dualstack` 要求 110 次 socket 创建（其中 88 个 UDP）、2 次 accept、6 次 epoll 创建、104 次注册及 6 次等待；`sk_so_peek_off` 要求 12 次 socket 创建（其中 6 个 UDP）和 2 次 accept。后者上游可能在全部不支持时仍退出 0，因此 runner 额外要求 TCP/UDP × IPv4/IPv6 的四行原版成功输出；不把退出 0 或跳过当成完成。两者的 TCP ActiveOpens/PassiveOpens 均须为 2，正常关闭后无 live socket 或 outstanding packet。本地结果和最终 hosted CI/review 分别记录。
+
+`linux-original-net-*.json` 包括原版输出、TAP、源码与二进制 hash、内核 fingerprint、native socket/accept 计数和清理结果。CI 的完整 default CTest graph 必须包含这六项及其 JUnit 结果，不能跳过。
 
 ```bash
 ctest --test-dir build-native-on --no-tests=error \
