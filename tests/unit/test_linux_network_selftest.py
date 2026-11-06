@@ -9,6 +9,14 @@ spec.loader.exec_module(runner)
 
 
 class OriginalNetworkCompletionTests(unittest.TestCase):
+    def test_macvtap_requires_both_real_writes_and_the_real_invalid_packet_error(self):
+        complete = dict(macvtap_opens=3, tun_if_sets=3, macvtap_writes=2, macvtap_bytes=2149,
+                        macvtap_write_einval=1, netlinks=12)
+        for key, value in (('macvtap_opens', 0), ('tun_if_sets', 2), ('macvtap_writes', 1),
+                           ('macvtap_bytes', 2148), ('macvtap_write_einval', 0), ('netlinks', 8)):
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                runner.validate_macvtap(dict(complete, **{key: value}))
+
     def test_socket_shell_pass_marker_cannot_hide_missing_native_protocols(self):
         with self.assertRaises(RuntimeError):
             runner.validate_missing_backend('run_netsocktests', dict(returncode=0, stdout='', stderr=''))

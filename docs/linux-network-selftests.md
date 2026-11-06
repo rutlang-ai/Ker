@@ -4,7 +4,7 @@
 
 | collection | 默认注册入口 | 当前接入范围 |
 | --- | ---: | --- |
-| `net` | 106 | `sk_connect_zero_addr`、四个完整 binding 程序、`reuseport_dualstack`、`sk_so_peek_off`、`tun`、`reuseport_addr_any.sh`、`run_netsocktests`；共 10 个入口本地通过 |
+| `net` | 106 | `sk_connect_zero_addr`、四个完整 binding 程序、`reuseport_dualstack`、`sk_so_peek_off`、`tun`、`reuseport_addr_any.sh`、`run_netsocktests`、`tap`；共 11 个入口本地通过 |
 | `net/af_unix` | 5 | 全部接入 host-backed IPC 兼容性测试，与 imported Linux 分开统计 |
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 73/310，剩余 237；其中 68 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 242 个。`net/` 本目录剩余 96/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 74/310，剩余 236；其中 69 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 241 个。`net/` 本目录剩余 95/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -67,4 +67,18 @@ CI 在专用 native 配置中强制执行两个入口，核对实际 TUN/DCCP �
 
 ```bash
 python3 tools/ci/native_tests.py net-profile build-native-net-selftests native-net-selftests-ctest.xml
+```
+
+## Macvtap 报文测试
+
+原版 `tap.c` 在单独 fingerprint 的 `config/native-linux-macvtap.config` 中完整执行 3/3 TAP：合法 UDP GSO、合法 UDP 校验和报文，以及错误以太网协议报文的真实 EINVAL。Linux 的 dummy、macvlan、macvtap、tap 和 sysfs 均须实际编译启用；源文件、断言和报文构造保持原样。
+
+fixture 转发原版创建/删除链路的 Netlink 请求，并从导入 Linux 的 `/sys/class/macvtap/tap<ifindex>/dev` 读取动态 major/minor，再在私有 native 文件系统中建立 `/dev/tap<ifindex>`。设备名称中的 ifindex 不等于其分配的 minor，不能用宿主设备或推算的设备号代替。TUNSETIFF 与三个报文写入全部进入 Linux macvtap 驱动，不在 Ker 中模拟成功或错误。
+
+本地完整通过，native fingerprint 为 `ee89323c0726f946f02cecf45efbfcc7b21f5a0a52b1740d38a6ebbf4547cb9f`。证据要求 12 次真实 Netlink socket、3 次 native macvtap open、3 次成功 TUNSETIFF、2 次共 2149 字节的成功 device write 和 1 次实际 EINVAL。缺失 backend 的原版 harness 必须失败；结束时无 live descriptor/outstanding packet，owner/worker 正常关闭。此项计为一个默认入口，hosted CI/review 单独确认。
+
+CI 强制检查专用配置、唯一注册、三个明确 TAP 名称、无 skip 的 JUnit 和匹配 fingerprint 的 JSON：
+
+```bash
+python3 tools/ci/native_tests.py macvtap-profile build-native-macvtap native-macvtap-ctest.xml
 ```

@@ -39,8 +39,11 @@ CONTRACTS = {
     'tun': (5, 5, 0),
     'reuseport_addr_any.sh': (None, 91, 6),
     'run_netsocktests': (None, 2, 0),
+    'tap': (3, 12, 0),
 }
 SHELL_HELPERS = {'run_netsocktests': 'socket', 'reuseport_addr_any.sh': 'reuseport_addr_any'}
+MACVTAP_CASES = ['tap.test_packet_valid_udp_gso', 'tap.test_packet_valid_udp_csum',
+                 'tap.test_packet_crash_tap_invalid_eth_proto']
 
 
 def validate_original(program, result):
@@ -91,6 +94,13 @@ def validate_missing_backend(program, result):
     require(not completed, 'original matrix passed without the imported kernel')
 
 
+def validate_macvtap(native):
+    keys = ('macvtap_opens', 'tun_if_sets', 'macvtap_writes', 'macvtap_bytes',
+            'macvtap_write_einval', 'netlinks')
+    require(tuple(native.get(key) for key in keys) == (3, 3, 2, 2149, 1, 12),
+            'incomplete native macvtap device/packet/error matrix')
+
+
 def main():
     parser = argparse.ArgumentParser()
     for name in ('server', 'binary', 'control', 'launcher', 'library', 'worker', 'pmd_dir', 'manifest', 'evidence'):
@@ -109,6 +119,12 @@ def main():
                 'original TUN/DCCP tests require their dedicated native profile')
         config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
         require({'CONFIG_TUN=y', 'CONFIG_IP_DCCP=y'}.issubset(config), 'missing real native TUN/DCCP facilities')
+    if args.program == 'tap':
+        require(manifest.get('config_fragment') == 'config/native-linux-macvtap.config',
+                'original tap test requires the dedicated macvtap profile')
+        config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
+        require({'CONFIG_DUMMY=y', 'CONFIG_MACVLAN=y', 'CONFIG_MACVTAP=y', 'CONFIG_TAP=y',
+                 'CONFIG_SYSFS=y'}.issubset(config), 'missing real native macvtap facilities')
     helper = SHELL_HELPERS.get(args.program, args.program)
     paths = ['tools/testing/selftests/net/' + helper + '.c',
              'tools/testing/selftests/net/Makefile', 'tools/testing/selftests/kselftest.h',
@@ -159,7 +175,7 @@ def main():
             require(report['missing_backend_control']['returncode'] == 0 and
                     report['missing_backend_control']['stdout'].strip() == 'MISSING_BACKEND_REJECTED',
                     'unavailable native backend was not rejected')
-            if args.program in ('reuseport_dualstack', 'sk_so_peek_off', 'tun', 'reuseport_addr_any.sh', 'run_netsocktests'):
+            if args.program in ('reuseport_dualstack', 'sk_so_peek_off', 'tun', 'reuseport_addr_any.sh', 'run_netsocktests', 'tap'):
                 missing = fixture.run_helper([args.binary], environment)
                 report['original_missing_backend_control'] = missing
                 validate_missing_backend(args.program, missing)
@@ -189,6 +205,8 @@ def main():
                     if expected_tap is not None:
                         result['cases'] = tap.tap_result(result)
                         require(len(result['cases']) == expected_tap, 'incomplete original fixture/variant matrix')
+                        if args.program == 'tap':
+                            require(result['cases'] == MACVTAP_CASES, 'incomplete original macvtap TAP cases')
                     deadline = time.monotonic() + 5
                     while True:
                         try:
@@ -209,6 +227,8 @@ def main():
                     require(native['udp_sockets'] == expected_udp, 'incomplete native UDP matrix')
                     if args.program == 'run_netsocktests':
                         validate_socket_creation(native)
+                    if args.program == 'tap':
+                        validate_macvtap(native)
                     require(native.get('dccp_sockets', 0) == (31 if args.program == 'reuseport_addr_any.sh' else 0),
                             'missing native DCCP sockets; a skipped protocol is not a complete shell entry')
                     expected_epoll = {'reuseport_dualstack': (6, 104, 6),

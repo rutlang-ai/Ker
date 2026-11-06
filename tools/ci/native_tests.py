@@ -25,6 +25,7 @@ LINUX_PROTOCOL_SELFTESTS = (
 )
 
 LINUX_NET_PROFILE_TESTS = {"linux-original-net-tun", "linux-original-net-reuseport_addr_any"}
+LINUX_MACVTAP_PROFILE_TEST = "linux-original-net-tap"
 
 LINUX_AF_UNIX_SELFTESTS = (
     "linux-original-af-unix-diag_uid", "linux-original-af-unix-msg_oob",
@@ -429,6 +430,34 @@ def run_net_profile(build: Path, junit: Path) -> None:
     summary('Original net: complete tun and reuseport_addr_any.sh entries, PASS ' + manifest['fingerprint'])
 
 
+def run_macvtap_profile(build: Path, junit: Path) -> None:
+    name = LINUX_MACVTAP_PROFILE_TEST
+    inventory = ctest_inventory(build)
+    require(sum(item['name'] == name for item in inventory) == 1,
+            'macvtap profile must register the complete original tap entry exactly once')
+    cache = (build / 'CMakeCache.txt').read_text()
+    native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
+                         if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
+    require(native_build, 'macvtap profile has no native kernel path')
+    manifest = json.loads((Path(native_build) / 'native-linux.json').read_text())
+    require(manifest.get('config_fragment') == 'config/native-linux-macvtap.config',
+            'macvtap test requires its dedicated native kernel profile')
+    config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
+    require({'CONFIG_DUMMY=y', 'CONFIG_MACVLAN=y', 'CONFIG_MACVTAP=y', 'CONFIG_TAP=y',
+             'CONFIG_SYSFS=y'}.issubset(config), 'macvtap profile lacks its native driver/sysfs facilities')
+    result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
+                             '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+    require(junit.is_file(), 'macvtap CTest did not produce JUnit')
+    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    evidence = json.loads((build / (name + '.json')).read_text())
+    require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
+            evidence.get('fingerprint') == manifest.get('fingerprint') and
+            evidence.get('original', {}).get('cases') == ['tap.test_packet_valid_udp_gso',
+                'tap.test_packet_valid_udp_csum', 'tap.test_packet_crash_tap_invalid_eth_proto'],
+            'incomplete native macvtap evidence')
+    summary('Original macvtap: all three original packet/error cases, PASS ' + manifest['fingerprint'])
+
+
 def run_packetdrill_profile(build: Path, junit: Path) -> None:
     name = "linux-original-packetdrill"
     inventory = ctest_inventory(build)
@@ -562,6 +591,7 @@ def run_join_profile(build: Path, junit: Path) -> None:
 
 
 def validate_default_profile_inventory(names: set[str]) -> None:
+    require(LINUX_MACVTAP_PROFILE_TEST not in names, 'macvtap requires its fingerprinted driver profile')
     require(not names.intersection(LINUX_NET_PROFILE_TESTS), 'TUN/DCCP tests require their fingerprinted net profile')
     require(LINUX_MPTCP_SOCKOPT_PROFILE_TEST not in names,
             "sockopt shell test must run in its fingerprinted netfilter profile")
@@ -897,8 +927,8 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
-        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
         if len(argv) != 2:
@@ -942,6 +972,11 @@ def main(argv: list[str]) -> int:
         if len(argv) != 4:
             raise RuntimeError("net-profile requires build directory and JUnit output path")
         run_net_profile(build, Path(argv[3]))
+        return 0
+    if group == "macvtap-profile":
+        if len(argv) != 4:
+            raise RuntimeError("macvtap-profile requires build directory and JUnit output path")
+        run_macvtap_profile(build, Path(argv[3]))
         return 0
     if group == "packetdrill-profile":
         if len(argv) != 4:

@@ -495,6 +495,31 @@ jobs:
           python3 tools/ci/native_tests.py net-profile \
             build-native-net-selftests "$RUNNER_TEMP/native-net-selftests-ctest.xml"
 
+      - name: Run complete original macvtap packet selftest
+        if: steps.native.outputs.present == 'true'
+        shell: bash
+        env:
+          KER_DPDK_PREFIX: ${{ runner.temp }}/dpdk-install
+        run: |
+          set -euo pipefail
+          python3 tools/build-native-linux.py \
+            --build "$RUNNER_TEMP/native-linux-macvtap-build" \
+            --cache "$RUNNER_TEMP/native-linux.git" --jobs 2 \
+            --config-fragment config/native-linux-macvtap.config
+          pkgconfig_dir="$(find "$KER_DPDK_PREFIX" -type f -name libdpdk.pc -printf '%h\n' -quit)"
+          test -n "$pkgconfig_dir"
+          PKG_CONFIG_PATH="$pkgconfig_dir" cmake -S . -B build-native-macvtap -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DKER_BUILD_EXAMPLES=ON \
+            -DKER_BUILD_LINUX_PROTOCOL_SELFTESTS=ON \
+            -DKER_MPTCP_DIAG_TOOLS_DIR="$RUNNER_TEMP/iproute2-diag" \
+            -DKER_WITH_DPDK=ON -DKER_WITH_NATIVE_TCP=ON \
+            -DKER_DPDK_PKGCONFIG_DIR="$pkgconfig_dir" \
+            -DKER_NATIVE_LINUX_BUILD="$RUNNER_TEMP/native-linux-macvtap-build" \
+            -DCMAKE_C_FLAGS='-Wall -Wextra -Werror'
+          cmake --build build-native-macvtap --parallel 2 --target ker-linux-network-tap
+          python3 tools/ci/native_tests.py macvtap-profile \
+            build-native-macvtap "$RUNNER_TEMP/native-macvtap-ctest.xml"
+
       - name: Run exact native session migration matrix
         if: steps.native.outputs.present == 'true'
         shell: bash
@@ -546,6 +571,9 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/native-full-ctest.xml
+            ${{ runner.temp }}/native-macvtap-ctest.xml
+            ${{ runner.temp }}/native-linux-macvtap-build/native-linux.json
+            build-native-macvtap/linux-original-net-tap.json
             ${{ runner.temp }}/native-net-selftests-ctest.xml
             ${{ runner.temp }}/native-linux-net-selftests-build/native-linux.json
             build-native-net-selftests/linux-original-net-tun.json

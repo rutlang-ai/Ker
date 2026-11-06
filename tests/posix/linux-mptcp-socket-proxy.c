@@ -670,6 +670,23 @@ int __wrap_open(const char *path, int flags, ...)
     }
 #endif
 #if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NET_DEVICE_SELFTEST)
+#ifdef KER_MACVTAP_SELFTEST
+    if (!strncmp(path, "/dev/tap", 8)) {
+        unsigned index; char trailing;
+        if (sscanf(path, "/dev/tap%u%c", &index, &trailing) != 1 || !index ||
+            flags != (O_RDWR | O_NONBLOCK)) { errno = EINVAL; return -1; }
+        const char *ns = getenv("KER_MPTCP_SOCKET_NAMESPACE"); if (!ns) ns = "";
+        if (strlen(ns) >= 64) { errno = EINVAL; return -1; }
+        int fd = open_channel(); if (fd < 0) return -1;
+        unsigned char data[MS_MAX]; strcpy((char *)data, ns);
+        struct ms_message m = {.operation = MS_MACVTAP_OPEN, .a = index,
+            .length = (uint32_t)strlen(ns) + 1};
+        if (exchange(fd, &m, data, NULL) < 0) {
+            int error = errno; syscall(SYS_close, fd); errno = error; return -1;
+        }
+        return remember(fd);
+    }
+#endif
     if (!strcmp(path, "/dev/net/tun")) {
         if (flags != O_RDWR) { errno = EOPNOTSUPP; return -1; }
         const char *ns = getenv("KER_MPTCP_SOCKET_NAMESPACE"); if (!ns) ns = "";
