@@ -109,7 +109,8 @@ static long namespace_change(unsigned op, const char *name)
 }
 static int diag_control(struct ms_message *m, unsigned char *data, size_t input, long *result)
 {
-    if ((m->operation < MS_NEWNS || m->operation > MS_FILE_CHUNK) && m->operation != MS_DIRECTORY) return 0;
+    if ((m->operation < MS_NEWNS || m->operation > MS_FILE_CHUNK) &&
+        m->operation != MS_DIRECTORY && m->operation != MS_IFNAME) return 0;
     *result = -1;
     if (!input || data[input - 1]) { errno = EINVAL; return 1; }
     char *name = (char *)data;
@@ -163,6 +164,13 @@ static int diag_control(struct ms_message *m, unsigned char *data, size_t input,
         const char *device = (char *)data + length;
         if (input <= length || strlen(device) + length + 1 != input) { errno = EINVAL; return 1; }
         unsigned value = if_nametoindex(device); *result = value ? (long)value : -1; return 1;
+    }
+    if (m->operation == MS_IFNAME) {
+        if (input != length) { errno = EINVAL; return 1; }
+        char device[IF_NAMESIZE];
+        if (!if_indextoname(m->a, device)) return 1;
+        m->length = (uint32_t)strlen(device) + 1;
+        memcpy(data, device, m->length); *result = 0; return 1;
     }
     char path[192];
     if (m->operation == MS_SYSCTL) {

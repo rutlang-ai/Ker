@@ -17,7 +17,7 @@
 
 `config/native-linux-mptcp-connect.config` 是独立、带 fingerprint 的测试配置，启用真实 nftables socket/tproxy 支持。生产默认配置和 ingress-freeze/admission 的 netfilter 编译约束保留；CI 分别运行默认完整测试图、原有 sockopt 配置，以及这四个 connect 入口的专用配置。
 
-拓扑、sysctl 和 proc 操作进入同一常驻导入 Linux。跨 namespace veth 与 policy rule/route 使用真实 rtnetlink 请求和 ACK。pinned iproute2 6.12.0 的 ss/nstat/tc、原版 ping、ethtool、nft 通过私有 socket transport 调用该内核，工具二进制 hash 写入证据。netem 的 loss、delay、reorder 和相关性从真实内核 readback 核对。helper 内部 `system("ss ...")` 也查询导入内核，保证完整断开等待的语义。
+拓扑、sysctl 和 proc 操作进入同一常驻导入 Linux。跨 namespace veth 与 policy rule/route 使用真实 rtnetlink 请求和 ACK。pinned iproute2 6.12.0 的 ss/nstat/tc、原版 ping、ethtool、nft 通过私有 socket transport 调用该内核，工具二进制 hash 写入证据。netem 的 loss、delay、reorder 和相关性从真实内核 readback 核对。helper 内部 `system("ss ...")` 也查询导入内核，保证完整断开等待的语义。`if_nametoindex` 和 `if_indextoname` 双向查询都进入原生 namespace，避免将 native endpoint 的设备索引按宿主接口名显示。
 
 mmap 的大 write 通过有界的真实 native short write 传输。sendfile 的输入按有界块上传到 sealed memfd，再导入只读 native 文件，随后调用 Linux 自身的 sendfile；32 MiB 上限覆盖原版默认最大约 24 MiB 的重复传输输入。显式/隐式文件 offset 取自实际 syscall 结果；输入身份和修改时间在导入前后核验。该接口仅存在于未安装的 tests-ON fixture，生产的跨内核 fd 边界未扩张。
 

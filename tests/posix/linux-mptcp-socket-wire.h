@@ -9,7 +9,7 @@ enum ms_operation { MS_SOCKET = 1, MS_BIND, MS_LISTEN, MS_ACCEPT, MS_CONNECT,
     MS_SETOPT, MS_GETOPT, MS_READ, MS_WRITE, MS_IOCTL, MS_RECVMSG, MS_STOP, MS_NAME, MS_PEER,
     MS_FCNTL, MS_POLL, MS_SHUTDOWN, MS_SENDMSG, MS_NEWNS, MS_DELNS, MS_UP, MS_SYSCTL,
     MS_FILE, MS_PIDS, MS_STATUS, MS_LISTNS, MS_NS_FD, MS_IFINDEX, MS_FILE_CHUNK, MS_SENDFILE,
-    MS_INPUT_START, MS_INPUT_WRITE, MS_INPUT_END, MS_DIRECTORY };
+    MS_INPUT_START, MS_INPUT_WRITE, MS_INPUT_END, MS_DIRECTORY, MS_IFNAME };
 struct ms_io { uint32_t data, control, name, flags; };
 _Static_assert(sizeof(struct ms_io) == 16, "private message wire layout");
 struct ms_message {

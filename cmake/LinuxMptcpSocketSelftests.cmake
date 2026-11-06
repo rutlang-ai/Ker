@@ -36,7 +36,7 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
         endforeach()
     endforeach()
     set(diag_wraps socket bind connect listen accept getsockname getpeername setsockopt getsockopt
-        read write ioctl recvmsg sendmsg recvfrom sendto recv send fcntl shutdown poll close open fopen if_nametoindex)
+        read write ioctl recvmsg sendmsg recvfrom sendto recv send fcntl shutdown poll close open fopen if_nametoindex if_indextoname)
     add_executable(ker-linux-mptcp-diag-connect "${mptcp_root}/mptcp_connect.c"
         $<TARGET_OBJECTS:ker-linux-mptcp-socket-proxy>)
     target_include_directories(ker-linux-mptcp-diag-connect PRIVATE "${ao_headers}")

@@ -145,6 +145,20 @@ unsigned __wrap_if_nametoindex(const char *name)
     long result = exchange(fd, &m, data, NULL); int error = errno; syscall(SYS_close, fd); errno = error;
     return result < 0 ? 0 : (unsigned)result;
 }
+char *__wrap_if_indextoname(unsigned index, char name[IF_NAMESIZE])
+{
+    const char *ns = getenv("KER_MPTCP_SOCKET_NAMESPACE"); if (!ns) ns = "";
+    if (!name || strlen(ns) >= 64) { errno = EINVAL; return NULL; }
+    int fd = open_channel(); if (fd < 0) return NULL;
+    unsigned char data[MS_MAX]; strcpy((char *)data, ns);
+    struct ms_message m = {.operation = MS_IFNAME, .a = index, .length = (uint32_t)strlen(ns) + 1};
+    long result = exchange(fd, &m, data, NULL); int error = errno; syscall(SYS_close, fd); errno = error;
+    if (result < 0) return NULL;
+    if (m.length < 2 || m.length > IF_NAMESIZE || data[m.length - 1] || strlen((char *)data) + 1 != m.length) {
+        errno = EPROTO; return NULL;
+    }
+    memcpy(name, data, m.length); return name;
+}
 
 static int address_call(int fd, unsigned op, const struct sockaddr *address, socklen_t length)
 {
