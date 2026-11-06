@@ -50,6 +50,10 @@ struct client { int host, native, ns, input, upload, retire; size_t input_size, 
 static struct client clients[4096];
 static unsigned clients_count;
 static atomic_ulong channels_opened;
+#ifdef KER_SOCKET_CREATION_SELFTEST
+static atomic_uint creation_attempts, creation_eafnosupport, creation_eprotonosupport;
+static atomic_uint creation_tcp, creation_udp;
+#endif
 #ifdef KER_PACKETDRILL_SELFTEST
 static atomic_ulong packetdrill_offloads, packetdrill_timestamps;
 #endif
@@ -183,10 +187,34 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         dccp = (m->a == AF_INET || m->a == AF_INET6) && m->b == SOCK_DCCP &&
                (m->c == 0 || m->c == IPPROTO_DCCP);
 #endif
-        if (fd >= 0 || (!dccp && !udp && !packet && !netlink && !raw && ((m->a != AF_INET && m->a != AF_INET6) || m->b != SOCK_STREAM ||
+        int creation = 0;
+#ifdef KER_SOCKET_CREATION_SELFTEST
+        creation = m->a == AF_INET || (m->a == AF_MAX && m->b == 0 && m->c == 0);
+#endif
+        if (fd >= 0 || (!creation && !dccp && !udp && !packet && !netlink && !raw && ((m->a != AF_INET && m->a != AF_INET6) || m->b != SOCK_STREAM ||
             (m->c != IPPROTO_MPTCP && m->c != IPPROTO_TCP && m->c != 0)))) { errno = EOPNOTSUPP; return -1; }
         if (select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
+#ifdef KER_SOCKET_CREATION_SELFTEST
+        atomic_fetch_add(&creation_attempts, 1);
+        /* IPv4 exercises the real POSIX facade. AF_MAX uses the private
+         * native call, because non-network public families belong to host IPC. */
+        if (m->a == AF_MAX) client->native = (int)native_call(KER_TEST_SOCKET, m->a, m->b, m->c);
+        else
+#endif
         client->native = raw ? (int)native_call(KER_TEST_RAW_SOCKET, m->a, m->b, m->c) : netlink ? (int)native_call(KER_TEST_NETLINK, m->b, m->c, 0) : socket((int)m->a, (int)m->b, (int)m->c);
+#ifdef KER_SOCKET_CREATION_SELFTEST
+        if (client->native < 0) {
+            if (errno == EAFNOSUPPORT) atomic_fetch_add(&creation_eafnosupport, 1);
+            if (errno == EPROTONOSUPPORT) atomic_fetch_add(&creation_eprotonosupport, 1);
+        } else {
+            int protocol = 0; socklen_t size = sizeof(protocol);
+            if (getsockopt(client->native, SOL_SOCKET, SO_PROTOCOL, &protocol, &size) || size != sizeof(protocol)) {
+                close(client->native); client->native = -1; errno = ENOTSUP; return -1;
+            }
+            if (protocol == IPPROTO_TCP) atomic_fetch_add(&creation_tcp, 1);
+            if (protocol == IPPROTO_UDP) atomic_fetch_add(&creation_udp, 1);
+        }
+#endif
         if (client->native < 0) return -1;
         int (*kind)(int) = dlsym(RTLD_DEFAULT, "ker_posix_descriptor_kind");
         if (!kind || kind(client->native) != ((packet || netlink) ? 3 : 1)) { close(client->native); client->native = -1; errno = ENOTSUP; return -1; }
@@ -696,6 +724,15 @@ int main(int argc, char **argv)
         atomic_load(&tun_queue_einval), atomic_load(&namespace_tcp_active), atomic_load(&namespace_tcp_passive));
 #endif
     extra = network_counts;
+#endif
+#ifdef KER_SOCKET_CREATION_SELFTEST
+    char creation_counts[1024];
+    snprintf(creation_counts, sizeof(creation_counts),
+        "%s,\"creation_attempts\":%u,\"creation_eafnosupport\":%u,\"creation_eprotonosupport\":%u,"
+        "\"creation_tcp\":%u,\"creation_udp\":%u", extra,
+        atomic_load(&creation_attempts), atomic_load(&creation_eafnosupport),
+        atomic_load(&creation_eprotonosupport), atomic_load(&creation_tcp), atomic_load(&creation_udp));
+    extra = creation_counts;
 #endif
     fprintf(stats, "{\"sockets\":%u,\"mptcp\":%u,\"accepts\":%u,\"live\":%u,"
         "\"reads\":%lu,\"writes\":%lu,\"received\":%lu,\"sent\":%lu,"

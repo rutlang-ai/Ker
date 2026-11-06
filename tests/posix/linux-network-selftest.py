@@ -38,12 +38,18 @@ CONTRACTS = {
     'sk_so_peek_off': (None, 12, 2),
     'tun': (5, 5, 0),
     'reuseport_addr_any.sh': (None, 91, 6),
+    'run_netsocktests': (None, 2, 0),
 }
+SHELL_HELPERS = {'run_netsocktests': 'socket', 'reuseport_addr_any.sh': 'reuseport_addr_any'}
 
 
 def validate_original(program, result):
     """An exit code alone permits sk_so_peek_off's all-unsupported path."""
-    if program == 'sk_so_peek_off':
+    if program == 'run_netsocktests':
+        require(result['stdout'].splitlines() == ['--------------------', 'running socket test',
+                '--------------------', '[PASS]'] and not result['stderr'],
+                'incomplete original socket creation shell')
+    elif program == 'sk_so_peek_off':
         expected = [f'{protocol}/IPv{family} with MSG_PEEK_OFF works correctly'
                     for protocol in ('TCP', 'UDP') for family in (4, 6)]
         require(result['stdout'].splitlines() == expected and not result['stderr'],
@@ -59,6 +65,30 @@ def validate_original(program, result):
                     for first, second in ((4, 6), (6, 4))]
         require(not result['stdout'] and result['stderr'].splitlines() == [*expected, 'SUCCESS'],
                 'incomplete original dual-stack reuseport groups')
+
+
+def validate_socket_creation(native):
+    # socket.c permits EAFNOSUPPORT for configured-out IPv4. Require both
+    # actual native protocols and every rejected request, not just its exit 0.
+    keys = ('creation_attempts', 'creation_eafnosupport', 'creation_eprotonosupport',
+            'creation_tcp', 'creation_udp')
+    require(tuple(native.get(key) for key in keys) == (5, 1, 2, 1, 1),
+            'incomplete imported Linux socket creation/error matrix')
+
+
+def validate_missing_backend(program, result):
+    if program == 'run_netsocktests':
+        # This control invokes the silent C helper, not the shell wrapper.
+        require(result['returncode'] != 0, 'original socket helper passed without the imported kernel')
+        return
+    completed = False
+    if result['returncode'] == 0:
+        try:
+            validate_original(program, result)
+            completed = True
+        except RuntimeError:
+            pass
+    require(not completed, 'original matrix passed without the imported kernel')
 
 
 def main():
@@ -79,11 +109,14 @@ def main():
                 'original TUN/DCCP tests require their dedicated native profile')
         config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
         require({'CONFIG_TUN=y', 'CONFIG_IP_DCCP=y'}.issubset(config), 'missing real native TUN/DCCP facilities')
-    paths = ['tools/testing/selftests/net/' + args.program.removesuffix('.sh') + '.c',
+    helper = SHELL_HELPERS.get(args.program, args.program)
+    paths = ['tools/testing/selftests/net/' + helper + '.c',
              'tools/testing/selftests/net/Makefile', 'tools/testing/selftests/kselftest.h',
              'tools/testing/selftests/kselftest_harness.h']
-    if args.program.endswith('.sh'):
-        paths += ['tools/testing/selftests/net/' + args.program, 'tools/testing/selftests/net/in_netns.sh']
+    if args.program in SHELL_HELPERS:
+        paths += ['tools/testing/selftests/net/' + args.program]
+        if args.program.endswith('.sh'):
+            paths += ['tools/testing/selftests/net/in_netns.sh']
     originals = {}
     for path in paths:
         original = subprocess.check_output(['git', '-C', str(source), 'show', manifest['linux']['revision'] + ':' + path])
@@ -108,14 +141,16 @@ def main():
                 tempfile.TemporaryDirectory(prefix='ker-linux-net-exec-', dir=args.binary.parent) as executable:
             stage = Path(executable)
             command = [str(args.binary)]
-            if args.program.endswith('.sh'):
-                for name in (args.program, 'in_netns.sh'):
+            if args.program in SHELL_HELPERS:
+                names = (args.program, 'in_netns.sh') if args.program.endswith('.sh') else (args.program,)
+                for name in names:
                     target = stage / name
                     target.write_bytes(originals['tools/testing/selftests/net/' + name]); target.chmod(0o700)
-                (stage / args.program.removesuffix('.sh')).symlink_to(args.binary.resolve())
-                shutil.copyfile(Path(__file__).with_name('linux-mptcp-diag-shim.py'), stage / 'ip')
-                (stage / 'ip').chmod(0o700)
-                environment['PATH'] = str(stage) + os.pathsep + environment.get('PATH', '')
+                (stage / helper).symlink_to(args.binary.resolve())
+                if args.program.endswith('.sh'):
+                    shutil.copyfile(Path(__file__).with_name('linux-mptcp-diag-shim.py'), stage / 'ip')
+                    (stage / 'ip').chmod(0o700)
+                    environment['PATH'] = str(stage) + os.pathsep + environment.get('PATH', '')
                 command = [str(stage / args.program)]
             root = Path(temporary)
             channel, counts, stats = root / 'socket', root / 'counts.json', root / 'stats.json'
@@ -124,17 +159,10 @@ def main():
             require(report['missing_backend_control']['returncode'] == 0 and
                     report['missing_backend_control']['stdout'].strip() == 'MISSING_BACKEND_REJECTED',
                     'unavailable native backend was not rejected')
-            if args.program in ('reuseport_dualstack', 'sk_so_peek_off', 'tun', 'reuseport_addr_any.sh'):
+            if args.program in ('reuseport_dualstack', 'sk_so_peek_off', 'tun', 'reuseport_addr_any.sh', 'run_netsocktests'):
                 missing = fixture.run_helper([args.binary], environment)
                 report['original_missing_backend_control'] = missing
-                completed = False
-                if missing['returncode'] == 0:
-                    try:
-                        validate_original(args.program, missing)
-                        completed = True
-                    except RuntimeError:
-                        pass
-                require(not completed, 'original matrix passed without the imported kernel')
+                validate_missing_backend(args.program, missing)
             with (root / 'server.stdout').open('w+') as out, (root / 'server.stderr').open('w+') as err:
                 process = subprocess.Popen([sys.executable, str(args.launcher), '--library', str(args.library),
                     '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal', eal,
@@ -176,8 +204,11 @@ def main():
                             'original native socket matrix or cleanup differs')
                     require(native['mptcp'] == 0 and native['raw_sockets'] == 0,
                             'unexpected protocol substitution')
-                    expected_udp = {'reuseport_dualstack': 88, 'sk_so_peek_off': 6, 'reuseport_addr_any.sh': 30}.get(args.program, 0)
+                    expected_udp = {'reuseport_dualstack': 88, 'sk_so_peek_off': 6,
+                                    'reuseport_addr_any.sh': 30, 'run_netsocktests': 1}.get(args.program, 0)
                     require(native['udp_sockets'] == expected_udp, 'incomplete native UDP matrix')
+                    if args.program == 'run_netsocktests':
+                        validate_socket_creation(native)
                     require(native.get('dccp_sockets', 0) == (31 if args.program == 'reuseport_addr_any.sh' else 0),
                             'missing native DCCP sockets; a skipped protocol is not a complete shell entry')
                     expected_epoll = {'reuseport_dualstack': (6, 104, 6),
