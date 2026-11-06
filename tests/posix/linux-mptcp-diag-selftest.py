@@ -225,15 +225,20 @@ def main():
         for name in (('ip', 'ss', 'grep', 'tc', 'cmp', 'nstat') if connect_suite else {'diag':('ip', 'ss'), 'sockopt':('ip', 'grep'), 'simult':('ip', 'grep', 'tc'), 'userspace':('ip', 'grep')}[args.suite]):
             (bins / name).write_text('#!' + sys.executable + '\n' + shim)
             (bins / name).chmod(0o700)
-        with tempfile.TemporaryDirectory(prefix='ker-mptcp-diag-', dir='/tmp' if connect_suite else '/dev/shm') as temporary:
-            root = Path(temporary); work = root / 'net/mptcp'; work.mkdir(parents=True)
+        with tempfile.TemporaryDirectory(prefix='ker-mptcp-diag-', dir='/dev/shm') as temporary:
+            root = Path(temporary)
+            # Mode wrappers execute their unchanged sibling shell. Keep those
+            # files beside the tested executable, while sockets/data can use
+            # a short path on a noexec shared-memory filesystem.
+            snapshot = bins if connect_suite else root
+            work = snapshot / 'net/mptcp'; work.mkdir(parents=True)
             if connect_suite:
                 (root / 'files').mkdir()
                 environment['TMPDIR'] = str(root / 'files')
-            for name, data in originals.items(): (root / 'net' / name).write_bytes(data)
+            for name, data in originals.items(): (snapshot / 'net' / name).write_bytes(data)
             if connect_suite:
                 for name in originals:
-                    if name.endswith('.sh'): (root / 'net' / name).chmod(0o700)
+                    if name.endswith('.sh'): (snapshot / 'net' / name).chmod(0o700)
             (work / 'mptcp_connect').symlink_to(args.binary)
             if args.suite != 'diag':
                 for name, binary in (('mptcp_sockopt', args.sockopt), ('mptcp_inq', args.inq), ('pm_nl_ctl', args.pm)):
@@ -440,7 +445,7 @@ def main():
                 report['stats'] = json.loads(stats.read_text())
                 require(report['stats'].get('outstanding') == 0, 'packet ownership did not settle')
                 for name, data in originals.items():
-                    require((source / name).read_bytes() == data and (root / 'net' / name).read_bytes() == data, 'upstream source changed')
+                    require((source / name).read_bytes() == data and (snapshot / 'net' / name).read_bytes() == data, 'upstream source changed')
                 report['status'] = 'PASS_IMPORTED_LINUX'
                 print('LINUX_ORIGINAL_MPTCP_' + args.suite.upper() + '_PASS', len(report['cases']))
                 return 0

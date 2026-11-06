@@ -496,7 +496,7 @@ jobs:
             build-native-join/linux-original-mptcp-join.*
             ${{ runner.temp }}/native-connect-ctest.xml
             ${{ runner.temp }}/native-linux-connect-build/native-linux.json
-            build-native-connect/linux-original-mptcp-connect-*.json
+            build-native-connect/linux-original-mptcp-connect-*
             ${{ runner.temp }}/native-sockopt-ctest.xml
             ${{ runner.temp }}/native-linux-sockopt-build/native-linux.json
             ${{ runner.temp }}/native-linux-mptcp-kunit/linux-original-mptcp-kunit.json
