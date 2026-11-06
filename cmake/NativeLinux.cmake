@@ -97,6 +97,7 @@ if(ker_ff_admission_window_serialized_lkl)
         KER_FF_ADMISSION_WINDOW_SERIALIZED_LKL=1)
 endif()
 if(BUILD_TESTING)
+    target_compile_definitions(ker-posix PRIVATE KER_LINUX_SELFTEST_RUNTIME=1)
     target_sources(ker-posix PRIVATE tests/posix/linux-selftest-input.c tests/posix/linux-selftest-runtime.c)
     target_include_directories(ker-posix PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     add_executable(ker-nginx-cycle-wire-test tests/posix/nginx-cycle-wire-test.c)
@@ -498,6 +499,9 @@ set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 
 add_executable(ker-app src/posix/app-guard.c)
 set(ker_io_worker_sources src/posix/worker-rx-lcores.c src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/io-worker.c src/posix/worker-offload.c src/posix/worker-receive-mode.c src/posix/worker-rss.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
 add_executable(ker-io-worker ${ker_io_worker_sources})
+if(BUILD_TESTING)
+    target_compile_definitions(ker-io-worker PRIVATE KER_IDLE_WAIT_TESTING=1)
+endif()
 # Separate resident shared-control session. This does not enable secondary mode
 # in the existing packet worker or advertise application reload support.
 find_library(ker_session_ring_pmd NAMES rte_net_ring HINTS ${DPDK_LIBRARY_DIRS} NO_DEFAULT_PATH)

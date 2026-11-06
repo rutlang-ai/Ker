@@ -188,7 +188,8 @@ static int diag_control(struct ms_message *m, unsigned char *data, size_t input,
         const char *file = (char *)data + length;
         if (input <= length || strlen(file) + length + 1 != input) { errno = EINVAL; return 1; }
         const char *allowed[] = {"/proc/net/tcp", "/proc/net/tcp6", "/proc/net/protocols", "/proc/net/netstat",
-            "/proc/net/snmp", "/proc/net/snmp6", "/proc/sys/net/mptcp/enabled", "/proc/kallsyms"};
+            "/proc/net/snmp", "/proc/net/snmp6", "/proc/sys/net/mptcp/enabled", "/proc/kallsyms",
+            "/proc/meminfo", "/proc/sys/net/ipv4/tcp_wmem", "/proc/sys/net/ipv4/tcp_rmem"};
         int found = 0;
         for (unsigned i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++) if (!strcmp(file, allowed[i])) found = 1;
         if (!found) { errno = EOPNOTSUPP; return 1; }

@@ -685,6 +685,11 @@ int main(int argc, char **argv)
     uint64_t rx_decision_local_cancelled = 0;
     struct ker_exception_filter exception_filter;
     int idle_sleep_us = 1000, tx_delay_us = 0;
+#ifdef KER_IDLE_WAIT_TESTING
+    const char *idle_test_marker = getenv("KER_IDLE_WAIT_TEST_MARKER");
+    const char *idle_test_arm = getenv("KER_IDLE_WAIT_TEST_ARM");
+    bool idle_test_marked = false;
+#endif
     int promiscuous = -1, tx_offloads = 0;
     int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU, maximum_mtu = 0;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
@@ -1536,7 +1541,33 @@ int main(int argc, char **argv)
             struct timespec timeout = {.tv_nsec = (long)wait_us * 1000};
             idle_waits++;
             int result = ppoll(fds, 6, &timeout, NULL);
-            if (!result) idle_timeouts++;
+            if (!result) {
+                idle_timeouts++;
+#ifdef KER_IDLE_WAIT_TESTING
+                bool check_idle_test_arm = idle_sleep_us != 0 || idle_timeouts % 1000 == 0;
+                if (check_idle_test_arm && !idle_test_marked && idle_test_marker && idle_test_arm) {
+                    if (access(idle_test_arm, F_OK) == 0) {
+                        int marker_fd = open(idle_test_marker,
+                            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+                        if (marker_fd < 0) {
+                            perror("ker: create idle timeout test marker");
+                            status = 1;
+                            break;
+                        }
+                        if (close(marker_fd)) {
+                            perror("ker: close idle timeout test marker");
+                            status = 1;
+                            break;
+                        }
+                        idle_test_marked = true;
+                    } else if (errno != ENOENT) {
+                        perror("ker: inspect idle timeout test arm");
+                        status = 1;
+                        break;
+                    }
+                }
+#endif
+            }
             else if (result < 0 && errno != EINTR) { perror("ker: idle wait"); status = 1; break; }
         }
     }

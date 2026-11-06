@@ -36,7 +36,7 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
         endforeach()
     endforeach()
     set(diag_wraps socket bind connect listen accept getsockname getpeername setsockopt getsockopt
-        read write ioctl recvmsg sendmsg recvfrom sendto recv send fcntl shutdown poll close open fopen)
+        read write ioctl recvmsg sendmsg recvfrom sendto recv send fcntl shutdown poll close open fopen if_nametoindex)
     add_executable(ker-linux-mptcp-diag-connect "${mptcp_root}/mptcp_connect.c"
         $<TARGET_OBJECTS:ker-linux-mptcp-socket-proxy>)
     target_include_directories(ker-linux-mptcp-diag-connect PRIVATE "${ao_headers}")
@@ -82,4 +82,15 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
     set_tests_properties(linux-original-mptcp-sockopt-shell PROPERTIES TIMEOUT 300
         LABELS "linux-upstream;original-linux;mptcp;protocol-selftest;dpdk" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     endif()
+    add_test(NAME linux-original-mptcp-simult-flows
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-mptcp-diag-selftest.py"
+            --suite simult --server "$<TARGET_FILE:ker-linux-mptcp-socket-server>"
+            --binary "$<TARGET_FILE:ker-linux-mptcp-diag-connect>" --sockopt "$<TARGET_FILE:ker-linux-mptcp-sockopt>"
+            --inq "$<TARGET_FILE:ker-linux-mptcp-inq>" --pm "$<TARGET_FILE:ker-linux-mptcp-sockopt-pm>"
+            --preload "$<TARGET_FILE:ker-linux-mptcp-diag-preload>" --tools "${KER_MPTCP_DIAG_TOOLS_DIR}"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --pmd-dir "${ker_session_pmd_dir}" --manifest "${ker_native_manifest}"
+            --evidence "${PROJECT_BINARY_DIR}/linux-original-mptcp-simult-flows.json")
+    set_tests_properties(linux-original-mptcp-simult-flows PROPERTIES TIMEOUT 300
+        LABELS "linux-upstream;original-linux;mptcp;protocol-selftest;dpdk" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 endif()

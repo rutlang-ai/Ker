@@ -104,16 +104,22 @@ def topology(args):
     if len(args) < 3 or args[0] not in ('-net', '-n'):
         return False
     namespace, words = args[1], args[2:]
-    if len(words) == 4 and words[:2] == ['link', 'set'] and words[3] == 'up':
-        netlink(namespace, 16, struct.pack('BBHiII', 0, 0, 0, ifindex(namespace, words[2]), 1, 1), flags=5)
+    if len(words) in (4, 6) and words[:2] == ['link', 'set'] and words[3] == 'up' and (len(words) == 4 or words[4] == 'mtu'):
+        mtu = integer(4, int(words[5])) if len(words) == 6 else b''
+        netlink(namespace, 16, struct.pack('BBHiII', 0, 0, 0, ifindex(namespace, words[2]), 1, 1) + mtu, flags=5)
     elif len(words) in (5, 6) and words[:2] == ['addr', 'add'] and words[3] == 'dev' and (len(words) == 5 or words[5] == 'nodad'):
         address, prefix = words[2].split('/')
         family = socket.AF_INET6 if ':' in address else socket.AF_INET
         value = socket.inet_pton(family, address)
         netlink(namespace, 20, struct.pack('BBBBI', family, int(prefix), 2 if len(words) == 6 else 0, 0, ifindex(namespace, words[4])) + attr(1, value) + attr(2, value))
-    elif len(words) == 9 and words[:4] == ['route', 'add', 'default', 'via'] and words[5] == 'dev' and words[7] == 'metric':
+    elif len(words) in (5, 7, 9) and words[:4] == ['route', 'add', 'default', 'via']:
         gateway = words[4]; family = socket.AF_INET6 if ':' in gateway else socket.AF_INET
-        netlink(namespace, 24, struct.pack('BBBBBBBBI', family, 0, 0, 0, 254, 3, 0, 1, 0) + attr(5, socket.inet_pton(family, gateway)) + integer(4, ifindex(namespace, words[6])) + integer(6, int(words[8])))
+        attributes = attr(5, socket.inet_pton(family, gateway))
+        for option, value in zip(words[5::2], words[6::2]):
+            if option == 'dev': attributes += integer(4, ifindex(namespace, value))
+            elif option == 'metric': attributes += integer(6, int(value))
+            else: raise RuntimeError('unsupported native route option: ' + option)
+        netlink(namespace, 24, struct.pack('BBBBBBBBI', family, 0, 0, 0, 254, 3, 0, 1, 0) + attributes)
     else:
         return False
     return True

@@ -35,6 +35,7 @@ LINUX_MPTCP_SELFTESTS = (
     "linux-original-mptcp-diag",
     "native-c24-ingress-freeze-tap", "native-c28-broker-owned-cutover-tap",
     "native-c28-broker-owned-cutover-abort-tap", "native-c28-cutover-start-cancel-destroy-retry",
+    "linux-original-mptcp-simult-flows",
 )
 LINUX_MPTCP_SOCKOPT_PROFILE_TEST = "linux-original-mptcp-sockopt-shell"
 
