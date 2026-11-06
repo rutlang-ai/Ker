@@ -24,6 +24,14 @@ class OriginalNetworkCompletionTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             runner.validate_original('reuseport_dualstack', dict(stdout='', stderr='SUCCESS\n'))
 
+    def test_address_preference_rejects_skipped_dccp_and_missing_families(self):
+        groups = [f'{protocol} {family} ... pass' for protocol in ('UDP', 'TCP', 'DCCP')
+                  for family in ('IPv4', 'IPv6', 'IPv4 mapped to IPv6')]
+        for lines in (['SUCCESS'], [*groups[:6], 'DCCP ... SKIP', 'SUCCESS'],
+                      [*groups[:-1], 'SUCCESS'], [*groups, groups[-1], 'SUCCESS']):
+            with self.subTest(lines=lines), self.assertRaises(RuntimeError):
+                runner.validate_original('reuseport_addr_any.sh', dict(stdout='', stderr='\n'.join(lines)))
+
 
 if __name__ == '__main__':
     unittest.main()

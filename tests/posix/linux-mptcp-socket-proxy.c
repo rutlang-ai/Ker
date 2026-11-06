@@ -30,9 +30,11 @@
 #if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NETWORK_SELFTEST)
 #include <sys/epoll.h>
 #endif
-#ifdef KER_PACKETDRILL_SELFTEST
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NET_DEVICE_SELFTEST)
 #include <linux/sockios.h>
 #include <linux/if_tun.h>
+#endif
+#ifdef KER_PACKETDRILL_SELFTEST
 #include <linux/filter.h>
 #include <sys/wait.h>
 #endif
@@ -143,7 +145,12 @@ int __wrap_socket(int domain, int type, int protocol)
           (protocol == 0 || protocol == IPPROTO_UDP);
     if (udp) raw = 0;
 #endif
-    if (!udp && !packet && !netlink && !raw && ((domain != AF_INET && domain != AF_INET6) || type != SOCK_STREAM ||
+    int dccp = 0;
+#ifdef KER_NET_DEVICE_SELFTEST
+    dccp = (domain == AF_INET || domain == AF_INET6) && type == SOCK_DCCP &&
+           (protocol == 0 || protocol == IPPROTO_DCCP);
+#endif
+    if (!dccp && !udp && !packet && !netlink && !raw && ((domain != AF_INET && domain != AF_INET6) || type != SOCK_STREAM ||
         (protocol != IPPROTO_MPTCP && protocol != IPPROTO_TCP && protocol != 0))) { errno = EOPNOTSUPP; return -1; }
     int fd = open_channel();
     if (fd < 0) return -1;
@@ -344,8 +351,8 @@ int __wrap_ioctl(int fd, unsigned long request, ...)
 #endif
     va_list ap; va_start(ap, request); void *value = va_arg(ap, void *); va_end(ap);
     if (!is_network(fd)) return (int)syscall(SYS_ioctl, fd, request, value);
-#ifdef KER_PACKETDRILL_SELFTEST
-    if (request == TUNSETIFF || request == SIOCGIFFLAGS || request == SIOCSIFFLAGS ||
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NET_DEVICE_SELFTEST)
+    if (request == TUNSETIFF || request == TUNSETQUEUE || request == SIOCGIFFLAGS || request == SIOCSIFFLAGS ||
         request == SIOCGIFADDR || request == SIOCSIFADDR || request == SIOCSIFNETMASK ||
         request == SIOCGIFMTU || request == SIOCSIFMTU) {
         unsigned char data[MS_MAX]; memcpy(data, value, sizeof(struct ifreq));
@@ -657,6 +664,8 @@ int __wrap_open(const char *path, int flags, ...)
         if (result >= 0) network_fds[result] = 2;
         return result;
     }
+#endif
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NET_DEVICE_SELFTEST)
     if (!strcmp(path, "/dev/net/tun")) {
         if (flags != O_RDWR) { errno = EOPNOTSUPP; return -1; }
         const char *ns = getenv("KER_MPTCP_SOCKET_NAMESPACE"); if (!ns) ns = "";

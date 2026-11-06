@@ -30,9 +30,11 @@
 #if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NETWORK_SELFTEST)
 #include <sys/epoll.h>
 #endif
-#ifdef KER_PACKETDRILL_SELFTEST
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NET_DEVICE_SELFTEST)
 #include <linux/sockios.h>
 #include <linux/if_tun.h>
+#endif
+#ifdef KER_PACKETDRILL_SELFTEST
 #include <linux/filter.h>
 #endif
 
@@ -49,7 +51,7 @@ static struct client clients[4096];
 static unsigned clients_count;
 static atomic_ulong channels_opened;
 #ifdef KER_PACKETDRILL_SELFTEST
-static atomic_ulong packetdrill_tuns, packetdrill_offloads, packetdrill_timestamps;
+static atomic_ulong packetdrill_offloads, packetdrill_timestamps;
 #endif
 #if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NETWORK_SELFTEST)
 static atomic_ulong native_epoll_creates, native_epoll_controls, native_epoll_waits;
@@ -57,7 +59,16 @@ static atomic_ulong native_epoll_creates, native_epoll_controls, native_epoll_wa
 #ifdef KER_NETWORK_SELFTEST
 static atomic_uint udp_count;
 #endif
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NET_DEVICE_SELFTEST)
+static atomic_ulong native_tun_opens;
+#endif
+#ifdef KER_NET_DEVICE_SELFTEST
+static atomic_uint dccp_count;
+static atomic_ulong namespace_tcp_active, namespace_tcp_passive;
+static atomic_ulong tun_if_sets, tun_queue_calls, tun_attaches, tun_detaches, tun_queue_einval;
+#endif
 static pthread_mutex_t clients_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t clients_drained = PTHREAD_COND_INITIALIZER;
 static atomic_uint stopping, live, sockets_count, mptcp_count, accepts_count;
 static atomic_ulong reads_count, writes_count, received_bytes, sent_bytes, infos_count, full_count, inq_count;
 static atomic_uint negotiated_count, fallback_count, raw_count, filter_sets, filter_gets;
@@ -124,13 +135,15 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         strcpy(client->proc_path, path);
         mark_active(client); return 0;
     }
+#endif
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NET_DEVICE_SELFTEST)
     if (m->operation == MS_TUN_OPEN) {
         if (fd >= 0 || select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
         client->native = (int)native_call(KER_TEST_OPEN_TUN, 0, 0, 0);
         if (client->native < 0) return -1;
         int (*kind)(int) = dlsym(RTLD_DEFAULT, "ker_posix_descriptor_kind");
         if (!kind || kind(client->native) != 3) { close(client->native); client->native = -1; errno = ENOTSUP; return -1; }
-        atomic_fetch_add(&packetdrill_tuns, 1);
+        atomic_fetch_add(&native_tun_opens, 1);
         mark_active(client); return 0;
     }
 #endif
@@ -165,13 +178,28 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
               (m->c == 0 || m->c == IPPROTO_UDP);
         if (udp) raw = 0;
 #endif
-        if (fd >= 0 || (!udp && !packet && !netlink && !raw && ((m->a != AF_INET && m->a != AF_INET6) || m->b != SOCK_STREAM ||
+        int dccp = 0;
+#ifdef KER_NET_DEVICE_SELFTEST
+        dccp = (m->a == AF_INET || m->a == AF_INET6) && m->b == SOCK_DCCP &&
+               (m->c == 0 || m->c == IPPROTO_DCCP);
+#endif
+        if (fd >= 0 || (!dccp && !udp && !packet && !netlink && !raw && ((m->a != AF_INET && m->a != AF_INET6) || m->b != SOCK_STREAM ||
             (m->c != IPPROTO_MPTCP && m->c != IPPROTO_TCP && m->c != 0)))) { errno = EOPNOTSUPP; return -1; }
         if (select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
         client->native = raw ? (int)native_call(KER_TEST_RAW_SOCKET, m->a, m->b, m->c) : netlink ? (int)native_call(KER_TEST_NETLINK, m->b, m->c, 0) : socket((int)m->a, (int)m->b, (int)m->c);
         if (client->native < 0) return -1;
         int (*kind)(int) = dlsym(RTLD_DEFAULT, "ker_posix_descriptor_kind");
         if (!kind || kind(client->native) != ((packet || netlink) ? 3 : 1)) { close(client->native); client->native = -1; errno = ENOTSUP; return -1; }
+#ifdef KER_NET_DEVICE_SELFTEST
+        if (udp || dccp) {
+            int protocol = 0; socklen_t size = sizeof(protocol);
+            if (getsockopt(client->native, SOL_SOCKET, SO_PROTOCOL, &protocol, &size) ||
+                size != sizeof(protocol) || protocol != (dccp ? IPPROTO_DCCP : IPPROTO_UDP)) {
+                close(client->native); client->native = -1; errno = ENOTSUP; return -1;
+            }
+        }
+        if (dccp) atomic_fetch_add(&dccp_count, 1);
+#endif
         atomic_fetch_add(&sockets_count, 1); mark_active(client);
 #ifdef KER_NETWORK_SELFTEST
         if (udp) atomic_fetch_add(&udp_count, 1);
@@ -398,15 +426,27 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         atomic_fetch_add(&writes_count, 1); return result;
     }
     case MS_IOCTL: {
-#ifdef KER_PACKETDRILL_SELFTEST
-        if (m->a == TUNSETIFF || m->a == SIOCGIFFLAGS || m->a == SIOCSIFFLAGS ||
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NET_DEVICE_SELFTEST)
+        if (m->a == TUNSETIFF || m->a == TUNSETQUEUE || m->a == SIOCGIFFLAGS || m->a == SIOCSIFFLAGS ||
             m->a == SIOCGIFADDR || m->a == SIOCSIFADDR || m->a == SIOCSIFNETMASK ||
             m->a == SIOCGIFMTU || m->a == SIOCSIFMTU) {
             if (input != sizeof(struct ifreq)) { errno = EINVAL; return -1; }
             long result = ioctl(fd, m->a, data);
+#ifdef KER_NET_DEVICE_SELFTEST
+            if (m->a == TUNSETIFF && !result) atomic_fetch_add(&tun_if_sets, 1);
+            if (m->a == TUNSETQUEUE) {
+                atomic_fetch_add(&tun_queue_calls, 1);
+                struct ifreq *request = (void *)data;
+                if (!result && request->ifr_flags == IFF_ATTACH_QUEUE) atomic_fetch_add(&tun_attaches, 1);
+                if (!result && request->ifr_flags == IFF_DETACH_QUEUE) atomic_fetch_add(&tun_detaches, 1);
+                if (result < 0 && errno == EINVAL) atomic_fetch_add(&tun_queue_einval, 1);
+            }
+#endif
             if (!result) m->length = sizeof(struct ifreq);
             return result;
         }
+#endif
+#ifdef KER_PACKETDRILL_SELFTEST
         if (m->a == TUNSETOFFLOAD) {
             if (input) { errno = EINVAL; return -1; }
             long result = ioctl(fd, m->a, (unsigned long)m->b);
@@ -529,6 +569,7 @@ static void *serve(void *argument)
         pthread_mutex_lock(&clients_lock);
         client->host = -1;
         atomic_store_explicit(&client->finished, 1, memory_order_release);
+        pthread_cond_signal(&clients_drained);
         while (client->host < 0 && !client->retire)
             pthread_cond_wait(&client->work, &clients_lock);
         int done = client->host < 0;
@@ -599,11 +640,24 @@ int main(int argc, char **argv)
      * rather than waiting for a host-side EOF that may never arrive. */
     for (unsigned i = 0; i < clients_count; i++)
         if (clients[i].host >= 0) syscall(SYS_shutdown, clients[i].host, SHUT_RDWR);
+    for (unsigned i = 0; i < clients_count; i++)
+        while (!atomic_load_explicit(&clients[i].finished, memory_order_acquire))
+            pthread_cond_wait(&clients_drained, &clients_lock);
     pthread_mutex_unlock(&clients_lock);
     fputs("KER_MPTCP_FIXTURE_CHANNELS_DRAINED\n", stderr);
+    if (close(root_namespace)) return 10;
+    /* All RPC work, descriptor closes and namespace releases have completed.
+     * Halt the native kernel while its host tasks remain parked. Retiring a
+     * pthread first invokes LKL's task TLS destructor, which can schedule a
+     * different host task that is waiting here rather than entering Linux.
+     * Native halt reclaims those tasks and deletes the TLS key before the
+     * pthreads exit, so no destructor can enter a stranded scheduler. */
+    if (native_call(KER_TEST_FINALIZE, 0, 0, 0)) {
+        perror("mptcp fixture native finalize"); return 12;
+    }
+    fputs("KER_MPTCP_FIXTURE_NATIVE_HALTED\n", stderr);
     for (unsigned i = 0; i < clients_count; i++) {
-        /* Retire one persistent LKL host task at a time. Workers return to
-         * root namespace before receiving their individual exit permission. */
+        /* Native state is gone; join every remaining host transport worker. */
         pthread_mutex_lock(&clients_lock);
         clients[i].retire = 1;
         pthread_cond_signal(&clients[i].work);
@@ -613,7 +667,6 @@ int main(int argc, char **argv)
         pthread_cond_destroy(&clients[i].work);
     }
     fputs("KER_MPTCP_FIXTURE_TASKS_RETIRED\n", stderr);
-    if (close(root_namespace)) return 10;
     FILE *stats = fopen(argv[2], "w");
     if (!stats) return 8;
     const char *extra = "";
@@ -622,16 +675,26 @@ int main(int argc, char **argv)
     snprintf(packetdrill_counts, sizeof(packetdrill_counts),
         ",\"tun_opens\":%lu,\"tun_offloads\":%lu,\"packet_timestamps\":%lu,"
         "\"epoll_creates\":%lu,\"epoll_controls\":%lu,\"epoll_waits\":%lu",
-        atomic_load(&packetdrill_tuns), atomic_load(&packetdrill_offloads), atomic_load(&packetdrill_timestamps),
+        atomic_load(&native_tun_opens), atomic_load(&packetdrill_offloads), atomic_load(&packetdrill_timestamps),
         atomic_load(&native_epoll_creates), atomic_load(&native_epoll_controls), atomic_load(&native_epoll_waits));
     extra = packetdrill_counts;
 #endif
 #ifdef KER_NETWORK_SELFTEST
-    char network_counts[256];
+    char network_counts[512];
     snprintf(network_counts, sizeof(network_counts),
         ",\"udp_sockets\":%u,\"epoll_creates\":%lu,\"epoll_controls\":%lu,\"epoll_waits\":%lu",
         atomic_load(&udp_count), atomic_load(&native_epoll_creates),
         atomic_load(&native_epoll_controls), atomic_load(&native_epoll_waits));
+#ifdef KER_NET_DEVICE_SELFTEST
+    size_t used = strlen(network_counts);
+    snprintf(network_counts + used, sizeof(network_counts) - used,
+        ",\"dccp_sockets\":%u,\"tun_opens\":%lu,\"tun_if_sets\":%lu,\"tun_queue_calls\":%lu,"
+        "\"tun_attaches\":%lu,\"tun_detaches\":%lu,\"tun_queue_einval\":%lu,"
+        "\"namespace_tcp_active\":%lu,\"namespace_tcp_passive\":%lu",
+        atomic_load(&dccp_count), atomic_load(&native_tun_opens), atomic_load(&tun_if_sets),
+        atomic_load(&tun_queue_calls), atomic_load(&tun_attaches), atomic_load(&tun_detaches),
+        atomic_load(&tun_queue_einval), atomic_load(&namespace_tcp_active), atomic_load(&namespace_tcp_passive));
+#endif
     extra = network_counts;
 #endif
     fprintf(stats, "{\"sockets\":%u,\"mptcp\":%u,\"accepts\":%u,\"live\":%u,"

@@ -46,9 +46,10 @@ static int select_namespace(const char *name, size_t length, int *index)
 }
 /* Snapshot real namespace MIBs before deleting its last pin. No protocol
  * state is inferred from the shell exit code or reconstructed in the fixture. */
-static int namespace_mptcp_counters(void)
+static int namespace_mib_counters(const char *path, const char *section,
+    const char *first, const char *second, atomic_ulong *first_count, atomic_ulong *second_count)
 {
-    int fd = (int)native_call(KER_TEST_OPEN, (unsigned long)"/proc/thread-self/net/netstat", O_RDONLY, 0);
+    int fd = (int)native_call(KER_TEST_OPEN, (unsigned long)path, O_RDONLY, 0);
     if (fd < 0) return -1;
     char text[16384]; size_t used = 0; ssize_t got;
     while (used < sizeof(text) - 1 && (got = read(fd, text + used, sizeof(text) - 1 - used)) > 0) used += (size_t)got;
@@ -56,24 +57,35 @@ static int namespace_mptcp_counters(void)
     if (got < 0) return -1;
     if (used == sizeof(text) - 1) { errno = EOVERFLOW; return -1; }
     text[used] = 0;
-    char *header = strstr(text, "MPTcpExt:"), *values = header ? strchr(header, '\n') : NULL;
+    size_t prefix = strlen(section);
+    char *header = strstr(text, section), *values = header ? strchr(header, '\n') : NULL;
     if (!values) { errno = EPROTO; return -1; }
     *values++ = 0;
     char *end = strchr(values, '\n'); if (end) *end = 0;
-    if (strncmp(values, "MPTcpExt:", 9)) { errno = EPROTO; return -1; }
+    if (strncmp(values, section, prefix)) { errno = EPROTO; return -1; }
     char *names_state = NULL, *values_state = NULL;
-    char *name = strtok_r(header + 9, " \t", &names_state);
-    char *value = strtok_r(values + 9, " \t", &values_state);
+    char *name = strtok_r(header + prefix, " \t", &names_state);
+    char *value = strtok_r(values + prefix, " \t", &values_state);
     unsigned found = 0;
     while (name && value) {
-        if (!strcmp(name, "MPJoinSynRx") || !strcmp(name, "MPJoinAckRx")) {
+        if (!strcmp(name, first) || !strcmp(name, second)) {
             char *tail; errno = 0; unsigned long count = strtoul(value, &tail, 10);
             if (errno || *tail) { errno = EPROTO; return -1; }
-            atomic_fetch_add(!strcmp(name, "MPJoinSynRx") ? &join_syn_rx : &join_ack_rx, count); found++;
+            atomic_fetch_add(!strcmp(name, first) ? first_count : second_count, count); found++;
         }
         name = strtok_r(NULL, " \t", &names_state); value = strtok_r(NULL, " \t", &values_state);
     }
     if (name || value || found != 2) { errno = EPROTO; return -1; }
+    return 0;
+}
+static int namespace_mptcp_counters(void)
+{
+    if (namespace_mib_counters("/proc/thread-self/net/netstat", "MPTcpExt:",
+            "MPJoinSynRx", "MPJoinAckRx", &join_syn_rx, &join_ack_rx)) return -1;
+#ifdef KER_NET_DEVICE_SELFTEST
+    if (namespace_mib_counters("/proc/thread-self/net/snmp", "Tcp:",
+            "ActiveOpens", "PassiveOpens", &namespace_tcp_active, &namespace_tcp_passive)) return -1;
+#endif
     return 0;
 }
 static long namespace_change(unsigned op, const char *name)

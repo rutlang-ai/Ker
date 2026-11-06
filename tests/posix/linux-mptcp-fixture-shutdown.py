@@ -85,6 +85,11 @@ def main():
                     fixture.stop(channel)
                     require(process.wait(timeout=10) == 0, 'native shutdown failed with idle control clients')
                     report['shutdown_seconds'] = time.monotonic() - started
+                    err.flush(); err.seek(0)
+                    markers = [line for line in err.read().splitlines() if line.startswith('KER_MPTCP_FIXTURE_')]
+                    require(markers == ['KER_MPTCP_FIXTURE_CHANNELS_DRAINED',
+                                        'KER_MPTCP_FIXTURE_NATIVE_HALTED', 'KER_MPTCP_FIXTURE_TASKS_RETIRED'],
+                            'native halt must complete after channel drain and before host task retirement')
                     report['eof_after_stop'] = [client.recv(1) == b'' for client in held]
                     require(all(report['eof_after_stop']), 'idle administrative channels were not closed')
                     report['native_fixture'] = json.loads(counts.read_text())
