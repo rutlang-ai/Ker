@@ -30,4 +30,4 @@ cmake --build build-native-on --target ker-linux-mptcp-pm-server ker-linux-mptcp
 ctest --test-dir build-native-on -R '^linux-original-mptcp-pm-netlink$' --output-on-failure
 ```
 
-当前入口使用原版 `pm_nl_ctl` 默认模式，不宣称已经支持 `pm_netlink.sh -i` 的 iproute2 模式或其他脚本的任意 ip/tc/iptables 命令。[完整 diag.sh](linux-mptcp-diag-tests.md)也已接入；剩余 8 个完整 MPTCP shell 入口、长驻事件监听和数据面场景继续单独迁移。
+当前入口使用原版 `pm_nl_ctl` 默认模式，不宣称已经支持 `pm_netlink.sh -i` 的 iproute2 模式或其他脚本的任意 ip/tc/iptables 命令。后续 [userspace PM](linux-mptcp-userspace-pm.md)已覆盖原版事件监听，[完整入口汇总](linux-mptcp-join.md)记录 10 个默认 shell 入口的本地通过结果。任意非默认参数和外部 DPDK 多路径互通不由此推断。

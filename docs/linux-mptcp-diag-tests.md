@@ -2,7 +2,7 @@
 
 直接执行固定 Linux stable 6.12.113 revision `7fdb7c1824a1f9979d648d7ae28ac446bcee9c6e` 的完整 `tools/testing/selftests/net/mptcp/diag.sh`。脚本、库、`mptcp_connect.c`、参数、循环次数和断言均保持原样，全部 **29 项 TAP 检查**必须通过，禁止 skip、IGNORE、TODO 和不完整计划。
 
-覆盖监听 socket 的目标/源端口与地址过滤，MP_CAPABLE 握手、remote key、TCP fallback，最后收发/ACK 时间，MPTCP in-use 与 established 计数、清理，以及原版的 100 组并发连接和 100 个 listener。helper、KUnit 和完整脚本分开统计；本批完成一个注册 shell 入口，剩余 **6 个**。
+覆盖监听 socket 的目标/源端口与地址过滤，MP_CAPABLE 握手、remote key、TCP fallback，最后收发/ACK 时间，MPTCP in-use 与 established 计数、清理，以及原版的 100 组并发连接和 100 个 listener。helper、KUnit 和完整脚本分开统计；本批完成一个注册 shell 入口，后续已补齐 [10 个完整入口](linux-mptcp-join.md)。
 
 ## 实际内核与工具
 
@@ -22,7 +22,7 @@ Netlink 消息和多 iovec 数据通过测试通道搬运，保留地址、控�
 
 `linux-original-mptcp-diag.json` 保留 Linux revision、内核指纹、原版文件哈希、工具归档及二进制证明、完整输出、29 项检查、并发/隔离证据和清理计数。CI 强制检查该 CTest 在 inventory 和 JUnit 中出现并通过；不支持的边界明确失败。
 
-流量在导入内核内部，不能由这些结果推断外部 DPDK 路径、MP_JOIN、多子流恢复或其余脚本已完成。原有 MPTCP helper、KUnit 和 TCP-AO 测试继续独立运行。
+流量在导入内核内部，本页诊断结果不代表外部 DPDK 路径或 MP_JOIN 故障矩阵通过；后者另由[完整 JOIN 入口](linux-mptcp-join.md)验证。原有 MPTCP helper、KUnit 和 TCP-AO 测试继续独立运行。
 
 ## 重现
 
@@ -35,3 +35,5 @@ ctest --test-dir build-native-on -R '^linux-original-mptcp-diag$' --output-on-fa
 ```
 
 使用已有 native Linux/DPDK 配置和 manifest。可执行 shim 放在实际 binary 所在的可执行目录，避免 `/dev/shm` 的 noexec 挂载影响它们；socket 和测试数据可留在 `/dev/shm`。
+
+私有 Python 控制通道在 host AF_UNIX 监听队列满时最多等待 5 秒，避免原版并发连接矩阵使额外隔离探针立即遇到 EAGAIN。仅等待本地 IPC 建连；导入内核返回的 EAGAIN 等错误原样传播。

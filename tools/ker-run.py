@@ -1682,6 +1682,8 @@ def main():
                         stop_deadline = None
                 stop_broker_for_signal()
                 app_returncode = app.wait(timeout=0.25)
+                if app_returncode and os.environ.get('KER_LINUX_SELFTEST_REPORT_EXIT') == '1':
+                    print(f'ker-run: original selftest kernel owner exit status {app_returncode}', file=sys.stderr)
                 if preserve_signal:
                     if app_returncode != 0:
                         infrastructure_failure = True

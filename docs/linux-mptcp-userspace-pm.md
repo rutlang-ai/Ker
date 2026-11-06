@@ -12,7 +12,7 @@
 
 本入口在 CI inventory/JUnit 中强制存在并通过。它验证导入内核内部 veth 上的用户态 PM 控制面与协议行为，不推断外部 DPDK 多路径验证完成。生产 tests-OFF 不包含私有测试 ABI。
 
-MPTCP 剩余五个完整注册 shell 入口：`mptcp_connect.sh`、`mptcp_connect_mmap.sh`、`mptcp_connect_sendfile.sh`、`mptcp_connect_checksum.sh`、`mptcp_join.sh`。TCP-AO 的全部 24 个 IPv4/IPv6 入口独立回归，848 个通过断言和 6 个已知上游 XFAIL 分开记录。
+四个 [connect 完整入口](linux-mptcp-connect-shells.md)已各自通过全部 68 项检查，[完整 JOIN 故障矩阵](linux-mptcp-join.md)也已通过全部 126 项，10 个完整 shell 入口均已本地跑通。TCP-AO 的全部 24 个 IPv4/IPv6 入口独立回归，848 个通过断言和 6 个已知上游 XFAIL 分开记录。
 
 ```bash
 ctest --test-dir build-native-on -R '^linux-original-mptcp-userspace-pm$' --output-on-failure

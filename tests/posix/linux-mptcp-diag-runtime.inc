@@ -109,7 +109,8 @@ static long namespace_change(unsigned op, const char *name)
 }
 static int diag_control(struct ms_message *m, unsigned char *data, size_t input, long *result)
 {
-    if (m->operation < MS_NEWNS || m->operation > MS_FILE_CHUNK) return 0;
+    if ((m->operation < MS_NEWNS || m->operation > MS_FILE_CHUNK) &&
+        m->operation != MS_DIRECTORY && m->operation != MS_IFNAME) return 0;
     *result = -1;
     if (!input || data[input - 1]) { errno = EINVAL; return 1; }
     char *name = (char *)data;
@@ -164,6 +165,13 @@ static int diag_control(struct ms_message *m, unsigned char *data, size_t input,
         if (input <= length || strlen(device) + length + 1 != input) { errno = EINVAL; return 1; }
         unsigned value = if_nametoindex(device); *result = value ? (long)value : -1; return 1;
     }
+    if (m->operation == MS_IFNAME) {
+        if (input != length) { errno = EINVAL; return 1; }
+        char device[IF_NAMESIZE];
+        if (!if_indextoname(m->a, device)) return 1;
+        m->length = (uint32_t)strlen(device) + 1;
+        memcpy(data, device, m->length); *result = 0; return 1;
+    }
     char path[192];
     if (m->operation == MS_SYSCTL) {
         char *setting = (char *)data + length;
@@ -184,14 +192,20 @@ static int diag_control(struct ms_message *m, unsigned char *data, size_t input,
         else if (count >= 0) errno = EIO;
         return 1;
     }
-    if (m->operation == MS_FILE || m->operation == MS_FILE_CHUNK) {
+    if (m->operation == MS_FILE || m->operation == MS_FILE_CHUNK || m->operation == MS_DIRECTORY) {
         const char *file = (char *)data + length;
         if (input <= length || strlen(file) + length + 1 != input) { errno = EINVAL; return 1; }
+        if (strlen(file) >= sizeof(path)) { errno = ENAMETOOLONG; return 1; }
         const char *allowed[] = {"/proc/net/tcp", "/proc/net/tcp6", "/proc/net/protocols", "/proc/net/netstat",
             "/proc/net/snmp", "/proc/net/snmp6", "/proc/sys/net/mptcp/enabled", "/proc/sys/net/mptcp/pm_type", "/proc/kallsyms",
             "/proc/meminfo", "/proc/sys/net/ipv4/tcp_wmem", "/proc/sys/net/ipv4/tcp_rmem"};
         int found = 0;
         for (unsigned i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++) if (!strcmp(file, allowed[i])) found = 1;
+        if (!strncmp(file, "/proc/sys/net/", 14) && !strstr(file, "..")) {
+            found = 1;
+            for (const char *p = file + 14; *p; p++)
+                if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_' || *p == '-' || *p == '/')) found = 0;
+        }
         if (!found) { errno = EOPNOTSUPP; return 1; }
         /* /proc/net resolves via the process leader. The resident fixture has
          * several host threads in different native namespaces; select the
@@ -199,8 +213,18 @@ static int diag_control(struct ms_message *m, unsigned char *data, size_t input,
         if (!strncmp(file, "/proc/net/", 10))
             snprintf(path, sizeof(path), "/proc/thread-self/net/%s", file + 10);
         else strcpy(path, file);
-        int fd = (int)native_call(KER_TEST_OPEN, (unsigned long)path, O_RDONLY, 0);
+        int fd = (int)native_call(KER_TEST_OPEN, (unsigned long)path,
+            O_RDONLY | (m->operation == MS_DIRECTORY ? O_DIRECTORY : 0), 0);
         if (fd < 0) return 1;
+        if (m->operation == MS_DIRECTORY) {
+            size_t used = 0; long got = 0;
+            while (used < MS_MAX && (got = native_call(KER_TEST_GETDENTS, fd, (unsigned long)(data + used), MS_MAX - used)) > 0)
+                used += (size_t)got;
+            int error = errno; close(fd); errno = error;
+            if (used == MS_MAX) { errno = EOVERFLOW; return 1; }
+            if (got < 0) return 1;
+            m->length = (uint32_t)used; *result = 0; return 1;
+        }
         if (m->operation == MS_FILE_CHUNK) {
             if (lseek(fd, m->a, SEEK_SET) < 0) { int error = errno; close(fd); errno = error; return 1; }
             ssize_t got = read(fd, data, MS_MAX); int error = errno; close(fd); errno = error;

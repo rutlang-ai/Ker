@@ -6,6 +6,7 @@ import shutil
 import socket
 import struct
 import sys
+import time
 
 HEADER = struct.Struct('=IIIIIIq')
 MAGIC, MAX = 0x4b4d5331, 131072
@@ -18,7 +19,19 @@ def rpc(operation, namespace='', argument=None):
         data += argument.encode() + b'\0'
     with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as channel:
         channel.settimeout(5)
-        channel.connect(os.environ['KER_MPTCP_SOCKET_CHANNEL'])
+        # Timeout-mode AF_UNIX connect reports EAGAIN immediately when the
+        # listener queue fills (diag creates hundreds of concurrent sockets).
+        # Wait only for this host IPC queue; native RPC errno stays unchanged.
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                channel.connect(os.environ['KER_MPTCP_SOCKET_CHANNEL'])
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('native fixture channel backlog remained full')
+                time.sleep(min(0.005, remaining))
         channel.sendall(HEADER.pack(MAGIC, operation, len(data), 0, 0, 0, 0) + data)
         packet, _, flags, _ = channel.recvmsg(HEADER.size + MAX)
     if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(packet) < HEADER.size:

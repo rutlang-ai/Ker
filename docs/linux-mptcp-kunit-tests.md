@@ -35,4 +35,4 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/run-linux-mptcp-kunit.py \
 
 native CI 必须执行这个独立步骤，失败会使 native job 失败；它与原有完整 CTest 图分别执行和统计，不关闭或替代原来的协议 selftests。CI 上传 `linux-original-mptcp-kunit.json`、构建证明和两次原始启动日志，包含 Linux revision、测试/生产指纹、真实配置和静态库摘要、原版源码/解析器、Ker host 适配器、harness/二进制和日志摘要。
 
-TCP-AO 原有 24 个入口仍独立统计。MPTCP 的完整注册 shell 入口在完整 diag.sh 接入后，剩余数量为 8，KUnit 不抵扣它们。
+TCP-AO 原有 24 个入口仍独立统计。后续已补齐 [10 个完整 MPTCP shell 入口](linux-mptcp-join.md)，KUnit 与其分别统计。
