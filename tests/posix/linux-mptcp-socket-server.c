@@ -110,6 +110,16 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     }
     if (fd < 0) { errno = ENOTCONN; return -1; }
     switch (m->operation) {
+    case MS_CLOSE: {
+        if (input) { errno = EINVAL; return -1; }
+        int result = close(fd);
+        if (!result) {
+            client->native = -1;
+            atomic_store_explicit(&client->active, 0, memory_order_release);
+            atomic_fetch_sub(&live, 1);
+        }
+        return result;
+    }
     case MS_INPUT_START:
         if (input || m->a > MS_INPUT_MAX) { errno = EINVAL; return -1; }
         if (client->input >= 0) { close(client->input); client->input = -1; }
