@@ -346,20 +346,42 @@ def handoff_fdinfo_interfaces(snapshot):
 
 def capture_exited_process_stdout(process, *, max_bytes=262144, budget=0.05):
     """Read currently available stdout from an exited child without blocking."""
+    output, _ = capture_exited_process_stdout_diagnostic(
+        process, max_bytes=max_bytes, budget=budget)
+    return output
+
+
+def capture_exited_process_stdout_diagnostic(process, *, max_bytes=262144, budget=0.05):
+    """Read bounded stdout and report whether EOF or a capture bound ended it."""
     if process is None or process.stdout is None or process.poll() is None:
         raise RuntimeError('stdout capture requires an exited child with a pipe')
     fd = process.stdout.fileno()
     output = bytearray()
     deadline = time.monotonic() + budget
+    eof = False
+    budget_expired = False
     while len(output) < max_bytes:
         remaining = deadline - time.monotonic()
-        if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+        if remaining <= 0:
+            budget_expired = True
+            break
+        if not select.select([fd], [], [], remaining)[0]:
+            budget_expired = True
             break
         chunk = os.read(fd, min(4096, max_bytes - len(output)))
         if not chunk:
+            eof = True
             break
         output.extend(chunk)
-    return bytes(output)
+    return bytes(output), dict(eof=eof, limit_reached=len(output) >= max_bytes,
+        budget_expired=budget_expired)
+
+
+def handoff_barrier_producer_exit_record(process, *, exited_before_cleanup, stdout, capture_status):
+    """Preserve the queued-death producer outcome when the fixture ACK fails."""
+    return dict(pid=process.pid, returncode=process.returncode,
+        exited_before_runner_cleanup=bool(exited_before_cleanup),
+        stdout=stdout.decode(errors='replace'), stdout_capture=capture_status)
 
 
 def unexpected_worker_exit_record(process, stdout, committed, drained, handoff_frame):
@@ -2220,6 +2242,8 @@ def _run_session_impl(args, api):
         return 0
     finally:
         try:
+            queued_producer_exited_before_cleanup = (
+                handoff_mode == 'frame-death-queued' and worker is not None and worker.poll() is not None)
             if worker_pidfd >= 0:
                 if worker is not None and pidfd_process_stopped(worker_pidfd, worker.pid):
                     resume_pidfd_if_live(worker_pidfd)
@@ -2244,6 +2268,18 @@ def _run_session_impl(args, api):
                     if peer_worker_pidfd >= 0: signal.pidfd_send_signal(peer_worker_pidfd, signal.SIGKILL)
                     else: peer_worker.kill()
                     peer_worker.wait()
+            if (not completed and handoff_mode == 'frame-death-queued' and worker is not None and
+                    worker.poll() is not None):
+                try:
+                    producer_stdout, capture_status = capture_exited_process_stdout_diagnostic(worker)
+                    metrics['handoff_barrier_producer_exit'] = handoff_barrier_producer_exit_record(
+                        worker, exited_before_cleanup=queued_producer_exited_before_cleanup,
+                        stdout=producer_stdout, capture_status=capture_status)
+                except Exception as error:
+                    metrics['handoff_barrier_producer_exit'] = dict(
+                        pid=worker.pid, returncode=worker.returncode,
+                        exited_before_runner_cleanup=bool(queued_producer_exited_before_cleanup),
+                        capture_error=f'{type(error).__name__}: {str(error)[:512]}')
             for endpoint in (packet_worker, packet_app, mtu_worker, mtu_app): endpoint.close()
             for endpoint in (peer_packet_worker, peer_packet_app, peer_mtu_worker, peer_mtu_app):
                 if endpoint is not None: endpoint.close()

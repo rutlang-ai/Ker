@@ -19,6 +19,9 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/sendfile.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -398,6 +401,61 @@ int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout)
         if (result || (timeout >= 0 && milliseconds() >= deadline)) return (int)result;
     }
 }
+/* pm_nl_ctl's single-reader event wait. Readiness belongs to the native
+ * netlink socket, never the host RPC channel. Finite poll slices also let
+ * terminated event readers release their resident sockets promptly. */
+int __wrap_select(int nfds, fd_set *reads, fd_set *writes, fd_set *excepts, struct timeval *timeout)
+{
+    if (nfds < 0 || nfds > FD_SETSIZE) { errno = EINVAL; return -1; }
+    int native = 0, count = 0, selected = -1;
+    for (int fd = 0; fd < nfds; fd++) {
+        if (reads && FD_ISSET(fd, reads)) { count++; selected = fd; native += is_network(fd); }
+        if (is_network(fd) && ((writes && FD_ISSET(fd, writes)) || (excepts && FD_ISSET(fd, excepts)))) native++;
+    }
+    if (!native) return (int)syscall(SYS_select, nfds, reads, writes, excepts, timeout);
+    if (native != 1 || count != 1 || writes || excepts || timeout) { errno = EOPNOTSUPP; return -1; }
+    struct pollfd p = {.fd = selected, .events = POLLIN};
+    int result = __wrap_poll(&p, 1, -1);
+    if (result < 0) return -1;
+    if (p.revents & POLLNVAL) { errno = EBADF; return -1; }
+    FD_ZERO(reads);
+    if (p.revents & (POLLIN | POLLHUP | POLLERR)) { FD_SET(selected, reads); return 1; }
+    errno = EIO; return -1;
+}
+
+/* Narrow immutable input fixture: copy the original small regular file into
+ * native Linux, then execute its real sendfile. Production cross-kernel file
+ * descriptors remain unsupported. No socket data is sent over a host IP path. */
+ssize_t __wrap_sendfile(int out, int in, off_t *offset, size_t count)
+{
+    if (!is_network(out)) return syscall(SYS_sendfile, out, in, offset, count);
+    if (is_network(in)) { errno = EOPNOTSUPP; return -1; }
+    struct stat st;
+    if (syscall(SYS_fstat, in, &st)) return -1;
+    if (!S_ISREG(st.st_mode) || st.st_size < 0 || (uint64_t)st.st_size > MS_MAX - sizeof(int64_t) || count > MS_MAX) {
+        errno = EOPNOTSUPP; return -1;
+    }
+    off_t position = offset ? *offset : (off_t)syscall(SYS_lseek, in, 0, SEEK_CUR);
+    if (position < 0) { errno = EINVAL; return -1; }
+    unsigned char data[MS_MAX]; int64_t wire_offset = position;
+    memcpy(data, &wire_offset, sizeof(wire_offset));
+    size_t size = (size_t)st.st_size, done = 0;
+    while (done < size) {
+        ssize_t got = syscall(SYS_pread64, in, data + sizeof(wire_offset) + done, size - done, done);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) { if (!got) errno = EIO; return -1; }
+        done += (size_t)got;
+    }
+    struct ms_message m = {.operation = MS_SENDFILE, .length = (uint32_t)(sizeof(wire_offset) + size), .a = (uint32_t)count};
+    long result = exchange(out, &m, data, NULL);
+    if (result < 0) return -1;
+    if (m.length != sizeof(wire_offset)) { errno = EPROTO; return -1; }
+    memcpy(&wire_offset, data, sizeof(wire_offset));
+    if (offset) *offset = (off_t)wire_offset;
+    else if (syscall(SYS_lseek, in, (off_t)wire_offset, SEEK_SET) < 0) return -1;
+    return result;
+}
+
 static int proc_file(const char *path)
 {
     const char *ns = getenv("KER_MPTCP_SOCKET_NAMESPACE");

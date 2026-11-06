@@ -33,4 +33,4 @@ ctest --test-dir build-native-on -R '^linux-original-mptcp-(sockopt|inq)-ipv' --
 
 CI 强制检查这 4 个 CTest 的 inventory 和 JUnit，不允许跳过；`linux-original-mptcp-*.json` 保留源码与二进制哈希、Linux revision、内核指纹、每次原版执行结果及实际 native 计数。
 
-两个 helper 在上游均属于 `TEST_GEN_FILES`。本页单独记录 helper 配置；后续[完整 `mptcp_sockopt.sh`](linux-mptcp-sockopt-shell.md)已补齐多地址拓扑和 packet mark/iptables 路径的 11 项原版检查。当前仍有 6 个完整注册 shell 入口待迁移；已完成的完整入口为 `pm_netlink.sh` 默认模式、`diag.sh`、`mptcp_sockopt.sh` 默认模式和 `simult_flows.sh` 默认模式。TCP-AO 的 24 个入口和已记录的 6 个上游 XFAIL 独立统计，不与 MPTCP helper 配置混算。
+两个 helper 在上游均属于 `TEST_GEN_FILES`。本页单独记录 helper 配置；后续[完整 `mptcp_sockopt.sh`](linux-mptcp-sockopt-shell.md)已补齐多地址拓扑和 packet mark/iptables 路径的 11 项原版检查。当前仍有 5 个完整注册 shell 入口待迁移；已完成的完整入口为 `pm_netlink.sh` 默认模式、`diag.sh`、`mptcp_sockopt.sh` 默认模式、`simult_flows.sh` 默认模式和 [`userspace_pm.sh`](linux-mptcp-userspace-pm.md)。TCP-AO 的 24 个入口和已记录的 6 个上游 XFAIL 独立统计，不与 MPTCP helper 配置混算。

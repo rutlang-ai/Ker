@@ -147,11 +147,27 @@ def bounded_communicate(process, timeout):
         return stdout, stderr, True
 
 
+def validate_userspace_counts(counts, topology):
+    require(len(topology) == 13 and
+        sum(command[:2] == ['link', 'add'] for command in topology) == 1 and
+        sum(command[2:4] == ['addr', 'add'] for command in topology) == 8 and
+        sum(command[2:4] == ['link', 'set'] for command in topology) == 4,
+        'incomplete acknowledged userspace PM topology')
+    require(counts['live'] == 0 and counts['namespaces_created'] == counts['namespaces_deleted'] == 3,
+        'userspace PM cleanup incomplete')
+    require(counts['sendfile_calls'] >= 2 and counts['imported_files'] == counts['sendfile_calls'],
+        'original sendfile inputs did not reach native Linux')
+    require(counts['negotiated'] == 4 and counts['accepts'] == 2 and counts['fallback'] == 0,
+        'native userspace PM negotiation missing')
+    require(counts['mp_join_syn_rx'] >= 8 and counts['mp_join_ack_rx'] >= 8 and counts['netlinks'] >= 69,
+        'native userspace PM subflow/event operations missing')
+
+
 def main():
     parser = argparse.ArgumentParser()
     for name in ('server', 'binary', 'preload', 'tools', 'launcher', 'library', 'worker', 'pmd_dir', 'manifest', 'evidence'):
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
-    parser.add_argument('--suite', choices=('diag', 'sockopt', 'simult'), default='diag')
+    parser.add_argument('--suite', choices=('diag', 'sockopt', 'simult', 'userspace'), default='diag')
     for name in ('sockopt', 'inq', 'pm'):
         parser.add_argument('--' + name, type=Path)
     parser.add_argument('--inside', action='store_true')
@@ -160,7 +176,7 @@ def main():
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), *sys.argv[1:], '--inside']).returncode
     manifest = json.loads(args.manifest.read_text())
     source = Path(manifest['source']) / 'tools/testing/selftests/net'
-    script = {'diag':'diag.sh', 'sockopt':'mptcp_sockopt.sh', 'simult':'simult_flows.sh'}[args.suite]
+    script = {'diag':'diag.sh', 'sockopt':'mptcp_sockopt.sh', 'simult':'simult_flows.sh', 'userspace':'userspace_pm.sh'}[args.suite]
     extra = () if args.suite == 'diag' else ('mptcp/mptcp_sockopt.c', 'mptcp/mptcp_inq.c', 'mptcp/pm_nl_ctl.c')
     originals = {}
     for name in extra + ('mptcp/' + script, 'mptcp/mptcp_lib.sh', 'mptcp/mptcp_connect.c', 'mptcp/Makefile', 'lib.sh', 'net_helper.sh'):
@@ -197,8 +213,8 @@ def main():
         if args.suite == 'simult':
             environment['KER_LINUX_SELFTEST_MEMORY_MB'] = '512'
         bins = Path(tempfile.mkdtemp(prefix='ker-mptcp-diag-bin-', dir=args.binary.resolve().parent))
-        shim = Path(__file__).with_name({'diag':'linux-mptcp-diag-shim.py', 'sockopt':'linux-mptcp-sockopt-ip.py', 'simult':'linux-mptcp-simult-ip.py'}[args.suite]).read_text()
-        for name in {'diag':('ip', 'ss'), 'sockopt':('ip', 'grep'), 'simult':('ip', 'grep', 'tc')}[args.suite]:
+        shim = Path(__file__).with_name({'diag':'linux-mptcp-diag-shim.py', 'sockopt':'linux-mptcp-sockopt-ip.py', 'simult':'linux-mptcp-simult-ip.py', 'userspace':'linux-mptcp-sockopt-ip.py'}[args.suite]).read_text()
+        for name in {'diag':('ip', 'ss'), 'sockopt':('ip', 'grep'), 'simult':('ip', 'grep', 'tc'), 'userspace':('ip', 'grep')}[args.suite]:
             (bins / name).write_text('#!' + sys.executable + '\n' + shim)
             (bins / name).chmod(0o700)
         with tempfile.TemporaryDirectory(prefix='ker-mptcp-diag-', dir='/dev/shm') as temporary:
@@ -236,6 +252,9 @@ def main():
                     require(process.poll() is None and time.monotonic() < deadline, 'resident kernel startup failed')
                     time.sleep(0.01)
                 require(transport.rpc(transport.FILE, '', '/proc/sys/net/mptcp/enabled').strip() == b'1', 'native MPTCP disabled')
+                if args.suite == 'userspace':
+                    report['native_pm_type'] = transport.rpc(transport.FILE, '', '/proc/sys/net/mptcp/pm_type').decode().strip()
+                    require(report['native_pm_type'] in ('0', '1'), 'native userspace PM sysctl unavailable')
                 # A real second namespace both tests isolation and leaves a
                 # genuine nonmatching entry for upstream cleanup_ns's grep -v.
                 # No namespace listing or diagnostic result is synthesized.
@@ -292,7 +311,7 @@ def main():
                 report['namespace_isolation_control'] = observation
                 require(not observer.is_alive() and not errors and (observation or args.suite != 'diag'), 'namespace isolation control failed: ' + repr(errors))
                 require(result.returncode == 0, 'original ' + script + ' failed: ' + stdout + stderr)
-                report['cases'] = tap_result(stdout, {'diag':29, 'sockopt':11, 'simult':10}[args.suite])
+                report['cases'] = tap_result(stdout, {'diag':29, 'sockopt':11, 'simult':10, 'userspace':37}[args.suite])
                 if args.suite == 'sockopt':
                     require(not stderr.strip(), 'original topology/helper errors: ' + stderr)
                     topology = [json.loads(line) for line in (root / 'topology.jsonl').read_text().splitlines()]
@@ -336,6 +355,10 @@ def main():
                     require(counts['raw_sockets'] >= 6 and counts['filter_sets'] >= 18 and counts['filter_gets'] >= 6 and counts['netlinks'] >= 53, 'native packet mark filter activity missing')
                     require(counts['mp_join_syn_rx'] > 0 and counts['mp_join_ack_rx'] > 0, 'native MP_JOIN handshakes missing')
                     require(counts['negotiated'] >= 8 and counts['full_info'] > 0 and counts['inq'] > 0, 'original socket helper coverage missing')
+                elif args.suite == 'userspace':
+                    topology = [json.loads(line) for line in (root / 'topology.jsonl').read_text().splitlines()]
+                    report['acknowledged_native_topology'] = topology
+                    validate_userspace_counts(counts, topology)
                 else:
                     require(counts['live'] == 0 and counts['namespaces_created'] == counts['namespaces_deleted'] == 4,
                         'simultaneous-flows cleanup incomplete')

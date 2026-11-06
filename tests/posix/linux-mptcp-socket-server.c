@@ -21,6 +21,8 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/mman.h>
+#include <sys/sendfile.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -36,6 +38,7 @@ static atomic_uint stopping, live, sockets_count, mptcp_count, accepts_count;
 static atomic_ulong reads_count, writes_count, received_bytes, sent_bytes, infos_count, full_count, inq_count;
 static atomic_uint negotiated_count, fallback_count, raw_count, filter_sets, filter_gets;
 static atomic_uint fallback_info_unsupported, fallback_info_no_proto;
+static atomic_ulong sendfile_calls, imported_files;
 
 static int observe_connection(int fd)
 {
@@ -99,6 +102,37 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     }
     if (fd < 0) { errno = ENOTCONN; return -1; }
     switch (m->operation) {
+    case MS_SENDFILE: {
+        if (input < sizeof(int64_t) || m->a > MS_MAX) { errno = EINVAL; return -1; }
+        int64_t position; memcpy(&position, data, sizeof(position));
+        if (position < 0) { errno = EINVAL; return -1; }
+        int (*import_input)(int) = dlsym(RTLD_DEFAULT, "ker_linux_selftest_input");
+        if (!import_input) { errno = EOPNOTSUPP; return -1; }
+        int host = (int)syscall(SYS_memfd_create, "mptcp-sendfile-input", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+        if (host < 0) return -1;
+        size_t size = input - sizeof(position), done = 0;
+        while (done < size) {
+            ssize_t n = syscall(SYS_write, host, data + sizeof(position) + done, size - done);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) { int error = n ? errno : EIO; syscall(SYS_close, host); errno = error; return -1; }
+            done += (size_t)n;
+        }
+        if (syscall(SYS_fcntl, host, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL)) {
+            int error = errno; syscall(SYS_close, host); errno = error; return -1;
+        }
+        int native_file = import_input(host), error = errno;
+        syscall(SYS_close, host);
+        if (native_file < 0) { errno = error; return -1; }
+        atomic_fetch_add(&imported_files, 1);
+        off_t offset = (off_t)position;
+        ssize_t result = sendfile(fd, native_file, &offset, m->a); error = errno;
+        close(native_file);
+        atomic_fetch_add(&sendfile_calls, 1);
+        if (result < 0) { errno = error; return -1; }
+        atomic_fetch_add(&sent_bytes, (unsigned long)result);
+        position = offset; memcpy(data, &position, sizeof(position)); m->length = sizeof(position);
+        return result;
+    }
     case MS_NAME:
     case MS_PEER: {
         socklen_t length = sizeof(struct sockaddr_storage);
@@ -306,7 +340,7 @@ int main(int argc, char **argv)
         "\"infos\":%lu,\"full_info\":%lu,\"inq\":%lu,\"negotiated\":%u,\"fallback\":%u,"
         "\"fallback_info_eopnotsupp\":%u,\"fallback_info_enoprotoopt\":%u,"
         "\"namespaces_created\":%u,\"namespaces_deleted\":%u,\"netlinks\":%u,"
-        "\"diag_sends\":%lu,\"diag_receives\":%lu,\"max_live\":%u,\"raw_sockets\":%u,\"filter_sets\":%u,\"filter_gets\":%u,\"mp_join_syn_rx\":%lu,\"mp_join_ack_rx\":%lu}\n",
+        "\"diag_sends\":%lu,\"diag_receives\":%lu,\"max_live\":%u,\"raw_sockets\":%u,\"filter_sets\":%u,\"filter_gets\":%u,\"mp_join_syn_rx\":%lu,\"mp_join_ack_rx\":%lu,\"sendfile_calls\":%lu,\"imported_files\":%lu}\n",
         atomic_load(&sockets_count), atomic_load(&mptcp_count), atomic_load(&accepts_count), atomic_load(&live),
         atomic_load(&reads_count), atomic_load(&writes_count), atomic_load(&received_bytes), atomic_load(&sent_bytes),
         atomic_load(&infos_count), atomic_load(&full_count), atomic_load(&inq_count),
@@ -315,6 +349,6 @@ int main(int argc, char **argv)
         atomic_load(&namespaces_created), atomic_load(&namespaces_deleted), atomic_load(&diag_netlinks),
         atomic_load(&diag_sends), atomic_load(&diag_receives), atomic_load(&max_live),
         atomic_load(&raw_count), atomic_load(&filter_sets), atomic_load(&filter_gets),
-        atomic_load(&join_syn_rx), atomic_load(&join_ack_rx));
+        atomic_load(&join_syn_rx), atomic_load(&join_ack_rx), atomic_load(&sendfile_calls), atomic_load(&imported_files));
     return fclose(stats) ? 9 : 0;
 }

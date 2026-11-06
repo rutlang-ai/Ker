@@ -1444,9 +1444,36 @@ class HandoffControlPathTests(unittest.TestCase):
             self.assertEqual(record['frame_committed_records'], committed)
             self.assertEqual(record['frame_drained_records'], drained)
             self.assertEqual(record['handoff_frame'], handoff)
+            captured, capture_status = self.launcher.capture_exited_process_stdout_diagnostic(process)
+            self.assertEqual(captured, b'')
+            self.assertTrue(capture_status['eof'])
+            barrier_record = self.launcher.handoff_barrier_producer_exit_record(
+                process, exited_before_cleanup=True, stdout=output,
+                capture_status={'eof': False, 'limit_reached': False, 'budget_expired': False})
+            self.assertEqual(barrier_record['returncode'], 125)
+            self.assertTrue(barrier_record['exited_before_runner_cleanup'])
+            self.assertIn('KER_SESSION_PARKED_OWNER_EXIT', barrier_record['stdout'])
+            self.assertFalse(barrier_record['stdout_capture']['eof'])
         finally:
             if process.stdout is not None:
                 process.stdout.close()
+
+    def test_exited_worker_stdout_capture_is_bounded_when_pipe_writer_remains_open(self):
+        read_fd, write_fd = os.pipe()
+        process = types.SimpleNamespace(pid=42, returncode=125, poll=lambda: 125,
+            stdout=os.fdopen(read_fd, 'rb', buffering=0))
+        started = time.monotonic()
+        try:
+            output, status = self.launcher.capture_exited_process_stdout_diagnostic(
+                process, max_bytes=1024, budget=0.02)
+            self.assertEqual(output, b'')
+            self.assertFalse(status['eof'])
+            self.assertTrue(status['budget_expired'])
+            self.assertFalse(status['limit_reached'])
+            self.assertLess(time.monotonic() - started, 0.5)
+        finally:
+            process.stdout.close()
+            os.close(write_fd)
 
     def test_proc_fd_eacces_remains_fatal_with_non_tun_diagnostics(self):
         with tempfile.TemporaryDirectory() as temporary:
