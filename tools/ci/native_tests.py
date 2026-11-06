@@ -398,6 +398,39 @@ def run_full_ctest(build: Path, junit: Path) -> None:
     summary(f"Full native CTest graph: {len(expected)} registered tests; {len(required)} mandatory hosted/session/software-datapath tests; unreviewed skips fail.")
 
 
+def run_packetdrill_profile(build: Path, junit: Path) -> None:
+    name = "linux-original-packetdrill"
+    inventory = ctest_inventory(build)
+    require(sum(item["name"] == name for item in inventory) == 1,
+            "packetdrill profile must register its complete original matrix exactly once")
+    cache = (build / "CMakeCache.txt").read_text()
+    native_build = next((line.split("=", 1)[1] for line in cache.splitlines()
+                         if line.startswith("KER_NATIVE_LINUX_BUILD:PATH=")), None)
+    require(native_build, "packetdrill profile has no native kernel path")
+    manifest = json.loads((Path(native_build) / "native-linux.json").read_text())
+    require(manifest.get("config_fragment") == "config/native-linux-packetdrill.config",
+            "packetdrill did not use its dedicated TUN/FQ kernel profile")
+    config = set((Path(manifest["kernel"]) / ".config").read_text().splitlines())
+    require({"CONFIG_TUN=y", "CONFIG_NET_SCH_FQ=y", "CONFIG_HIGH_RES_TIMERS=y", "CONFIG_HZ=1000"}.issubset(config),
+            "packetdrill profile lacks its recorded native device/timer facilities")
+    result = subprocess.run(["ctest", "--test-dir", str(build), "--no-tests=error", "--output-on-failure",
+                            "--output-junit", str(junit), "--parallel", "1", "-R", "^" + name + "$"], check=False)
+    require(junit.is_file(), "packetdrill profile CTest did not produce JUnit")
+    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    evidence = json.loads((build / (name + ".json")).read_text())
+    require(evidence.get("status") == "PASS_IMPORTED_LINUX" and
+            evidence.get("fingerprint") == manifest.get("fingerprint"), "packetdrill native evidence mismatch")
+    scripts, entries = evidence.get("original_scripts", []), evidence.get("entries", [])
+    require(len(scripts) == 24 and len({x["script"] for x in scripts}) == 24 and
+            len(entries) == 48 and all(x.get("returncode") == 0 and not x.get("stderr") for x in [*scripts, *entries]),
+            "packetdrill did not finish all 24 original entries and 48 family configurations without helper errors")
+    for script in scripts:
+        family_entries = [item for item in entries if item.get("arguments", [None])[-1] == script["script"]]
+        require(len(family_entries) == 2 and {item["arguments"][0] for item in family_entries} ==
+                {"--ip_version=ipv4", "--ip_version=ipv6"}, "packetdrill family configuration is missing or duplicated")
+    summary("Original packetdrill: 24 scripts / 48 family configurations, PASS " + manifest["fingerprint"])
+
+
 def run_sockopt_profile(build: Path, junit: Path) -> None:
     inventory = ctest_inventory(build)
     names = {item["name"] for item in inventory}
@@ -832,7 +865,7 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
         print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
@@ -872,6 +905,11 @@ def main(argv: list[str]) -> int:
         if len(argv) != 4:
             raise RuntimeError("full-ctest requires build directory and JUnit output path")
         run_full_ctest(build, Path(argv[3]))
+        return 0
+    if group == "packetdrill-profile":
+        if len(argv) != 4:
+            raise RuntimeError("packetdrill-profile requires build directory and JUnit output path")
+        run_packetdrill_profile(build, Path(argv[3]))
         return 0
     if group == "join-profile":
         if len(argv) != 4:

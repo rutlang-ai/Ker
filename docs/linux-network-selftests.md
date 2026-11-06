@@ -8,7 +8,7 @@
 | `net/af_unix` | 5 | 全部接入 host-backed IPC 兼容性测试，与 imported Linux 分开统计 |
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
-| `net/packetdrill` | 24 | 每个脚本要求 IPv4/IPv6；48 个宿主基线配置通过，尚未计为 Ker 接入 |
+| `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
 | `net/forwarding` | 107 | 尚未逐个接入完整原版入口 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | 尚未逐个接入完整原版入口 |
@@ -40,8 +40,6 @@ ctest --test-dir build-native-on --no-tests=error \
   -R '^linux-original-net-' --output-on-failure
 ```
 
-## 后续 packetdrill
+## Packetdrill
 
-先核对原版工具与输入：Google packetdrill revision `2a8b4d80459e157d5bb7a99fe620c83e5ce036bb` 的未修改工具已构建，24 个原版脚本经原版 `ksft_runner.sh` 完整执行，IPv4/IPv6 共 48 个宿主基线配置通过。运行位于隔离 namespace；本机 8 MiB locked-memory 限制下将进程线程栈配置为 1 MiB，保留工具的 mlock 和全部原版时间断言。宿主通过不计 imported Linux 覆盖。
-
-Ker 的后续接入仍需真实 native 设备收发与时间戳、sysctl/路由配置及脚本 syscall 路径。原版工具提供 `packetdrill_interface` 共享对象接口，可用于保留原版解析器、时间检查和 syscall 断言；标准 TUN 模式的上游配置另要求 TUN 和 HZ=1000。设备与内存适配尚须实现并实际验证，不能把现有 MPTCP 配置或宿主 socket 的通过当作这 48 项已完成。
+[完整原版 packetdrill 迁移](linux-packetdrill-selftests.md)使用 unchanged Google 工具 revision `8051382e6ac928c4c13a88b34832649d9b07abc2` 和单独 fingerprint 的 native TUN/FQ 内核。24 个原版脚本经原版 runner 执行 IPv4/IPv6 共 48 个配置，保留全部包内容、syscall、时间及内嵌 TCP_INFO 断言。本地完整 CTest 已通过，最终提交的 hosted CI/review 仍须单独通过。此前宿主基线单列，不计 native 覆盖。

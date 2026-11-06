@@ -47,6 +47,27 @@ class NativeLinuxBuilderWiringTests(unittest.TestCase):
         git.assert_called_once_with(self.root, 'add', '--',
             'arch/lkl/kernel/Makefile')
 
+    def test_paired_kconfig_input_changes_fingerprint_and_cannot_reuse_old_proof(self):
+        (self.root / 'config').mkdir()
+        (self.root / 'config/native-linux.json').write_text('{}\n')
+        (self.root / 'config/native-linux.defconfig').write_text('CONFIG_INET=y\n')
+        fragment = self.root / 'config/timers.config'; fragment.write_text('CONFIG_HZ=1000\n')
+        before = builder.source_fingerprint(self.root, fragment)
+        prelude = fragment.with_suffix('.Kconfig'); prelude.write_text('config HZ\n\tint\n\tdefault 1000\n')
+        after = builder.source_fingerprint(self.root, fragment)
+        self.assertNotEqual(before, after)
+        prelude.write_text('config HZ\n\tint\n\tdefault 250\n')
+        self.assertNotEqual(after, builder.source_fingerprint(self.root, fragment))
+
+    def test_external_root_preserves_original_bytes_and_places_default_before_includes(self):
+        original = b'# SPDX-License-Identifier: GPL-2.0\nmainmenu "Linux"\nsource "init/Kconfig"\n'
+        prelude = b'config HZ\n\tint\n\tdefault 1000\n'
+        result = builder.external_kconfig_root(original, prelude)
+        self.assertEqual(result.replace(b'\n' + prelude + b'\n', b'', 1), original)
+        self.assertLess(result.index(b'default 1000'), result.index(b'source "init/Kconfig"'))
+        with self.assertRaisesRegex(RuntimeError, 'exactly one'):
+            builder.external_kconfig_root(b'config HZ\n', prelude)
+
     def test_refuses_duplicate_generated_wiring_for_each_adapter(self):
         for object_name in ('ker_tcp_payload.o', 'ker_tcp_request_revoke.o',
                             'ker_ff_admission_queue.o'):

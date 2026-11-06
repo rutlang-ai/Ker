@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <linux/netlink.h>
 #include <poll.h>
 #include <signal.h>
@@ -26,6 +27,13 @@
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
+#ifdef KER_PACKETDRILL_SELFTEST
+#include <linux/sockios.h>
+#include <linux/if_tun.h>
+#include <linux/filter.h>
+#include <sys/epoll.h>
+#include <sys/wait.h>
+#endif
 
 /* Only linked into the unchanged upstream helpers. Host fork, pipe, waitpid,
  * AF_UNIX synchronization, files and alarms retain their original semantics.
@@ -33,6 +41,9 @@
  * Upstream creates every network fd after fork; inheriting network fds is not
  * supported by this deliberately narrow fixture. There is no host IP fallback. */
 static unsigned char network_fds[4096];
+#ifdef KER_PACKETDRILL_SELFTEST
+static int remote_epoll[4096];
+#endif
 static struct stat imported_inputs[4096];
 static unsigned char has_input[4096];
 static int interrupted;
@@ -111,6 +122,10 @@ static int open_channel(void)
 }
 int __wrap_socket(int domain, int type, int protocol)
 {
+    int packet = 0;
+#ifdef KER_PACKETDRILL_SELFTEST
+    packet = domain == AF_PACKET && type == SOCK_RAW;
+#endif
     int netlink = domain == AF_NETLINK && ((type & ~SOCK_CLOEXEC) == SOCK_RAW || (type & ~SOCK_CLOEXEC) == SOCK_DGRAM) &&
                   (protocol == NETLINK_SOCK_DIAG || protocol == NETLINK_ROUTE || protocol == NETLINK_GENERIC || protocol == NETLINK_NETFILTER);
     int raw = (domain == AF_INET || domain == AF_INET6) &&
@@ -120,7 +135,7 @@ int __wrap_socket(int domain, int type, int protocol)
                ((type & ~SOCK_CLOEXEC) == SOCK_DGRAM &&
                  (protocol == 0 || (domain == AF_INET && protocol == IPPROTO_ICMP) ||
                   (domain == AF_INET6 && protocol == IPPROTO_ICMPV6))));
-    if (!netlink && !raw && ((domain != AF_INET && domain != AF_INET6) || type != SOCK_STREAM ||
+    if (!packet && !netlink && !raw && ((domain != AF_INET && domain != AF_INET6) || type != SOCK_STREAM ||
         (protocol != IPPROTO_MPTCP && protocol != IPPROTO_TCP && protocol != 0))) { errno = EOPNOTSUPP; return -1; }
     int fd = open_channel();
     if (fd < 0) return -1;
@@ -213,6 +228,18 @@ int __wrap_setsockopt(int fd, int level, int option, const void *value, socklen_
     if (!is_network(fd)) { errno = EBADF; return -1; }
     if (length > MS_MAX) { errno = EOPNOTSUPP; return -1; }
     unsigned char data[MS_MAX]; memcpy(data, value, length);
+#ifdef KER_PACKETDRILL_SELFTEST
+    if (level == SOL_SOCKET && option == SO_ATTACH_FILTER) {
+        if (length != sizeof(struct sock_fprog)) { errno = EINVAL; return -1; }
+        struct sock_fprog program; memcpy(&program, value, sizeof(program));
+        size_t bytes = (size_t)program.len * sizeof(struct sock_filter);
+        if (!program.filter || bytes > MS_MAX - sizeof(program)) { errno = EINVAL; return -1; }
+        memcpy(data + sizeof(program), program.filter, bytes); program.filter = NULL;
+        memcpy(data, &program, sizeof(program));
+        struct ms_message m = {.operation = MS_SETOPT, .length = (uint32_t)(sizeof(program) + bytes), .a = level, .b = option};
+        return (int)exchange(fd, &m, data, NULL);
+    }
+#endif
     int replace = (level == IPPROTO_IP || level == IPPROTO_IPV6) && option == IPT_SO_SET_REPLACE;
     struct xt_counters *counters = NULL;
     size_t count = 0;
@@ -299,8 +326,40 @@ ssize_t __wrap_write(int fd, const void *buffer, size_t length)
 }
 int __wrap_ioctl(int fd, unsigned long request, ...)
 {
+#ifdef KER_PACKETDRILL_SELFTEST
+    if (is_network(fd) && request == TUNSETOFFLOAD) {
+        va_list ap; va_start(ap, request); unsigned long flags = va_arg(ap, unsigned long); va_end(ap);
+        unsigned char data[MS_MAX];
+        struct ms_message m = {.operation = MS_IOCTL, .a = (uint32_t)request, .b = (uint32_t)flags};
+        return (int)exchange(fd, &m, data, NULL);
+    }
+#endif
     va_list ap; va_start(ap, request); void *value = va_arg(ap, void *); va_end(ap);
     if (!is_network(fd)) return (int)syscall(SYS_ioctl, fd, request, value);
+#ifdef KER_PACKETDRILL_SELFTEST
+    if (request == TUNSETIFF || request == SIOCGIFFLAGS || request == SIOCSIFFLAGS ||
+        request == SIOCGIFADDR || request == SIOCSIFADDR || request == SIOCSIFNETMASK ||
+        request == SIOCGIFMTU || request == SIOCSIFMTU) {
+        unsigned char data[MS_MAX]; memcpy(data, value, sizeof(struct ifreq));
+        struct ms_message m = {.operation = MS_IOCTL, .a = (uint32_t)request, .length = sizeof(struct ifreq)};
+        int result = (int)exchange(fd, &m, data, NULL);
+        if (result >= 0) {
+            if (m.length != sizeof(struct ifreq)) { errno = EPROTO; return -1; }
+            memcpy(value, data, sizeof(struct ifreq));
+        }
+        return result;
+    }
+    if (request == SIOCGSTAMP) {
+        unsigned char data[MS_MAX];
+        struct ms_message m = {.operation = MS_IOCTL, .a = (uint32_t)request};
+        int result = (int)exchange(fd, &m, data, NULL);
+        if (result >= 0) {
+            if (m.length != sizeof(struct timeval)) { errno = EPROTO; return -1; }
+            memcpy(value, data, sizeof(struct timeval));
+        }
+        return result;
+    }
+#endif
     if (request != FIONREAD && request != TIOCOUTQ && request != 0x894b /* SIOCOUTQNSD */) {
         errno = EOPNOTSUPP; return -1;
     }
@@ -316,6 +375,32 @@ int __wrap_ioctl(int fd, unsigned long request, ...)
 static ssize_t message_call(int fd, struct msghdr *message, int flags, int sending)
 {
     if (!is_network(fd)) return syscall(sending ? SYS_sendmsg : SYS_recvmsg, fd, message, flags);
+#ifdef KER_PACKETDRILL_SELFTEST
+    if (sending) {
+        if (!message || message->msg_iovlen > 64 || message->msg_namelen > sizeof(struct sockaddr_storage)) { errno = EOPNOTSUPP; return -1; }
+        size_t prefix = sizeof(struct ms_io) + message->msg_iovlen * sizeof(uint32_t);
+        size_t total = 0, control = message->msg_controllen, name = message->msg_namelen;
+        for (size_t i = 0; i < message->msg_iovlen; i++) {
+            if (message->msg_iov[i].iov_len > MS_MAX - total) { errno = EMSGSIZE; return -1; }
+            total += message->msg_iov[i].iov_len;
+        }
+        if (control > MS_MAX || prefix + total + control + name > MS_MAX) { errno = EMSGSIZE; return -1; }
+        unsigned char data[MS_MAX];
+        struct ms_io io = {(uint32_t)total, (uint32_t)control, (uint32_t)name, (uint32_t)flags};
+        memcpy(data, &io, sizeof(io));
+        size_t offset = prefix;
+        for (size_t i = 0; i < message->msg_iovlen; i++) {
+            uint32_t length = (uint32_t)message->msg_iov[i].iov_len;
+            memcpy(data + sizeof(io) + i * sizeof(length), &length, sizeof(length));
+            if (length) memcpy(data + offset, message->msg_iov[i].iov_base, length);
+            offset += length;
+        }
+        if (control) memcpy(data + offset, message->msg_control, control);
+        if (name) memcpy(data + offset + control, message->msg_name, name);
+        struct ms_message m = {.operation = MS_PACKET_SENDV, .length = (uint32_t)(prefix + total + control + name), .a = (uint32_t)message->msg_iovlen};
+        return write_result(exchange(fd, &m, data, NULL), flags);
+    }
+#endif
     if (!message || message->msg_iovlen > 16 || message->msg_namelen > sizeof(struct sockaddr_storage)) {
         errno = EOPNOTSUPP; return -1;
     }
@@ -382,7 +467,12 @@ ssize_t __wrap_send(int fd, const void *bytes, size_t length, int flags)
 { return __wrap_sendto(fd, bytes, length, flags, NULL, 0); }
 int __wrap_fcntl(int fd, int command, ...)
 {
-    if (is_network(fd) && command != F_GETFL && command != F_SETFL && command != F_GETFD && command != F_SETFD) {
+    int administrative = 0;
+#ifdef KER_PACKETDRILL_SELFTEST
+    administrative = is_network(fd) && network_fds[fd] == 2;
+#endif
+    if (is_network(fd) && command != F_GETFL && command != F_SETFL && command != F_GETFD && command != F_SETFD &&
+        !(administrative && (command == F_DUPFD || command == F_DUPFD_CLOEXEC))) {
         errno = EOPNOTSUPP; return -1;
     }
     long argument = 0;
@@ -396,6 +486,16 @@ int __wrap_fcntl(int fd, int command, ...)
         va_end(ap);
     }
     if (!is_network(fd)) return (int)syscall(SYS_fcntl, fd, command, argument);
+#ifdef KER_PACKETDRILL_SELFTEST
+    if (administrative && (command == F_DUPFD || command == F_DUPFD_CLOEXEC || command == F_GETFD || command == F_SETFD)) {
+        int result = (int)syscall(SYS_fcntl, fd, command, argument);
+        if (result >= 0 && (command == F_DUPFD || command == F_DUPFD_CLOEXEC)) {
+            if (result >= 4096) { syscall(SYS_close, result); errno = EMFILE; return -1; }
+            network_fds[result] = 2;
+        }
+        return result;
+    }
+#endif
     unsigned char data[MS_MAX];
     struct ms_message m = {.operation = MS_FCNTL, .a = command, .b = (uint32_t)argument};
     return (int)exchange(fd, &m, data, NULL);
@@ -532,6 +632,37 @@ int __wrap_open(const char *path, int flags, ...)
     if ((flags & O_CREAT) || (flags & O_TMPFILE) == O_TMPFILE) {
         va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
     }
+#ifdef KER_PACKETDRILL_SELFTEST
+    if (!strncmp(path, "/proc/sys/net/", 14)) {
+        if ((flags & O_ACCMODE) == O_RDONLY) return proc_file(path);
+        const char *ns = getenv("KER_MPTCP_SOCKET_NAMESPACE"); if (!ns) ns = "";
+        if (strlen(ns) >= 64 || strlen(path) > 128) { errno = EINVAL; return -1; }
+        int fd = open_channel(); if (fd < 0) return -1;
+        unsigned char data[MS_MAX]; strcpy((char *)data, ns); strcpy((char *)data + strlen(ns) + 1, path);
+        struct ms_message m = {.operation = MS_PROC_OPEN, .a = (uint32_t)flags,
+            .length = (uint32_t)(strlen(ns) + strlen(path) + 2)};
+        if (exchange(fd, &m, data, NULL) < 0) { int e = errno; syscall(SYS_close, fd); errno = e; return -1; }
+        if (setenv("KER_PACKETDRILL_PROC_TARGET", path, 1)) {
+            int error = errno; syscall(SYS_close, fd); errno = error; return -1;
+        }
+        int result = remember(fd);
+        /* Bash duplicates this administrative transport onto stdout. Its
+         * native proc file belongs to the last host channel reference, not
+         * to the first close of the original pre-dup descriptor. */
+        if (result >= 0) network_fds[result] = 2;
+        return result;
+    }
+    if (!strcmp(path, "/dev/net/tun")) {
+        if (flags != O_RDWR) { errno = EOPNOTSUPP; return -1; }
+        const char *ns = getenv("KER_MPTCP_SOCKET_NAMESPACE"); if (!ns) ns = "";
+        if (strlen(ns) >= 64) { errno = EINVAL; return -1; }
+        int fd = open_channel(); if (fd < 0) return -1;
+        unsigned char data[MS_MAX]; strcpy((char *)data, ns);
+        struct ms_message m = {.operation = MS_TUN_OPEN, .length = (uint32_t)strlen(ns) + 1};
+        if (exchange(fd, &m, data, NULL) < 0) { int e = errno; syscall(SYS_close, fd); errno = e; return -1; }
+        return remember(fd);
+    }
+#endif
     if (!strncmp(path, "/proc/net/", 10) || !strcmp(path, "/proc/sys/net/mptcp/enabled")) {
         if ((flags & O_ACCMODE) != O_RDONLY) { errno = EOPNOTSUPP; return -1; }
         return proc_file(path);
@@ -540,7 +671,11 @@ int __wrap_open(const char *path, int flags, ...)
 }
 FILE *__wrap_fopen(const char *path, const char *mode)
 {
-    if (!strncmp(path, "/proc/net/", 10) || !strcmp(path, "/proc/sys/net/mptcp/enabled")) {
+    if (!strncmp(path, "/proc/net/", 10) || !strcmp(path, "/proc/sys/net/mptcp/enabled")
+#ifdef KER_PACKETDRILL_SELFTEST
+        || !strncmp(path, "/proc/sys/net/", 14)
+#endif
+    ) {
         if (strcmp(mode, "r") && strcmp(mode, "re")) { errno = EOPNOTSUPP; return NULL; }
         int fd = proc_file(path);
         if (fd < 0) return NULL;
@@ -554,6 +689,13 @@ FILE *__wrap_fopen(const char *path, const char *mode)
 }
 int __wrap_close(int fd)
 {
+#ifdef KER_PACKETDRILL_SELFTEST
+    if (is_network(fd) && network_fds[fd] == 2) {
+        network_fds[fd] = 0; has_input[fd] = 0;
+        return (int)syscall(SYS_close, fd);
+    }
+    if (is_network(fd)) remote_epoll[fd] = 0;
+#endif
     if (is_network(fd)) {
         /* Preserve original close ordering, including the native FIN and
          * TIME_WAIT transition, before releasing its host RPC transport. */
@@ -568,6 +710,70 @@ int __wrap_close(int fd)
     return (int)syscall(SYS_close, fd);
 }
 #ifdef KER_MPTCP_DIAG_PRELOAD
+#ifdef KER_PACKETDRILL_SELFTEST
+/* The original sysctl helper emits simple echo redirections and a bash
+ * restore script. Bash's fixture echo function writes their exact bytes
+ * through the native proc fd and propagates the real write result. */
+int system(const char *command)
+{
+    if (!command || !strstr(command, "/proc/sys/net/") || !strchr(command, '>')) {
+        int (*original)(const char *) = dlsym(RTLD_NEXT, "system");
+        if (!original) { errno = ENOSYS; return -1; }
+        return original(command);
+    }
+    pid_t child = fork();
+    if (child < 0) return -1;
+    if (!child) { execl("/bin/bash", "bash", "-c", command, (char *)NULL); _exit(127); }
+    int status;
+    while (waitpid(child, &status, 0) < 0) { if (errno != EINTR) return -1; }
+    return status;
+}
+int epoll_create(int size)
+{
+    const char *ns = getenv("KER_MPTCP_SOCKET_NAMESPACE"); if (!ns) ns = "";
+    if (strlen(ns) >= 64) { errno = EINVAL; return -1; }
+    int fd = open_channel(); if (fd < 0) return -1;
+    unsigned char data[MS_MAX]; strcpy((char *)data, ns);
+    struct ms_message m = {.operation = MS_EPOLL_OPEN, .a = (uint32_t)size, .length = (uint32_t)strlen(ns) + 1};
+    long result = exchange(fd, &m, data, NULL);
+    if (result < 0) { int error = errno; syscall(SYS_close, fd); errno = error; return -1; }
+    if (remember(fd) < 0) return -1;
+    remote_epoll[fd] = (int)result; return fd;
+}
+int epoll_ctl(int epoll, int operation, int target, struct epoll_event *event)
+{
+    if (!is_network(epoll) && !is_network(target)) return (int)syscall(SYS_epoll_ctl, epoll, operation, target, event);
+    if (!is_network(epoll) || !remote_epoll[epoll] || !is_network(target)) { errno = EBADF; return -1; }
+    unsigned char data[MS_MAX];
+    struct ms_message m = {.operation = MS_EPOLL_CTL, .a = (uint32_t)remote_epoll[epoll], .b = (uint32_t)operation};
+    if (event) { memcpy(data, event, sizeof(*event)); m.length = sizeof(*event); }
+    return (int)exchange(target, &m, data, NULL);
+}
+int epoll_wait(int epoll, struct epoll_event *events, int maximum, int timeout)
+{
+    if (!is_network(epoll)) return (int)syscall(SYS_epoll_wait, epoll, events, maximum, timeout);
+    if (!remote_epoll[epoll] || maximum <= 0 || maximum > 64 || timeout < 0 || timeout > 1000) { errno = EOPNOTSUPP; return -1; }
+    unsigned char data[MS_MAX];
+    struct ms_message m = {.operation = MS_EPOLL_WAIT, .a = (uint32_t)maximum, .b = (uint32_t)timeout};
+    long result = exchange(epoll, &m, data, NULL);
+    if (result >= 0) {
+        if (result > maximum || m.length != (size_t)result * sizeof(*events)) { errno = EPROTO; return -1; }
+        memcpy(events, data, m.length);
+    }
+    return (int)result;
+}
+ssize_t writev(int fd, const struct iovec *vectors, int count)
+{
+    if (!is_network(fd)) return syscall(SYS_writev, fd, vectors, count);
+    if (count < 0 || count > IOV_MAX) { errno = EINVAL; return -1; }
+    unsigned char bytes[MS_MAX]; size_t total = 0;
+    for (int i = 0; i < count; i++) {
+        if (vectors[i].iov_len > sizeof(bytes) - total) { errno = EMSGSIZE; return -1; }
+        memcpy(bytes + total, vectors[i].iov_base, vectors[i].iov_len); total += vectors[i].iov_len;
+    }
+    return __wrap_write(fd, bytes, total);
+}
+#endif
 FILE *fopen64(const char *path, const char *mode) { return __wrap_fopen(path, mode); }
 int open64(const char *path, int flags, ...)
 {

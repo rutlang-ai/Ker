@@ -27,6 +27,12 @@
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
+#ifdef KER_PACKETDRILL_SELFTEST
+#include <linux/sockios.h>
+#include <linux/if_tun.h>
+#include <linux/filter.h>
+#include <sys/epoll.h>
+#endif
 
 /* A thread per socket preserves blocking accept/connect/read on one original
  * kernel. Only the harness transport runs in the host; all IP socket syscalls
@@ -36,6 +42,10 @@ struct client { int host, native, ns, input, upload, retire; size_t input_size, 
 static struct client clients[4096];
 static unsigned clients_count;
 static atomic_ulong channels_opened;
+#ifdef KER_PACKETDRILL_SELFTEST
+static atomic_ulong packetdrill_tuns, packetdrill_offloads, packetdrill_timestamps;
+static atomic_ulong packetdrill_epoll_creates, packetdrill_epoll_controls, packetdrill_epoll_waits;
+#endif
 static pthread_mutex_t clients_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint stopping, live, sockets_count, mptcp_count, accepts_count;
 static atomic_ulong reads_count, writes_count, received_bytes, sent_bytes, infos_count, full_count, inq_count;
@@ -73,6 +83,9 @@ static int observe_connection(int fd)
 
 static int start_client(int host, int native, int ns, pid_t pid);
 #include "linux-mptcp-diag-runtime.inc"
+#ifdef KER_PACKETDRILL_SELFTEST
+#include "linux-packetdrill-send.inc"
+#endif
 static long dispatch(struct client *client, struct ms_message *m, unsigned char *data, int *pass_fd)
 {
     int fd = client->native;
@@ -85,7 +98,43 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     }
     long control_result;
     if (diag_control(m, data, input, &control_result)) return control_result;
+#ifdef KER_PACKETDRILL_SELFTEST
+    if (m->operation == MS_PROC_OPEN) {
+        if (fd >= 0 || !input || data[input - 1]) { errno = EINVAL; return -1; }
+        size_t prefix = strlen((char *)data) + 1;
+        if (prefix >= input) { errno = EINVAL; return -1; }
+        const char *path = (char *)data + prefix;
+        if (strlen(path) + prefix + 1 != input || strncmp(path, "/proc/sys/net/", 14) || strstr(path, "..") ||
+            (m->a & O_ACCMODE) != O_WRONLY || (m->a & ~(O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC))) { errno = EINVAL; return -1; }
+        if (select_namespace((char *)data, prefix, &client->ns)) return -1;
+        client->native = (int)native_call(KER_TEST_OPEN, (unsigned long)path, m->a, 0);
+        if (client->native < 0) return -1;
+        mark_active(client); return 0;
+    }
+    if (m->operation == MS_EPOLL_OPEN) {
+        if (fd >= 0 || select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
+        client->native = epoll_create((int)m->a);
+        if (client->native < 0) return -1;
+        int (*kind)(int) = dlsym(RTLD_DEFAULT, "ker_posix_descriptor_kind");
+        if (!kind || kind(client->native) != 2) { close(client->native); client->native = -1; errno = ENOTSUP; return -1; }
+        atomic_fetch_add(&packetdrill_epoll_creates, 1);
+        mark_active(client); return client->native;
+    }
+    if (m->operation == MS_TUN_OPEN) {
+        if (fd >= 0 || select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
+        client->native = (int)native_call(KER_TEST_OPEN_TUN, 0, 0, 0);
+        if (client->native < 0) return -1;
+        int (*kind)(int) = dlsym(RTLD_DEFAULT, "ker_posix_descriptor_kind");
+        if (!kind || kind(client->native) != 3) { close(client->native); client->native = -1; errno = ENOTSUP; return -1; }
+        atomic_fetch_add(&packetdrill_tuns, 1);
+        mark_active(client); return 0;
+    }
+#endif
     if (m->operation == MS_SOCKET) {
+        int packet = 0;
+#ifdef KER_PACKETDRILL_SELFTEST
+        packet = m->a == AF_PACKET && m->b == SOCK_RAW;
+#endif
         int netlink = m->a == AF_NETLINK && ((m->b & ~SOCK_CLOEXEC) == SOCK_RAW || (m->b & ~SOCK_CLOEXEC) == SOCK_DGRAM) &&
                   (m->c == NETLINK_SOCK_DIAG || m->c == NETLINK_ROUTE || m->c == NETLINK_GENERIC || m->c == NETLINK_NETFILTER);
         int raw = (m->a == AF_INET || m->a == AF_INET6) &&
@@ -95,16 +144,16 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
                  ((m->b & ~SOCK_CLOEXEC) == SOCK_DGRAM &&
                    (m->c == 0 || (m->a == AF_INET && m->c == IPPROTO_ICMP) ||
                     (m->a == AF_INET6 && m->c == IPPROTO_ICMPV6))));
-        if (fd >= 0 || (!netlink && !raw && ((m->a != AF_INET && m->a != AF_INET6) || m->b != SOCK_STREAM ||
+        if (fd >= 0 || (!packet && !netlink && !raw && ((m->a != AF_INET && m->a != AF_INET6) || m->b != SOCK_STREAM ||
             (m->c != IPPROTO_MPTCP && m->c != IPPROTO_TCP && m->c != 0)))) { errno = EOPNOTSUPP; return -1; }
         if (select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
         client->native = raw ? (int)native_call(KER_TEST_RAW_SOCKET, m->a, m->b, m->c) : netlink ? (int)native_call(KER_TEST_NETLINK, m->b, m->c, 0) : socket((int)m->a, (int)m->b, (int)m->c);
         if (client->native < 0) return -1;
         int (*kind)(int) = dlsym(RTLD_DEFAULT, "ker_posix_descriptor_kind");
-        if (!kind || kind(client->native) != (netlink ? 3 : 1)) { close(client->native); client->native = -1; errno = ENOTSUP; return -1; }
+        if (!kind || kind(client->native) != ((packet || netlink) ? 3 : 1)) { close(client->native); client->native = -1; errno = ENOTSUP; return -1; }
         atomic_fetch_add(&sockets_count, 1); mark_active(client);
         if (netlink) atomic_fetch_add(&diag_netlinks, 1);
-        if (raw) atomic_fetch_add(&raw_count, 1);
+        if (raw || packet) atomic_fetch_add(&raw_count, 1);
         if (!netlink && m->c == IPPROTO_MPTCP) atomic_fetch_add(&mptcp_count, 1);
         return 0;
     }
@@ -120,6 +169,30 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         }
         return result;
     }
+#ifdef KER_PACKETDRILL_SELFTEST
+    case MS_EPOLL_CTL: {
+        struct epoll_event event;
+        if (input && input != sizeof(event)) { errno = EINVAL; return -1; }
+        if (input) memcpy(&event, data, sizeof(event));
+        /* The target socket owns this RPC channel and cannot be recycled
+         * while its request is being dispatched. No frontend fd is used. */
+        int result = epoll_ctl((int)m->a, (int)m->b, fd, input ? &event : NULL);
+        if (!result) atomic_fetch_add(&packetdrill_epoll_controls, 1);
+        return result;
+    }
+    case MS_EPOLL_WAIT: {
+        if (input || m->a > 64 || !m->a || m->b > 1000) { errno = EINVAL; return -1; }
+        struct epoll_event events[64];
+        long result = epoll_wait(fd, events, (int)m->a, (int)m->b);
+        if (result >= 0) {
+            m->length = (uint32_t)result * sizeof(events[0]); memcpy(data, events, m->length);
+            atomic_fetch_add(&packetdrill_epoll_waits, 1);
+        }
+        return result;
+    }
+    case MS_PACKET_SENDV:
+        return packetdrill_send_vectors(fd, m->a, data, input);
+#endif
     case MS_INPUT_START:
         if (input || m->a > MS_INPUT_MAX) { errno = EINVAL; return -1; }
         if (client->input >= 0) { close(client->input); client->input = -1; }
@@ -220,6 +293,19 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         *pass_fd = pair[1]; return 0;
     }
     case MS_SETOPT: {
+#ifdef KER_PACKETDRILL_SELFTEST
+        if (m->a == SOL_SOCKET && m->b == SO_ATTACH_FILTER) {
+            struct sock_fprog program;
+            if (input < sizeof(program)) { errno = EINVAL; return -1; }
+            memcpy(&program, data, sizeof(program));
+            size_t bytes = (size_t)program.len * sizeof(struct sock_filter);
+            if (program.filter || bytes != input - sizeof(program)) { errno = EINVAL; return -1; }
+            program.filter = (void *)(data + sizeof(program));
+            long result = setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program));
+            if (!result) atomic_fetch_add(&filter_sets, 1);
+            return result;
+        }
+#endif
         int replace = (m->a == IPPROTO_IP || m->a == IPPROTO_IPV6) && m->b == IPT_SO_SET_REPLACE;
         size_t count = 0;
         if (replace) {
@@ -275,6 +361,31 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         atomic_fetch_add(&writes_count, 1); return result;
     }
     case MS_IOCTL: {
+#ifdef KER_PACKETDRILL_SELFTEST
+        if (m->a == TUNSETIFF || m->a == SIOCGIFFLAGS || m->a == SIOCSIFFLAGS ||
+            m->a == SIOCGIFADDR || m->a == SIOCSIFADDR || m->a == SIOCSIFNETMASK ||
+            m->a == SIOCGIFMTU || m->a == SIOCSIFMTU) {
+            if (input != sizeof(struct ifreq)) { errno = EINVAL; return -1; }
+            long result = ioctl(fd, m->a, data);
+            if (!result) m->length = sizeof(struct ifreq);
+            return result;
+        }
+        if (m->a == TUNSETOFFLOAD) {
+            if (input) { errno = EINVAL; return -1; }
+            long result = ioctl(fd, m->a, (unsigned long)m->b);
+            if (!result) atomic_fetch_add(&packetdrill_offloads, 1);
+            return result;
+        }
+        if (m->a == SIOCGSTAMP) {
+            struct timeval timestamp;
+            long result = ioctl(fd, m->a, &timestamp);
+            if (!result) {
+                memcpy(data, &timestamp, sizeof(timestamp)); m->length = sizeof(timestamp);
+                atomic_fetch_add(&packetdrill_timestamps, 1);
+            }
+            return result;
+        }
+#endif
         if (m->a != FIONREAD && m->a != TIOCOUTQ && m->a != 0x894b) { errno = EOPNOTSUPP; return -1; }
         int value = 0;
         long result = ioctl(fd, m->a, &value);
@@ -465,12 +576,22 @@ int main(int argc, char **argv)
     if (close(root_namespace)) return 10;
     FILE *stats = fopen(argv[2], "w");
     if (!stats) return 8;
+    const char *extra = "";
+#ifdef KER_PACKETDRILL_SELFTEST
+    char packetdrill_counts[512];
+    snprintf(packetdrill_counts, sizeof(packetdrill_counts),
+        ",\"tun_opens\":%lu,\"tun_offloads\":%lu,\"packet_timestamps\":%lu,"
+        "\"epoll_creates\":%lu,\"epoll_controls\":%lu,\"epoll_waits\":%lu",
+        atomic_load(&packetdrill_tuns), atomic_load(&packetdrill_offloads), atomic_load(&packetdrill_timestamps),
+        atomic_load(&packetdrill_epoll_creates), atomic_load(&packetdrill_epoll_controls), atomic_load(&packetdrill_epoll_waits));
+    extra = packetdrill_counts;
+#endif
     fprintf(stats, "{\"sockets\":%u,\"mptcp\":%u,\"accepts\":%u,\"live\":%u,"
         "\"reads\":%lu,\"writes\":%lu,\"received\":%lu,\"sent\":%lu,"
         "\"infos\":%lu,\"full_info\":%lu,\"inq\":%lu,\"negotiated\":%u,\"fallback\":%u,"
         "\"fallback_info_eopnotsupp\":%u,\"fallback_info_enoprotoopt\":%u,\"channel_slots\":%u,\"channels_opened\":%lu,"
         "\"namespaces_created\":%u,\"namespaces_deleted\":%u,\"netlinks\":%u,"
-        "\"diag_sends\":%lu,\"diag_receives\":%lu,\"max_live\":%u,\"raw_sockets\":%u,\"filter_sets\":%u,\"filter_gets\":%u,\"mp_join_syn_rx\":%lu,\"mp_join_ack_rx\":%lu,\"sendfile_calls\":%lu,\"imported_files\":%lu}\n",
+        "\"diag_sends\":%lu,\"diag_receives\":%lu,\"max_live\":%u,\"raw_sockets\":%u,\"filter_sets\":%u,\"filter_gets\":%u,\"mp_join_syn_rx\":%lu,\"mp_join_ack_rx\":%lu,\"sendfile_calls\":%lu,\"imported_files\":%lu%s}\n",
         atomic_load(&sockets_count), atomic_load(&mptcp_count), atomic_load(&accepts_count), atomic_load(&live),
         atomic_load(&reads_count), atomic_load(&writes_count), atomic_load(&received_bytes), atomic_load(&sent_bytes),
         atomic_load(&infos_count), atomic_load(&full_count), atomic_load(&inq_count),
@@ -480,6 +601,6 @@ int main(int argc, char **argv)
         atomic_load(&namespaces_created), atomic_load(&namespaces_deleted), atomic_load(&diag_netlinks),
         atomic_load(&diag_sends), atomic_load(&diag_receives), atomic_load(&max_live),
         atomic_load(&raw_count), atomic_load(&filter_sets), atomic_load(&filter_gets),
-        atomic_load(&join_syn_rx), atomic_load(&join_ack_rx), atomic_load(&sendfile_calls), atomic_load(&imported_files));
+        atomic_load(&join_syn_rx), atomic_load(&join_ack_rx), atomic_load(&sendfile_calls), atomic_load(&imported_files), extra);
     return fclose(stats) ? 9 : 0;
 }

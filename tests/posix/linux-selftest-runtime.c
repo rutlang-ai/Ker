@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <lkl.h>
@@ -34,6 +35,16 @@ long ker_linux_selftest_call(unsigned operation, const unsigned long a[6])
     struct ker_fd *entry;
     long result;
     switch (operation) {
+    case KER_TEST_OPEN_TUN:
+        /* Private test device setup; the real tun driver handles every ioctl
+         * and packet. No host /dev/net/tun descriptor enters native Linux. */
+        result = lkl_sys_mkdir("/dev", 0700);
+        if (result < 0 && result != -EEXIST) return result;
+        result = lkl_sys_mkdir("/dev/net", 0700);
+        if (result < 0 && result != -EEXIST) return result;
+        result = lkl_sys_mknodat(LKL_AT_FDCWD, "/dev/net/tun", S_IFCHR | 0600, (10U << 8) | 200U);
+        if (result < 0 && result != -EEXIST) return result;
+        return export_file(lkl_sys_open("/dev/net/tun", O_RDWR | O_CLOEXEC, 0), KER_FD_FILE, O_CLOEXEC);
     case KER_TEST_IF_UP: return lkl_if_up((int)a[0]);
     case KER_TEST_UNSHARE: return lkl_sys_unshare(a[0]);
     case KER_TEST_SETNS:
