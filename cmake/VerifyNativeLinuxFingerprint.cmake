@@ -12,6 +12,13 @@ function(ker_verify_native_linux_fingerprint source_root manifest_path builder_s
     if(config_fragment)
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
             "${source_root}/${config_fragment}")
+        get_filename_component(ker_config_directory "${config_fragment}" DIRECTORY)
+        get_filename_component(ker_config_name "${config_fragment}" NAME)
+        string(REGEX REPLACE "\\.[^.]*$" "" ker_config_name "${ker_config_name}")
+        set(ker_config_prelude "${source_root}/${ker_config_directory}/${ker_config_name}.Kconfig")
+        if(EXISTS "${ker_config_prelude}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ker_config_prelude}")
+        endif()
     endif()
     file(GLOB_RECURSE ker_native_overlay_files CONFIGURE_DEPENDS
         LIST_DIRECTORIES FALSE "${source_root}/src/posix/lkl-overlay/*")

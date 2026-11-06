@@ -1,0 +1,7 @@
+# Kconfig permits an earlier default for a symbol defined in another file.
+# Keep pinned arch/lkl/Kconfig unchanged while selecting the upstream
+# packetdrill timer frequency for this isolated test kernel.
+config HZ
+	int
+	default 1000
+

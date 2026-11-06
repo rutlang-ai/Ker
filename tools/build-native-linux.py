@@ -28,6 +28,29 @@ def tracked_config_fragment(root, config_fragment):
         raise ValueError('kernel config fragment must be tracked under the source root') from error
 
 
+def paired_kconfig_prelude(root, config_fragment):
+    if not config_fragment:
+        return None
+    fragment = tracked_config_fragment(root, config_fragment)
+    path = (Path(root) / fragment).with_suffix('.Kconfig')
+    return path if path.is_file() else None
+
+
+def external_kconfig_root(original, prelude):
+    """Insert an earlier default after mainmenu in a generated build input.
+
+    The source Kconfig is never edited. A hidden symbol cannot be selected by
+    a .config seed; Kconfig's documented first-visible-default rule permits
+    this adapter to select its value without patching the architecture tree.
+    """
+    lines = original.splitlines(keepends=True)
+    entries = [i for i, line in enumerate(lines) if line.startswith(b'mainmenu ')]
+    if len(entries) != 1:
+        raise RuntimeError('expected exactly one root Kconfig mainmenu')
+    position = entries[0] + 1
+    return b''.join(lines[:position]) + b'\n' + prelude + b'\n' + b''.join(lines[position:])
+
+
 def source_fingerprint(root=ROOT, config_fragment=None):
     root = Path(root)
     manifest_path = root / 'config/native-linux.json'
@@ -39,6 +62,10 @@ def source_fingerprint(root=ROOT, config_fragment=None):
         fragment_path = root / fragment
         digest.update(fragment.encode())
         digest.update(fragment_path.read_bytes())
+        prelude = paired_kconfig_prelude(root, fragment)
+        if prelude:
+            digest.update(str(prelude.relative_to(root)).encode())
+            digest.update(prelude.read_bytes())
     # The builder controls how these inputs become an artifact. Include the
     # exact script being executed so changes to that process invalidate proofs.
     digest.update(Path(__file__).resolve().read_bytes())
@@ -198,6 +225,11 @@ def build_artifacts(args):
     kernel = build / ('kernel-' + fingerprint[:16])
     kernel.mkdir(exist_ok=True)
     env = dict(os.environ, OUTPUT=str(kernel))
+    prelude = paired_kconfig_prelude(ROOT, args.config_fragment)
+    if prelude:
+        config_root = kernel / 'Kconfig.ker-profile'
+        config_root.write_bytes(external_kconfig_root((source / 'Kconfig').read_bytes(), prelude.read_bytes()))
+        env['KBUILD_KCONFIG'] = str(config_root)
     run(['make', '-C', source / 'tools/lkl', 'conf'], env=env)
     if not (kernel / '.config').exists():
         seed = (ROOT / 'config/native-linux.defconfig').read_bytes()
@@ -208,7 +240,7 @@ def build_artifacts(args):
             seed += b'\n' + fragment_path.read_bytes()
         host = (kernel / 'tools/lkl/kernel.config').read_bytes()
         (kernel / '.config').write_bytes(seed + b'\n' + host)
-    run(['make', '-C', source, 'ARCH=lkl', 'O=' + str(kernel), 'olddefconfig'])
+    run(['make', '-C', source, 'ARCH=lkl', 'O=' + str(kernel), 'olddefconfig'], env=env)
     tools = kernel / 'tools/lkl'
     run(['make', '-C', source / 'tools/lkl', '-j', args.jobs,
         tools / 'liblkl.a', tools / 'lib/hijack/liblkl-hijack.so'], env=env)
@@ -227,6 +259,10 @@ def build_artifacts(args):
         'library_sha256': hashlib.sha256((tools / 'liblkl.a').read_bytes()).hexdigest()}
     if args.config_fragment:
         proof['config_fragment'] = args.config_fragment.as_posix()
+    if prelude:
+        proof['kconfig_prelude'] = str(prelude.relative_to(ROOT))
+        proof['kconfig_prelude_sha256'] = hashlib.sha256(prelude.read_bytes()).hexdigest()
+        proof['kconfig_root_sha256'] = hashlib.sha256(config_root.read_bytes()).hexdigest()
     (build / 'native-linux.json').write_text(json.dumps(proof, indent=2) + '\n')
     print('Native Linux artifacts and protocol provenance:', build / 'native-linux.json')
 
