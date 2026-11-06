@@ -18,6 +18,8 @@ import xml.etree.ElementTree as ET
 LINUX_PROTOCOL_SELFTESTS = (
     "linux-original-sk-connect-zero-addr", "linux-original-tcp-inq-ipv4",
     "linux-original-tcp-inq-ipv6", "linux-original-reject-host-only",
+    "linux-original-net-reuseaddr_conflict", "linux-original-net-sk_bind_sendto_listen",
+    "linux-original-net-bind_timewait", "linux-original-net-bind_wildcard",
 )
 
 LINUX_AF_UNIX_SELFTESTS = (

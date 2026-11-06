@@ -554,7 +554,17 @@ FILE *__wrap_fopen(const char *path, const char *mode)
 }
 int __wrap_close(int fd)
 {
-    if (is_network(fd)) { network_fds[fd] = 0; has_input[fd] = 0; }
+    if (is_network(fd)) {
+        /* Preserve original close ordering, including the native FIN and
+         * TIME_WAIT transition, before releasing its host RPC transport. */
+        unsigned char data[MS_MAX];
+        struct ms_message m = {.operation = MS_CLOSE};
+        long result = exchange(fd, &m, data, NULL);
+        int error = errno;
+        network_fds[fd] = 0; has_input[fd] = 0;
+        syscall(SYS_close, fd); errno = error;
+        return (int)result;
+    }
     return (int)syscall(SYS_close, fd);
 }
 #ifdef KER_MPTCP_DIAG_PRELOAD
