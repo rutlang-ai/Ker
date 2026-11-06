@@ -23,6 +23,8 @@ mmap 的大 write 通过有界的真实 native short write 传输。sendfile 的
 
 resident server 复用少量常驻 native task，结束通道时关闭 socket/输入文件并返回 root namespace。这样完整脚本超过 6000 次通道访问不会反复创建、销毁 LKL host task，也不会由空闲任务持有被删除的 namespace。SIGPIPE 在原调用者执行；共享内核 owner 返回实际 EPIPE。
 
+STOP 要求 native socket 已归零，先排入真实应答再停止接收连接，并主动唤醒闲置的 host 控制通道。worker 返回 root namespace 后逐个退出，避免由未关闭的控制连接或并发 task 退役阻塞 owner 收尾。`linux-mptcp-fixture-shutdown` 在 8 条已进入 Linux 的控制连接持续保持打开时验证 EOF、正常 kernel/worker 退出和零 outstanding；这是 fixture 生命周期对照，不增加原版 TAP 场景数量。
+
 ## 证据与回归
 
 runner 要求精确的 68 项 TAP、全部文件比较、真实 ICMP/nft/policy-routing 活动、native MPTCP 协商与 TCP fallback，以及超过 4096 次通道访问且少于 64 个 worker 槽位。最后必须删除全部 6 个 namespace、socket 归零、内核和 DPDK worker 正常停止、packet outstanding 归零。

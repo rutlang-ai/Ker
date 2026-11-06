@@ -31,7 +31,7 @@
 /* A thread per socket preserves blocking accept/connect/read on one original
  * kernel. Only the harness transport runs in the host; all IP socket syscalls
  * below go through the real POSIX facade. No fork occurs in the kernel owner. */
-struct client { int host, native, ns, input, upload; size_t input_size, uploaded;
+struct client { int host, native, ns, input, upload, retire; size_t input_size, uploaded;
     pid_t pid; atomic_int active, finished; pthread_t thread; pthread_cond_t work; };
 static struct client clients[4096];
 static unsigned clients_count;
@@ -81,7 +81,7 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     if (m->operation == MS_STOP) {
         if (fd >= 0 || input) { errno = EINVAL; return -1; }
         if (atomic_load(&live)) { errno = EBUSY; return -1; }
-        atomic_store(&stopping, 1); return 0;
+        return 0;
     }
     long control_result;
     if (diag_control(m, data, input, &control_result)) return control_result;
@@ -341,12 +341,20 @@ static void serve_channel(struct client *client)
         ssize_t sent = syscall(SYS_sendmsg, client->host, &msg, MSG_NOSIGNAL);
         if (pass_fd >= 0) close(pass_fd);
         if (sent != (ssize_t)iov.iov_len) break;
+        /* Publish STOP only after its reply is queued. The coordinator may
+         * then close idle control channels without racing this acknowledgement. */
+        if (packet.h.operation == MS_STOP && result == 0) {
+            atomic_store(&stopping, 1); break;
+        }
     }
     if (client->native >= 0) {
         if (close(client->native)) abort();
         atomic_store_explicit(&client->active, 0, memory_order_release); atomic_fetch_sub(&live, 1);
     }
-    close(client->host);
+    pthread_mutex_lock(&clients_lock);
+    syscall(SYS_close, client->host);
+    client->host = -1;
+    pthread_mutex_unlock(&clients_lock);
     if (client->input >= 0) close(client->input);
     if (client->upload >= 0) syscall(SYS_close, client->upload);
     /* A persistent native task must leave the retired namespace before its
@@ -363,7 +371,7 @@ static void *serve(void *argument)
         pthread_mutex_lock(&clients_lock);
         client->host = -1;
         atomic_store_explicit(&client->finished, 1, memory_order_release);
-        while (client->host < 0 && !atomic_load(&stopping))
+        while (client->host < 0 && !client->retire)
             pthread_cond_wait(&client->work, &clients_lock);
         int done = client->host < 0;
         pthread_mutex_unlock(&clients_lock);
@@ -408,7 +416,7 @@ int main(int argc, char **argv)
     if (!call) return 3;
     unsigned long args[6] = {if_nametoindex("lo"), 0, 0, 0, 0, 0};
     if (!args[0] || call(KER_TEST_IF_UP, args) || diag_initialize(call)) return 4;
-    int listener = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+    int listener = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     struct sockaddr_un address = {.sun_family = AF_UNIX}; strcpy(address.sun_path, argv[1]);
     if (listener < 0 || bind(listener, (void *)&address, sizeof(address)) || listen(listener, 16)) return 5;
     while (!atomic_load(&stopping)) {
@@ -418,18 +426,32 @@ int main(int argc, char **argv)
         if (result < 0) { perror("mptcp fixture listener poll"); return 6; }
         if (!result) continue;
         int host = accept(listener, NULL, NULL);
+        if (host < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
         struct ucred peer; socklen_t size = sizeof(peer);
         if (host < 0 || syscall(SYS_getsockopt, host, SOL_SOCKET, SO_PEERCRED, &peer, &size) ||
             start_client(host, -1, -1, peer.pid)) { perror("mptcp fixture client start"); return 7; }
     }
     close(listener); unlink(argv[1]);
     pthread_mutex_lock(&clients_lock);
-    for (unsigned i = 0; i < clients_count; i++) pthread_cond_signal(&clients[i].work);
+    /* STOP requires zero native sockets. An idle administrative RPC channel
+     * can still be held by a caller, so close admission and wake those readers
+     * rather than waiting for a host-side EOF that may never arrive. */
+    for (unsigned i = 0; i < clients_count; i++)
+        if (clients[i].host >= 0) syscall(SYS_shutdown, clients[i].host, SHUT_RDWR);
     pthread_mutex_unlock(&clients_lock);
+    fputs("KER_MPTCP_FIXTURE_CHANNELS_DRAINED\n", stderr);
     for (unsigned i = 0; i < clients_count; i++) {
-        pthread_join(clients[i].thread, NULL);
+        /* Retire one persistent LKL host task at a time. Workers return to
+         * root namespace before receiving their individual exit permission. */
+        pthread_mutex_lock(&clients_lock);
+        clients[i].retire = 1;
+        pthread_cond_signal(&clients[i].work);
+        pthread_mutex_unlock(&clients_lock);
+        int error = pthread_join(clients[i].thread, NULL);
+        if (error) { errno = error; perror("mptcp fixture worker join"); return 11; }
         pthread_cond_destroy(&clients[i].work);
     }
+    fputs("KER_MPTCP_FIXTURE_TASKS_RETIRED\n", stderr);
     if (close(root_namespace)) return 10;
     FILE *stats = fopen(argv[2], "w");
     if (!stats) return 8;

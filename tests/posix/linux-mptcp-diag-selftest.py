@@ -452,6 +452,12 @@ def main():
             finally:
                 if process.poll() is None:
                     kill_tree(process.pid); process.wait()
+                for path, key in ((counts_file, 'native_fixture'), (stats, 'stats')):
+                    if path.exists() and key not in report:
+                        try:
+                            report[key] = json.loads(path.read_text())
+                        except (OSError, ValueError) as error:
+                            report[key + '_read_error'] = str(error)
                 for stream, name in ((out, 'server_stdout'), (err, 'server_stderr')):
                     stream.flush(); stream.seek(0); report[name] = stream.read(); stream.close()
     except BaseException as error:

@@ -27,6 +27,7 @@ LINUX_AF_UNIX_SELFTESTS = (
 )
 
 LINUX_MPTCP_SELFTESTS = (
+    "linux-mptcp-fixture-shutdown",
     "linux-original-mptcp-ipv4-client", "linux-original-mptcp-ipv4-server",
     "linux-original-mptcp-ipv6-client", "linux-original-mptcp-ipv6-server",
     "linux-original-mptcp-pm-netlink",

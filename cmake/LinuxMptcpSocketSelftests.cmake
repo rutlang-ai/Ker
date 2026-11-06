@@ -12,6 +12,15 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
         $<TARGET_OBJECTS:ker-linux-mptcp-socket-proxy>)
     target_link_options(ker-linux-mptcp-socket-control PRIVATE -Wl,--wrap=socket -Wl,--wrap=close)
     target_link_libraries(ker-linux-mptcp-socket-control PRIVATE ${CMAKE_DL_LIBS})
+    add_test(NAME linux-mptcp-fixture-shutdown
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-mptcp-fixture-shutdown.py"
+            --server "$<TARGET_FILE:ker-linux-mptcp-socket-server>"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --pmd-dir "${ker_session_pmd_dir}"
+            --manifest "${ker_native_manifest}"
+            --evidence "${PROJECT_BINARY_DIR}/linux-mptcp-fixture-shutdown.json")
+    set_tests_properties(linux-mptcp-fixture-shutdown PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE
+        LABELS "linux-upstream-control;runtime;dpdk" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     foreach(program sockopt inq)
         add_executable(ker-linux-mptcp-${program} "${mptcp_root}/mptcp_${program}.c"
             $<TARGET_OBJECTS:ker-linux-mptcp-socket-proxy>)
