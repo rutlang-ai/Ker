@@ -2,7 +2,7 @@
 
 直接执行固定 Linux stable 6.12.113 revision `7fdb7c1824a1f9979d648d7ae28ac446bcee9c6e` 的完整默认 `tools/testing/selftests/net/mptcp/mptcp_sockopt.sh`，保留脚本、库、helper 的源码、拓扑、等待、随机数据和全部断言。11 项 TAP 检查均必须通过，不接受 skip、IGNORE、TODO 或不完整计划。
 
-覆盖 IPv4/IPv6 双向传输与 packet mark、两个 SOL_MPTCP socket option 配置，以及五个原版 TCP_INQ 配置。本批补齐完整 shell 入口，既有 helper 配置继续独立记录；完整注册 shell 入口剩余 6 个。TCP-AO 的 24 个注册入口已接入，仍作为内核回归测试执行，其 6 个已知上游 XFAIL 单列、不计通过。
+覆盖 IPv4/IPv6 双向传输与 packet mark、两个 SOL_MPTCP socket option 配置，以及五个原版 TCP_INQ 配置。本批补齐完整 shell 入口，既有 helper 配置继续独立记录；后续迁移已补齐 [10 个完整 shell 入口](linux-mptcp-join.md)。TCP-AO 的 24 个注册入口已接入，仍作为内核回归测试执行，其 6 个已知上游 XFAIL 单列、不计通过。
 
 ## 实际内核拓扑与过滤
 
@@ -18,7 +18,7 @@
 
 `linux-original-mptcp-sockopt-shell.json` 保存固定源码、helper、preload、facade 与工具哈希，完整原版 stdout/stderr、11 项检查、35 条实际内核 ACK 后记录的拓扑操作、负对照 counter 和实际内核活动。销毁 namespace pin 前读取真实 `MPTcpExt`，要求 MP_JOIN SYN 与 ACK 计数非零，验证多地址场景确实执行原版子流握手。缺失能力明确失败，不回退到宿主 IP socket，也不生成替代诊断结果。
 
-原版三个 namespace 和一个负对照 namespace 必须全部删除，socket 归零，native kernel/DPDK worker 正常退出，packet outstanding 归零。流量经导入内核内部 veth/loopback；本批不宣称外部 DPDK 多路径或剩余 `mptcp_join.sh` 故障矩阵已完成。
+原版三个 namespace 和一个负对照 namespace 必须全部删除，socket 归零，native kernel/DPDK worker 正常退出，packet outstanding 归零。流量经导入内核内部 veth/loopback；本批不宣称外部 DPDK 多路径互通通过。[完整 JOIN 故障矩阵](linux-mptcp-join.md)另有 126 项原版检查的运行证据。
 
 ## 重现
 

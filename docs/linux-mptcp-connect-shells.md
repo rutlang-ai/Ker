@@ -29,4 +29,4 @@ runner 要求精确的 68 项 TAP、全部文件比较、真实 ICMP/nft/policy-
 
 每个 CTest 生成同名 JSON、原始 stdout/stderr 和 hash。JSON 包括源码/工具/二进制指纹、原版 TAP、内核操作和 qdisc readback、文件比较、namespace/socket 计数及最终 packet ownership。CI 的 `connect-profile` gate 逐个检查四个入口、JUnit、68 项原版检查和对应 kernel fingerprint，不能用其它入口的通过数抵扣。
 
-至此 MPTCP Makefile 的 10 个完整 shell 入口已完成 9 个，剩余 `mptcp_join.sh` 完整故障矩阵继续单独推进。原版 [TCP-AO](linux-tcp-ao-tests.md) 的 24 个注册入口独立回归。
+[完整 JOIN 故障矩阵](linux-mptcp-join.md)随后通过全部 126 项；MPTCP Makefile 的 10 个完整 shell 入口均已本地跑通。原版 [TCP-AO](linux-tcp-ao-tests.md) 的 24 个注册入口独立回归。

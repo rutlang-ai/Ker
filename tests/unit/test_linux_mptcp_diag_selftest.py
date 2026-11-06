@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -80,6 +81,55 @@ class OriginalDiagEvidenceTests(unittest.TestCase):
         with self.assertRaises(OSError) as caught:
             self.response(wire.HEADER.pack(wire.MAGIC, wire.FILE, 0, 0, 0, 0, -errno.ENOENT))
         self.assertEqual(caught.exception.errno, errno.ENOENT)
+        with self.assertRaises(OSError) as caught:
+            self.response(wire.HEADER.pack(wire.MAGIC, wire.FILE, 0, 0, 0, 0, -errno.EAGAIN))
+        self.assertEqual(caught.exception.errno, errno.EAGAIN)
+
+    def test_rpc_waits_for_a_saturated_host_listener_queue(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = str(Path(temporary) / 'fixture')
+            with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as listener:
+                listener.bind(path); listener.listen(1)
+                queued = []
+                try:
+                    # Fill the real host queue until a nonblocking connect
+                    # observes EAGAIN, then release it after RPC has started.
+                    for _ in range(8):
+                        channel = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                        channel.setblocking(False)
+                        try:
+                            channel.connect(path)
+                        except BlockingIOError:
+                            channel.close()
+                            break
+                        queued.append(channel)
+                    else:
+                        self.fail('host listener queue did not saturate')
+
+                    errors = []
+                    def drain():
+                        try:
+                            time.sleep(0.05)
+                            for _ in queued:
+                                channel, _ = listener.accept(); channel.close()
+                            channel, _ = listener.accept()
+                            with channel:
+                                channel.recv(wire.HEADER.size + wire.MAX)
+                                channel.sendall(wire.HEADER.pack(wire.MAGIC, wire.FILE, 4, 0, 0, 0, 0) + b'real')
+                        except BaseException as error:
+                            errors.append(error)
+
+                    listener.settimeout(2)
+                    thread = threading.Thread(target=drain); thread.start()
+                    try:
+                        with mock.patch.dict('os.environ', KER_MPTCP_SOCKET_CHANNEL=path):
+                            self.assertEqual(wire.rpc(wire.FILE), b'real')
+                    finally:
+                        thread.join(timeout=3)
+                        self.assertFalse(thread.is_alive())
+                        self.assertEqual(errors, [])
+                finally:
+                    for channel in queued: channel.close()
 
     def test_timeout_cleanup_reaches_children_in_separate_sessions(self):
         code = 'import subprocess,sys,time; p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"],start_new_session=True); print(p.pid,flush=True); time.sleep(60)'

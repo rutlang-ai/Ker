@@ -35,12 +35,12 @@ native 诊断读取原始 Linux `MPTcpExt` MIB，并导出 MP_CAPABLE SYN/SYNACK
 ctest --test-dir build-native-on -R '^linux-original-mptcp-' --output-on-failure
 ```
 
-本批使用一条数据路径和一个子流。除[已接入的原版 pm_netlink.sh 默认入口](linux-mptcp-pm-tests.md)、[完整 diag.sh](linux-mptcp-diag-tests.md)、[完整 mptcp_sockopt.sh](linux-mptcp-sockopt-shell.md)、[完整 simult_flows.sh](linux-mptcp-simult-flows.md)和[完整 userspace_pm.sh](linux-mptcp-userspace-pm.md)外，上游剩余 5 个 shell 入口的完整拓扑/参数矩阵仍未完整迁移，包括多地址 PM、MP_JOIN、多子流恢复、故障注入、动态 endpoint/limits 和重复连接等；不能由本批单子流 MP_CAPABLE/DSS 通过推断这些能力完成。独立宿主对端需要支持 MPTCP；不支持时测试失败，不用普通 TCP 成功替代。
+本页的首批互通配置使用一条数据路径和一个子流。后续[完整 connect 入口](linux-mptcp-connect-shells.md)和[完整 JOIN 故障矩阵](linux-mptcp-join.md)已分别通过四组 68 项及 126 项检查；连同 PM、diag、sockopt、simult、userspace PM，10 个默认完整 shell 入口均已本地跑通。独立宿主对端需要支持 MPTCP；不支持时测试失败，不用普通 TCP 成功替代。内部 veth 多路径矩阵与外部 DPDK 多路径互通分别验证。
 
 
 ## 原版路径管理脚本
 
-[pm_netlink.sh 默认入口](linux-mptcp-pm-tests.md)已在常驻导入内核上通过全部 23 项检查，保留原版脚本与工具。其控制面覆盖与本页的数据传输配置分别记录。四个 [connect 完整入口](linux-mptcp-connect-shells.md)已各自通过全部 68 项检查，剩余 `mptcp_join.sh` 完整故障矩阵。
+[pm_netlink.sh 默认入口](linux-mptcp-pm-tests.md)已在常驻导入内核上通过全部 23 项检查，保留原版脚本与工具。其控制面覆盖与本页的数据传输配置分别记录。四个 [connect 完整入口](linux-mptcp-connect-shells.md)已各自通过全部 68 项检查，[完整 JOIN 故障矩阵](linux-mptcp-join.md)也已通过全部 126 项，10 个完整 shell 入口均已本地跑通。
 
 ## 原版 socket 信息与 INQ helper
 
@@ -48,15 +48,15 @@ ctest --test-dir build-native-on -R '^linux-original-mptcp-' --output-on-failure
 
 ## 原版内核内部测试
 
-[MPTCP KUnit](linux-mptcp-kunit-tests.md)在独立测试内核中运行原版 crypto/token 两个 suite，共 5 个用例，覆盖密码学校验与 token 创建、转交、查找、销毁和引用计数边界。生产内核继续关闭 KUnit；这些用例也不抵扣剩余 6 个完整 shell 入口。
+[MPTCP KUnit](linux-mptcp-kunit-tests.md)在独立测试内核中运行原版 crypto/token 两个 suite，共 5 个用例，覆盖密码学校验与 token 创建、转交、查找、销毁和引用计数边界。生产内核继续关闭 KUnit；这些用例与 10 个完整 shell 入口分别统计。
 
 ## 完整原版诊断脚本
 
-[diag.sh](linux-mptcp-diag-tests.md)直接执行完整原版脚本的 29 项检查，使用真实 native Netlink 与 proc 数据验证监听过滤、协商/回退、时间戳、MPTCP 计数、100 组并发连接和清理。当前完整注册脚本剩余 6 个，详见上方清单。
+[diag.sh](linux-mptcp-diag-tests.md)直接执行完整原版脚本的 29 项检查，使用真实 native Netlink 与 proc 数据验证监听过滤、协商/回退、时间戳、MPTCP 计数、100 组并发连接和清理。完整入口清单见 [JOIN 汇总](linux-mptcp-join.md)。
 
 ## 完整原版 socket option 脚本
 
-[mptcp_sockopt.sh](linux-mptcp-sockopt-shell.md)在四对真实 native veth 和三个测试 namespace 上执行原版默认入口的全部 11 项检查；helper 配置与完整脚本分别统计。剩余 6 个完整入口尚未完成。
+[mptcp_sockopt.sh](linux-mptcp-sockopt-shell.md)在四对真实 native veth 和三个测试 namespace 上执行原版默认入口的全部 11 项检查；helper 配置与完整脚本分别统计。完整入口清单见 [JOIN 汇总](linux-mptcp-join.md)。
 
 ## 完整原版同时流量脚本
 
