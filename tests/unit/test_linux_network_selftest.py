@@ -9,6 +9,14 @@ spec.loader.exec_module(runner)
 
 
 class OriginalNetworkCompletionTests(unittest.TestCase):
+    def test_netlink_dump_success_cannot_hide_ignored_mq_notify_failure(self):
+        complete = dict(generic_netlinks=3, mq_opens=1, mq_notifications=1, mq_closes=1,
+                        notified_netlink_closes=1, writes=3, sent=84, reads=2)
+        runner.validate_netlink_dumps(complete)
+        for key in complete:
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                runner.validate_netlink_dumps(dict(complete, **{key: 0}))
+
     def test_macvtap_requires_both_real_writes_and_the_real_invalid_packet_error(self):
         complete = dict(macvtap_opens=3, tun_if_sets=3, macvtap_writes=2, macvtap_bytes=2149,
                         macvtap_write_einval=1, netlinks=12)

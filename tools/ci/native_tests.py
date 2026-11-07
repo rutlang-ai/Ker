@@ -26,6 +26,7 @@ LINUX_PROTOCOL_SELFTESTS = (
 
 LINUX_NET_PROFILE_TESTS = {"linux-original-net-tun", "linux-original-net-reuseport_addr_any"}
 LINUX_MACVTAP_PROFILE_TEST = "linux-original-net-tap"
+LINUX_NETLINK_DUMPS_PROFILE_TEST = "linux-original-net-netlink-dumps"
 
 LINUX_AF_UNIX_SELFTESTS = (
     "linux-original-af-unix-diag_uid", "linux-original-af-unix-msg_oob",
@@ -458,6 +459,36 @@ def run_macvtap_profile(build: Path, junit: Path) -> None:
     summary('Original macvtap: all three original packet/error cases, PASS ' + manifest['fingerprint'])
 
 
+def run_netlink_dumps_profile(build: Path, junit: Path) -> None:
+    name = LINUX_NETLINK_DUMPS_PROFILE_TEST
+    inventory = ctest_inventory(build)
+    require(sum(item['name'] == name for item in inventory) == 1,
+            'Netlink dumps profile must register the complete original entry exactly once')
+    cache = (build / 'CMakeCache.txt').read_text()
+    native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
+                         if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
+    require(native_build, 'Netlink dumps profile has no native kernel path')
+    manifest = json.loads((Path(native_build) / 'native-linux.json').read_text())
+    require(manifest.get('config_fragment') == 'config/native-linux-netlink-dumps.config',
+            'Netlink dumps require the dedicated native mqueue profile')
+    config = (Path(manifest['kernel']) / '.config').read_text().splitlines()
+    require('CONFIG_POSIX_MQUEUE=y' in config, 'Netlink dump reference test requires real native mqueue')
+    result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
+                             '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+    require(junit.is_file(), 'Netlink dumps CTest did not produce JUnit')
+    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    evidence = json.loads((build / (name + '.json')).read_text())
+    native = evidence.get('native_fixture', {})
+    require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
+            evidence.get('fingerprint') == manifest.get('fingerprint') and
+            evidence.get('original', {}).get('cases') == ['global.test_sanity',
+                'global.close_in_progress', 'global.close_with_ref'] and
+            tuple(native.get(k) for k in ('generic_netlinks', 'mq_opens', 'mq_notifications',
+                'mq_closes', 'notified_netlink_closes', 'live')) == (3, 1, 1, 1, 1, 0),
+            'incomplete native Netlink dump/message-queue reference evidence')
+    summary('Original Netlink dumps: three complete lifecycle cases, PASS ' + manifest['fingerprint'])
+
+
 def run_packetdrill_profile(build: Path, junit: Path) -> None:
     name = "linux-original-packetdrill"
     inventory = ctest_inventory(build)
@@ -591,6 +622,7 @@ def run_join_profile(build: Path, junit: Path) -> None:
 
 
 def validate_default_profile_inventory(names: set[str]) -> None:
+    require(LINUX_NETLINK_DUMPS_PROFILE_TEST not in names, 'Netlink dumps require native POSIX mqueue profile')
     require(LINUX_MACVTAP_PROFILE_TEST not in names, 'macvtap requires its fingerprinted driver profile')
     require(not names.intersection(LINUX_NET_PROFILE_TESTS), 'TUN/DCCP tests require their fingerprinted net profile')
     require(LINUX_MPTCP_SOCKOPT_PROFILE_TEST not in names,
@@ -927,8 +959,8 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
-        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
         if len(argv) != 2:
@@ -972,6 +1004,11 @@ def main(argv: list[str]) -> int:
         if len(argv) != 4:
             raise RuntimeError("net-profile requires build directory and JUnit output path")
         run_net_profile(build, Path(argv[3]))
+        return 0
+    if group == "netlink-dumps-profile":
+        if len(argv) != 4:
+            raise RuntimeError("netlink-dumps-profile requires build directory and JUnit output path")
+        run_netlink_dumps_profile(build, Path(argv[3]))
         return 0
     if group == "macvtap-profile":
         if len(argv) != 4:
