@@ -11,14 +11,14 @@
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
 | `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh` 完整入口本地通过；其余 105 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
-| `net/netfilter` | 29 | 尚未逐个接入完整原版入口 |
+| `net/netfilter` | 29 | `conntrack_dump_flush` 完整三项 TAP 本地通过；其余 28 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
 | `net/rds` | 2 | 尚未接入 |
 | 合计 | 310 | 逐个保留原版入口合同，不用 Ker 自编回归抵扣 |
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 78/310，剩余 232；其中 73 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 237 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 79/310，剩余 231；其中 74 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 236 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -124,3 +124,9 @@ Ker 的目标应用包括网关和 WAF，因此优先迁移转发、路由、VLA
 `forwarding/min_max_mtu.sh` 使用同一原生 forwarding 配置，完整执行六项原版测试：普通 IPv4/IPv6 ping、最大/最小 MTU 配置、最大/最小边界流量。实际 veth 的 min/max 为 68/65535，超出边界的四次配置必须返回内核错误。最大 MTU 下的 IPv4/IPv6 原版 ping 分别发送 65507/65487 字节 payload，均收到全部十个回包；降低接口 MTU 后，两个相同包长的原版 ping 必须失败；最小 MTU 下 40 字节 IPv4 payload 必须成功。原版脚本明确不在最小 MTU 下测试 IPv6，保留这一合同，不创造额外通过项。
 
 共 128 条原版拓扑/配置/流量/清理命令，经真实 Netlink 和 ICMP 执行。六项均须明确输出 OK，不能用 XFAIL 或缺失子项抵扣；native socket/packet 必须归零，保留完整脚本缺失后端和无效 VRF 对照。CI 的 forwarding profile 同时强制运行两个完整入口并核对各自的独立 JSON/JUnit。
+
+## Conntrack zone dump/flush
+
+`netfilter/conntrack_dump_flush.c` 在独立 `config/native-linux-conntrack.config` 中完整执行三个原版 TAP case：按 zone dump、清空指定 zone、清空默认 zone，并验证其他 zone 的 IPv4/IPv6 tuple 保留。每项原版 fixture 在四个 zone 中插入八条 tuple；总计 24 次 CT_NEW、15 次 CT_GET、2 次 CT_DELETE，来自三个真实 NETLINK_NETFILTER socket 的 41 次请求、5180 字节。所有 conntrack table、zone filtering、错误及 dump 数据均来自导入 Linux。
+
+原版程序通过原版 libmnl 的真实 socket/Netlink 调用进入已有私有 preload；不修改 C 测试、libmnl 或 Linux 源码。编译保留全部断言和原版 harness fork；执行前后核对 C 源码、Makefile、kselftest 两个头文件与 pinned Git blob。原版缺失 backend 时会全部 SKIP 并退出 0，runner 必须拒绝此路径，要求三个精确 TAP 名称全部通过、无 skip/fail/XFAIL，并要求 socket/packet 归零和 worker 正常退出。这里验证 conntrack 表管理，不将 tuple 插入计成 TCP 连接流量测试。hosted CI/review 单独核对。
