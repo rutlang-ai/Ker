@@ -38,8 +38,10 @@
 #include <linux/if_tun.h>
 #endif
 #ifdef KER_PACKETDRILL_SELFTEST
-#include <linux/filter.h>
 #include <sys/wait.h>
+#endif
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_SOCKET_FILTER_SELFTEST)
+#include <linux/filter.h>
 #endif
 
 /* Only linked into the unchanged upstream helpers. Host fork, pipe, waitpid,
@@ -310,7 +312,7 @@ int __wrap_setsockopt(int fd, int level, int option, const void *value, socklen_
     if (!is_network(fd)) { errno = EBADF; return -1; }
     if (length > MS_MAX) { errno = EOPNOTSUPP; return -1; }
     unsigned char data[MS_MAX]; memcpy(data, value, length);
-#ifdef KER_PACKETDRILL_SELFTEST
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_SOCKET_FILTER_SELFTEST)
     if (level == SOL_SOCKET && option == SO_ATTACH_FILTER) {
         if (length != sizeof(struct sock_fprog)) { errno = EINVAL; return -1; }
         struct sock_fprog program; memcpy(&program, value, sizeof(program));

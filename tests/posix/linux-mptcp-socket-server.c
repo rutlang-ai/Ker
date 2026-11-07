@@ -34,7 +34,7 @@
 #include <linux/sockios.h>
 #include <linux/if_tun.h>
 #endif
-#ifdef KER_PACKETDRILL_SELFTEST
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_SOCKET_FILTER_SELFTEST)
 #include <linux/filter.h>
 #endif
 
@@ -438,7 +438,7 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         *pass_fd = pair[1]; return 0;
     }
     case MS_SETOPT: {
-#ifdef KER_PACKETDRILL_SELFTEST
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_SOCKET_FILTER_SELFTEST)
         if (m->a == SOL_SOCKET && m->b == SO_ATTACH_FILTER) {
             struct sock_fprog program;
             if (input < sizeof(program)) { errno = EINVAL; return -1; }
