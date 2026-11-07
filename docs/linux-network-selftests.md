@@ -4,7 +4,7 @@
 
 | collection | 默认注册入口 | 当前接入范围 |
 | --- | ---: | --- |
-| `net` | 106 | `sk_connect_zero_addr`、四个完整 binding 程序、`reuseport_dualstack`、`sk_so_peek_off`、`tun`、`reuseport_addr_any.sh`、`run_netsocktests`、`tap`；共 11 个入口本地通过 |
+| `net` | 106 | `sk_connect_zero_addr`、四个完整 binding 程序、`reuseport_dualstack`、`sk_so_peek_off`、`tun`、`reuseport_addr_any.sh`、`run_netsocktests`、`tap`、`netlink-dumps`；共 12 个入口本地通过 |
 | `net/af_unix` | 5 | 全部接入 host-backed IPC 兼容性测试，与 imported Linux 分开统计 |
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 74/310，剩余 236；其中 69 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 241 个。`net/` 本目录剩余 95/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 75/310，剩余 235；其中 70 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 240 个。`net/` 本目录剩余 94/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -81,4 +81,19 @@ CI 强制检查专用配置、唯一注册、三个明确 TAP 名称、无 skip 
 
 ```bash
 python3 tools/ci/native_tests.py macvtap-profile build-native-macvtap native-macvtap-ctest.xml
+```
+
+
+## Netlink dump 生命周期
+
+原版 `netlink-dumps.c` 在独立的 `config/native-linux-netlink-dumps.config` 中完整执行三个 TAP 用例：`global.test_sanity`、`global.close_in_progress`、`global.close_with_ref`。前者验证 generic Netlink policy dump 跨两次接收，后两者在 dump 进行中分别直接关闭、带 POSIX 消息队列通知引用关闭。原版源文件、harness 和断言保持不变。
+
+专用配置实际启用 `CONFIG_POSIX_MQUEUE=y`。只有该原版程序的 raw `syscall()` 经私有编译适配转发 `mq_open`、`mq_notify`；宿主传输自身的 syscall 不受影响。runtime 将 facade descriptor 翻译为真实 native descriptor，并构造 Linux `SIGEV_THREAD` 通知，让原版 mqueue 实现获取并保留 Netlink socket 引用。cookie 内容原样传入内核，不在 Ker 中合成通知、dump 或成功返回。内核和依赖源码均无本地修改。
+
+上游未断言 `mq_notify` 的返回值，runner 因此额外要求一次真实成功的通知注册、一条随后实际关闭的被引用 Netlink descriptor，以及消息队列 descriptor 的正常回收。完整证据还要求三次 generic Netlink 创建、三次共 84 字节的原始 dump 请求、两次原始接收，三个准确 TAP 名称和无 skip。缺失 backend 对照必须失败；native live descriptor、outstanding packet 均归零，worker 正常关闭。消息队列名称与上游一致，在独立内核实例结束时回收；不提前 unlink 或改变原版生命周期。
+
+本地完整通过，native fingerprint 为 `130c31bb9c04219ac28071b85d338adb509d2c5227238b3069cd34a023b9c4df`。该程序计一个默认入口，hosted CI/review 另行核对。CI 强制验证专用内核配置、唯一注册、准确 TAP 矩阵、native 引用计数和无 skip 的 JUnit：
+
+```bash
+python3 tools/ci/native_tests.py netlink-dumps-profile build-native-netlink-dumps native-netlink-dumps-ctest.xml
 ```

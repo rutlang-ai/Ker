@@ -43,6 +43,9 @@
  * below go through the real POSIX facade. No fork occurs in the kernel owner. */
 struct client { int host, native, ns, input, upload, retire; size_t input_size, uploaded;
     pid_t pid; atomic_int active, finished; pthread_t thread; pthread_cond_t work;
+#ifdef KER_NETLINK_DUMPS_SELFTEST
+    int message_queue;
+#endif
 #ifdef KER_PACKETDRILL_SELFTEST
     char proc_path[129];
 #endif
@@ -50,6 +53,10 @@ struct client { int host, native, ns, input, upload, retire; size_t input_size, 
 static struct client clients[4096];
 static unsigned clients_count;
 static atomic_ulong channels_opened;
+#ifdef KER_NETLINK_DUMPS_SELFTEST
+static atomic_uint mq_opens, mq_notifications, mq_closes, notified_netlink_closes, generic_netlinks;
+static atomic_int notified_netlink = -1;
+#endif
 #ifdef KER_MACVTAP_SELFTEST
 static atomic_uint macvtap_opens, macvtap_write_einval, macvtap_writes;
 static atomic_ulong macvtap_bytes;
@@ -128,6 +135,21 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     }
     long control_result;
     if (diag_control(m, data, input, &control_result)) return control_result;
+#ifdef KER_NETLINK_DUMPS_SELFTEST
+    if (m->operation == MS_MQ_OPEN) {
+        if (fd >= 0 || !input || input > 256 || data[input - 1] ||
+            strlen((char *)data) + 1 != input) { errno = EINVAL; return -1; }
+        if (select_namespace("", 1, &client->ns)) return -1;
+        client->native = (int)native_call(KER_TEST_MQ_OPEN, (unsigned long)data, m->a, m->b);
+        if (client->native < 0) return -1;
+        int (*kind)(int) = dlsym(RTLD_DEFAULT, "ker_posix_descriptor_kind");
+        if (!kind || kind(client->native) != 3) {
+            close(client->native); client->native = -1; errno = ENOTSUP; return -1;
+        }
+        client->message_queue = 1; atomic_fetch_add(&mq_opens, 1);
+        mark_active(client); return 0;
+    }
+#endif
 #ifdef KER_PACKETDRILL_SELFTEST
     if (m->operation == MS_PROC_OPEN) {
         if (fd >= 0 || !input || data[input - 1]) { errno = EINVAL; return -1; }
@@ -249,16 +271,41 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         if (udp) atomic_fetch_add(&udp_count, 1);
 #endif
         if (netlink) atomic_fetch_add(&diag_netlinks, 1);
+#ifdef KER_NETLINK_DUMPS_SELFTEST
+        if (netlink && m->c == NETLINK_GENERIC) atomic_fetch_add(&generic_netlinks, 1);
+#endif
         if (raw || packet) atomic_fetch_add(&raw_count, 1);
         if (!netlink && m->c == IPPROTO_MPTCP) atomic_fetch_add(&mptcp_count, 1);
         return 0;
     }
     if (fd < 0) { errno = ENOTCONN; return -1; }
     switch (m->operation) {
+#ifdef KER_NETLINK_DUMPS_SELFTEST
+    case MS_NETLINK_HANDLE: {
+        int domain = 0; socklen_t size = sizeof(domain);
+        if (input || getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &domain, &size) || domain != AF_NETLINK) {
+            errno = EINVAL; return -1;
+        }
+        return fd;
+    }
+    case MS_MQ_NOTIFY: {
+        if (!client->message_queue || input != 32) { errno = EINVAL; return -1; }
+        long result = native_call(KER_TEST_MQ_NOTIFY, fd, m->a, (unsigned long)data);
+        if (!result) {
+            atomic_store(&notified_netlink, (int)m->a);
+            atomic_fetch_add(&mq_notifications, 1);
+        }
+        return result;
+    }
+#endif
     case MS_CLOSE: {
         if (input) { errno = EINVAL; return -1; }
         int result = close(fd);
         if (!result) {
+#ifdef KER_NETLINK_DUMPS_SELFTEST
+            if (fd == atomic_load(&notified_netlink)) atomic_fetch_add(&notified_netlink_closes, 1);
+            if (client->message_queue) atomic_fetch_add(&mq_closes, 1);
+#endif
             client->native = -1;
             atomic_store_explicit(&client->active, 0, memory_order_release);
             atomic_fetch_sub(&live, 1);
@@ -598,6 +645,9 @@ static void serve_channel(struct client *client)
     }
     if (client->native >= 0) {
         if (close(client->native)) abort();
+#ifdef KER_NETLINK_DUMPS_SELFTEST
+        if (client->message_queue) atomic_fetch_add(&mq_closes, 1);
+#endif
         atomic_store_explicit(&client->active, 0, memory_order_release); atomic_fetch_sub(&live, 1);
     }
     pthread_mutex_lock(&clients_lock);
@@ -643,6 +693,9 @@ static int start_client(int host, int native, int ns, pid_t pid)
          * through TLS retirement; unrelated channels need no new task. */
         client->host = host; client->native = native; client->ns = ns;
         client->input = -1; client->upload = -1;
+#ifdef KER_NETLINK_DUMPS_SELFTEST
+        client->message_queue = 0;
+#endif
 #ifdef KER_PACKETDRILL_SELFTEST
         client->proc_path[0] = '\0';
 #endif
@@ -747,6 +800,15 @@ int main(int argc, char **argv)
         atomic_load(&tun_queue_einval), atomic_load(&namespace_tcp_active), atomic_load(&namespace_tcp_passive));
 #endif
     extra = network_counts;
+#endif
+#ifdef KER_NETLINK_DUMPS_SELFTEST
+    char mq_counts[1024];
+    snprintf(mq_counts, sizeof(mq_counts),
+        "%s,\"mq_opens\":%u,\"mq_notifications\":%u,\"mq_closes\":%u,"
+        "\"notified_netlink_closes\":%u,\"generic_netlinks\":%u", extra,
+        atomic_load(&mq_opens), atomic_load(&mq_notifications), atomic_load(&mq_closes),
+        atomic_load(&notified_netlink_closes), atomic_load(&generic_netlinks));
+    extra = mq_counts;
 #endif
 #ifdef KER_MACVTAP_SELFTEST
     char macvtap_counts[1024];

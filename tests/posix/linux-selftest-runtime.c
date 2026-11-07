@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <lkl.h>
 #include <lkl/linux/in6.h>
+#include <lkl/asm-generic/siginfo.h>
 
 static atomic_ulong operations[KER_TEST_OPERATION_COUNT];
 static void report_operations(void);
@@ -35,6 +36,29 @@ long ker_linux_selftest_call(unsigned operation, const unsigned long a[6])
     struct ker_fd *entry;
     long result;
     switch (operation) {
+#ifdef KER_NETLINK_DUMPS_SELFTEST
+    case KER_TEST_MQ_OPEN:
+        return export_file(lkl_sys_mq_open((const char *)a[0], (int)a[1], (unsigned)a[2], NULL),
+                           KER_FD_FILE, (int)a[1]);
+    case KER_TEST_MQ_NOTIFY: {
+        /* libc's raw SIGEV_THREAD ABI names a Netlink descriptor, not a
+         * signal. Translate both facade descriptors inside native Linux;
+         * the real mqueue code acquires and retains the socket reference. */
+        struct ker_fd *queue = ker_fd_get((int)a[0]);
+        if (!queue) return -EBADF;
+        struct ker_fd *socket = ker_fd_get((int)a[1]);
+        if (!socket) { ker_fd_put(queue); return -EBADF; }
+        struct lkl_sigevent event = {.sigev_notify = LKL_SIGEV_THREAD,
+            .sigev_signo = socket->native, .sigev_value.sival_ptr = (void *)a[2]};
+        result = lkl_sys_mq_notify(queue->native, &event);
+        ker_fd_put(socket); ker_fd_put(queue);
+        return result;
+    }
+#else
+    case KER_TEST_MQ_OPEN:
+    case KER_TEST_MQ_NOTIFY:
+        return -EOPNOTSUPP;
+#endif
     case KER_TEST_OPEN_MACVTAP: {
         /* macvtap's /dev/tap<ifindex> name is not its allocated minor. Read
          * the real driver's sysfs dev_t in native Linux before making a node

@@ -12,7 +12,7 @@ enum ms_operation { MS_SOCKET = 1, MS_BIND, MS_LISTEN, MS_ACCEPT, MS_CONNECT,
     MS_FILE, MS_PIDS, MS_STATUS, MS_LISTNS, MS_NS_FD, MS_IFINDEX, MS_FILE_CHUNK, MS_SENDFILE,
     MS_INPUT_START, MS_INPUT_WRITE, MS_INPUT_END, MS_DIRECTORY, MS_IFNAME, MS_TUN_OPEN,
     MS_PACKET_SENDV, MS_EPOLL_OPEN, MS_EPOLL_CTL, MS_EPOLL_WAIT, MS_PROC_OPEN, MS_CLOSE = 42,
-    MS_MACVTAP_OPEN = 43 };
+    MS_MACVTAP_OPEN = 43, MS_MQ_OPEN, MS_MQ_NOTIFY, MS_NETLINK_HANDLE };
 struct ms_io { uint32_t data, control, name, flags; };
 _Static_assert(sizeof(struct ms_io) == 16, "private message wire layout");
 struct ms_message {

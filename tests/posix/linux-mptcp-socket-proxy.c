@@ -27,6 +27,9 @@
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
+#ifdef KER_NETLINK_DUMPS_SELFTEST
+#include <linux/mqueue.h>
+#endif
 #if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NETWORK_SELFTEST)
 #include <sys/epoll.h>
 #endif
@@ -124,6 +127,48 @@ static int open_channel(void)
     }
     return fd;
 }
+#ifdef KER_NETLINK_DUMPS_SELFTEST
+/* Only the upstream helper is compiled with syscall=ker_netlink_syscall.
+ * The transport's host syscalls retain their ordinary libc implementation. */
+long ker_netlink_syscall(long operation, ...)
+{
+    va_list ap; va_start(ap, operation);
+    unsigned char data[MS_MAX];
+    if (operation == SYS_mq_open) {
+        const char *name = va_arg(ap, const char *);
+        int flags = va_arg(ap, int);
+        unsigned mode = (unsigned)va_arg(ap, int);
+        int attributes = va_arg(ap, int); /* original syscall passes literal 0 */
+        va_end(ap);
+        if (!name || strlen(name) >= 256 || attributes) { errno = EOPNOTSUPP; return -1; }
+        int fd = open_channel(); if (fd < 0) return -1;
+        strcpy((char *)data, name);
+        struct ms_message m = {.operation = MS_MQ_OPEN, .a = (unsigned)flags, .b = mode,
+                              .length = (uint32_t)strlen(name) + 1};
+        if (exchange(fd, &m, data, NULL) < 0) {
+            int error = errno; syscall(SYS_close, fd); errno = error; return -1;
+        }
+        return remember(fd);
+    }
+    if (operation == SYS_mq_notify) {
+        int fd = va_arg(ap, int);
+        const struct sigevent *event = va_arg(ap, const struct sigevent *);
+        va_end(ap);
+        if (!is_network(fd) || !event || event->sigev_notify != SIGEV_THREAD ||
+            !is_network(event->sigev_signo) || !event->sigev_value.sival_ptr) {
+            errno = EOPNOTSUPP; return -1;
+        }
+        struct ms_message handle = {.operation = MS_NETLINK_HANDLE};
+        long target = exchange(event->sigev_signo, &handle, data, NULL);
+        if (target < 0) return -1;
+        memcpy(data, event->sigev_value.sival_ptr, NOTIFY_COOKIE_LEN);
+        struct ms_message m = {.operation = MS_MQ_NOTIFY, .a = (uint32_t)target,
+                              .length = NOTIFY_COOKIE_LEN};
+        return exchange(fd, &m, data, NULL);
+    }
+    va_end(ap); errno = EOPNOTSUPP; return -1;
+}
+#endif
 int __wrap_socket(int domain, int type, int protocol)
 {
     int packet = 0;

@@ -40,6 +40,7 @@ CONTRACTS = {
     'reuseport_addr_any.sh': (None, 91, 6),
     'run_netsocktests': (None, 2, 0),
     'tap': (3, 12, 0),
+    'netlink-dumps': (3, 3, 0),
 }
 SHELL_HELPERS = {'run_netsocktests': 'socket', 'reuseport_addr_any.sh': 'reuseport_addr_any'}
 MACVTAP_CASES = ['tap.test_packet_valid_udp_gso', 'tap.test_packet_valid_udp_csum',
@@ -101,6 +102,13 @@ def validate_macvtap(native):
             'incomplete native macvtap device/packet/error matrix')
 
 
+def validate_netlink_dumps(native):
+    keys = ('generic_netlinks', 'mq_opens', 'mq_notifications', 'mq_closes', 'notified_netlink_closes')
+    require(tuple(native.get(key) for key in keys) == (3, 1, 1, 1, 1) and
+            (native.get('writes'), native.get('sent'), native.get('reads')) == (3, 84, 2),
+            'original dump close-with-reference did not reach real native mqueue/Netlink operations')
+
+
 def main():
     parser = argparse.ArgumentParser()
     for name in ('server', 'binary', 'control', 'launcher', 'library', 'worker', 'pmd_dir', 'manifest', 'evidence'):
@@ -125,6 +133,11 @@ def main():
         config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
         require({'CONFIG_DUMMY=y', 'CONFIG_MACVLAN=y', 'CONFIG_MACVTAP=y', 'CONFIG_TAP=y',
                  'CONFIG_SYSFS=y'}.issubset(config), 'missing real native macvtap facilities')
+    if args.program == 'netlink-dumps':
+        require(manifest.get('config_fragment') == 'config/native-linux-netlink-dumps.config',
+                'original Netlink dumps require their dedicated native mqueue profile')
+        require('CONFIG_POSIX_MQUEUE=y' in (Path(manifest['kernel']) / '.config').read_text().splitlines(),
+                'missing real native POSIX message queues')
     helper = SHELL_HELPERS.get(args.program, args.program)
     paths = ['tools/testing/selftests/net/' + helper + '.c',
              'tools/testing/selftests/net/Makefile', 'tools/testing/selftests/kselftest.h',
@@ -175,7 +188,7 @@ def main():
             require(report['missing_backend_control']['returncode'] == 0 and
                     report['missing_backend_control']['stdout'].strip() == 'MISSING_BACKEND_REJECTED',
                     'unavailable native backend was not rejected')
-            if args.program in ('reuseport_dualstack', 'sk_so_peek_off', 'tun', 'reuseport_addr_any.sh', 'run_netsocktests', 'tap'):
+            if args.program in ('reuseport_dualstack', 'sk_so_peek_off', 'tun', 'reuseport_addr_any.sh', 'run_netsocktests', 'tap', 'netlink-dumps'):
                 missing = fixture.run_helper([args.binary], environment)
                 report['original_missing_backend_control'] = missing
                 validate_missing_backend(args.program, missing)
@@ -205,6 +218,9 @@ def main():
                     if expected_tap is not None:
                         result['cases'] = tap.tap_result(result)
                         require(len(result['cases']) == expected_tap, 'incomplete original fixture/variant matrix')
+                        if args.program == 'netlink-dumps':
+                            require(result['cases'] == ['global.test_sanity', 'global.close_in_progress', 'global.close_with_ref'],
+                                    'incomplete original Netlink dump lifecycle TAP cases')
                         if args.program == 'tap':
                             require(result['cases'] == MACVTAP_CASES, 'incomplete original macvtap TAP cases')
                     deadline = time.monotonic() + 5
@@ -229,6 +245,8 @@ def main():
                         validate_socket_creation(native)
                     if args.program == 'tap':
                         validate_macvtap(native)
+                    if args.program == 'netlink-dumps':
+                        validate_netlink_dumps(native)
                     require(native.get('dccp_sockets', 0) == (31 if args.program == 'reuseport_addr_any.sh' else 0),
                             'missing native DCCP sockets; a skipped protocol is not a complete shell entry')
                     expected_epoll = {'reuseport_dualstack': (6, 104, 6),
