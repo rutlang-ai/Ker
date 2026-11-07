@@ -1,0 +1,65 @@
+{
+  "program": "conntrack_dump_flush",
+  "status": "PASS_IMPORTED_LINUX",
+  "fingerprint": "candidate",
+  "original": {
+    "returncode": 0,
+    "stdout": "TAP version 13\n1..3\n# Starting 3 tests from 1 test cases.\n#  RUN           conntrack_dump_flush.test_dump_by_zone ...\n#            OK  conntrack_dump_flush.test_dump_by_zone\nok 1 conntrack_dump_flush.test_dump_by_zone\n#  RUN           conntrack_dump_flush.test_flush_by_zone ...\n#            OK  conntrack_dump_flush.test_flush_by_zone\nok 2 conntrack_dump_flush.test_flush_by_zone\n#  RUN           conntrack_dump_flush.test_flush_by_zone_default ...\n#            OK  conntrack_dump_flush.test_flush_by_zone_default\nok 3 conntrack_dump_flush.test_flush_by_zone_default\n# PASSED: 3 / 3 tests passed.\n# Totals: pass:3 fail:0 xfail:0 xpass:0 skip:0 error:0\n",
+    "stderr": "",
+    "cases": [
+      "conntrack_dump_flush.test_dump_by_zone",
+      "conntrack_dump_flush.test_flush_by_zone",
+      "conntrack_dump_flush.test_flush_by_zone_default"
+    ]
+  },
+  "original_missing_backend_control": {
+    "command": [
+      "/tmp/ker-conntrack-cmake/ker-linux-conntrack-dump-flush"
+    ],
+    "returncode": 0,
+    "stdout": "TAP version 13\n1..3\n# Starting 3 tests from 1 test cases.\n#  RUN           conntrack_dump_flush.test_dump_by_zone ...\n#            OK  conntrack_dump_flush.test_dump_by_zone\nok 1 conntrack_dump_flush.test_dump_by_zone # SKIP cannot open netlink_netfilter socket\n#  RUN           conntrack_dump_flush.test_flush_by_zone ...\n#            OK  conntrack_dump_flush.test_flush_by_zone\nok 2 conntrack_dump_flush.test_flush_by_zone # SKIP cannot open netlink_netfilter socket\n#  RUN           conntrack_dump_flush.test_flush_by_zone_default ...\n#            OK  conntrack_dump_flush.test_flush_by_zone_default\nok 3 conntrack_dump_flush.test_flush_by_zone_default # SKIP cannot open netlink_netfilter socket\n# PASSED: 3 / 3 tests passed.\n# Totals: pass:0 fail:0 xfail:0 xpass:0 skip:3 error:0\n",
+    "stderr": "mnl_socket_open: No such file or directory\n#      SKIP      cannot open netlink_netfilter socket\nmnl_socket_open: No such file or directory\n#      SKIP      cannot open netlink_netfilter socket\nmnl_socket_open: No such file or directory\n#      SKIP      cannot open netlink_netfilter socket\n"
+  },
+  "native_fixture": {
+    "sockets": 3,
+    "mptcp": 0,
+    "accepts": 0,
+    "live": 0,
+    "reads": 52,
+    "writes": 41,
+    "received": 8932,
+    "sent": 5180,
+    "infos": 0,
+    "full_info": 0,
+    "inq": 52,
+    "negotiated": 0,
+    "fallback": 0,
+    "fallback_info_eopnotsupp": 0,
+    "fallback_info_enoprotoopt": 0,
+    "channel_slots": 1,
+    "channels_opened": 4,
+    "namespaces_created": 0,
+    "namespaces_deleted": 0,
+    "netlinks": 3,
+    "diag_sends": 0,
+    "diag_receives": 0,
+    "max_live": 1,
+    "raw_sockets": 0,
+    "filter_sets": 0,
+    "filter_gets": 0,
+    "mp_join_syn_rx": 0,
+    "mp_join_ack_rx": 0,
+    "sendfile_calls": 0,
+    "imported_files": 0,
+    "udp_sockets": 0,
+    "epoll_creates": 0,
+    "epoll_controls": 0,
+    "epoll_waits": 0
+  },
+  "stats": {
+    "outstanding": 0,
+    "worker_exit_code": 0,
+    "control_eof": true,
+    "shutdown_timed_out": false
+  }
+}

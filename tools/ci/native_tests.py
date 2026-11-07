@@ -28,6 +28,7 @@ LINUX_PROTOCOL_SELFTESTS = (
 LINUX_NET_PROFILE_TESTS = {"linux-original-net-tun", "linux-original-net-reuseport_addr_any"}
 LINUX_MACVTAP_PROFILE_TEST = "linux-original-net-tap"
 LINUX_NETLINK_DUMPS_PROFILE_TEST = "linux-original-net-netlink-dumps"
+LINUX_CONNTRACK_PROFILE_TEST = "linux-original-netfilter-conntrack-dump-flush"
 LINUX_NETNS_NAME_PROFILE_TEST = "linux-original-net-netns-name"
 LINUX_FORWARDING_PROFILE_TEST = "linux-original-forwarding-router-vid1"
 LINUX_FORWARDING_PROFILE_TESTS = {LINUX_FORWARDING_PROFILE_TEST: "router_vid_1.sh",
@@ -494,6 +495,40 @@ def run_netlink_dumps_profile(build: Path, junit: Path) -> None:
     summary('Original Netlink dumps: three complete lifecycle cases, PASS ' + manifest['fingerprint'])
 
 
+def run_conntrack_profile(build: Path, junit: Path) -> None:
+    name = LINUX_CONNTRACK_PROFILE_TEST
+    require(sum(item['name'] == name for item in ctest_inventory(build)) == 1,
+            'conntrack profile must register the complete original entry exactly once')
+    cache = (build / 'CMakeCache.txt').read_text()
+    native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
+                         if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
+    require(native_build, 'conntrack profile has no native kernel path')
+    manifest = json.loads((Path(native_build) / 'native-linux.json').read_text())
+    config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
+    require(manifest.get('config_fragment') == 'config/native-linux-conntrack.config' and
+            {'CONFIG_NF_CONNTRACK=y', 'CONFIG_NF_CONNTRACK_ZONES=y', 'CONFIG_NF_CT_NETLINK=y'}.issubset(config),
+            'conntrack dump/flush requires real native ctnetlink and zone filtering')
+    result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
+                            '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+    require(junit.is_file(), 'conntrack CTest did not produce JUnit')
+    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    evidence = json.loads((build / (name + '.json')).read_text())
+    require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
+            evidence.get('fingerprint') == manifest.get('fingerprint') and
+            evidence.get('program') == 'conntrack_dump_flush', 'wrong native conntrack evidence')
+    script = Path(__file__).resolve().parents[2] / 'tests/posix/linux-network-selftest.py'
+    spec = importlib.util.spec_from_file_location('conntrack_contract', script)
+    contract = importlib.util.module_from_spec(spec); spec.loader.exec_module(contract)
+    contract.validate_original('conntrack_dump_flush', evidence.get('original', {}))
+    contract.validate_missing_backend('conntrack_dump_flush', evidence.get('original_missing_backend_control', {}))
+    contract.validate_conntrack(evidence.get('native_fixture', {}))
+    stats = evidence.get('stats', {})
+    require(stats.get('outstanding') == 0 and stats.get('worker_exit_code') == 0 and
+            stats.get('control_eof') is True and stats.get('shutdown_timed_out') is False,
+            'native conntrack resources did not stop normally')
+    summary('Original conntrack: complete three-case IPv4/IPv6 zone dump/flush, PASS ' + manifest['fingerprint'])
+
+
 def run_netns_name_profile(build: Path, junit: Path) -> None:
     name = LINUX_NETNS_NAME_PROFILE_TEST
     inventory = ctest_inventory(build)
@@ -691,6 +726,7 @@ def run_join_profile(build: Path, junit: Path) -> None:
 
 
 def validate_default_profile_inventory(names: set[str]) -> None:
+    require(LINUX_CONNTRACK_PROFILE_TEST not in names, 'conntrack requires its native zone profile')
     require(not set(LINUX_FORWARDING_PROFILE_TESTS) & names, 'forwarding shell requires native multipath profile')
     require(LINUX_NETNS_NAME_PROFILE_TEST not in names, 'namespace-name shell requires native dummy profile')
     require(LINUX_NETLINK_DUMPS_PROFILE_TEST not in names, 'Netlink dumps require native POSIX mqueue profile')
@@ -1030,8 +1066,8 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "netns-name-profile", "forwarding-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
-        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile|netns-name-profile|forwarding-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "netns-name-profile", "forwarding-profile", "conntrack-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile|netns-name-profile|forwarding-profile|conntrack-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
         if len(argv) != 2:
@@ -1075,6 +1111,11 @@ def main(argv: list[str]) -> int:
         if len(argv) != 4:
             raise RuntimeError("net-profile requires build directory and JUnit output path")
         run_net_profile(build, Path(argv[3]))
+        return 0
+    if group == "conntrack-profile":
+        if len(argv) != 4:
+            raise RuntimeError("conntrack-profile requires build directory and JUnit output path")
+        run_conntrack_profile(build, Path(argv[3]))
         return 0
     if group == "forwarding-profile":
         if len(argv) != 4:

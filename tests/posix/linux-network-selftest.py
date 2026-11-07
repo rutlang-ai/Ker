@@ -41,15 +41,22 @@ CONTRACTS = {
     'run_netsocktests': (None, 2, 0),
     'tap': (3, 12, 0),
     'netlink-dumps': (3, 3, 0),
+    'conntrack_dump_flush': (3, 3, 0),
 }
 SHELL_HELPERS = {'run_netsocktests': 'socket', 'reuseport_addr_any.sh': 'reuseport_addr_any'}
 MACVTAP_CASES = ['tap.test_packet_valid_udp_gso', 'tap.test_packet_valid_udp_csum',
                  'tap.test_packet_crash_tap_invalid_eth_proto']
+CONNTRACK_CASES = ['conntrack_dump_flush.test_dump_by_zone',
+                   'conntrack_dump_flush.test_flush_by_zone',
+                   'conntrack_dump_flush.test_flush_by_zone_default']
 
 
 def validate_original(program, result):
     """An exit code alone permits sk_so_peek_off's all-unsupported path."""
-    if program == 'run_netsocktests':
+    if program == 'conntrack_dump_flush':
+        require(tap.tap_result(result) == CONNTRACK_CASES,
+                'incomplete original conntrack zone dump/flush TAP matrix')
+    elif program == 'run_netsocktests':
         require(result['stdout'].splitlines() == ['--------------------', 'running socket test',
                 '--------------------', '[PASS]'] and not result['stderr'],
                 'incomplete original socket creation shell')
@@ -109,11 +116,21 @@ def validate_netlink_dumps(native):
             'original dump close-with-reference did not reach real native mqueue/Netlink operations')
 
 
+def validate_conntrack(native):
+    # Each original fixture inserts eight IPv4/IPv6 tuples in four zones:
+    # 24 CT_NEW, 15 CT_GET and two CT_DELETE requests across its three cases.
+    require(tuple(native.get(k) for k in ('sockets', 'netlinks', 'writes', 'sent', 'live',
+                'accepts', 'mptcp', 'raw_sockets', 'udp_sockets')) == (3, 3, 41, 5180, 0, 0, 0, 0, 0) and
+            native.get('reads', 0) >= 41,
+            'incomplete native conntrack insert/dump/zone-flush matrix')
+
+
 def main():
     parser = argparse.ArgumentParser()
     for name in ('server', 'binary', 'control', 'launcher', 'library', 'worker', 'pmd_dir', 'manifest', 'evidence'):
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
     parser.add_argument('--program', choices=CONTRACTS, required=True)
+    parser.add_argument('--preload', type=Path)
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if not args.inside:
@@ -121,6 +138,13 @@ def main():
                                *sys.argv[1:], '--inside']).returncode
     manifest = json.loads(args.manifest.read_text())
     source = Path(manifest['source'])
+    if args.program == 'conntrack_dump_flush':
+        require(args.preload and args.preload.is_file() and
+                manifest.get('config_fragment') == 'config/native-linux-conntrack.config',
+                'original conntrack entry requires its native profile and libc socket transport')
+        config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
+        require({'CONFIG_NF_CONNTRACK=y', 'CONFIG_NF_CONNTRACK_ZONES=y',
+                 'CONFIG_NF_CT_NETLINK=y'}.issubset(config), 'missing real native conntrack facilities')
     profile_program = args.program in ('tun', 'reuseport_addr_any.sh')
     if profile_program:
         require(manifest.get('config_fragment') == 'config/native-linux-net-selftests.config',
@@ -139,8 +163,9 @@ def main():
         require('CONFIG_POSIX_MQUEUE=y' in (Path(manifest['kernel']) / '.config').read_text().splitlines(),
                 'missing real native POSIX message queues')
     helper = SHELL_HELPERS.get(args.program, args.program)
-    paths = ['tools/testing/selftests/net/' + helper + '.c',
-             'tools/testing/selftests/net/Makefile', 'tools/testing/selftests/kselftest.h',
+    collection = 'tools/testing/selftests/net/' + ('netfilter/' if args.program == 'conntrack_dump_flush' else '')
+    paths = [collection + helper + '.c',
+             collection + 'Makefile', 'tools/testing/selftests/kselftest.h',
              'tools/testing/selftests/kselftest_harness.h']
     if args.program in SHELL_HELPERS:
         paths += ['tools/testing/selftests/net/' + args.program]
@@ -188,8 +213,12 @@ def main():
             require(report['missing_backend_control']['returncode'] == 0 and
                     report['missing_backend_control']['stdout'].strip() == 'MISSING_BACKEND_REJECTED',
                     'unavailable native backend was not rejected')
-            if args.program in ('reuseport_dualstack', 'sk_so_peek_off', 'tun', 'reuseport_addr_any.sh', 'run_netsocktests', 'tap', 'netlink-dumps'):
-                missing = fixture.run_helper([args.binary], environment)
+            child_environment = dict(environment)
+            if args.program == 'conntrack_dump_flush':
+                child_environment['LD_PRELOAD'] = str(args.preload)
+                report['preload_sha256'] = hashlib.sha256(args.preload.read_bytes()).hexdigest()
+            if args.program in ('reuseport_dualstack', 'sk_so_peek_off', 'tun', 'reuseport_addr_any.sh', 'run_netsocktests', 'tap', 'netlink-dumps', 'conntrack_dump_flush'):
+                missing = fixture.run_helper([args.binary], child_environment)
                 report['original_missing_backend_control'] = missing
                 validate_missing_backend(args.program, missing)
             with (root / 'server.stdout').open('w+') as out, (root / 'server.stderr').open('w+') as err:
@@ -202,7 +231,7 @@ def main():
                     while not channel.exists():
                         require(process.poll() is None and time.monotonic() < deadline, 'resident kernel startup failed')
                         time.sleep(0.01)
-                    child = subprocess.Popen(command, cwd=stage, env=environment, stdout=subprocess.PIPE,
+                    child = subprocess.Popen(command, cwd=stage, env=child_environment, stdout=subprocess.PIPE,
                                              stderr=subprocess.PIPE, text=True, start_new_session=True)
                     try:
                         stdout, stderr = child.communicate(timeout=300)
@@ -223,6 +252,9 @@ def main():
                                     'incomplete original Netlink dump lifecycle TAP cases')
                         if args.program == 'tap':
                             require(result['cases'] == MACVTAP_CASES, 'incomplete original macvtap TAP cases')
+                        if args.program == 'conntrack_dump_flush':
+                            require(result['cases'] == CONNTRACK_CASES,
+                                    'incomplete original conntrack zone dump/flush TAP cases')
                     deadline = time.monotonic() + 5
                     while True:
                         try:
@@ -247,6 +279,8 @@ def main():
                         validate_macvtap(native)
                     if args.program == 'netlink-dumps':
                         validate_netlink_dumps(native)
+                    if args.program == 'conntrack_dump_flush':
+                        validate_conntrack(native)
                     require(native.get('dccp_sockets', 0) == (31 if args.program == 'reuseport_addr_any.sh' else 0),
                             'missing native DCCP sockets; a skipped protocol is not a complete shell entry')
                     expected_epoll = {'reuseport_dualstack': (6, 104, 6),
