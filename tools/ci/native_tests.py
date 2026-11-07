@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import ast
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -28,6 +29,7 @@ LINUX_NET_PROFILE_TESTS = {"linux-original-net-tun", "linux-original-net-reusepo
 LINUX_MACVTAP_PROFILE_TEST = "linux-original-net-tap"
 LINUX_NETLINK_DUMPS_PROFILE_TEST = "linux-original-net-netlink-dumps"
 LINUX_NETNS_NAME_PROFILE_TEST = "linux-original-net-netns-name"
+LINUX_FORWARDING_PROFILE_TEST = "linux-original-forwarding-router-vid1"
 
 LINUX_AF_UNIX_SELFTESTS = (
     "linux-original-af-unix-diag_uid", "linux-original-af-unix-msg_oob",
@@ -524,6 +526,34 @@ def run_netns_name_profile(build: Path, junit: Path) -> None:
     summary('Original namespace names: complete move/conflict/rename/alternative-name shell, PASS ' + manifest['fingerprint'])
 
 
+def run_forwarding_profile(build: Path, junit: Path) -> None:
+    name = LINUX_FORWARDING_PROFILE_TEST
+    require(sum(item['name'] == name for item in ctest_inventory(build)) == 1,
+            'forwarding profile must register the complete original shell exactly once')
+    cache = (build / 'CMakeCache.txt').read_text()
+    native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
+                         if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
+    require(native_build, 'forwarding profile has no native kernel path')
+    manifest = json.loads((Path(native_build) / 'native-linux.json').read_text())
+    require(manifest.get('config_fragment') == 'config/native-linux-forwarding.config' and
+            'CONFIG_IP_ROUTE_MULTIPATH=y' in (Path(manifest['kernel']) / '.config').read_text().splitlines(),
+            'forwarding shell requires its native multipath routing profile')
+    result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
+                            '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+    require(junit.is_file(), 'forwarding CTest did not produce JUnit')
+    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    evidence = json.loads((build / (name + '.json')).read_text())
+    require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
+            evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native forwarding evidence')
+    # Use the same traffic/cleanup contract for local execution and uploaded CI
+    # evidence, rather than treating an exit code or a skipped shell as proof.
+    script = Path(__file__).resolve().parents[2] / 'tests/posix/linux-forwarding-selftest.py'
+    spec = importlib.util.spec_from_file_location('forwarding_contract', script)
+    contract = importlib.util.module_from_spec(spec); spec.loader.exec_module(contract)
+    contract.validate_evidence(evidence)
+    summary('Original VLAN 1 forwarding: both IPv4/IPv6 with ten replies each, PASS ' + manifest['fingerprint'])
+
+
 def run_packetdrill_profile(build: Path, junit: Path) -> None:
     name = "linux-original-packetdrill"
     inventory = ctest_inventory(build)
@@ -657,6 +687,7 @@ def run_join_profile(build: Path, junit: Path) -> None:
 
 
 def validate_default_profile_inventory(names: set[str]) -> None:
+    require(LINUX_FORWARDING_PROFILE_TEST not in names, 'forwarding shell requires native multipath profile')
     require(LINUX_NETNS_NAME_PROFILE_TEST not in names, 'namespace-name shell requires native dummy profile')
     require(LINUX_NETLINK_DUMPS_PROFILE_TEST not in names, 'Netlink dumps require native POSIX mqueue profile')
     require(LINUX_MACVTAP_PROFILE_TEST not in names, 'macvtap requires its fingerprinted driver profile')
@@ -995,8 +1026,8 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "netns-name-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
-        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile|netns-name-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "netns-name-profile", "forwarding-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile|netns-name-profile|forwarding-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
         if len(argv) != 2:
@@ -1040,6 +1071,11 @@ def main(argv: list[str]) -> int:
         if len(argv) != 4:
             raise RuntimeError("net-profile requires build directory and JUnit output path")
         run_net_profile(build, Path(argv[3]))
+        return 0
+    if group == "forwarding-profile":
+        if len(argv) != 4:
+            raise RuntimeError("forwarding-profile requires build directory and JUnit output path")
+        run_forwarding_profile(build, Path(argv[3]))
         return 0
     if group == "netns-name-profile":
         if len(argv) != 4:
