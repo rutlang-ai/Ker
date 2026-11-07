@@ -11,14 +11,14 @@
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
 | `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh` 完整入口本地通过；其余 105 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
-| `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh` 完整入口本地通过；其余 26 个尚未逐个接入 |
+| `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh` 完整入口本地通过；其余 25 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
 | `net/rds` | 2 | 尚未接入 |
 | 合计 | 310 | 逐个保留原版入口合同，不用 Ker 自编回归抵扣 |
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 81/310，剩余 229；其中 76 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 234 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 82/310，剩余 228；其中 77 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 233 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -149,3 +149,14 @@ Ker 的目标应用包括网关和 WAF，因此优先迁移转发、路由、VLA
 独立控制程序验证真实 UDP 与宿主 pipe 的超时、单方/双方就绪、select 写就绪、HUP、POLLNVAL/EBADF，以及缺失 backend 时拒绝。原版 shell 有意忽略 PMTU 探测期间 socat 的退出状态；保留其 stderr，只接受有实际 native syscall 计数佐证的 EMSGSIZE/ECONNREFUSED，并继续要求两组完整数据断言。没有修改 Linux 分片、PMTU 或 conntrack 行为。
 
 本地完整入口和控制通过，native fingerprint `43382ec08169bba6733c7d50bf548985c20ed5df2b81b1bc4c004d305a6f7906`。五个 namespace 均删除，live socket/outstanding packet 归零，worker 正常退出。CI 的 `ipip-profile` gate 检查实际内核配置、唯一注册、无 skip 的 JUnit、匹配 fingerprint 的 JSON 与同一完整证据合同；hosted CI/review 资格另行确认。
+
+
+## 反向路径过滤与 VRF
+
+完整原版 `netfilter/rpath.sh` 在独立 `config/native-linux-rpath-selftests.config` 中运行，强制原版 iptables-legacy、ip6tables-legacy 和 nft 三套工具全部参与。保留普通接口与 VRF 两轮、IPv4/IPv6 的正常/反向路径异常流量、原版 ping 超时、全部正向/反向匹配和 FIB 计数断言，不修改上游脚本或 Linux 实现。
+
+该配置启用 dummy、双栈 legacy raw/rpfilter、nft inet/FIB 和 `CONFIG_IP_ROUTE_MULTIPATH`。固定 Linux 的 `fib_info_nh_uses_dev()` 只有在 MULTIPATH 分支使用 `nhc_l3mdev_matches_dev()`，因此这是完整 IPv4 VRF 验证需要的实际内核配置。配置缺失时，CI 的 CMake/manifest gate 必须拒绝；不修改原版 rpfilter 判断或跳过 VRF。
+
+普通拓扑、地址、邻居、VRF 与规则均由原版工具经 native socket 执行；仅跨 namespace 的 veth fd 和 proc/sysctl 使用既有 runtime 适配器。原版 iputils 产生的特定 source-device warning 由 runner 原样记录，并检查实际 native 源地址、全部原版结果及真实规则计数；其他错误仍拒绝。
+
+本地完整入口通过，native fingerprint `367d168f2003a7a7194c5251918d3653d4f856dcf0b498e4b7c26214856ecca6`。额外证据合同核对 8 次探测、16 次 legacy raw 规则计数读取、8 次 nft 双栈 FIB 计数读取，以及四次清零、原版 VRF 转换顺序。两个 namespace 均删除，native live socket/outstanding packet 为零，worker 正常退出。缺失 backend 的原版脚本必须失败或跳过，不能计为成功。CI 的 `rpath-profile` gate 要求完整唯一入口、无 skip 的 JUnit、实际配置和相同 fingerprint 的 JSON；最终 hosted CI/review 资格单独确认。
