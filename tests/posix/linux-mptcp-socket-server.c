@@ -53,6 +53,9 @@ struct client { int host, native, ns, input, upload, retire; size_t input_size, 
 static struct client clients[4096];
 static unsigned clients_count;
 static atomic_ulong channels_opened;
+#ifdef KER_IPIP_SELFTEST
+static atomic_uint native_emsgsize, native_econnrefused;
+#endif
 #ifdef KER_NETLINK_DUMPS_SELFTEST
 static atomic_uint mq_opens, mq_notifications, mq_closes, notified_netlink_closes, generic_netlinks;
 static atomic_int notified_netlink = -1;
@@ -624,6 +627,10 @@ static void serve_channel(struct client *client)
         int pass_fd = -1;
         long result = dispatch(client, &packet.h, packet.data, &pass_fd);
         packet.h.result = result < 0 ? -errno : result;
+#ifdef KER_IPIP_SELFTEST
+        if (packet.h.result == -EMSGSIZE) atomic_fetch_add(&native_emsgsize, 1);
+        if (packet.h.result == -ECONNREFUSED) atomic_fetch_add(&native_econnrefused, 1);
+#endif
         struct iovec iov = {&packet, sizeof(packet.h) + packet.h.length};
         union { struct cmsghdr align; char data[CMSG_SPACE(sizeof(int))]; } control;
         struct msghdr msg = {.msg_iov = &iov, .msg_iovlen = 1};
@@ -800,6 +807,13 @@ int main(int argc, char **argv)
         atomic_load(&tun_queue_einval), atomic_load(&namespace_tcp_active), atomic_load(&namespace_tcp_passive));
 #endif
     extra = network_counts;
+#endif
+#ifdef KER_IPIP_SELFTEST
+    char ipip_counts[1024];
+    snprintf(ipip_counts, sizeof(ipip_counts),
+        "%s,\"native_emsgsize\":%u,\"native_econnrefused\":%u", extra,
+        atomic_load(&native_emsgsize), atomic_load(&native_econnrefused));
+    extra = ipip_counts;
 #endif
 #ifdef KER_NETLINK_DUMPS_SELFTEST
     char mq_counts[1024];
