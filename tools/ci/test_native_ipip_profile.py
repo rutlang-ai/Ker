@@ -12,11 +12,15 @@ import native_tests
 class IpipProfileTests(unittest.TestCase):
     def test_candidate_bound_native_ipip_gate(self):
         fixture = Path(__file__).resolve().parents[2] / 'tests/unit/ipip-mtu-transcript.json'
-        for mutation in ('complete', 'missing-entry', 'duplicate-entry', 'wrong-profile', 'missing-nat',
-                         'skipped', 'wrong-fingerprint', 'failed-evidence', 'missing-counter', 'leaked-namespace'):
+        for mutation in ('complete', 'missing-entry', 'duplicate-entry', 'missing-control', 'skipped-control',
+                         'wrong-profile', 'missing-nat', 'skipped', 'wrong-fingerprint', 'failed-evidence',
+                         'missing-counter', 'leaked-namespace'):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary); name = native_tests.LINUX_IPIP_PROFILE_TEST
+                control = 'linux-mixed-poll-timeout-control'
                 inventory = [] if mutation == 'missing-entry' else [dict(name=name)]
+                if mutation != 'missing-control':
+                    inventory.append(dict(name=control))
                 if mutation == 'duplicate-entry':
                     inventory.append(dict(name=name))
                 (root / 'CMakeCache.txt').write_text(f'KER_NATIVE_LINUX_BUILD:PATH={root}\n')
@@ -28,8 +32,10 @@ class IpipProfileTests(unittest.TestCase):
                 if mutation == 'missing-nat':
                     options.remove('CONFIG_NET_IPIP=y')
                 (root / '.config').write_text('\n'.join(options) + '\n')
-                junit = root / 'junit.xml'; junit.write_text(f'<testsuite><testcase name="{name}">' +
-                    ('<skipped/>' if mutation == 'skipped' else '') + '</testcase></testsuite>')
+                cases = f'<testcase name="{name}">' + ('<skipped/>' if mutation == 'skipped' else '') + '</testcase>'
+                if mutation != 'missing-control':
+                    cases += f'<testcase name="{control}">' + ('<skipped/>' if mutation == 'skipped-control' else '') + '</testcase>'
+                junit = root / 'junit.xml'; junit.write_text('<testsuite>' + cases + '</testsuite>')
                 evidence = json.loads(fixture.read_text()); evidence['fingerprint'] = 'candidate'
                 if mutation == 'wrong-fingerprint':
                     evidence['fingerprint'] = 'other'

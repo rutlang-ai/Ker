@@ -27,6 +27,7 @@
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <sys/time.h>
+#include "mixed-poll-timeout.h"
 #include <unistd.h>
 #ifdef KER_NETLINK_DUMPS_SELFTEST
 #include <linux/mqueue.h>
@@ -735,8 +736,7 @@ static int mixed_select(int nfds, fd_set *reads, fd_set *writes, fd_set *excepts
     if (timeout) {
         clock_gettime(CLOCK_MONOTONIC, &after);
         long long used = (after.tv_sec - before.tv_sec) * 1000000LL + (after.tv_nsec - before.tv_nsec) / 1000;
-        long long remaining = budget > used ? budget - used : 0;
-        timeout->tv_sec = remaining / 1000000; timeout->tv_usec = remaining % 1000000;
+        mixed_poll_update_timeout(timeout, budget, used, result);
     }
     if (result < 0) return -1;
     for (nfds_t i = 0; i < count; i++) if (fds[i].revents & POLLNVAL) { errno = EBADF; return -1; }

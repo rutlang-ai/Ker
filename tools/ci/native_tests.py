@@ -568,7 +568,9 @@ def run_rpath_profile(build: Path, junit: Path) -> None:
 
 def run_ipip_profile(build: Path, junit: Path) -> None:
     name = LINUX_IPIP_PROFILE_TEST
-    require(sum(item['name'] == name for item in ctest_inventory(build)) == 1,
+    control = 'linux-mixed-poll-timeout-control'
+    require(sum(item['name'] == name for item in ctest_inventory(build)) == 1 and
+            sum(item['name'] == control for item in ctest_inventory(build)) == 1,
             'IPIP profile must register the complete original entry exactly once')
     cache = (build / 'CMakeCache.txt').read_text()
     native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
@@ -581,9 +583,9 @@ def run_ipip_profile(build: Path, junit: Path) -> None:
              'CONFIG_IP_NF_IPTABLES=y', 'CONFIG_IP_NF_FILTER=y', 'CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y'}.issubset(config),
             'IPIP shell requires its real native tunnel/conntrack profile')
     result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
-                            '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+                            '--output-junit', str(junit), '--parallel', '1', '-R', '^(' + name + '|' + control + ')$'], check=False)
     require(junit.is_file(), 'IPIP CTest did not produce JUnit')
-    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    report_junit(junit, expected={name, control}, required={name, control}, ctest_returncode=result.returncode)
     evidence = json.loads((build / (name + '.json')).read_text())
     require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
             evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native IPIP evidence')
