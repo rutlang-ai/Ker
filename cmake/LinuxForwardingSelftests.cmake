@@ -7,15 +7,22 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_forwardin
     foreach(wrap IN LISTS diag_wraps)
         target_compile_definitions(ker-linux-forwarding-preload PRIVATE "__wrap_${wrap}=${wrap}")
     endforeach()
-    add_test(NAME linux-original-forwarding-router-vid1
-        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-forwarding-selftest.py"
-            --server "$<TARGET_FILE:ker-linux-network-server>"
-            --preload "$<TARGET_FILE:ker-linux-forwarding-preload>" --tools "${KER_MPTCP_DIAG_TOOLS_DIR}"
-            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
-            --worker "$<TARGET_FILE:ker-io-worker>" --pmd-dir "${ker_session_pmd_dir}"
-            --manifest "${ker_native_manifest}"
-            --evidence "${PROJECT_BINARY_DIR}/linux-original-forwarding-router-vid1.json")
-    set_tests_properties(linux-original-forwarding-router-vid1 PROPERTIES TIMEOUT 240 RUN_SERIAL TRUE
-        LABELS "linux-upstream;original-linux;protocol-selftest;dpdk;forwarding"
-        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    foreach(program router_vid_1.sh min_max_mtu.sh)
+        if(program STREQUAL "router_vid_1.sh")
+            set(suffix router-vid1)
+        else()
+            set(suffix mtu)
+        endif()
+        add_test(NAME linux-original-forwarding-${suffix}
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-forwarding-selftest.py"
+                --program "${program}" --server "$<TARGET_FILE:ker-linux-network-server>"
+                --preload "$<TARGET_FILE:ker-linux-forwarding-preload>" --tools "${KER_MPTCP_DIAG_TOOLS_DIR}"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker>" --pmd-dir "${ker_session_pmd_dir}"
+                --manifest "${ker_native_manifest}"
+                --evidence "${PROJECT_BINARY_DIR}/linux-original-forwarding-${suffix}.json")
+        set_tests_properties(linux-original-forwarding-${suffix} PROPERTIES TIMEOUT 240 RUN_SERIAL TRUE
+            LABELS "linux-upstream;original-linux;protocol-selftest;dpdk;forwarding"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    endforeach()
 endif()
