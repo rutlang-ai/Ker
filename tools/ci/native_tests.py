@@ -29,6 +29,7 @@ LINUX_NET_PROFILE_TESTS = {"linux-original-net-tun", "linux-original-net-reusepo
 LINUX_MACVTAP_PROFILE_TEST = "linux-original-net-tap"
 LINUX_NETLINK_DUMPS_PROFILE_TEST = "linux-original-net-netlink-dumps"
 LINUX_RPATH_PROFILE_TEST = "linux-original-netfilter-rpath"
+LINUX_RPATH_REALTIME_TEST = "rpath-realtime-wrapper-contract"
 LINUX_IPIP_PROFILE_TEST = "linux-original-netfilter-conntrack-ipip-mtu"
 LINUX_NAT_PROFILE_TEST = "linux-original-netfilter-conntrack-icmp-related"
 LINUX_CONNTRACK_PROFILE_TEST = "linux-original-netfilter-conntrack-dump-flush"
@@ -500,8 +501,10 @@ def run_netlink_dumps_profile(build: Path, junit: Path) -> None:
 
 def run_rpath_profile(build: Path, junit: Path) -> None:
     name = LINUX_RPATH_PROFILE_TEST
-    require(sum(item['name'] == name for item in ctest_inventory(build)) == 1,
-            'rpath profile must register the complete original entry exactly once')
+    inventory = ctest_inventory(build)
+    require(sum(item['name'] == name for item in inventory) == 1 and
+            sum(item['name'] == LINUX_RPATH_REALTIME_TEST for item in inventory) == 1,
+            'rpath profile must register the original entry and realtime ABI control exactly once')
     cache = (build / 'CMakeCache.txt').read_text()
     native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
                          if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
@@ -517,10 +520,12 @@ def run_rpath_profile(build: Path, junit: Path) -> None:
                 'CONFIG_NFT_FIB_IPV6=y', 'CONFIG_NFT_FIB_INET=y',
             }.issubset(config),
             'rpath shell requires its real native rpfilter/fib profile')
+    required = {name, LINUX_RPATH_REALTIME_TEST}
     result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
-                            '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+                            '--output-junit', str(junit), '--parallel', '1', '-R',
+                            '^(' + '|'.join(sorted(required)) + ')$'], check=False)
     require(junit.is_file(), 'rpath CTest did not produce JUnit')
-    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    report_junit(junit, expected=required, required=required, ctest_returncode=result.returncode)
     evidence = json.loads((build / (name + '.json')).read_text())
     require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
             evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native rpath evidence')

@@ -13,6 +13,7 @@
 #include <linux/tcp.h>
 #include <linux/netfilter_ipv4/ip_tables.h>
 #include <linux/netfilter_ipv6/ip6_tables.h>
+#include <limits.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stddef.h>
@@ -22,6 +23,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/mman.h>
 #include <sys/sendfile.h>
 #include <sys/syscall.h>
@@ -283,6 +285,22 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     }
     if (fd < 0) { errno = ENOTCONN; return -1; }
     switch (m->operation) {
+#ifdef KER_RPATH_SELFTEST
+    case MS_REALTIME_GET: {
+        int64_t seconds;
+        long nanoseconds;
+        int (*get_current_time)(int64_t *, long *) = dlsym(RTLD_DEFAULT, "ker_posix_get_current_time");
+        if (input || !get_current_time) { errno = ENOSYS; return -1; }
+        if (get_current_time(&seconds, &nanoseconds)) return -1;
+        if (seconds < 0 || seconds > LONG_MAX || nanoseconds < 0 || nanoseconds >= 1000000000L) {
+            errno = EOVERFLOW; return -1;
+        }
+        struct timeval timestamp = {.tv_sec = (time_t)seconds, .tv_usec = nanoseconds / 1000};
+        memcpy(data, &timestamp, sizeof(timestamp));
+        m->length = sizeof(timestamp);
+        return 0;
+    }
+#endif
 #ifdef KER_NETLINK_DUMPS_SELFTEST
     case MS_NETLINK_HANDLE: {
         int domain = 0; socklen_t size = sizeof(domain);

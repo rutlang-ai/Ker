@@ -12,13 +12,16 @@ import native_tests
 class RpathProfileTests(unittest.TestCase):
     def test_candidate_bound_native_rpath_gate(self):
         fixture = Path(__file__).resolve().parents[2] / 'tests/unit/rpath-transcript.json'
-        for mutation in ('complete', 'missing-entry', 'duplicate-entry', 'wrong-profile', 'missing-multipath',
+        for mutation in ('complete', 'missing-entry', 'duplicate-entry', 'missing-clock-control', 'wrong-profile', 'missing-multipath',
                          'skipped', 'wrong-fingerprint', 'failed-evidence', 'missing-counter', 'leaked-namespace'):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary); name = native_tests.LINUX_RPATH_PROFILE_TEST
-                inventory = [] if mutation == 'missing-entry' else [dict(name=name)]
+                inventory = [] if mutation == 'missing-entry' else [dict(name=name),
+                    dict(name=native_tests.LINUX_RPATH_REALTIME_TEST)]
                 if mutation == 'duplicate-entry':
                     inventory.append(dict(name=name))
+                if mutation == 'missing-clock-control':
+                    inventory = [dict(name=name)]
                 (root / 'CMakeCache.txt').write_text(f'KER_NATIVE_LINUX_BUILD:PATH={root}\n')
                 (root / 'native-linux.json').write_text(json.dumps(dict(
                     config_fragment='wrong' if mutation == 'wrong-profile' else 'config/native-linux-rpath-selftests.config',
@@ -28,8 +31,10 @@ class RpathProfileTests(unittest.TestCase):
                 if mutation == 'missing-multipath':
                     options.remove('CONFIG_IP_ROUTE_MULTIPATH=y')
                 (root / '.config').write_text('\n'.join(options) + '\n')
-                junit = root / 'junit.xml'; junit.write_text(f'<testsuite><testcase name="{name}">' +
-                    ('<skipped/>' if mutation == 'skipped' else '') + '</testcase></testsuite>')
+                junit = root / 'junit.xml'; junit.write_text(
+                    f'<testsuite><testcase name="{name}">' +
+                    ('<skipped/>' if mutation == 'skipped' else '') + '</testcase>' +
+                    f'<testcase name="{native_tests.LINUX_RPATH_REALTIME_TEST}"/></testsuite>')
                 evidence = json.loads(fixture.read_text()); evidence['fingerprint'] = 'candidate'
                 if mutation == 'wrong-fingerprint':
                     evidence['fingerprint'] = 'other'

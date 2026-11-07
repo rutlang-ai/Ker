@@ -16,7 +16,8 @@ class RpathContractTests(unittest.TestCase):
         for mutation in ('complete', 'missing-probe', 'relaxed-timeout', 'martian-succeeds', 'missing-ipv6-tool',
                          'missing-legacy-counter', 'wrong-inverse', 'missing-nft-counter', 'wrong-nft-counter',
                          'missing-reset', 'missing-vrf', 'wrong-vrf-order', 'unexpected-warning',
-                         'unrecorded-error', 'host-fallback', 'leaked-namespace', 'live-socket', 'forced-shutdown'):
+                         'missing-native-clock', 'backwards-clock-warning', 'unrecorded-error', 'host-fallback',
+                         'leaked-namespace', 'live-socket', 'forced-shutdown'):
             with self.subTest(mutation=mutation):
                 report = copy.deepcopy(original); rows = report['commands']
                 pings = [r for r in rows if r['tool'] == 'ping']
@@ -47,6 +48,11 @@ class RpathContractTests(unittest.TestCase):
                     rows.remove(vrf); rows.append(vrf)
                 elif mutation == 'unexpected-warning':
                     pings[0]['stderr'] = 'WARNING: failed to install socket filter\n'
+                elif mutation == 'missing-native-clock':
+                    del pings[0]['native_clock_reads']
+                elif mutation == 'backwards-clock-warning':
+                    warning = 'Warning: time of day goes back (-1 s), taking countermeasures'
+                    pings[2]['stderr'] = 'original-ping: ' + warning + '\n'
                 elif mutation == 'unrecorded-error':
                     report['original']['stderr'] += 'hidden error\n'
                 elif mutation == 'host-fallback':

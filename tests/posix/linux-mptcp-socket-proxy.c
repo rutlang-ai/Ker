@@ -26,6 +26,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
+#include <sys/time.h>
 #include <unistd.h>
 #ifdef KER_NETLINK_DUMPS_SELFTEST
 #include <linux/mqueue.h>
@@ -541,6 +542,50 @@ ssize_t __wrap_recvfrom(int fd, void *bytes, size_t length, int flags, struct so
 }
 ssize_t __wrap_recv(int fd, void *bytes, size_t length, int flags)
 { return __wrap_recvfrom(fd, bytes, length, flags, NULL, NULL); }
+#ifdef KER_RPATH_SELFTEST
+__attribute__((visibility("hidden")))
+int ker_rpath_gettimeofday_impl(struct timeval *tv, void *tz)
+{
+    if (!getenv("KER_MPTCP_NATIVE_REALTIME") || tv == NULL)
+        return (int)syscall(SYS_gettimeofday, tv, tz);
+
+    /* Keep the legacy timezone output on the host ABI while sourcing time
+     * from the same Linux instance that produces SO_TIMESTAMP for this test. */
+    if (tz) {
+        struct timeval ignored;
+        if (syscall(SYS_gettimeofday, &ignored, tz)) return -1;
+    }
+    int fd = -1;
+    for (int candidate = 0; candidate < (int)(sizeof(network_fds) / sizeof(network_fds[0])); candidate++)
+        if (network_fds[candidate]) { fd = candidate; break; }
+    if (fd < 0) { errno = ENOTCONN; return -1; }
+
+    unsigned char response[MS_MAX];
+    struct ms_message m = {.operation = MS_REALTIME_GET};
+    long result = exchange(fd, &m, response, NULL);
+    if (result < 0) return -1;
+    if (result || m.length != sizeof(struct timeval)) {
+        errno = EPROTO; return -1;
+    }
+    struct timeval native;
+    memcpy(&native, response, sizeof(native));
+    if (native.tv_usec < 0 || native.tv_usec >= 1000000) { errno = EPROTO; return -1; }
+    const char *log = getenv("KER_MPTCP_NATIVE_TIME_LOG");
+    if (log && *log) {
+        int out = (int)syscall(SYS_openat, AT_FDCWD, log, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+        if (out < 0) return -1;
+        static const char marker = '1';
+        long written = syscall(SYS_write, out, &marker, 1);
+        int saved = errno;
+        syscall(SYS_close, out);
+        if (written != 1) { errno = written < 0 ? saved : EIO; return -1; }
+    }
+    *tv = native;
+    return 0;
+}
+int __wrap_gettimeofday(struct timeval *tv, void *tz)
+{ return ker_rpath_gettimeofday_impl(tv, tz); }
+#endif
 ssize_t __wrap_sendto(int fd, const void *bytes, size_t length, int flags, const struct sockaddr *address, socklen_t addrlen)
 {
     struct iovec vector = {(void *)bytes, length};

@@ -39,6 +39,8 @@ def validate_commands(records):
             len({r['namespace'] for r in pings}) == 1 and pings[0]['namespace'].startswith('ns1-'),
             'incomplete original dual-stack regular/martian matrix before and after VRF')
     for ping in pings:
+        require(ping.get('native_clock_reads', 0) > 0,
+                'original ping did not use native realtime for its SO_TIMESTAMP clock domain')
         if ping['stderr']:
             # Preserve the original source-device warning and verify the actual
             # native source address together with all original rule counters.

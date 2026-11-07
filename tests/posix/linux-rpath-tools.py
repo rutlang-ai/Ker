@@ -54,10 +54,21 @@ def main():
         if tool not in ('ip', 'ping', 'nft', 'iptables-legacy', 'ip6tables-legacy'):
             raise RuntimeError('unsupported native process: ' + tool)
         env = dict(os.environ, LD_PRELOAD=os.environ['KER_RPATH_PRELOAD'], KER_MPTCP_SOCKET_NAMESPACE=namespace)
+        native_time_log = None
+        if tool == 'ping':
+            native_time_log = os.environ['KER_RPATH_LOG'] + '.native-time-' + str(os.getpid())
+            env['KER_MPTCP_NATIVE_REALTIME'] = '1'
+            env['KER_MPTCP_NATIVE_TIME_LOG'] = native_time_log
         source = sys.stdin.read() if tool == 'nft' and words == ['-f', '-'] else None
         result = subprocess.run([os.environ['KER_RPATH_' + tool.upper().replace('-', '_')], *words], env=env,
             input=source, capture_output=True, text=True, timeout=30)
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        if native_time_log:
+            try:
+                record['native_clock_reads'] = Path(native_time_log).stat().st_size
+            except FileNotFoundError:
+                record['native_clock_reads'] = 0
+            Path(native_time_log).unlink(missing_ok=True)
         if source is not None:
             record['ruleset'] = source
     with open(os.environ['KER_RPATH_LOG'], 'a') as stream:
