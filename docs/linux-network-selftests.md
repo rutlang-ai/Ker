@@ -11,14 +11,14 @@
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
 | `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh` 完整入口本地通过；其余 105 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
-| `net/netfilter` | 29 | `conntrack_dump_flush` 完整三项 TAP 本地通过；其余 28 个尚未逐个接入 |
+| `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh` 完整入口本地通过；其余 27 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
 | `net/rds` | 2 | 尚未接入 |
 | 合计 | 310 | 逐个保留原版入口合同，不用 Ker 自编回归抵扣 |
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 79/310，剩余 231；其中 74 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 236 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 80/310，剩余 230；其中 75 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 235 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -130,3 +130,11 @@ Ker 的目标应用包括网关和 WAF，因此优先迁移转发、路由、VLA
 `netfilter/conntrack_dump_flush.c` 在独立 `config/native-linux-conntrack.config` 中完整执行三个原版 TAP case：按 zone dump、清空指定 zone、清空默认 zone，并验证其他 zone 的 IPv4/IPv6 tuple 保留。每项原版 fixture 在四个 zone 中插入八条 tuple；总计 24 次 CT_NEW、15 次 CT_GET、2 次 CT_DELETE，来自三个真实 NETLINK_NETFILTER socket 的 41 次请求、5180 字节。所有 conntrack table、zone filtering、错误及 dump 数据均来自导入 Linux。
 
 原版程序通过原版 libmnl 的真实 socket/Netlink 调用进入已有私有 preload；不修改 C 测试、libmnl 或 Linux 源码。编译保留全部断言和原版 harness fork；执行前后核对 C 源码、Makefile、kselftest 两个头文件与 pinned Git blob。原版缺失 backend 时会全部 SKIP 并退出 0，runner 必须拒绝此路径，要求三个精确 TAP 名称全部通过、无 skip/fail/XFAIL，并要求 socket/packet 归零和 worker 正常退出。这里验证 conntrack 表管理，不将 tuple 插入计成 TCP 连接流量测试。hosted CI/review 单独核对。
+
+## ICMP RELATED 与 NAT
+
+`netfilter/conntrack_icmp_related.sh` 在独立 `config/native-linux-nat-selftests.config` 中完整运行，保留四个真实 native namespace、双栈路由、1280 字节瓶颈、nftables/conntrack/masquerade 规则，以及原版全部包长和 timeout。原版 iproute2 配置普通拓扑，只有跨 namespace 的 veth fd 与 native proc/sysctl 需要既有适配器转换；原版 nft、ping、ping6 的 socket 调用进入同一常驻 Linux，不修改上游脚本、断言或协议实现。
+
+完整脚本两行 PASS，六次原版 ping 覆盖 IPv4/IPv6 连通性、1300 字节 PMTU 失败和 ICMP redirect。15 次真实 nft counter 读取逐项核对，包括 RELATED 的 1 packet/576 bytes、2 packets/1856 bytes，两个 redirect 的 1 packet/112 bytes 与 1 packet/192 bytes。删除 router namespace 前额外读取实际 NAT JSON，IPv4/IPv6 masquerade 各记录两次探测，分别为 2356/2396 bytes；不以仅加载规则或退出 0 作为 NAT 生效证据。
+
+专用 preload/server 复用已有 classic BPF 程序指针序列化，原样传递 ping 的 filter 指令到 native SO_ATTACH_FILTER，要求原版 stderr 无过滤器安装警告。新开关只作用于该私有测试 fixture；生产 API 和协议不变。缺失 backend 的整个原版脚本必须失败。四个 native namespace 均创建/删除，live socket、packet outstanding 为零，worker 正常退出；hosted CI/review 单独核对。
