@@ -28,6 +28,7 @@ LINUX_PROTOCOL_SELFTESTS = (
 LINUX_NET_PROFILE_TESTS = {"linux-original-net-tun", "linux-original-net-reuseport_addr_any"}
 LINUX_MACVTAP_PROFILE_TEST = "linux-original-net-tap"
 LINUX_NETLINK_DUMPS_PROFILE_TEST = "linux-original-net-netlink-dumps"
+LINUX_RPATH_PROFILE_TEST = "linux-original-netfilter-rpath"
 LINUX_IPIP_PROFILE_TEST = "linux-original-netfilter-conntrack-ipip-mtu"
 LINUX_NAT_PROFILE_TEST = "linux-original-netfilter-conntrack-icmp-related"
 LINUX_CONNTRACK_PROFILE_TEST = "linux-original-netfilter-conntrack-dump-flush"
@@ -497,6 +498,39 @@ def run_netlink_dumps_profile(build: Path, junit: Path) -> None:
     summary('Original Netlink dumps: three complete lifecycle cases, PASS ' + manifest['fingerprint'])
 
 
+def run_rpath_profile(build: Path, junit: Path) -> None:
+    name = LINUX_RPATH_PROFILE_TEST
+    require(sum(item['name'] == name for item in ctest_inventory(build)) == 1,
+            'rpath profile must register the complete original entry exactly once')
+    cache = (build / 'CMakeCache.txt').read_text()
+    native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
+                         if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
+    require(native_build, 'rpath profile has no native kernel path')
+    manifest = json.loads((Path(native_build) / 'native-linux.json').read_text())
+    config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
+    require(manifest.get('config_fragment') == 'config/native-linux-rpath-selftests.config' and
+            {
+                'CONFIG_DUMMY=y', 'CONFIG_IP_ROUTE_MULTIPATH=y', 'CONFIG_NETFILTER_XTABLES=y',
+                'CONFIG_IP_NF_IPTABLES=y', 'CONFIG_IP_NF_RAW=y', 'CONFIG_IP_NF_MATCH_RPFILTER=y',
+                'CONFIG_IP6_NF_IPTABLES=y', 'CONFIG_IP6_NF_RAW=y', 'CONFIG_IP6_NF_MATCH_RPFILTER=y',
+                'CONFIG_NF_TABLES=y', 'CONFIG_NF_TABLES_INET=y', 'CONFIG_NFT_FIB_IPV4=y',
+                'CONFIG_NFT_FIB_IPV6=y', 'CONFIG_NFT_FIB_INET=y',
+            }.issubset(config),
+            'rpath shell requires its real native rpfilter/fib profile')
+    result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
+                            '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+    require(junit.is_file(), 'rpath CTest did not produce JUnit')
+    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    evidence = json.loads((build / (name + '.json')).read_text())
+    require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
+            evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native rpath evidence')
+    script = Path(__file__).resolve().parents[2] / 'tests/posix/linux-rpath-selftest.py'
+    spec = importlib.util.spec_from_file_location('rpath_contract', script)
+    contract = importlib.util.module_from_spec(spec); spec.loader.exec_module(contract)
+    contract.validate_evidence(evidence)
+    summary('Original reverse-path filtering: IPv4/IPv6, legacy/nft, plain/VRF, PASS ' + manifest['fingerprint'])
+
+
 def run_ipip_profile(build: Path, junit: Path) -> None:
     name = LINUX_IPIP_PROFILE_TEST
     require(sum(item['name'] == name for item in ctest_inventory(build)) == 1,
@@ -784,6 +818,7 @@ def run_join_profile(build: Path, junit: Path) -> None:
 
 
 def validate_default_profile_inventory(names: set[str]) -> None:
+    require(LINUX_RPATH_PROFILE_TEST not in names, 'rpath shell requires its native rpfilter/fib profile')
     require(LINUX_IPIP_PROFILE_TEST not in names, 'IPIP shell requires its native tunnel profile')
     require(LINUX_NAT_PROFILE_TEST not in names, 'NAT shell requires its native nftables profile')
     require(LINUX_CONNTRACK_PROFILE_TEST not in names, 'conntrack requires its native zone profile')
@@ -1126,8 +1161,8 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "netns-name-profile", "forwarding-profile", "conntrack-profile", "nat-profile", "ipip-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
-        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile|netns-name-profile|forwarding-profile|conntrack-profile|nat-profile|ipip-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "netns-name-profile", "forwarding-profile", "conntrack-profile", "nat-profile", "ipip-profile", "rpath-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile|netns-name-profile|forwarding-profile|conntrack-profile|nat-profile|ipip-profile|rpath-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
         if len(argv) != 2:
@@ -1171,6 +1206,11 @@ def main(argv: list[str]) -> int:
         if len(argv) != 4:
             raise RuntimeError("net-profile requires build directory and JUnit output path")
         run_net_profile(build, Path(argv[3]))
+        return 0
+    if group == "rpath-profile":
+        if len(argv) != 4:
+            raise RuntimeError("rpath-profile requires build directory and JUnit output path")
+        run_rpath_profile(build, Path(argv[3]))
         return 0
     if group == "ipip-profile":
         if len(argv) != 4:
