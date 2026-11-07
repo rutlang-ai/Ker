@@ -27,6 +27,7 @@ LINUX_PROTOCOL_SELFTESTS = (
 LINUX_NET_PROFILE_TESTS = {"linux-original-net-tun", "linux-original-net-reuseport_addr_any"}
 LINUX_MACVTAP_PROFILE_TEST = "linux-original-net-tap"
 LINUX_NETLINK_DUMPS_PROFILE_TEST = "linux-original-net-netlink-dumps"
+LINUX_NETNS_NAME_PROFILE_TEST = "linux-original-net-netns-name"
 
 LINUX_AF_UNIX_SELFTESTS = (
     "linux-original-af-unix-diag_uid", "linux-original-af-unix-msg_oob",
@@ -489,6 +490,40 @@ def run_netlink_dumps_profile(build: Path, junit: Path) -> None:
     summary('Original Netlink dumps: three complete lifecycle cases, PASS ' + manifest['fingerprint'])
 
 
+def run_netns_name_profile(build: Path, junit: Path) -> None:
+    name = LINUX_NETNS_NAME_PROFILE_TEST
+    inventory = ctest_inventory(build)
+    require(sum(item['name'] == name for item in inventory) == 1,
+            'namespace-name profile must register the complete original shell exactly once')
+    cache = (build / 'CMakeCache.txt').read_text()
+    native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
+                         if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
+    require(native_build, 'namespace-name profile has no native kernel path')
+    manifest = json.loads((Path(native_build) / 'native-linux.json').read_text())
+    require(manifest.get('config_fragment') == 'config/native-linux-netns-name.config' and
+            'CONFIG_DUMMY=y' in (Path(manifest['kernel']) / '.config').read_text().splitlines(),
+            'namespace-name shell requires its real native dummy profile')
+    result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
+                            '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+    require(junit.is_file(), 'namespace-name CTest did not produce JUnit')
+    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    evidence = json.loads((build / (name + '.json')).read_text())
+    native = evidence.get('native_fixture', {})
+    original = evidence.get('original', {})
+    moves = [r for r in evidence.get('commands', []) if r.get('operation') == 'move']
+    require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
+            evidence.get('fingerprint') == manifest.get('fingerprint') and
+            original.get('returncode') == 0 and not original.get('stderr') and
+            original.get('stdout', '').split() == ['netns-name.sh', '[', 'OK', ']'] and
+            len(evidence.get('commands', [])) == 30 and
+            [r.get('returncode') for r in moves] == [0, 1, 0, 1, 0] and
+            [r.get('errno') for r in moves if r.get('returncode')] == [17, 17] and
+            native.get('namespaces_created') == native.get('namespaces_deleted') == 2 and
+            native.get('netlinks', 0) >= 30 and native.get('live') == 0,
+            'incomplete native namespace-name lifecycle evidence')
+    summary('Original namespace names: complete move/conflict/rename/alternative-name shell, PASS ' + manifest['fingerprint'])
+
+
 def run_packetdrill_profile(build: Path, junit: Path) -> None:
     name = "linux-original-packetdrill"
     inventory = ctest_inventory(build)
@@ -622,6 +657,7 @@ def run_join_profile(build: Path, junit: Path) -> None:
 
 
 def validate_default_profile_inventory(names: set[str]) -> None:
+    require(LINUX_NETNS_NAME_PROFILE_TEST not in names, 'namespace-name shell requires native dummy profile')
     require(LINUX_NETLINK_DUMPS_PROFILE_TEST not in names, 'Netlink dumps require native POSIX mqueue profile')
     require(LINUX_MACVTAP_PROFILE_TEST not in names, 'macvtap requires its fingerprinted driver profile')
     require(not names.intersection(LINUX_NET_PROFILE_TESTS), 'TUN/DCCP tests require their fingerprinted net profile')
@@ -959,8 +995,8 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
-        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "netns-name-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile|netns-name-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
         if len(argv) != 2:
@@ -1004,6 +1040,11 @@ def main(argv: list[str]) -> int:
         if len(argv) != 4:
             raise RuntimeError("net-profile requires build directory and JUnit output path")
         run_net_profile(build, Path(argv[3]))
+        return 0
+    if group == "netns-name-profile":
+        if len(argv) != 4:
+            raise RuntimeError("netns-name-profile requires build directory and JUnit output path")
+        run_netns_name_profile(build, Path(argv[3]))
         return 0
     if group == "netlink-dumps-profile":
         if len(argv) != 4:
