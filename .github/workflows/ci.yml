@@ -545,6 +545,31 @@ jobs:
           python3 tools/ci/native_tests.py netlink-dumps-profile \
             build-native-netlink-dumps "$RUNNER_TEMP/native-netlink-dumps-ctest.xml"
 
+      - name: Run complete original namespace-name shell
+        if: steps.native.outputs.present == 'true'
+        shell: bash
+        env:
+          KER_DPDK_PREFIX: ${{ runner.temp }}/dpdk-install
+        run: |
+          set -euo pipefail
+          python3 tools/build-native-linux.py \
+            --build "$RUNNER_TEMP/native-linux-netns-name-build" \
+            --cache "$RUNNER_TEMP/native-linux.git" --jobs 2 \
+            --config-fragment config/native-linux-netns-name.config
+          pkgconfig_dir="$(find "$KER_DPDK_PREFIX" -type f -name libdpdk.pc -printf '%h\n' -quit)"
+          test -n "$pkgconfig_dir"
+          PKG_CONFIG_PATH="$pkgconfig_dir" cmake -S . -B build-native-netns-name -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DKER_BUILD_EXAMPLES=ON \
+            -DKER_BUILD_LINUX_PROTOCOL_SELFTESTS=ON \
+            -DKER_MPTCP_DIAG_TOOLS_DIR="$RUNNER_TEMP/iproute2-diag" \
+            -DKER_WITH_DPDK=ON -DKER_WITH_NATIVE_TCP=ON \
+            -DKER_DPDK_PKGCONFIG_DIR="$pkgconfig_dir" \
+            -DKER_NATIVE_LINUX_BUILD="$RUNNER_TEMP/native-linux-netns-name-build" \
+            -DCMAKE_C_FLAGS='-Wall -Wextra -Werror'
+          cmake --build build-native-netns-name --parallel 2 --target ker-linux-network-server ker-linux-mptcp-diag-preload
+          python3 tools/ci/native_tests.py netns-name-profile \
+            build-native-netns-name "$RUNNER_TEMP/native-netns-name-ctest.xml"
+
       - name: Run exact native session migration matrix
         if: steps.native.outputs.present == 'true'
         shell: bash
@@ -602,6 +627,9 @@ jobs:
             ${{ runner.temp }}/native-netlink-dumps-ctest.xml
             ${{ runner.temp }}/native-linux-netlink-dumps-build/native-linux.json
             build-native-netlink-dumps/linux-original-net-netlink-dumps.json
+            ${{ runner.temp }}/native-netns-name-ctest.xml
+            ${{ runner.temp }}/native-linux-netns-name-build/native-linux.json
+            build-native-netns-name/linux-original-net-netns-name.json
             ${{ runner.temp }}/native-net-selftests-ctest.xml
             ${{ runner.temp }}/native-linux-net-selftests-build/native-linux.json
             build-native-net-selftests/linux-original-net-tun.json

@@ -4,7 +4,7 @@
 
 | collection | 默认注册入口 | 当前接入范围 |
 | --- | ---: | --- |
-| `net` | 106 | `sk_connect_zero_addr`、四个完整 binding 程序、`reuseport_dualstack`、`sk_so_peek_off`、`tun`、`reuseport_addr_any.sh`、`run_netsocktests`、`tap`、`netlink-dumps`；共 12 个入口本地通过 |
+| `net` | 106 | `sk_connect_zero_addr`、四个完整 binding 程序、`reuseport_dualstack`、`sk_so_peek_off`、`tun`、`reuseport_addr_any.sh`、`run_netsocktests`、`tap`、`netlink-dumps`、`netns-name.sh`；共 13 个入口本地通过 |
 | `net/af_unix` | 5 | 全部接入 host-backed IPC 兼容性测试，与 imported Linux 分开统计 |
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 75/310，剩余 235；其中 70 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 240 个。`net/` 本目录剩余 94/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 76/310，剩余 234；其中 71 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 239 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -96,4 +96,17 @@ python3 tools/ci/native_tests.py macvtap-profile build-native-macvtap native-mac
 
 ```bash
 python3 tools/ci/native_tests.py netlink-dumps-profile build-native-netlink-dumps native-netlink-dumps-ctest.xml
+```
+
+
+## Namespace 与设备名称
+
+完整未修改的 `netns-name.sh` 和 `lib.sh` 在单独的 `config/native-linux-netns-name.config` 中执行，真实启用 dummy 驱动。原版 shell 检查普通移动、名称冲突拒绝、移动时重命名、备用名称冲突拒绝，以及备用名称跨 namespace 的可见性；保留原版所有返回值检查和清理。该入口不输出 TAP，不将五组场景或 30 次工具调用计作额外注册入口。
+
+普通链路操作与查询使用固定 iproute2 6.12.0 的原版 `ip`，只把 socket 调用转发到常驻内核。移动操作将源设备 index 和目标 namespace 的真实 native fd 编码为 rtnetlink 请求，逐次要求真实内核 ACK；不把宿主 `/run/netns` 或宿主 PID 当作 native namespace。名称检查、重命名、备用名称冲突和查询结果均来自导入 Linux，没有自编名称表或成功 stub。
+
+runner 要求原版 `[ OK ]` 输出、25 次原版 `ip` 操作及五次真实移动结果 `[0, EEXIST, 0, EEXIST, 0]`，核对原版备用名称查询的目标成功/源失败，两次 namespace 创建/删除，无协议 socket 替代和零 live descriptor/outstanding packet。缺失 backend 的整个原版脚本必须失败；该负对照仅将 `WAIT_TIMEOUT` 设为一秒，正向原版等待设置保持默认。源码在执行前后逐字节核对，固定工具 provenance 和 binary hash 单列。native fingerprint 为 `d3ebd0dbf314cab88786a9e45994aec7fd752c7a91086e1bd90e24aaa06220c1`；本地完整通过，hosted CI/review 单独确认。
+
+```bash
+python3 tools/ci/native_tests.py netns-name-profile build-native-netns-name native-netns-name-ctest.xml
 ```
