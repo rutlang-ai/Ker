@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | 尚未逐个接入完整原版入口 |
+| `net/forwarding` | 107 | `router_vid_1.sh` 完整入口本地通过；其余 106 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | 尚未逐个接入完整原版入口 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 76/310，剩余 234；其中 71 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 239 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 77/310，剩余 233；其中 72 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 238 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -110,3 +110,13 @@ runner 要求原版 `[ OK ]` 输出、25 次原版 `ip` 操作及五次真实移
 ```bash
 python3 tools/ci/native_tests.py netns-name-profile build-native-netns-name native-netns-name-ctest.xml
 ```
+
+## 网关 forwarding
+
+Ker 的目标应用包括网关和 WAF，因此优先迁移转发、路由、VLAN/VRF、netfilter、conntrack 和 NAT 的完整上游入口。HTTP/TLS 解析和 WAF 规则属于调用方。
+
+`forwarding/router_vid_1.sh` 在独立的 `config/native-linux-forwarding.config` 中完整运行。该配置启用 `CONFIG_IP_ROUTE_MULTIPATH=y`，保留原版 `nexthop` 路由命令；默认配置缺失该能力时不注册此测试。原版 shell、两个公共 lib 和 forwarding Makefile 在执行前后均与 pinned Git blob 逐字节核对。四个 veth 接口、四个 VLAN 1 子接口、两个 VRF、地址和路由由原版 iproute2 6.12.0 经 Netlink 配置到导入 Linux。
+
+原版 `ip vrf exec` 的宿主 cgroup BPF 无法引用常驻 Linux 的设备，私有测试适配器在创建每个 IP socket 时调用原生 `SO_BINDTODEVICE`，设置同一 `sk_bound_dev_if` 字段；路由查找、VRF 隔离、VLAN 和转发行为均来自 Linux。未知 VRF 必须让原版 ping 失败；同一后端的 loopback ping 对照必须成功。`sysctl` 读写导入 Linux 的真实 proc，不修改宿主 sysctl。
+
+本地完整原版两项测试通过，IPv4/IPv6 均保留默认 10 次 ping、0.1 秒间隔、5 秒 deadline；实际各收到 10 个回包，原生 `ForwDatagrams` 和 `Ip6OutForwDatagrams` 各增加 20。缺失 backend 的完整原版脚本必须失败；不以跳过、退出 0 或自编转发测试抵扣入口。清理必须无 live socket/outstanding packet、worker 正常退出。CI 单独构建该内核配置，强制运行完整入口和同样的证据门禁，上传 JSON/JUnit/manifest。hosted CI/review 资格单独核对。

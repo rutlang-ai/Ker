@@ -212,6 +212,24 @@ int __wrap_socket(int domain, int type, int protocol)
     if (exchange(fd, &m, data, NULL) < 0) {
         int error = errno; syscall(SYS_close, fd); errno = error; return -1;
     }
+#ifdef KER_FORWARDING_SELFTEST
+    /* ip vrf exec normally attaches a cgroup socket-create BPF program. The
+     * host cgroup cannot address resident Linux devices. Apply the same
+     * sk_bound_dev_if operation through native SO_BINDTODEVICE before exposing
+     * each IP socket; routing and VRF isolation remain entirely in Linux. */
+    const char *vrf = getenv("KER_FORWARDING_VRF");
+    if (vrf && (domain == AF_INET || domain == AF_INET6)) {
+        if (!*vrf || strlen(vrf) >= IFNAMSIZ) {
+            syscall(SYS_close, fd); errno = EINVAL; return -1;
+        }
+        strcpy((char *)data, vrf);
+        m = (struct ms_message){.operation = MS_SETOPT, .a = SOL_SOCKET,
+            .b = SO_BINDTODEVICE, .length = (uint32_t)strlen(vrf) + 1};
+        if (exchange(fd, &m, data, NULL) < 0) {
+            int error = errno; syscall(SYS_close, fd); errno = error; return -1;
+        }
+    }
+#endif
     return remember(fd);
 }
 unsigned __wrap_if_nametoindex(const char *name)
