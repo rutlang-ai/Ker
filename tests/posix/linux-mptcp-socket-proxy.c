@@ -596,11 +596,51 @@ static long long milliseconds(void)
     struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
     return (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
+#ifdef KER_MIXED_POLL_SELFTEST
+/* The RPC channel's host readiness is unrelated to its resident socket.
+ * Query each resident socket through native poll and ordinary descriptors
+ * through host poll. Bounded host waits keep both sources observable while
+ * preserving the caller's overall timeout and native error/hangup events. */
+static int mixed_poll(struct pollfd *fds, nfds_t count, int timeout)
+{
+    if (count > 64) { errno = EOPNOTSUPP; return -1; }
+    struct pollfd host[64];
+    long long deadline = milliseconds() + timeout;
+    for (;;) {
+        for (nfds_t i = 0; i < count; i++) {
+            host[i] = fds[i]; host[i].revents = 0;
+            if (is_network(host[i].fd)) host[i].fd = -1;
+        }
+        if (syscall(SYS_poll, host, count, 0) < 0) return -1;
+        int ready = 0;
+        for (nfds_t i = 0; i < count; i++) {
+            fds[i].revents = host[i].revents;
+            if (is_network(fds[i].fd)) {
+                unsigned char data[MS_MAX];
+                struct ms_message m = {.operation = MS_POLL, .a = 0, .b = (uint32_t)fds[i].events};
+                interrupted = 0;
+                if (exchange(fds[i].fd, &m, data, NULL) < 0) return -1;
+                if (interrupted) { errno = EINTR; return -1; }
+                fds[i].revents = (short)m.b;
+            }
+            if (fds[i].revents) ready++;
+        }
+        if (ready) return ready;
+        long long remaining = deadline - milliseconds();
+        if (timeout >= 0 && remaining <= 0) return 0;
+        int slice = timeout < 0 || remaining > 5 ? 5 : (int)remaining;
+        if (syscall(SYS_poll, host, count, slice) < 0) return -1;
+    }
+}
+#endif
 int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout)
 {
     int native = 0;
     for (nfds_t i = 0; i < count; i++) native += is_network(fds[i].fd);
     if (!native) return (int)syscall(SYS_poll, fds, count, timeout);
+#ifdef KER_MIXED_POLL_SELFTEST
+    if (count != 1 || native != 1) return mixed_poll(fds, count, timeout);
+#endif
     if (count != 1 || native != 1) { errno = EOPNOTSUPP; return -1; }
     long long deadline = milliseconds() + timeout;
     for (;;) {
@@ -620,6 +660,54 @@ int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout)
 /* pm_nl_ctl's single-reader event wait. Readiness belongs to the native
  * netlink socket, never the host RPC channel. Finite poll slices also let
  * terminated event readers release their resident sockets promptly. */
+#ifdef KER_MIXED_POLL_SELFTEST
+static int mixed_select(int nfds, fd_set *reads, fd_set *writes, fd_set *excepts, struct timeval *timeout)
+{
+    struct pollfd fds[64]; nfds_t count = 0;
+    fd_set wanted_reads, wanted_writes, wanted_excepts;
+    FD_ZERO(&wanted_reads); FD_ZERO(&wanted_writes); FD_ZERO(&wanted_excepts);
+    if (reads) wanted_reads = *reads;
+    if (writes) wanted_writes = *writes;
+    if (excepts) wanted_excepts = *excepts;
+    for (int fd = 0; fd < nfds; fd++) {
+        short events = (FD_ISSET(fd, &wanted_reads) ? POLLIN : 0) |
+                       (FD_ISSET(fd, &wanted_writes) ? POLLOUT : 0) |
+                       (FD_ISSET(fd, &wanted_excepts) ? POLLPRI : 0);
+        if (!events) continue;
+        if (count == 64) { errno = EOPNOTSUPP; return -1; }
+        fds[count++] = (struct pollfd){.fd = fd, .events = events};
+    }
+    int wait = -1; long long budget = 0;
+    struct timespec before, after;
+    if (timeout) {
+        if (timeout->tv_sec < 0 || timeout->tv_usec < 0 || timeout->tv_usec >= 1000000) { errno = EINVAL; return -1; }
+        if (timeout->tv_sec > (INT_MAX - 999) / 1000) { errno = EOPNOTSUPP; return -1; }
+        budget = (long long)timeout->tv_sec * 1000000 + timeout->tv_usec;
+        wait = (int)((budget + 999) / 1000);
+        clock_gettime(CLOCK_MONOTONIC, &before);
+    }
+    int result = __wrap_poll(fds, count, wait);
+    if (timeout) {
+        clock_gettime(CLOCK_MONOTONIC, &after);
+        long long used = (after.tv_sec - before.tv_sec) * 1000000LL + (after.tv_nsec - before.tv_nsec) / 1000;
+        long long remaining = budget > used ? budget - used : 0;
+        timeout->tv_sec = remaining / 1000000; timeout->tv_usec = remaining % 1000000;
+    }
+    if (result < 0) return -1;
+    for (nfds_t i = 0; i < count; i++) if (fds[i].revents & POLLNVAL) { errno = EBADF; return -1; }
+    if (reads) FD_ZERO(reads);
+    if (writes) FD_ZERO(writes);
+    if (excepts) FD_ZERO(excepts);
+    result = 0;
+    for (nfds_t i = 0; i < count; i++) {
+        int fd = fds[i].fd; short ready = fds[i].revents;
+        if (reads && FD_ISSET(fd, &wanted_reads) && (ready & (POLLIN | POLLHUP | POLLERR))) { FD_SET(fd, reads); result++; }
+        if (writes && FD_ISSET(fd, &wanted_writes) && (ready & (POLLOUT | POLLERR))) { FD_SET(fd, writes); result++; }
+        if (excepts && FD_ISSET(fd, &wanted_excepts) && (ready & POLLPRI)) { FD_SET(fd, excepts); result++; }
+    }
+    return result;
+}
+#endif
 int __wrap_select(int nfds, fd_set *reads, fd_set *writes, fd_set *excepts, struct timeval *timeout)
 {
     if (nfds < 0 || nfds > FD_SETSIZE) { errno = EINVAL; return -1; }
@@ -629,6 +717,9 @@ int __wrap_select(int nfds, fd_set *reads, fd_set *writes, fd_set *excepts, stru
         if (is_network(fd) && ((writes && FD_ISSET(fd, writes)) || (excepts && FD_ISSET(fd, excepts)))) native++;
     }
     if (!native) return (int)syscall(SYS_select, nfds, reads, writes, excepts, timeout);
+#ifdef KER_MIXED_POLL_SELFTEST
+    return mixed_select(nfds, reads, writes, excepts, timeout);
+#endif
     if (native != 1 || count != 1 || writes || excepts || timeout) { errno = EOPNOTSUPP; return -1; }
     struct pollfd p = {.fd = selected, .events = POLLIN};
     int result = __wrap_poll(&p, 1, -1);

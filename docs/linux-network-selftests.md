@@ -11,14 +11,14 @@
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
 | `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh` 完整入口本地通过；其余 105 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
-| `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh` 完整入口本地通过；其余 27 个尚未逐个接入 |
+| `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh` 完整入口本地通过；其余 26 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
 | `net/rds` | 2 | 尚未接入 |
 | 合计 | 310 | 逐个保留原版入口合同，不用 Ker 自编回归抵扣 |
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 80/310，剩余 230；其中 75 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 235 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 81/310，剩余 229；其中 76 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 234 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -138,3 +138,14 @@ Ker 的目标应用包括网关和 WAF，因此优先迁移转发、路由、VLA
 完整脚本两行 PASS，六次原版 ping 覆盖 IPv4/IPv6 连通性、1300 字节 PMTU 失败和 ICMP redirect。15 次真实 nft counter 读取逐项核对，包括 RELATED 的 1 packet/576 bytes、2 packets/1856 bytes，两个 redirect 的 1 packet/112 bytes 与 1 packet/192 bytes。删除 router namespace 前额外读取实际 NAT JSON，IPv4/IPv6 masquerade 各记录两次探测，分别为 2356/2396 bytes；不以仅加载规则或退出 0 作为 NAT 生效证据。
 
 专用 preload/server 复用已有 classic BPF 程序指针序列化，原样传递 ping 的 filter 指令到 native SO_ATTACH_FILTER，要求原版 stderr 无过滤器安装警告。新开关只作用于该私有测试 fixture；生产 API 和协议不变。缺失 backend 的整个原版脚本必须失败。四个 native namespace 均创建/删除，live socket、packet outstanding 为零，worker 正常退出；hosted CI/review 单独核对。
+
+
+## IPIP PMTU 与 conntrack
+
+完整原版 `netfilter/conntrack_ipip_mtu.sh` 在独立 `config/native-linux-ipip-selftests.config` 中运行：五个 native namespace、四对 veth、两个 IPIP tunnel、1400 字节 WAN MTU，分别在无 conntrack 与加载 conntrack FORWARD match 时发送三次 1400 字节 UDP 数据。两组必须收到原版断言要求的恰好 1400 字节并输出完整两行 OK；脚本、lib.sh、Makefile、包长和原版超时逐字节保持不变。
+
+原版 iproute2、ss、socat 和 iptables-legacy 的网络调用进入同一个 imported Linux。libc AI_ADDRCONFIG 只为解析查询宿主 namespace，因此隔离的宿主传输接口配置真实 IPv4 地址；IP 数据 socket 仍强制进入 native backend。跨 namespace veth fd、proc/sysctl 和工具执行采用既有适配器；混合宿主 pipe/native socket 的 poll/select 分别读取真实宿主和 Linux readiness，不将 RPC 通道当成网络就绪事件。
+
+独立控制程序验证真实 UDP 与宿主 pipe 的超时、单方/双方就绪、select 写就绪、HUP、POLLNVAL/EBADF，以及缺失 backend 时拒绝。原版 shell 有意忽略 PMTU 探测期间 socat 的退出状态；保留其 stderr，只接受有实际 native syscall 计数佐证的 EMSGSIZE/ECONNREFUSED，并继续要求两组完整数据断言。没有修改 Linux 分片、PMTU 或 conntrack 行为。
+
+本地完整入口和控制通过，native fingerprint `43382ec08169bba6733c7d50bf548985c20ed5df2b81b1bc4c004d305a6f7906`。五个 namespace 均删除，live socket/outstanding packet 归零，worker 正常退出。CI 的 `ipip-profile` gate 检查实际内核配置、唯一注册、无 skip 的 JUnit、匹配 fingerprint 的 JSON 与同一完整证据合同；hosted CI/review 资格另行确认。
