@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,8 @@ CONTRACTS = {
     'bind_wildcard': (132, 1056, 0),
     'reuseport_dualstack': (None, 110, 2),
     'sk_so_peek_off': (None, 12, 2),
+    'tun': (5, 5, 0),
+    'reuseport_addr_any.sh': (None, 91, 6),
 }
 
 
@@ -45,6 +48,11 @@ def validate_original(program, result):
                     for protocol in ('TCP', 'UDP') for family in (4, 6)]
         require(result['stdout'].splitlines() == expected and not result['stderr'],
                 'missing original TCP/UDP IPv4/IPv6 peek-offset assertion matrix')
+    elif program == 'reuseport_addr_any.sh':
+        expected = [f'{protocol} {family} ... pass' for protocol in ('UDP', 'TCP', 'DCCP')
+                    for family in ('IPv4', 'IPv6', 'IPv4 mapped to IPv6')]
+        require(not result['stdout'] and result['stderr'].splitlines() == [*expected, 'SUCCESS'],
+                'incomplete original UDP/TCP/DCCP address-preference matrix')
     elif program == 'reuseport_dualstack':
         expected = [f'---- {protocol} IPv{first} created before IPv{second}{suffix} ----'
                     for protocol, suffix in (('UDP', ''), ('UDP', ' (large)'), ('TCP', ''))
@@ -65,9 +73,17 @@ def main():
                                *sys.argv[1:], '--inside']).returncode
     manifest = json.loads(args.manifest.read_text())
     source = Path(manifest['source'])
-    paths = ['tools/testing/selftests/net/' + args.program + '.c',
+    profile_program = args.program in ('tun', 'reuseport_addr_any.sh')
+    if profile_program:
+        require(manifest.get('config_fragment') == 'config/native-linux-net-selftests.config',
+                'original TUN/DCCP tests require their dedicated native profile')
+        config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
+        require({'CONFIG_TUN=y', 'CONFIG_IP_DCCP=y'}.issubset(config), 'missing real native TUN/DCCP facilities')
+    paths = ['tools/testing/selftests/net/' + args.program.removesuffix('.sh') + '.c',
              'tools/testing/selftests/net/Makefile', 'tools/testing/selftests/kselftest.h',
              'tools/testing/selftests/kselftest_harness.h']
+    if args.program.endswith('.sh'):
+        paths += ['tools/testing/selftests/net/' + args.program, 'tools/testing/selftests/net/in_netns.sh']
     originals = {}
     for path in paths:
         original = subprocess.check_output(['git', '-C', str(source), 'show', manifest['linux']['revision'] + ':' + path])
@@ -88,7 +104,19 @@ def main():
         cpu = min(os.sched_getaffinity(0))
         eal = (f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m 64 '
                f'-d {shlex.quote(str(args.pmd_dir / "librte_net_tap.so"))} --vdev=net_tap0,iface=kerpeer,remote=kerlink')
-        with tempfile.TemporaryDirectory(prefix='ker-linux-net-', dir='/dev/shm') as temporary:
+        with tempfile.TemporaryDirectory(prefix='ker-linux-net-', dir='/dev/shm') as temporary, \
+                tempfile.TemporaryDirectory(prefix='ker-linux-net-exec-', dir=args.binary.parent) as executable:
+            stage = Path(executable)
+            command = [str(args.binary)]
+            if args.program.endswith('.sh'):
+                for name in (args.program, 'in_netns.sh'):
+                    target = stage / name
+                    target.write_bytes(originals['tools/testing/selftests/net/' + name]); target.chmod(0o700)
+                (stage / args.program.removesuffix('.sh')).symlink_to(args.binary.resolve())
+                shutil.copyfile(Path(__file__).with_name('linux-mptcp-diag-shim.py'), stage / 'ip')
+                (stage / 'ip').chmod(0o700)
+                environment['PATH'] = str(stage) + os.pathsep + environment.get('PATH', '')
+                command = [str(stage / args.program)]
             root = Path(temporary)
             channel, counts, stats = root / 'socket', root / 'counts.json', root / 'stats.json'
             environment['KER_MPTCP_SOCKET_CHANNEL'] = str(channel)
@@ -96,7 +124,7 @@ def main():
             require(report['missing_backend_control']['returncode'] == 0 and
                     report['missing_backend_control']['stdout'].strip() == 'MISSING_BACKEND_REJECTED',
                     'unavailable native backend was not rejected')
-            if args.program in ('reuseport_dualstack', 'sk_so_peek_off'):
+            if args.program in ('reuseport_dualstack', 'sk_so_peek_off', 'tun', 'reuseport_addr_any.sh'):
                 missing = fixture.run_helper([args.binary], environment)
                 report['original_missing_backend_control'] = missing
                 completed = False
@@ -117,7 +145,7 @@ def main():
                     while not channel.exists():
                         require(process.poll() is None and time.monotonic() < deadline, 'resident kernel startup failed')
                         time.sleep(0.01)
-                    child = subprocess.Popen([str(args.binary)], env=environment, stdout=subprocess.PIPE,
+                    child = subprocess.Popen(command, cwd=stage, env=environment, stdout=subprocess.PIPE,
                                              stderr=subprocess.PIPE, text=True, start_new_session=True)
                     try:
                         stdout, stderr = child.communicate(timeout=300)
@@ -148,12 +176,20 @@ def main():
                             'original native socket matrix or cleanup differs')
                     require(native['mptcp'] == 0 and native['raw_sockets'] == 0,
                             'unexpected protocol substitution')
-                    expected_udp = {'reuseport_dualstack': 88, 'sk_so_peek_off': 6}.get(args.program, 0)
+                    expected_udp = {'reuseport_dualstack': 88, 'sk_so_peek_off': 6, 'reuseport_addr_any.sh': 30}.get(args.program, 0)
                     require(native['udp_sockets'] == expected_udp, 'incomplete native UDP matrix')
-                    expected_epoll = (6, 104, 6) if args.program == 'reuseport_dualstack' else (0, 0, 0)
+                    require(native.get('dccp_sockets', 0) == (31 if args.program == 'reuseport_addr_any.sh' else 0),
+                            'missing native DCCP sockets; a skipped protocol is not a complete shell entry')
+                    expected_epoll = {'reuseport_dualstack': (6, 104, 6),
+                                      'reuseport_addr_any.sh': (9, 81, 9)}.get(args.program, (0, 0, 0))
+                    if args.program == 'tun':
+                        require(tuple(native[k] for k in ('tun_opens', 'tun_if_sets', 'tun_queue_calls',
+                                'tun_attaches', 'tun_detaches', 'tun_queue_einval', 'netlinks')) ==
+                                (10, 10, 7, 2, 4, 1, 5), 'incomplete native TUN lifetime/error matrix')
                     require(tuple(native[key] for key in ('epoll_creates', 'epoll_controls', 'epoll_waits')) == expected_epoll,
                             'original readiness checks did not reach native epoll')
-                    require(native['namespaces_created'] == native['namespaces_deleted'] == 0,
+                    expected_namespaces = int(args.program.endswith('.sh'))
+                    require(native['namespaces_created'] == native['namespaces_deleted'] == expected_namespaces,
                             'unexpected namespace lifetime')
                     report['stats'] = json.loads(stats.read_text())
                     require(report['stats'].get('outstanding') == 0, 'packet ownership did not settle')
@@ -163,8 +199,13 @@ def main():
                             'native worker did not stop normally')
                     if accepts:
                         mib = report['stats'].get('native', {})
-                        require(mib.get('active_opens') == accepts and mib.get('passive_opens') == accepts,
-                                'original TIME_WAIT connections did not reach native TCP')
+                        if args.program == 'reuseport_addr_any.sh':
+                            require(native['namespace_tcp_active'] == native['namespace_tcp_passive'] == 3 and
+                                    mib.get('active_opens') == mib.get('passive_opens') == 0,
+                                    'original connections did not reach native TCP in the test namespace')
+                        else:
+                            require(mib.get('active_opens') == accepts and mib.get('passive_opens') == accepts,
+                                    'original connections did not reach native TCP')
                     for path, original in originals.items():
                         require((source / path).read_bytes() == original, 'upstream source changed during test')
                     report['status'] = 'PASS_IMPORTED_LINUX'

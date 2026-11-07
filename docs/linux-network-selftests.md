@@ -4,7 +4,7 @@
 
 | collection | 默认注册入口 | 当前接入范围 |
 | --- | ---: | --- |
-| `net` | 106 | `sk_connect_zero_addr`、四个完整 binding 程序，以及 `reuseport_dualstack`、`sk_so_peek_off` |
+| `net` | 106 | `sk_connect_zero_addr`、四个完整 binding 程序、`reuseport_dualstack`、`sk_so_peek_off`、`tun`、`reuseport_addr_any.sh`；共 9 个入口本地通过 |
 | `net/af_unix` | 5 | 全部接入 host-backed IPC 兼容性测试，与 imported Linux 分开统计 |
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
@@ -17,6 +17,8 @@
 | 合计 | 310 | 逐个保留原版入口合同，不用 Ker 自编回归抵扣 |
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
+
+按本地完整入口合同统计，当前接入 72/310，剩余 238；其中 67 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 243 个。`net/` 本目录剩余 97/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -47,3 +49,19 @@ ctest --test-dir build-native-on --no-tests=error \
 ## Packetdrill
 
 [完整原版 packetdrill 迁移](linux-packetdrill-selftests.md)使用 unchanged Google 工具 revision `8051382e6ac928c4c13a88b34832649d9b07abc2` 和单独 fingerprint 的 native TUN/FQ 内核。24 个原版脚本经原版 runner 执行 IPv4/IPv6 共 48 个配置，保留全部包内容、syscall、时间及内嵌 TCP_INFO 断言。本地完整 CTest 已通过，最终提交的 hosted CI/review 仍须单独通过。此前宿主基线单列，不计 native 覆盖。
+
+## TUN 与地址优先级
+
+`config/native-linux-net-selftests.config` 为单独 fingerprint 的 native 配置，启用原版 TUN 与 DCCP；不修改 Linux 源码。CTest 的 `linux-original-net-tun` 编译原版 `tun.c`，完整执行 5 项 TAP，涵盖两次 attach、四次 detach、错误队列操作的 EINVAL 和设备生命周期。fixture 必须记录 10 次真实 TUN open、10 次 TUNSETIFF、7 次 TUNSETQUEUE 和 5 次 native Netlink socket 创建。
+
+`linux-original-net-reuseport_addr_any` 完整运行未修改的 `reuseport_addr_any.sh`、`in_netns.sh` 和 C helper。UDP/TCP/DCCP 分别执行 IPv4、IPv6、IPv4 mapped to IPv6，共九组原版成功输出；即使上游缺失 DCCP 时退出 0，也不能计为通过。实际 native 证据要求 91 次 socket 创建（30 UDP、31 DCCP、30 TCP）、6 次 accept、9 次 epoll 创建、81 次注册、9 次等待，以及一次真实 namespace 创建/删除。删除 namespace 前读取其原版 `/proc/thread-self/net/snmp`，要求 TCP ActiveOpens/PassiveOpens 均为 3；根 namespace 两者为 0。协议和地址选择均来自导入 Linux。
+
+两项完整入口本地通过，总耗时约 3 秒，native fingerprint 为 `d40b9a892a5b01196cf3f91cc07eb54b810bd7451089e5e91d1b10f28fcb130c`。缺失 backend 的原版程序对照必须失败。runner 保留源文件执行前后的 pinned Git blob 检查、完整断言、20 秒清理上限、零 live socket、零 outstanding packet 和正常 worker 退出要求。
+
+共享 fixture 先排空所有 RPC，确认每个 worker 完成原生 descriptor close 和 namespace release，再通过已有 runtime 接口完成 native halt，最后 join 全部宿主线程。这样 LKL 在 halt 中统一回收原生 task 并删除 TLS key，避免退出某个 pthread 时的 LKL TLS destructor 将 CPU 调度给等待宿主条件变量的另一个 worker。持有空闲管理通道的 shutdown 对照验证此先后顺序；不延长 deadline 或绕过内核清理。
+
+CI 在专用 native 配置中强制执行两个入口，核对实际 TUN/DCCP 配置、两项唯一注册、无 skip 的 JUnit 和匹配 fingerprint 的 JSON 证据：
+
+```bash
+python3 tools/ci/native_tests.py net-profile build-native-net-selftests native-net-selftests-ctest.xml
+```

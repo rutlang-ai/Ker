@@ -50,7 +50,7 @@ def execute(namespace, command):
         program = os.environ['KER_MPTCP_DIAG_' + command[0].upper()]
         environment['LD_PRELOAD'] = os.environ['KER_MPTCP_DIAG_PRELOAD']
         os.execve(program, [program, *command[1:]], environment)
-    if command[0] == './mptcp_connect':
+    if command[0] in ('./mptcp_connect', './reuseport_addr_any'):
         os.execve(str(Path(command[0]).resolve()), command, environment)
     if command[0] in ('cat', 'grep', 'awk'):
         mapped = []
@@ -73,7 +73,7 @@ def execute(namespace, command):
 
 
 def main():
-    args = sys.argv[1:]
+    args = ['-n' if argument == '-netns' else argument for argument in sys.argv[1:]]
     if Path(sys.argv[0]).name == 'ss':
         namespace = os.environ.get('KER_MPTCP_SOCKET_NAMESPACE', '')
         rewritten = []
@@ -90,7 +90,7 @@ def main():
         execute(namespace, ['ss', *rewritten])
     if args == ['-Version']:
         program = os.environ['KER_MPTCP_DIAG_REAL_IP']; os.execv(program, [program, *args])
-    if len(args) == 3 and args[:2] in (['netns', 'add'], ['netns', 'delete']):
+    if len(args) == 3 and args[:2] in (['netns', 'add'], ['netns', 'delete'], ['netns', 'del']):
         rpc(NEWNS if args[1] == 'add' else DELNS, args[2]); return 0
     if args[:2] == ['netns', 'list']:
         sys.stdout.buffer.write(rpc(LISTNS)); return 0
