@@ -21,6 +21,7 @@ LINUX_PROTOCOL_SELFTESTS = (
     "linux-original-net-reuseaddr_conflict", "linux-original-net-sk_bind_sendto_listen",
     "linux-original-net-bind_timewait", "linux-original-net-bind_wildcard",
     "linux-original-net-reuseport_dualstack", "linux-original-net-sk_so_peek_off",
+    "linux-original-net-run_netsocktests",
 )
 
 LINUX_NET_PROFILE_TESTS = {"linux-original-net-tun", "linux-original-net-reuseport_addr_any"}

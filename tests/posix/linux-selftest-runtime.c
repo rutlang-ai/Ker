@@ -35,6 +35,12 @@ long ker_linux_selftest_call(unsigned operation, const unsigned long a[6])
     struct ker_fd *entry;
     long result;
     switch (operation) {
+    case KER_TEST_SOCKET:
+        /* Invalid address families must reach Linux too. The public facade
+         * deliberately leaves non-network families on the host; this private
+         * selftest operation avoids testing that host fallback by accident. */
+        return export_file(lkl_sys_socket((int)a[0], (int)a[1], (int)a[2]), KER_FD_SOCKET,
+                           (a[1] & O_CLOEXEC) ? O_CLOEXEC : 0);
     case KER_TEST_OPEN_TUN:
         /* Private test device setup; the real tun driver handles every ioctl
          * and packet. No host /dev/net/tun descriptor enters native Linux. */

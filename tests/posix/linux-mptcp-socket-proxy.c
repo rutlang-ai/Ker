@@ -150,7 +150,11 @@ int __wrap_socket(int domain, int type, int protocol)
     dccp = (domain == AF_INET || domain == AF_INET6) && type == SOCK_DCCP &&
            (protocol == 0 || protocol == IPPROTO_DCCP);
 #endif
-    if (!dccp && !udp && !packet && !netlink && !raw && ((domain != AF_INET && domain != AF_INET6) || type != SOCK_STREAM ||
+    int creation = 0;
+#ifdef KER_SOCKET_CREATION_SELFTEST
+    creation = domain == AF_INET || (domain == AF_MAX && type == 0 && protocol == 0);
+#endif
+    if (!creation && !dccp && !udp && !packet && !netlink && !raw && ((domain != AF_INET && domain != AF_INET6) || type != SOCK_STREAM ||
         (protocol != IPPROTO_MPTCP && protocol != IPPROTO_TCP && protocol != 0))) { errno = EOPNOTSUPP; return -1; }
     int fd = open_channel();
     if (fd < 0) return -1;

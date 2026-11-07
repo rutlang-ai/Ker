@@ -9,6 +9,18 @@ spec.loader.exec_module(runner)
 
 
 class OriginalNetworkCompletionTests(unittest.TestCase):
+    def test_socket_shell_pass_marker_cannot_hide_missing_native_protocols(self):
+        with self.assertRaises(RuntimeError):
+            runner.validate_missing_backend('run_netsocktests', dict(returncode=0, stdout='', stderr=''))
+        with self.assertRaises(RuntimeError):
+            runner.validate_original('run_netsocktests', dict(stdout='[PASS]\n', stderr=''))
+        complete = dict(creation_attempts=5, creation_eafnosupport=1, creation_eprotonosupport=2,
+                        creation_tcp=1, creation_udp=1)
+        for key, value in (('creation_attempts', 4), ('creation_eafnosupport', 3),
+                           ('creation_eprotonosupport', 0), ('creation_tcp', 0), ('creation_udp', 0)):
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                runner.validate_socket_creation(dict(complete, **{key: value}))
+
     def test_peek_offset_exit_zero_cannot_hide_missing_families_or_protocols(self):
         lines = ['TCP/IPv4 with MSG_PEEK_OFF works correctly',
                  'TCP/IPv6 with MSG_PEEK_OFF works correctly',
