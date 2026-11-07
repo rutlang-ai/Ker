@@ -30,6 +30,8 @@ LINUX_MACVTAP_PROFILE_TEST = "linux-original-net-tap"
 LINUX_NETLINK_DUMPS_PROFILE_TEST = "linux-original-net-netlink-dumps"
 LINUX_NETNS_NAME_PROFILE_TEST = "linux-original-net-netns-name"
 LINUX_FORWARDING_PROFILE_TEST = "linux-original-forwarding-router-vid1"
+LINUX_FORWARDING_PROFILE_TESTS = {LINUX_FORWARDING_PROFILE_TEST: "router_vid_1.sh",
+                                  "linux-original-forwarding-mtu": "min_max_mtu.sh"}
 
 LINUX_AF_UNIX_SELFTESTS = (
     "linux-original-af-unix-diag_uid", "linux-original-af-unix-msg_oob",
@@ -527,9 +529,10 @@ def run_netns_name_profile(build: Path, junit: Path) -> None:
 
 
 def run_forwarding_profile(build: Path, junit: Path) -> None:
-    name = LINUX_FORWARDING_PROFILE_TEST
-    require(sum(item['name'] == name for item in ctest_inventory(build)) == 1,
-            'forwarding profile must register the complete original shell exactly once')
+    names = set(LINUX_FORWARDING_PROFILE_TESTS)
+    inventory = ctest_inventory(build)
+    require(all(sum(item['name'] == name for item in inventory) == 1 for name in names),
+            'forwarding profile must register both complete original shells exactly once')
     cache = (build / 'CMakeCache.txt').read_text()
     native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
                          if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
@@ -539,19 +542,20 @@ def run_forwarding_profile(build: Path, junit: Path) -> None:
             'CONFIG_IP_ROUTE_MULTIPATH=y' in (Path(manifest['kernel']) / '.config').read_text().splitlines(),
             'forwarding shell requires its native multipath routing profile')
     result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
-                            '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+                            '--output-junit', str(junit), '--parallel', '1', '-R', '^(' + '|'.join(sorted(names)) + ')$'], check=False)
     require(junit.is_file(), 'forwarding CTest did not produce JUnit')
-    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
-    evidence = json.loads((build / (name + '.json')).read_text())
-    require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
-            evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native forwarding evidence')
-    # Use the same traffic/cleanup contract for local execution and uploaded CI
-    # evidence, rather than treating an exit code or a skipped shell as proof.
+    report_junit(junit, expected=names, required=names, ctest_returncode=result.returncode)
+    # Use the same complete traffic/cleanup contracts for local execution and
+    # uploaded CI evidence, rather than treating exit codes as coverage.
     script = Path(__file__).resolve().parents[2] / 'tests/posix/linux-forwarding-selftest.py'
     spec = importlib.util.spec_from_file_location('forwarding_contract', script)
     contract = importlib.util.module_from_spec(spec); spec.loader.exec_module(contract)
-    contract.validate_evidence(evidence)
-    summary('Original VLAN 1 forwarding: both IPv4/IPv6 with ten replies each, PASS ' + manifest['fingerprint'])
+    for name, program in LINUX_FORWARDING_PROFILE_TESTS.items():
+        evidence = json.loads((build / (name + '.json')).read_text())
+        require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and evidence.get('program') == program and
+                evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native forwarding evidence')
+        contract.validate_evidence(evidence)
+    summary('Original forwarding: VLAN 1 routing and complete min/max MTU shells, PASS ' + manifest['fingerprint'])
 
 
 def run_packetdrill_profile(build: Path, junit: Path) -> None:
@@ -687,7 +691,7 @@ def run_join_profile(build: Path, junit: Path) -> None:
 
 
 def validate_default_profile_inventory(names: set[str]) -> None:
-    require(LINUX_FORWARDING_PROFILE_TEST not in names, 'forwarding shell requires native multipath profile')
+    require(not set(LINUX_FORWARDING_PROFILE_TESTS) & names, 'forwarding shell requires native multipath profile')
     require(LINUX_NETNS_NAME_PROFILE_TEST not in names, 'namespace-name shell requires native dummy profile')
     require(LINUX_NETLINK_DUMPS_PROFILE_TEST not in names, 'Netlink dumps require native POSIX mqueue profile')
     require(LINUX_MACVTAP_PROFILE_TEST not in names, 'macvtap requires its fingerprinted driver profile')

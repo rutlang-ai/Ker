@@ -16,7 +16,9 @@ class ForwardingProfileTests(unittest.TestCase):
                          'skipped', 'failed-ctest', 'wrong-fingerprint', 'failed-evidence', 'missing-native-traffic'):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary); name = native_tests.LINUX_FORWARDING_PROFILE_TEST
-                inventory = [] if mutation == 'missing-entry' else [dict(name=name)]
+                inventory = [dict(name=n) for n in native_tests.LINUX_FORWARDING_PROFILE_TESTS]
+                if mutation == 'missing-entry':
+                    inventory.pop()
                 if mutation == 'duplicate-entry':
                     inventory.append(dict(name=name))
                 (root / 'CMakeCache.txt').write_text(f'KER_NATIVE_LINUX_BUILD:PATH={root}\n')
@@ -24,14 +26,18 @@ class ForwardingProfileTests(unittest.TestCase):
                     config_fragment='wrong' if mutation == 'wrong-profile' else 'config/native-linux-forwarding.config',
                     kernel=str(root), fingerprint='candidate')))
                 (root / '.config').write_text('' if mutation == 'missing-multipath' else 'CONFIG_IP_ROUTE_MULTIPATH=y\n')
-                junit = root / 'junit.xml'; junit.write_text(f'<testsuite><testcase name="{name}">' +
-                    ('<skipped/>' if mutation == 'skipped' else '') + '</testcase></testsuite>')
+                junit = root / 'junit.xml'; junit.write_text('<testsuite>' + ''.join(f'<testcase name="{n}">' +
+                    ('<skipped/>' if mutation == 'skipped' else '') + '</testcase>'
+                    for n in native_tests.LINUX_FORWARDING_PROFILE_TESTS) + '</testsuite>')
                 evidence = json.loads(transcript.read_text())
-                evidence.update(status='FAIL' if mutation == 'failed-evidence' else 'PASS_IMPORTED_LINUX',
+                evidence.update(program='router_vid_1.sh', status='FAIL' if mutation == 'failed-evidence' else 'PASS_IMPORTED_LINUX',
                                 fingerprint='other' if mutation == 'wrong-fingerprint' else 'candidate')
                 if mutation == 'missing-native-traffic':
                     evidence['mib_after'] = evidence['mib_before']
                 (root / (name + '.json')).write_text(json.dumps(evidence))
+                mtu = json.loads(transcript.with_name('forwarding-mtu-transcript.json').read_text())
+                mtu.update(status='PASS_IMPORTED_LINUX', fingerprint='candidate')
+                (root / 'linux-original-forwarding-mtu.json').write_text(json.dumps(mtu))
                 result = subprocess.CompletedProcess([], 1 if mutation == 'failed-ctest' else 0)
                 with mock.patch.object(native_tests, 'ctest_inventory', return_value=inventory), \
                      mock.patch.object(native_tests.subprocess, 'run', return_value=result):
