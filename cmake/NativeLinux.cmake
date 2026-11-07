@@ -49,7 +49,22 @@ set(ker_native_mptcp_join_profile FALSE)
 set(ker_native_packetdrill_profile FALSE)
 set(ker_native_net_selftests_profile FALSE)
 set(ker_native_macvtap_profile FALSE)
-if(ker_native_config_fragment STREQUAL "config/native-linux-ipip-selftests.config")
+if(ker_native_config_fragment STREQUAL "config/native-linux-rpath-selftests.config")
+    file(STRINGS "${ker_native_kernel}/.config" ker_native_rpath_options REGEX "^CONFIG_[A-Z0-9_]+=y$")
+    foreach(option
+            CONFIG_DUMMY=y CONFIG_IP_ROUTE_MULTIPATH=y CONFIG_NETFILTER_XTABLES=y
+            CONFIG_IP_NF_IPTABLES=y CONFIG_IP_NF_RAW=y CONFIG_IP_NF_MATCH_RPFILTER=y
+            CONFIG_IP6_NF_IPTABLES=y CONFIG_IP6_NF_RAW=y CONFIG_IP6_NF_MATCH_RPFILTER=y
+            CONFIG_NF_TABLES=y CONFIG_NF_TABLES_INET=y CONFIG_NFT_FIB_IPV4=y
+            CONFIG_NFT_FIB_IPV6=y CONFIG_NFT_FIB_INET=y
+    )
+        if(NOT option IN_LIST ker_native_rpath_options)
+            message(FATAL_ERROR "Incomplete original rpath profile: missing ${option}")
+        endif()
+    endforeach()
+    set(ker_native_rpath_selftests_profile TRUE)
+    set(ker_native_mptcp_sockopt_profile FALSE)
+elseif(ker_native_config_fragment STREQUAL "config/native-linux-ipip-selftests.config")
     file(STRINGS "${ker_native_kernel}/.config" ker_native_ipip_options
         REGEX "^CONFIG_(NET_IPIP|NF_CONNTRACK|NETFILTER_XTABLES|IP_NF_IPTABLES|IP_NF_FILTER|NETFILTER_XT_MATCH_CONNTRACK)=y$")
     foreach(option CONFIG_NET_IPIP=y CONFIG_NF_CONNTRACK=y CONFIG_NETFILTER_XTABLES=y
@@ -980,6 +995,7 @@ if(BUILD_TESTING)
     include("${PROJECT_SOURCE_DIR}/cmake/LinuxConntrackSelftests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/LinuxNatSelftests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/LinuxIpipSelftests.cmake")
+    include("${PROJECT_SOURCE_DIR}/cmake/LinuxRpathSelftests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/LinuxPacketdrillSelftests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/NativeAdmissionRequestIdentity.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/NativeIngressFreezeTests.cmake")

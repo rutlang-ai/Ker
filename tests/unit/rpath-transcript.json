@@ -1,0 +1,1438 @@
+{
+  "status": "PASS_IMPORTED_LINUX",
+  "revision": "7fdb7c1824a1f9979d648d7ae28ac446bcee9c6e",
+  "fingerprint": "367d168f2003a7a7194c5251918d3653d4f856dcf0b498e4b7c26214856ecca6",
+  "source_hashes": {
+    "netfilter/rpath.sh": "dbe56d8bcb6844284df6b5cde263447c0e4b245da1e5d9e16a8a6a5f96a090b8",
+    "netfilter/Makefile": "e5a19f1741c5e003ccc1a509f608f0ba60f3d559951016fb8e84a43ae3482bbd"
+  },
+  "iproute2": {
+    "version": "6.12.0",
+    "archive_sha256": "bbd141ef7b5d0127cc2152843ba61f274dc32814fa3e0f13e7d07a080bef53d9",
+    "source_hashes": {
+      "misc/ss.c": "7ca064fff1bf2650486d2d2c4cca009775e842e67d308a7632a0675f54c21712",
+      "misc/nstat.c": "274712c43536c6636ad03ddfab8cde4eeec0045b57ca1085dd17885f7c8b5343",
+      "lib/libnetlink.c": "f2698818203f27380ddc18cfefc79d7d99d1717cf7becbbd2b3f92b9c2b5193c",
+      "tc/tc.c": "e9b2e36053ee6e20f79d44a0cab3e1661300ecf9e9783c5fcd03357aa696a101",
+      "tc/q_netem.c": "999a1f78f6685c8567f68806b5430194de8d6d7416aec7fcf03b1255981fb57a",
+      "ip/ip.c": "9668158b877e99f8dee354953f557a4b42b286d56a8e52a97adf88f369b18c33",
+      "ip/ipmptcp.c": "d9eaaa4046a3ba2bbdae92ecbfe7c7e329b1b90986cd2a3290a6640d5ff7bf4d"
+    },
+    "binaries": {
+      "ss": "d84bbff6151132da388383cee656fd42ba8a1038f8f622249e9d12bb5eb0f9f8",
+      "nstat": "f5dec5e0a282d4027ffa873ac2a6b1681078631f35f8ec2b408c469775331c6d",
+      "tc": "ce2ade230c443b97b5c6d783f0292ce19dbb800fe2896f057e46ca3c182dc3ff",
+      "ip": "da433fdbb1d6c9a4a3bf739a754f0cd9b924a8f1a60bb28676157b0285c6f3d3"
+    }
+  },
+  "preload_sha256": "4d7af72affb37a3d332a7b1edd06009135b2dd83aed528e52e4d0df08031e3d5",
+  "library_sha256": "9ab08e2b27a003c580c827cd9ee7a7ffe9a75a018c80b5e4a3d23f0415635237",
+  "server_sha256": "831b7a808029f852329ee32807ccfaafb6666aa4246a5f44001cf6749e7a6df7",
+  "transport_sha256": "823f4e84dafb11f74430da085e3c39f4cdbdc79fccca07b90b2e34812fc2cdaf",
+  "original_tools": {
+    "ping": {
+      "path": "/tmp/ker-pr542-ubuntu-ping/usr/bin/ping",
+      "sha256": "2369424506d87f336f41e6df9ebb07cee14e93dfff9b526f04c55bd1aebc937f"
+    },
+    "nft": {
+      "path": "/usr/bin/nft",
+      "sha256": "e0fe1bb7246ad58ee816112813499683c1c0b7cb294682b9a382e54dc2a2cd7f"
+    },
+    "iptables-legacy": {
+      "path": "/usr/bin/iptables-legacy",
+      "sha256": "4928af2dff1b20c7cead969b281401191adddbb210b15d1b8dd3650de758dd2a"
+    },
+    "ip6tables-legacy": {
+      "path": "/usr/bin/ip6tables-legacy",
+      "sha256": "4928af2dff1b20c7cead969b281401191adddbb210b15d1b8dd3650de758dd2a"
+    }
+  },
+  "missing_backend_control": {
+    "returncode": 4,
+    "stdout": "Cannot add rpfilter rule\n",
+    "stderr": "native rpath transport: [Errno 2] No such file or directory\nnative rpath transport: [Errno 2] No such file or directory\nnative rpath transport: [Errno 2] No such file or directory\nnative rpath transport: [Errno 2] No such file or directory\nnative rpath transport: [Errno 2] No such file or directory\nnative rpath transport: [Errno 2] No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCould not open socket to kernel: No such file or directory\nnative rpath transport: [Errno 2] No such file or directory\nnative rpath transport: [Errno 2] No such file or directory\n"
+  },
+  "original": {
+    "returncode": 0,
+    "stdout": "PASS: netfilter reverse path match works as intended\n",
+    "stderr": "/tmp/ker-pr542-rpath-repair/ker-rpath-exec-gt4ztwld/bin/original-ping: Warning: source address might be selected on device other than: v0\n/tmp/ker-pr542-rpath-repair/ker-rpath-exec-gt4ztwld/bin/original-ping: Warning: source address might be selected on device other than: v0\n/tmp/ker-pr542-rpath-repair/ker-rpath-exec-gt4ztwld/bin/original-ping: Warning: source address might be selected on device other than: v0\n/tmp/ker-pr542-rpath-repair/ker-rpath-exec-gt4ztwld/bin/original-ping: Warning: source address might be selected on device other than: v0\n"
+  },
+  "commands": [
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "--version"
+      ],
+      "namespace": "",
+      "returncode": 0,
+      "stdout": "iptables v1.8.11 (legacy)\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "--version"
+      ],
+      "namespace": "",
+      "returncode": 0,
+      "stdout": "ip6tables v1.8.11 (legacy)\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "--version"
+      ],
+      "namespace": "",
+      "returncode": 0,
+      "stdout": "nftables v1.1.6 (Commodore Bullmoose #7)\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "netns",
+        "add",
+        "ns1-zq7UfWqS"
+      ],
+      "namespace": "",
+      "operation": "namespace",
+      "returncode": 0
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "netns",
+        "add",
+        "ns2-zq7UfWqS"
+      ],
+      "namespace": "",
+      "operation": "namespace",
+      "returncode": 0
+    },
+    {
+      "tool": "sysctl",
+      "arguments": [
+        "-q",
+        "net.ipv4.conf.all.rp_filter=0"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "sysctl",
+      "arguments": [
+        "-q",
+        "net.ipv4.conf.default.rp_filter=0"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "sysctl",
+      "arguments": [
+        "-q",
+        "net.ipv6.conf.all.keep_addr_on_down=1"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "add",
+        "v0",
+        "type",
+        "veth",
+        "peer",
+        "name",
+        "v0",
+        "netns",
+        "ns2-zq7UfWqS"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "operation": "namespace-veth",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "v0",
+        "up"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "v0",
+        "up"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "a",
+        "a",
+        "192.168.23.2/24",
+        "dev",
+        "v0"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "a",
+        "a",
+        "192.168.23.1/24",
+        "dev",
+        "v0"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "a",
+        "a",
+        "fec0:23::2/64",
+        "dev",
+        "v0",
+        "nodad"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "a",
+        "a",
+        "fec0:23::1/64",
+        "dev",
+        "v0",
+        "nodad"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "add",
+        "d0",
+        "type",
+        "dummy"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "d0",
+        "up"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "a",
+        "a",
+        "192.168.42.2/24",
+        "dev",
+        "v0"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "a",
+        "a",
+        "192.168.42.1/24",
+        "dev",
+        "d0"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "a",
+        "a",
+        "fec0:42::2/64",
+        "dev",
+        "v0",
+        "nodad"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "a",
+        "a",
+        "fec0:42::1/64",
+        "dev",
+        "d0",
+        "nodad"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "show",
+        "dev",
+        "v0"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "3: v0@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether 5e:0c:37:43:e1:b9 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "show",
+        "dev",
+        "v0"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "3: v0@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether ca:43:a5:9b:50:72 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "neigh",
+        "add",
+        "fec0:42::1",
+        "lladdr",
+        "5e:0c:37:43:e1:b9",
+        "nud",
+        "permanent",
+        "dev",
+        "v0"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "neigh",
+        "add",
+        "fec0:23::1",
+        "lladdr",
+        "5e:0c:37:43:e1:b9",
+        "nud",
+        "permanent",
+        "dev",
+        "v0"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "neigh",
+        "add",
+        "fec0:42::2",
+        "lladdr",
+        "ca:43:a5:9b:50:72",
+        "nud",
+        "permanent",
+        "dev",
+        "d0"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "neigh",
+        "add",
+        "fec0:23::2",
+        "lladdr",
+        "ca:43:a5:9b:50:72",
+        "nud",
+        "permanent",
+        "dev",
+        "v0"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-A",
+        "PREROUTING",
+        "-s",
+        "192.168.0.0/16",
+        "-p",
+        "icmp",
+        "--icmp-type",
+        "echo-request",
+        "-m",
+        "rpfilter"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-A",
+        "PREROUTING",
+        "-s",
+        "192.168.0.0/16",
+        "-p",
+        "icmp",
+        "--icmp-type",
+        "echo-request",
+        "-m",
+        "rpfilter",
+        "--invert"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-A",
+        "PREROUTING",
+        "-s",
+        "fec0::/16",
+        "-p",
+        "icmpv6",
+        "--icmpv6-type",
+        "echo-request",
+        "-m",
+        "rpfilter"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-A",
+        "PREROUTING",
+        "-s",
+        "fec0::/16",
+        "-p",
+        "icmpv6",
+        "--icmpv6-type",
+        "echo-request",
+        "-m",
+        "rpfilter",
+        "--invert"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "-f",
+        "-"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "",
+      "ruleset": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request \t\t\tfib saddr . iif oif exists counter\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request \t\t\tfib saddr . iif oif exists counter\n\t}\n}\n"
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-Z"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-Z"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "-s",
+        "list",
+        "table",
+        "inet",
+        "t"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter\n\t}\n}\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "-f",
+        "-"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "",
+      "ruleset": "delete table inet t\ntable inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter\n\t}\n}\n"
+    },
+    {
+      "tool": "ping",
+      "arguments": [
+        "-q",
+        "-c",
+        "1",
+        "-W",
+        "1",
+        "-I",
+        "v0",
+        "192.168.42.1"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 1,
+      "stdout": "PING 192.168.42.1 (192.168.42.1) from 192.168.42.2 v0: 56(84) bytes of data.\n\n--- 192.168.42.1 ping statistics ---\n1 packets transmitted, 0 received, 100% packet loss, time 0ms\n\n",
+      "stderr": "/tmp/ker-pr542-rpath-repair/ker-rpath-exec-gt4ztwld/bin/original-ping: Warning: source address might be selected on device other than: v0\n",
+      "native_clock_reads": 1
+    },
+    {
+      "tool": "ping",
+      "arguments": [
+        "-q",
+        "-c",
+        "1",
+        "-W",
+        "1",
+        "-I",
+        "v0",
+        "fec0:42::1"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 1,
+      "stdout": "PING fec0:42::1 (fec0:42::1) from fec0:42::2 v0: 56 data bytes\n\n--- fec0:42::1 ping statistics ---\n1 packets transmitted, 0 received, 100% packet loss, time 0ms\n\n",
+      "stderr": "/tmp/ker-pr542-rpath-repair/ker-rpath-exec-gt4ztwld/bin/original-ping: Warning: source address might be selected on device other than: v0\n",
+      "native_clock_reads": 1
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 1 84\n-P OUTPUT ACCEPT -c 1 84\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter -c 0 0\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter --invert -c 1 84\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 5 448\n-P OUTPUT ACCEPT -c 4 352\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter -c 0 0\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter --invert -c 1 104\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 1 84\n-P OUTPUT ACCEPT -c 1 84\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter -c 0 0\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter --invert -c 1 84\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 5 448\n-P OUTPUT ACCEPT -c 4 352\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter -c 0 0\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter --invert -c 1 104\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "list",
+        "chain",
+        "inet",
+        "t",
+        "c"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter packets 0 bytes 0\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter packets 0 bytes 0\n\t}\n}\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "list",
+        "chain",
+        "inet",
+        "t",
+        "c"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter packets 0 bytes 0\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter packets 0 bytes 0\n\t}\n}\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-Z"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-Z"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "-s",
+        "list",
+        "table",
+        "inet",
+        "t"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter\n\t}\n}\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "-f",
+        "-"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "",
+      "ruleset": "delete table inet t\ntable inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter\n\t}\n}\n"
+    },
+    {
+      "tool": "ping",
+      "arguments": [
+        "-q",
+        "-c",
+        "1",
+        "-W",
+        "1",
+        "192.168.23.1"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "PING 192.168.23.1 (192.168.23.1) 56(84) bytes of data.\n\n--- 192.168.23.1 ping statistics ---\n1 packets transmitted, 1 received, 0% packet loss, time 0ms\nrtt min/avg/max/mdev = 0.089/0.089/0.089/0.000 ms\n",
+      "stderr": "",
+      "native_clock_reads": 1
+    },
+    {
+      "tool": "ping",
+      "arguments": [
+        "-q",
+        "-c",
+        "1",
+        "-W",
+        "1",
+        "fec0:23::1"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "PING fec0:23::1 (fec0:23::1) 56 data bytes\n\n--- fec0:23::1 ping statistics ---\n1 packets transmitted, 1 received, 0% packet loss, time 0ms\nrtt min/avg/max/mdev = 0.103/0.103/0.103/0.000 ms\n",
+      "stderr": "",
+      "native_clock_reads": 1
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 1 84\n-P OUTPUT ACCEPT -c 1 84\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter -c 1 84\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter --invert -c 0 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 1 104\n-P OUTPUT ACCEPT -c 1 104\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter -c 1 104\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter --invert -c 0 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 1 84\n-P OUTPUT ACCEPT -c 1 84\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter -c 1 84\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter --invert -c 0 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 1 104\n-P OUTPUT ACCEPT -c 1 104\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter -c 1 104\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter --invert -c 0 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "list",
+        "chain",
+        "inet",
+        "t",
+        "c"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter packets 1 bytes 84\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter packets 1 bytes 104\n\t}\n}\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "list",
+        "chain",
+        "inet",
+        "t",
+        "c"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter packets 1 bytes 84\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter packets 1 bytes 104\n\t}\n}\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "add",
+        "vrf0",
+        "type",
+        "vrf",
+        "table",
+        "10"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "vrf0",
+        "up"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "v0",
+        "master",
+        "vrf0"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-Z"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-Z"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "-s",
+        "list",
+        "table",
+        "inet",
+        "t"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter\n\t}\n}\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "-f",
+        "-"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "",
+      "ruleset": "delete table inet t\ntable inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter\n\t}\n}\n"
+    },
+    {
+      "tool": "ping",
+      "arguments": [
+        "-q",
+        "-c",
+        "1",
+        "-W",
+        "1",
+        "-I",
+        "v0",
+        "192.168.42.1"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 1,
+      "stdout": "PING 192.168.42.1 (192.168.42.1) from 192.168.42.2 v0: 56(84) bytes of data.\n\n--- 192.168.42.1 ping statistics ---\n1 packets transmitted, 0 received, 100% packet loss, time 0ms\n\n",
+      "stderr": "/tmp/ker-pr542-rpath-repair/ker-rpath-exec-gt4ztwld/bin/original-ping: Warning: source address might be selected on device other than: v0\n",
+      "native_clock_reads": 1
+    },
+    {
+      "tool": "ping",
+      "arguments": [
+        "-q",
+        "-c",
+        "1",
+        "-W",
+        "1",
+        "-I",
+        "v0",
+        "fec0:42::1"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 1,
+      "stdout": "PING fec0:42::1 (fec0:42::1) from fec0:42::2 v0: 56 data bytes\n\n--- fec0:42::1 ping statistics ---\n1 packets transmitted, 0 received, 100% packet loss, time 0ms\n\n",
+      "stderr": "/tmp/ker-pr542-rpath-repair/ker-rpath-exec-gt4ztwld/bin/original-ping: Warning: source address might be selected on device other than: v0\n",
+      "native_clock_reads": 1
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 2 168\n-P OUTPUT ACCEPT -c 1 84\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter -c 0 0\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter --invert -c 2 168\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 5 416\n-P OUTPUT ACCEPT -c 7 576\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter -c 0 0\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter --invert -c 2 208\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 2 168\n-P OUTPUT ACCEPT -c 1 84\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter -c 0 0\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter --invert -c 2 168\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 5 416\n-P OUTPUT ACCEPT -c 7 576\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter -c 0 0\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter --invert -c 2 208\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "list",
+        "chain",
+        "inet",
+        "t",
+        "c"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter packets 0 bytes 0\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter packets 0 bytes 0\n\t}\n}\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "list",
+        "chain",
+        "inet",
+        "t",
+        "c"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter packets 0 bytes 0\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter packets 0 bytes 0\n\t}\n}\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-Z"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-Z"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "-s",
+        "list",
+        "table",
+        "inet",
+        "t"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter\n\t}\n}\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "-f",
+        "-"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "",
+      "ruleset": "delete table inet t\ntable inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter\n\t}\n}\n"
+    },
+    {
+      "tool": "ping",
+      "arguments": [
+        "-q",
+        "-c",
+        "1",
+        "-W",
+        "1",
+        "192.168.23.1"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "PING 192.168.23.1 (192.168.23.1) 56(84) bytes of data.\n\n--- 192.168.23.1 ping statistics ---\n1 packets transmitted, 1 received, 0% packet loss, time 0ms\nrtt min/avg/max/mdev = 0.107/0.107/0.107/0.000 ms\n",
+      "stderr": "",
+      "native_clock_reads": 1
+    },
+    {
+      "tool": "ping",
+      "arguments": [
+        "-q",
+        "-c",
+        "1",
+        "-W",
+        "1",
+        "fec0:23::1"
+      ],
+      "namespace": "ns1-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "PING fec0:23::1 (fec0:23::1) 56 data bytes\n\n--- fec0:23::1 ping statistics ---\n1 packets transmitted, 1 received, 0% packet loss, time 0ms\nrtt min/avg/max/mdev = 0.129/0.129/0.129/0.000 ms\n",
+      "stderr": "",
+      "native_clock_reads": 1
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 2 168\n-P OUTPUT ACCEPT -c 2 168\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter -c 2 168\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter --invert -c 0 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 4 352\n-P OUTPUT ACCEPT -c 3 280\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter -c 2 208\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter --invert -c 0 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 2 168\n-P OUTPUT ACCEPT -c 2 168\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter -c 2 168\n-A PREROUTING -s 192.168.0.0/16 -p icmp -m icmp --icmp-type 8 -m rpfilter --invert -c 0 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip6tables-legacy",
+      "arguments": [
+        "-t",
+        "raw",
+        "-vS"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "-P PREROUTING ACCEPT -c 4 352\n-P OUTPUT ACCEPT -c 3 280\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter -c 2 208\n-A PREROUTING -s fec0::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m rpfilter --invert -c 0 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "list",
+        "chain",
+        "inet",
+        "t",
+        "c"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter packets 2 bytes 168\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter packets 2 bytes 208\n\t}\n}\n",
+      "stderr": ""
+    },
+    {
+      "tool": "nft",
+      "arguments": [
+        "list",
+        "chain",
+        "inet",
+        "t",
+        "c"
+      ],
+      "namespace": "ns2-zq7UfWqS",
+      "returncode": 0,
+      "stdout": "table inet t {\n\tchain c {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tip saddr 192.168.0.0/16 icmp type echo-request fib saddr . iif check exists counter packets 2 bytes 168\n\t\tip6 saddr fec0::/16 icmpv6 type echo-request fib saddr . iif check exists counter packets 2 bytes 208\n\t}\n}\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "netns",
+        "del",
+        "ns1-zq7UfWqS"
+      ],
+      "namespace": "",
+      "operation": "namespace",
+      "returncode": 0
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "netns",
+        "del",
+        "ns2-zq7UfWqS"
+      ],
+      "namespace": "",
+      "operation": "namespace",
+      "returncode": 0
+    }
+  ],
+  "native_fixture": {
+    "sockets": 150,
+    "mptcp": 0,
+    "accepts": 0,
+    "live": 0,
+    "reads": 297,
+    "writes": 171,
+    "received": 101676,
+    "sent": 11504,
+    "infos": 0,
+    "full_info": 0,
+    "inq": 259,
+    "negotiated": 0,
+    "fallback": 0,
+    "fallback_info_eopnotsupp": 0,
+    "fallback_info_enoprotoopt": 0,
+    "channel_slots": 4,
+    "channels_opened": 179,
+    "namespaces_created": 2,
+    "namespaces_deleted": 2,
+    "netlinks": 58,
+    "diag_sends": 171,
+    "diag_receives": 259,
+    "max_live": 3,
+    "raw_sockets": 84,
+    "filter_sets": 24,
+    "filter_gets": 96,
+    "mp_join_syn_rx": 0,
+    "mp_join_ack_rx": 0,
+    "sendfile_calls": 0,
+    "imported_files": 0,
+    "udp_sockets": 8,
+    "epoll_creates": 0,
+    "epoll_controls": 0,
+    "epoll_waits": 0
+  },
+  "stats": {
+    "rx_reconfigure_discarded": 0,
+    "rx_decision_enabled": false,
+    "rx_decision_leases": 0,
+    "rx_decision_drops": 0,
+    "rx_decision_local": 0,
+    "rx_decision_forwarded": 0,
+    "rx_decision_local_cancelled": 0,
+    "rx_decision_settled": false,
+    "rx_pollers": [
+      {
+        "queue": 0,
+        "owner": 0,
+        "lcore": 0,
+        "cpu": 0,
+        "packets": 0,
+        "polls": 7504,
+        "stalled": 0,
+        "shutdown": 0,
+        "reconfigured": 0,
+        "starts": 1
+      }
+    ],
+    "exception_console_charged": 0,
+    "exception_general_charged": 0,
+    "exception_console_dropped": 0,
+    "exception_general_dropped": 0,
+    "exception_shared_arp": 0,
+    "exception_shared_selected": 0,
+    "exception_shared_icmp_error": 0,
+    "exception_shared_failed": 0,
+    "exception_fragment_dropped": 0,
+    "exception_selected": 0,
+    "exception_enqueued": 0,
+    "exception_to_host": 0,
+    "exception_to_host_dropped": 0,
+    "exception_host_received": 0,
+    "exception_from_host": 0,
+    "exception_wire_dropped": 0,
+    "exception_shutdown_dropped": 0,
+    "exception_rate_dropped": 0,
+    "exception_malformed": 0,
+    "rx_by_queue": [
+      0
+    ],
+    "host_receive_mode_restored": false,
+    "tx_tcp_checksum": 0,
+    "tx_udp_checksum": 0,
+    "tx_ip_checksum": 0,
+    "tx_tso4": 0,
+    "tx_tso6": 0,
+    "tx_checksum_fallback": 0,
+    "rx_rss_metadata": 0,
+    "bond": null,
+    "mtu_final": 1500,
+    "max_mtu": 9000,
+    "mtu_changes": 0,
+    "tx": 7,
+    "rx": 0,
+    "dropped": 0,
+    "tx_retries": 0,
+    "rx_retries": 0,
+    "tx_bytes": 586,
+    "rx_bytes": 0,
+    "tx_dropped": 0,
+    "rx_dropped": 0,
+    "outstanding": 0,
+    "stop_requests": 0,
+    "control_eof": true,
+    "tx_multiseg": 0,
+    "rx_multiseg": 0,
+    "rx_startup_discarded": 0,
+    "rx_shutdown_discarded": 0,
+    "idle_waits": 7498,
+    "idle_timeouts": 7483,
+    "tx_flushes": 6,
+    "tx_timer_flushes": 0,
+    "tx_full_flushes": 0,
+    "tx_drain_flushes": 0,
+    "shutdown_timed_out": false,
+    "worker_exit_code": 0,
+    "io": {
+      "all_multicast_method": "off",
+      "tap_retry_safe": false,
+      "tx_offload_features": 0,
+      "tx_offload_flags": 0,
+      "tx_offload_mode": 0,
+      "tx_capture_stage": "before_offload",
+      "rss": null,
+      "queues": 1,
+      "data_tx_queue": 0,
+      "bond": null,
+      "driver": "net_tap",
+      "max_rx_queues": 64,
+      "max_tx_queues": 64,
+      "rx_descriptors": 0,
+      "tx_descriptors": 0,
+      "pool_rx_descriptors": 256,
+      "pool_tx_descriptors": 256,
+      "mbuf_pool_count": 4095,
+      "mac": "72:91:c6:b4:6b:81",
+      "mtu": 1500,
+      "mbuf_mode": "large",
+      "port_id": 0,
+      "port_count": 1,
+      "socket_id": 0,
+      "process_type": "primary",
+      "numa": true,
+      "lcore_socket_id": 0,
+      "allocation_socket_id": 0,
+      "pool_socket_id": 0,
+      "eal_log_level": 8,
+      "log_level": 8,
+      "memory_base": "0x1000ef000",
+      "memory_bytes": 67108864,
+      "hugepages": false,
+      "memory_channels": 0,
+      "lcore_count": 1,
+      "main_lcore": 0,
+      "main_cpu": 0,
+      "link_up": true,
+      "promiscuous": false,
+      "idle_sleep_us": 1000,
+      "tx_delay_us": 0
+    },
+    "native": {
+      "buffer_allocations": 0,
+      "buffer_releases": 0,
+      "buffer_shutdown_releases": 0,
+      "buffers_live": 0,
+      "buffer_bytes": 0,
+      "buffer_option_guards_live": 0,
+      "active_opens": 0,
+      "passive_opens": 0,
+      "retransmitted_segments": 0,
+      "zero_window_probes": 0,
+      "out_of_order_queued": 0,
+      "udp_in_datagrams": 0,
+      "udp_out_datagrams": 0,
+      "udp_in_errors": 0,
+      "udp_no_ports": 0,
+      "udp6_in_datagrams": 0,
+      "udp6_out_datagrams": 0,
+      "udp6_in_errors": 0,
+      "udp6_no_ports": 0,
+      "ip6_frag_ok": 0,
+      "ip6_frag_creates": 0,
+      "ip6_reasm_ok": 0,
+      "ip6_reasm_fails": 0,
+      "ip6_reasm_timeouts": 0,
+      "ip_frag_ok": 0,
+      "ip_frag_creates": 0,
+      "ip_reasm_ok": 0,
+      "ip_reasm_fails": 0,
+      "tcp_ecn": 2,
+      "mptcp_capable_syn_tx": 0,
+      "mptcp_capable_syn_rx": 0,
+      "mptcp_capable_synack_rx": 0,
+      "mptcp_capable_ack_rx": 0,
+      "mptcp_fallback_synack": 0,
+      "mptcp_fallback_ack": 0
+    }
+  },
+  "server_stdout": "",
+  "server_stderr": "EAL: Detected CPU lcores: 128\nEAL: Detected NUMA nodes: 1\nEAL: Error creating '/var/run/dpdk': Permission denied\nEAL: No DPDK runtime directory created\nEAL: Detected shared linkage of DPDK\nEAL: Selected IOVA mode 'VA'\nKER_MPTCP_FIXTURE_CHANNELS_DRAINED\nKER_LINUX_SELFTEST_OPS {\"unshare\":2,\"setns\":359,\"open\":8,\"netlink\":58,\"mount\":0}\nKER_MPTCP_FIXTURE_NATIVE_HALTED\nKER_MPTCP_FIXTURE_TASKS_RETIRED\n"
+}
