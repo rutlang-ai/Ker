@@ -35,6 +35,40 @@ long ker_linux_selftest_call(unsigned operation, const unsigned long a[6])
     struct ker_fd *entry;
     long result;
     switch (operation) {
+    case KER_TEST_OPEN_MACVTAP: {
+        /* macvtap's /dev/tap<ifindex> name is not its allocated minor. Read
+         * the real driver's sysfs dev_t in native Linux before making a node
+         * in its private filesystem; never borrow a host macvtap device. */
+        if (!a[0] || a[0] > 0x7fffffffUL) return -EINVAL;
+        if (lkl_sys_access("/sys/class/macvtap", F_OK)) {
+            result = lkl_sys_mkdir("/sys", 0555);
+            if (result < 0 && result != -EEXIST) return result;
+            result = lkl_sys_mount("sysfs", "/sys", "sysfs", 0, NULL);
+            if (result < 0) return result;
+        }
+        char info[96], node[48], text[64];
+        snprintf(info, sizeof(info), "/sys/class/macvtap/tap%lu/dev", a[0]);
+        long fd = lkl_sys_open(info, O_RDONLY | O_CLOEXEC, 0);
+        if (fd < 0) return fd;
+        long size = lkl_sys_read(fd, text, sizeof(text) - 1);
+        long closed = lkl_sys_close(fd);
+        if (size < 0) return size;
+        if (closed < 0) return closed;
+        if (!size || size == (long)sizeof(text) - 1) return -EIO;
+        text[size] = 0;
+        unsigned major, minor; char trailing;
+        if (sscanf(text, "%u:%u %c", &major, &minor, &trailing) != 2 ||
+            major > 0xfff || minor > 0xfffff) return -EINVAL;
+        unsigned device = (major << 8) | (minor & 0xff) | ((minor & 0xfff00) << 12);
+        result = lkl_sys_mkdir("/dev", 0700);
+        if (result < 0 && result != -EEXIST) return result;
+        snprintf(node, sizeof(node), "/dev/tap%lu", a[0]);
+        result = lkl_sys_unlink(node);
+        if (result < 0 && result != -ENOENT) return result;
+        result = lkl_sys_mknodat(LKL_AT_FDCWD, node, S_IFCHR | 0600, device);
+        if (result < 0) return result;
+        return export_file(lkl_sys_open(node, O_RDWR | O_NONBLOCK | O_CLOEXEC, 0), KER_FD_FILE, O_CLOEXEC);
+    }
     case KER_TEST_SOCKET:
         /* Invalid address families must reach Linux too. The public facade
          * deliberately leaves non-network families on the host; this private

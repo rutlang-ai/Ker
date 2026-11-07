@@ -50,6 +50,10 @@ struct client { int host, native, ns, input, upload, retire; size_t input_size, 
 static struct client clients[4096];
 static unsigned clients_count;
 static atomic_ulong channels_opened;
+#ifdef KER_MACVTAP_SELFTEST
+static atomic_uint macvtap_opens, macvtap_write_einval, macvtap_writes;
+static atomic_ulong macvtap_bytes;
+#endif
 #ifdef KER_SOCKET_CREATION_SELFTEST
 static atomic_uint creation_attempts, creation_eafnosupport, creation_eprotonosupport;
 static atomic_uint creation_tcp, creation_udp;
@@ -141,6 +145,18 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     }
 #endif
 #if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_NET_DEVICE_SELFTEST)
+#ifdef KER_MACVTAP_SELFTEST
+    if (m->operation == MS_MACVTAP_OPEN) {
+        if (fd >= 0 || select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
+        client->native = (int)native_call(KER_TEST_OPEN_MACVTAP, m->a, 0, 0);
+        if (client->native < 0) return -1;
+        int (*kind)(int) = dlsym(RTLD_DEFAULT, "ker_posix_descriptor_kind");
+        if (!kind || kind(client->native) != 3) {
+            close(client->native); client->native = -1; errno = ENOTSUP; return -1;
+        }
+        atomic_fetch_add(&macvtap_opens, 1); mark_active(client); return 0;
+    }
+#endif
     if (m->operation == MS_TUN_OPEN) {
         if (fd >= 0 || select_namespace(input ? (char *)data : "", input, &client->ns)) return -1;
         client->native = (int)native_call(KER_TEST_OPEN_TUN, 0, 0, 0);
@@ -444,6 +460,13 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         if (m->a == MS_WRITE_PROC_TARGET && !client->proc_path[0]) { errno = EINVAL; return -1; }
 #endif
         ssize_t result = write(fd, data, input);
+#ifdef KER_MACVTAP_SELFTEST
+        if (result < 0 && errno == EINVAL) atomic_fetch_add(&macvtap_write_einval, 1);
+        if (result >= 0) {
+            atomic_fetch_add(&macvtap_writes, 1);
+            atomic_fetch_add(&macvtap_bytes, (unsigned long)result);
+        }
+#endif
         if (result >= 0) atomic_fetch_add(&sent_bytes, (unsigned long)result);
 #ifdef KER_PACKETDRILL_SELFTEST
         if (result >= 0 && m->a == MS_WRITE_PROC_TARGET) {
@@ -724,6 +747,15 @@ int main(int argc, char **argv)
         atomic_load(&tun_queue_einval), atomic_load(&namespace_tcp_active), atomic_load(&namespace_tcp_passive));
 #endif
     extra = network_counts;
+#endif
+#ifdef KER_MACVTAP_SELFTEST
+    char macvtap_counts[1024];
+    snprintf(macvtap_counts, sizeof(macvtap_counts),
+        "%s,\"macvtap_opens\":%u,\"macvtap_write_einval\":%u,"
+        "\"macvtap_writes\":%u,\"macvtap_bytes\":%lu", extra,
+        atomic_load(&macvtap_opens), atomic_load(&macvtap_write_einval),
+        atomic_load(&macvtap_writes), atomic_load(&macvtap_bytes));
+    extra = macvtap_counts;
 #endif
 #ifdef KER_SOCKET_CREATION_SELFTEST
     char creation_counts[1024];
