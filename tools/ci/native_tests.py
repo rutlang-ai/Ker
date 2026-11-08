@@ -28,6 +28,8 @@ LINUX_PROTOCOL_SELFTESTS = (
 LINUX_NET_PROFILE_TESTS = {"linux-original-net-tun", "linux-original-net-reuseport_addr_any"}
 LINUX_MACVTAP_PROFILE_TEST = "linux-original-net-tap"
 LINUX_NETLINK_DUMPS_PROFILE_TEST = "linux-original-net-netlink-dumps"
+LINUX_NEXTHOP_PROFILE_TEST = "linux-original-forwarding-router-nh"
+LINUX_NEXTHOP_REALTIME_TEST = "nexthop-realtime-wrapper-contract"
 LINUX_BRIDGE_PROFILE_TEST = "linux-original-forwarding-router-bridge"
 LINUX_BRIDGE_REALTIME_TEST = "bridge-realtime-wrapper-contract"
 LINUX_XT_STRING_PROFILE_TEST = "linux-original-netfilter-xt-string"
@@ -502,6 +504,37 @@ def run_netlink_dumps_profile(build: Path, junit: Path) -> None:
     summary('Original Netlink dumps: three complete lifecycle cases, PASS ' + manifest['fingerprint'])
 
 
+def run_nexthop_profile(build: Path, junit: Path) -> None:
+    name = LINUX_NEXTHOP_PROFILE_TEST
+    control = LINUX_NEXTHOP_REALTIME_TEST
+    inventory = [item['name'] for item in ctest_inventory(build)]
+    require(inventory.count(name) == 1 and inventory.count(control) == 1,
+            'nexthop profile must register the complete original entry and realtime ABI control exactly once')
+    cache = (build / 'CMakeCache.txt').read_text()
+    native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
+                         if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
+    require(native_build, 'nexthop profile has no native kernel path')
+    manifest = json.loads((Path(native_build) / 'native-linux.json').read_text())
+    config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
+    require(manifest.get('config_fragment') == 'config/native-linux-nexthop-selftests.config' and
+            {'CONFIG_VETH=y', 'CONFIG_NET_VRF=y', 'CONFIG_IP_ROUTE_MULTIPATH=y',
+             'CONFIG_IP_MULTIPLE_TABLES=y', 'CONFIG_IPV6_MULTIPLE_TABLES=y', 'CONFIG_NET_CLS_ACT=y',
+             'CONFIG_NET_SCH_INGRESS=y'}.issubset(config),
+            'nexthop requires its real native nexthop/clsact/VRF profile')
+    result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
+                            '--output-junit', str(junit), '--parallel', '1', '-R', '^(' + name + '|' + control + ')$'], check=False)
+    require(junit.is_file(), 'nexthop CTest did not produce JUnit')
+    report_junit(junit, expected={name, control}, required={name, control}, ctest_returncode=result.returncode)
+    evidence = json.loads((build / (name + '.json')).read_text())
+    require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
+            evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native nexthop evidence')
+    script = Path(__file__).resolve().parents[2] / 'tests/posix/linux-nexthop-selftest.py'
+    spec = importlib.util.spec_from_file_location('nexthop_contract', script)
+    contract = importlib.util.module_from_spec(spec); spec.loader.exec_module(contract)
+    contract.validate_evidence(evidence)
+    summary('Original nexthop objects: complete shared IPv4/IPv6 routing and clsact lifecycle, PASS ' + manifest['fingerprint'])
+
+
 def run_bridge_profile(build: Path, junit: Path) -> None:
     name = LINUX_BRIDGE_PROFILE_TEST
     control = LINUX_BRIDGE_REALTIME_TEST
@@ -890,6 +923,7 @@ def run_join_profile(build: Path, junit: Path) -> None:
 
 
 def validate_default_profile_inventory(names: set[str]) -> None:
+    require(LINUX_NEXTHOP_PROFILE_TEST not in names, "nexthop requires its native nexthop/clsact/VRF profile")
     require(LINUX_BRIDGE_PROFILE_TEST not in names, "bridge requires its native bridge/VLAN/VRF profile")
     require(LINUX_XT_STRING_PROFILE_TEST not in names, "xt_string requires its native string/BM/KMP profile")
     require(LINUX_RPATH_PROFILE_TEST not in names, 'rpath shell requires its native rpfilter/fib profile')
@@ -1235,8 +1269,8 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "netns-name-profile", "forwarding-profile", "conntrack-profile", "nat-profile", "ipip-profile", "rpath-profile", "xt-string-profile", "bridge-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
-        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile|netns-name-profile|forwarding-profile|conntrack-profile|nat-profile|ipip-profile|rpath-profile|xt-string-profile|bridge-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "netns-name-profile", "forwarding-profile", "conntrack-profile", "nat-profile", "ipip-profile", "rpath-profile", "xt-string-profile", "bridge-profile", "nexthop-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile|netns-name-profile|forwarding-profile|conntrack-profile|nat-profile|ipip-profile|rpath-profile|xt-string-profile|bridge-profile|nexthop-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
         if len(argv) != 2:
@@ -1280,6 +1314,11 @@ def main(argv: list[str]) -> int:
         if len(argv) != 4:
             raise RuntimeError("net-profile requires build directory and JUnit output path")
         run_net_profile(build, Path(argv[3]))
+        return 0
+    if group == "nexthop-profile":
+        if len(argv) != 4:
+            raise RuntimeError("nexthop-profile requires build directory and JUnit output path")
+        run_nexthop_profile(build, Path(argv[3]))
         return 0
     if group == "bridge-profile":
         if len(argv) != 4:

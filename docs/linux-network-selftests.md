@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh` 完整入口本地通过；其余 104 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh` 完整入口本地通过；其余 103 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 84/310，剩余 226；其中 79 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 231 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 85/310，剩余 225；其中 80 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 230 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -130,6 +130,12 @@ Ker 的目标应用包括网关和 WAF，因此优先迁移转发、路由、VLA
 iproute2 6.12.0 的 unchanged `bridge` 工具和 `ip` 使用同一原生 Netlink 通道。每次 ping 前读取真实 bridge 类型、VLAN filtering、端口 master/forwarding 状态和 VLAN 1 flags，要求仅隔离阶段缺失 PVID/untagged。完整 110 条原版命令还须保留 remaster、default PVID 0→1 的顺序及成功清理。实际 IPv4/IPv6 forwarding MIB 各至少增加 80；结束后 br1/VRF 设备消失、forwarding sysctl 恢复、live socket/outstanding packet 为零，worker 正常退出。保留完整入口缺失 backend、未知 VRF 与同后端 loopback 对照。
 
 本地完整原版及 `bridge-profile` CI gate 通过，native fingerprint 为 `6ee942b2c8460007ae8131a5f0764b4ff646c6efd9d0340d2b282d025eadedf5`，并使用 hosted CI 对应的 Ubuntu iputils 20240117 ping 验证。gate 要求实际配置、唯一原版入口、无 skip 的 JUnit 和匹配 fingerprint 的完整 JSON；最终提交的 hosted CI/review 资格仍须单独核对。该程序计一个默认入口。
+
+`forwarding/router_nh.sh` 完整运行两个原版双栈 ping，保留所有拓扑、`nexthop`、路由替换、clsact 创建/删除及 cleanup 命令。专用 `config/native-linux-nexthop-selftests.config` 启用 multipath、NET_CLS_ACT 和 NET_SCH_INGRESS；原版 iproute2 6.12.0 `ip`/`tc` 经已有 Netlink 通道操作导入 Linux，不修改 Linux、工具或原版脚本及三个公共库。
+
+原版创建两个 AF_INET6 nexthop（101→veth1，102→veth2），IPv4 和 IPv6 各有两条路由引用它们。每次 ping 前读取实际 AF_INET6 nexthop dump、双栈 FIB、clsact 和 `route get fibmatch`。IPv4 实际选中 nhid 102；原版 IPv6 配置同时保留 metric 256 的直连路由和 metric 1024 的 nhid 路由，实际选中直连路由。本项保留并记录这个上游合同，不将 IPv6 ping 宣称为经 nhid 转发的流量证明。
+
+本地使用 hosted Ubuntu iputils 20240117 完整通过，两次 ping 均保持 10 个回包、0.1 秒间隔和 5 秒 deadline，实际 IPv4/IPv6 forwarding MIB 各增加 20。要求 clsact/VRF 清理、forwarding sysctl 恢复、live socket/outstanding packet 为零和 worker 正常退出；上游未显式删除的 nexthop/路由随常驻内核关闭释放，不额外改写原版 cleanup。完整脚本缺失 backend 必须失败，未知 VRF 必须拒绝，同后端 loopback 对照成功。`nexthop-profile` gate 强制配置、唯一完整入口、无 skip JUnit、匹配 fingerprint 和完整证据。本地 native fingerprint 为 `6414aae9fd58c1f5012289ba99c8f3bab5a883982a6b2da969d4964f06a1cc3d`；hosted CI/review 资格另行核对。该程序计一个默认入口。
 
 ## Conntrack zone dump/flush
 

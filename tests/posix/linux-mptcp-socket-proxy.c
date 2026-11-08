@@ -543,7 +543,7 @@ ssize_t __wrap_recvfrom(int fd, void *bytes, size_t length, int flags, struct so
 }
 ssize_t __wrap_recv(int fd, void *bytes, size_t length, int flags)
 { return __wrap_recvfrom(fd, bytes, length, flags, NULL, NULL); }
-#if defined(KER_RPATH_SELFTEST) || defined(KER_BRIDGE_SELFTEST)
+#if defined(KER_RPATH_SELFTEST) || defined(KER_BRIDGE_SELFTEST) || defined(KER_NEXTHOP_SELFTEST)
 __attribute__((visibility("hidden")))
 int ker_native_realtime_gettimeofday_impl(struct timeval *tv, void *tz)
 {
