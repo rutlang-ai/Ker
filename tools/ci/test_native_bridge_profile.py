@@ -1,4 +1,4 @@
-"""Both original bridge entries and the native realtime ABI control are mandatory."""
+"""All three complete bridge entries and the native realtime ABI control are mandatory."""
 import json
 from pathlib import Path
 import subprocess
@@ -13,6 +13,11 @@ class BridgeProfileTests(unittest.TestCase):
     def test_candidate_bound_native_bridge_gate(self):
         fixtures = Path(__file__).resolve().parents[2] / 'tests/unit'
         files = dict(native_tests.LINUX_BRIDGE_PROFILE_TESTS)
+        fixture_by_program = {
+            'router_bridge.sh': 'bridge-transcript.json',
+            'router_bridge_vlan.sh': 'bridge-vlan-transcript.json',
+            'router_bridge_1d.sh': 'bridge-1d-transcript.json',
+        }
         control = native_tests.LINUX_BRIDGE_REALTIME_TEST
         cases = [('complete', None), ('wrong-profile', None), ('missing-vlan', None),
                  ('missing-control', None), ('duplicate-control', None),
@@ -40,23 +45,26 @@ class BridgeProfileTests(unittest.TestCase):
                             'IP_MULTIPLE_TABLES', 'IPV6_MULTIPLE_TABLES', 'BRIDGE', 'BRIDGE_VLAN_FILTERING')]
                 if mutation == 'missing-vlan': options.remove('CONFIG_BRIDGE_VLAN_FILTERING=y')
                 (root / '.config').write_text('\n'.join(options) + '\n')
-                junit = root / 'junit.xml'
                 entries = []
                 for name in sorted(expected):
-                    status = ('<skipped/>' if mutation == 'skipped-control' and name == control or
-                              mutation == 'skipped-entry' and name == target else
+                    status = ('<skipped/>' if (mutation == 'skipped-control' and name == control or
+                                                 mutation == 'skipped-entry' and name == target) else
                               '<failure message="failed"/>' if mutation == 'failed-control' and name == control else '')
                     entries.append(f'<testcase name="{name}">{status}</testcase>')
+                junit = root / 'junit.xml'
                 junit.write_text('<testsuite>' + ''.join(entries) + '</testsuite>')
                 for name, program in files.items():
-                    filename = 'bridge-transcript.json' if program == 'router_bridge.sh' else 'bridge-vlan-transcript.json'
-                    report = json.loads((fixtures / filename).read_text())
+                    report = json.loads((fixtures / fixture_by_program[program]).read_text())
                     report['fingerprint'] = 'candidate'
                     if name == target:
                         if mutation == 'wrong-fingerprint': report['fingerprint'] = 'other'
                         elif mutation == 'failed-evidence': report['status'] = 'FAIL'
                         elif mutation == 'wrong-program': report['program'] = 'wrong.sh'
-                        elif mutation == 'missing-phase': report['commands'] = [r for r in report['commands'] if r['tool'] != 'bridge']
+                        elif mutation == 'missing-phase':
+                            if program == 'router_bridge_1d.sh':
+                                report['commands'] = [r for r in report['commands'] if 'port_after' not in r]
+                            else:
+                                report['commands'] = [r for r in report['commands'] if r['tool'] != 'bridge']
                         elif mutation == 'leaked-bridge': report['cleanup_state']['links'].append(dict(ifname='br1'))
                         elif mutation == 'missing-clock':
                             next(r for r in report['commands'] if r['arguments'][:2] == ['vrf', 'exec']).pop('native_clock_reads')
@@ -68,7 +76,7 @@ class BridgeProfileTests(unittest.TestCase):
                     else:
                         with self.assertRaises(RuntimeError): native_tests.run_bridge_profile(root, junit)
 
-    def test_default_graph_excludes_both_bridge_entries(self):
+    def test_default_graph_excludes_all_bridge_entries(self):
         for name in native_tests.LINUX_BRIDGE_PROFILE_TESTS:
             with self.subTest(name=name), self.assertRaisesRegex(RuntimeError, 'bridge'):
                 native_tests.validate_default_profile_inventory({name})
