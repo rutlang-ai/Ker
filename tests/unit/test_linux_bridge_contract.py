@@ -16,7 +16,8 @@ class BridgeContractTests(unittest.TestCase):
         for mutation in ('complete', 'missing-family', 'lost-packet', 'isolation-bypass', 'warning',
                          'timeout', 'remaster-order', 'late-pvid', 'stale-pvid', 'wrong-port',
                          'no-forwarding', 'not-restored', 'leaked-bridge', 'failed-cleanup',
-                         'ignored-vrf', 'host-fallback', 'outstanding-packet', 'forced-stop'):
+                         'ignored-vrf', 'host-fallback', 'outstanding-packet', 'forced-stop',
+                         'missing-clock'):
             with self.subTest(mutation=mutation):
                 report = copy.deepcopy(original); rows = report['commands']
                 pings = [r for r in rows if r['arguments'][:2] == ['vrf','exec']]
@@ -40,6 +41,7 @@ class BridgeContractTests(unittest.TestCase):
                 elif mutation == 'host-fallback': report['missing_backend_control']['returncode'] = 0
                 elif mutation == 'outstanding-packet': report['stats']['outstanding'] = 1
                 elif mutation == 'forced-stop': report['stats']['shutdown_timed_out'] = True
+                elif mutation == 'missing-clock': pings[0].pop('native_clock_reads')
                 if mutation == 'complete': contract.validate_evidence(report)
                 else:
                     with self.assertRaises(RuntimeError): contract.validate_evidence(report)
