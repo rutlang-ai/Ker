@@ -16,6 +16,21 @@ spec = importlib.util.spec_from_file_location('forwarding_diag', root / 'linux-m
 diag = importlib.util.module_from_spec(spec); spec.loader.exec_module(diag)
 
 
+def bridge_snapshot(env):
+    result = {}
+    for key, query in (
+        ('links', [os.environ['KER_FORWARDING_IP'], '-d', '-j', 'link', 'show']),
+        ('addresses', [os.environ['KER_FORWARDING_IP'], '-j', 'address', 'show']),
+        ('ipv4_routes', [os.environ['KER_FORWARDING_IP'], '-4', '-j', 'route', 'show', 'table', 'all']),
+        ('ipv6_routes', [os.environ['KER_FORWARDING_IP'], '-6', '-j', 'route', 'show', 'table', 'all']),
+        ('vlans', [os.environ['KER_FORWARDING_BRIDGE'], '-j', 'vlan', 'show'])):
+        state = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
+        if state.stderr:
+            raise RuntimeError('native bridge VLAN upper observation warning: ' + state.stderr)
+        result[key] = json.loads(state.stdout)
+    return result
+
+
 def main():
     tool, words = Path(sys.argv[0]).name, sys.argv[1:]
     record = dict(tool=tool, arguments=words)
@@ -43,18 +58,9 @@ def main():
             env['KER_FORWARDING_VRF'] = vrf
             command = [os.environ['KER_FORWARDING_' + program.upper()], *arguments]
             record['vrf'] = objects[0]
-            if os.environ.get('KER_FORWARDING_BRIDGE_VLAN_UPPER') == '1':
-                record['bridge_state'] = {}
-                for key, query in (
-                    ('links', [os.environ['KER_FORWARDING_IP'], '-d', '-j', 'link', 'show']),
-                    ('addresses', [os.environ['KER_FORWARDING_IP'], '-j', 'address', 'show']),
-                    ('ipv4_routes', [os.environ['KER_FORWARDING_IP'], '-4', '-j', 'route', 'show', 'table', 'all']),
-                    ('ipv6_routes', [os.environ['KER_FORWARDING_IP'], '-6', '-j', 'route', 'show', 'table', 'all']),
-                    ('vlans', [os.environ['KER_FORWARDING_BRIDGE'], '-j', 'vlan', 'show'])):
-                    state = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
-                    if state.stderr:
-                        raise RuntimeError('native bridge VLAN upper observation warning: ' + state.stderr)
-                    record['bridge_state'][key] = json.loads(state.stdout)
+            if (os.environ.get('KER_FORWARDING_BRIDGE_VLAN_UPPER') == '1' or
+                    os.environ.get('KER_FORWARDING_BRIDGE_PVID_UPPER') == '1'):
+                record['bridge_state'] = bridge_snapshot(env)
             elif os.environ.get('KER_FORWARDING_BRIDGE_1D') == '1':
                 state = subprocess.run([os.environ['KER_FORWARDING_IP'], '-d', '-j', 'link', 'show'],
                                        env=env, capture_output=True, text=True, timeout=10, check=True)
@@ -112,8 +118,12 @@ def main():
             if state.stderr:
                 raise RuntimeError('native bridge VLAN upper port observation warning: ' + state.stderr)
             record['port_after'] = json.loads(state.stdout)
+        if (tool == 'ip' and os.environ.get('KER_FORWARDING_BRIDGE_PVID_UPPER') == '1' and
+                'br1.10' in words and words[0] in ('link', 'address')):
+            record['upper_after'] = bridge_snapshot(env)
         if tool == 'bridge' and (os.environ.get('KER_FORWARDING_BRIDGE_VLAN') == '1' or
-                                 os.environ.get('KER_FORWARDING_BRIDGE_VLAN_UPPER') == '1'):
+                                 os.environ.get('KER_FORWARDING_BRIDGE_VLAN_UPPER') == '1' or
+                                 os.environ.get('KER_FORWARDING_BRIDGE_PVID_UPPER') == '1'):
             state = subprocess.run([os.environ['KER_FORWARDING_BRIDGE'], '-j', 'vlan', 'show'],
                                    env=env, capture_output=True, text=True, timeout=10, check=True)
             if state.stderr:
