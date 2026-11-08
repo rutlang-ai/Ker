@@ -1,0 +1,1796 @@
+{
+  "program": "router_nh.sh",
+  "status": "PASS_IMPORTED_LINUX",
+  "revision": "7fdb7c1824a1f9979d648d7ae28ac446bcee9c6e",
+  "fingerprint": "6414aae9fd58c1f5012289ba99c8f3bab5a883982a6b2da969d4964f06a1cc3d",
+  "original": {
+    "returncode": 0,
+    "stdout": "TEST: ping                                                          [ OK ]\nTEST: ping6                                                         [ OK ]\n",
+    "stderr": ""
+  },
+  "commands": [
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "show",
+        "dev",
+        "veth0"
+      ],
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "Device \"veth0\" does not exist.\n"
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "add",
+        "veth0",
+        "type",
+        "veth",
+        "peer",
+        "name",
+        "veth1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "show",
+        "dev",
+        "veth2"
+      ],
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "Device \"veth2\" does not exist.\n"
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "add",
+        "veth2",
+        "type",
+        "veth",
+        "peer",
+        "name",
+        "veth3"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "show",
+        "dev",
+        "veth0"
+      ],
+      "returncode": 0,
+      "stdout": "5: veth0@veth1: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether ea:2f:55:15:eb:fc brd ff:ff:ff:ff:ff:ff\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "show",
+        "dev",
+        "veth1"
+      ],
+      "returncode": 0,
+      "stdout": "4: veth1@veth0: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether 72:61:44:aa:f1:ce brd ff:ff:ff:ff:ff:ff\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "show",
+        "dev",
+        "veth2"
+      ],
+      "returncode": 0,
+      "stdout": "7: veth2@veth3: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether 8a:e3:8d:55:5f:57 brd ff:ff:ff:ff:ff:ff\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "show",
+        "dev",
+        "veth3"
+      ],
+      "returncode": 0,
+      "stdout": "6: veth3@veth2: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether d2:66:5b:46:af:58 brd ff:ff:ff:ff:ff:ff\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-j",
+        "link",
+        "show",
+        "dev",
+        "veth1"
+      ],
+      "returncode": 0,
+      "stdout": "[{\"ifindex\":4,\"link\":\"veth0\",\"ifname\":\"veth1\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"M-DOWN\"],\"mtu\":1500,\"qdisc\":\"noop\",\"operstate\":\"DOWN\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"72:61:44:aa:f1:ce\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-4",
+        "rule",
+        "add",
+        "pref",
+        "32765",
+        "table",
+        "local"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-4",
+        "rule",
+        "del",
+        "pref",
+        "0"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-6",
+        "rule",
+        "add",
+        "pref",
+        "32765",
+        "table",
+        "local"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-6",
+        "rule",
+        "del",
+        "pref",
+        "0"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "add",
+        "dev",
+        "vrf-h1",
+        "type",
+        "vrf",
+        "table",
+        "1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-4",
+        "route",
+        "add",
+        "table",
+        "1",
+        "unreachable",
+        "default",
+        "metric",
+        "4278198272"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-6",
+        "route",
+        "add",
+        "table",
+        "1",
+        "unreachable",
+        "default",
+        "metric",
+        "4278198272"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "dev",
+        "veth0",
+        "master",
+        "vrf-h1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "dev",
+        "vrf-h1",
+        "up"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "dev",
+        "veth0",
+        "up"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "add",
+        "192.0.2.2/24",
+        "dev",
+        "veth0"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "add",
+        "2001:db8:1::2/64",
+        "dev",
+        "veth0"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "route",
+        "add",
+        "198.51.100.0/24",
+        "vrf",
+        "vrf-h1",
+        "nexthop",
+        "via",
+        "192.0.2.1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "route",
+        "add",
+        "2001:db8:2::/64",
+        "vrf",
+        "vrf-h1",
+        "nexthop",
+        "via",
+        "2001:db8:1::1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "add",
+        "dev",
+        "vrf-h2",
+        "type",
+        "vrf",
+        "table",
+        "2"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-4",
+        "route",
+        "add",
+        "table",
+        "2",
+        "unreachable",
+        "default",
+        "metric",
+        "4278198272"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-6",
+        "route",
+        "add",
+        "table",
+        "2",
+        "unreachable",
+        "default",
+        "metric",
+        "4278198272"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "dev",
+        "veth3",
+        "master",
+        "vrf-h2"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "dev",
+        "vrf-h2",
+        "up"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "dev",
+        "veth3",
+        "up"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "add",
+        "198.51.100.2/24",
+        "dev",
+        "veth3"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "add",
+        "2001:db8:2::2/64",
+        "dev",
+        "veth3"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "route",
+        "add",
+        "192.0.2.0/24",
+        "vrf",
+        "vrf-h2",
+        "nexthop",
+        "via",
+        "198.51.100.1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "route",
+        "add",
+        "2001:db8:1::/64",
+        "vrf",
+        "vrf-h2",
+        "nexthop",
+        "via",
+        "2001:db8:2::1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "dev",
+        "veth1",
+        "up"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "dev",
+        "veth2",
+        "up"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "tc",
+      "arguments": [
+        "qdisc",
+        "add",
+        "dev",
+        "veth2",
+        "clsact"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "add",
+        "192.0.2.1/24",
+        "dev",
+        "veth1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "add",
+        "2001:db8:1::1/64",
+        "dev",
+        "veth1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "add",
+        "198.51.100.1/24",
+        "dev",
+        "veth2"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "add",
+        "2001:db8:2::1/64",
+        "dev",
+        "veth2"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "sysctl",
+      "arguments": [
+        "-n",
+        "net.ipv4.conf.all.forwarding"
+      ],
+      "returncode": 0,
+      "stdout": "0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "sysctl",
+      "arguments": [
+        "-qw",
+        "net.ipv4.conf.all.forwarding=1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "sysctl",
+      "arguments": [
+        "-n",
+        "net.ipv6.conf.all.forwarding"
+      ],
+      "returncode": 0,
+      "stdout": "0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "sysctl",
+      "arguments": [
+        "-qw",
+        "net.ipv6.conf.all.forwarding=1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "show",
+        "dev",
+        "veth0",
+        "up"
+      ],
+      "returncode": 0,
+      "stdout": "5: veth0@veth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master vrf-h1 state UP mode DEFAULT group default qlen 1000\n    link/ether ea:2f:55:15:eb:fc brd ff:ff:ff:ff:ff:ff\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "show",
+        "dev",
+        "veth1",
+        "up"
+      ],
+      "returncode": 0,
+      "stdout": "4: veth1@veth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether 72:61:44:aa:f1:ce brd ff:ff:ff:ff:ff:ff\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "show",
+        "dev",
+        "veth2",
+        "up"
+      ],
+      "returncode": 0,
+      "stdout": "7: veth2@veth3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether 8a:e3:8d:55:5f:57 brd ff:ff:ff:ff:ff:ff\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "show",
+        "dev",
+        "veth3",
+        "up"
+      ],
+      "returncode": 0,
+      "stdout": "6: veth3@veth2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master vrf-h2 state UP mode DEFAULT group default qlen 1000\n    link/ether d2:66:5b:46:af:58 brd ff:ff:ff:ff:ff:ff\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-6",
+        "nexthop",
+        "add",
+        "id",
+        "101",
+        "dev",
+        "veth1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-6",
+        "nexthop",
+        "add",
+        "id",
+        "102",
+        "dev",
+        "veth2"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "route",
+        "replace",
+        "192.0.2.0/24",
+        "nhid",
+        "101"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "route",
+        "replace",
+        "2001:db8:1::/64",
+        "nhid",
+        "101"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "route",
+        "replace",
+        "198.51.100.0/24",
+        "nhid",
+        "102"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "route",
+        "replace",
+        "2001:db8:2::/64",
+        "nhid",
+        "102"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-j",
+        "link",
+        "show",
+        "dev",
+        "veth0"
+      ],
+      "returncode": 0,
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vrf-h1\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"ea:2f:55:15:eb:fc\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "vrf",
+        "exec",
+        "vrf-h1",
+        "ping",
+        "-c",
+        "10",
+        "-i",
+        "0.1",
+        "-w",
+        "5",
+        "198.51.100.2"
+      ],
+      "vrf": {
+        "ifindex": 8,
+        "ifname": "vrf-h1",
+        "flags": [
+          "NOARP",
+          "MASTER",
+          "UP",
+          "LOWER_UP"
+        ],
+        "mtu": 65575,
+        "qdisc": "noqueue",
+        "operstate": "UP",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "a2:f4:47:06:e4:27",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 1280,
+        "max_mtu": 65575,
+        "linkinfo": {
+          "info_kind": "vrf",
+          "info_data": {
+            "table": 1
+          }
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 65536,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
+      },
+      "routing_state": {
+        "nexthops": [
+          {
+            "id": 101,
+            "dev": "veth1",
+            "scope": "link",
+            "flags": []
+          },
+          {
+            "id": 102,
+            "dev": "veth2",
+            "scope": "link",
+            "flags": []
+          }
+        ],
+        "ipv4": [
+          {
+            "dst": "192.0.2.0/24",
+            "nhid": 101,
+            "dev": "veth1",
+            "flags": []
+          },
+          {
+            "dst": "198.18.0.0/24",
+            "dev": "eth0",
+            "protocol": "kernel",
+            "scope": "link",
+            "prefsrc": "198.18.0.2",
+            "flags": []
+          },
+          {
+            "dst": "198.51.100.0/24",
+            "nhid": 102,
+            "dev": "veth2",
+            "flags": []
+          }
+        ],
+        "ipv6": [
+          {
+            "dst": "2001:db8:1::/64",
+            "dev": "veth1",
+            "protocol": "kernel",
+            "metric": 256,
+            "flags": [],
+            "pref": "medium"
+          },
+          {
+            "dst": "2001:db8:1::/64",
+            "nhid": 101,
+            "dev": "veth1",
+            "metric": 1024,
+            "flags": [],
+            "pref": "medium"
+          },
+          {
+            "dst": "2001:db8:2::/64",
+            "dev": "veth2",
+            "protocol": "kernel",
+            "metric": 256,
+            "flags": [],
+            "pref": "medium"
+          },
+          {
+            "dst": "2001:db8:2::/64",
+            "nhid": 102,
+            "dev": "veth2",
+            "metric": 1024,
+            "flags": [],
+            "pref": "medium"
+          },
+          {
+            "dst": "fe80::/64",
+            "dev": "eth0",
+            "protocol": "kernel",
+            "metric": 256,
+            "flags": [],
+            "pref": "medium"
+          },
+          {
+            "dst": "fe80::/64",
+            "dev": "veth1",
+            "protocol": "kernel",
+            "metric": 256,
+            "flags": [],
+            "pref": "medium"
+          },
+          {
+            "dst": "fe80::/64",
+            "dev": "veth2",
+            "protocol": "kernel",
+            "metric": 256,
+            "flags": [],
+            "pref": "medium"
+          }
+        ],
+        "qdisc": [
+          {
+            "kind": "noqueue",
+            "handle": "0:",
+            "root": true,
+            "refcnt": 2,
+            "options": {}
+          },
+          {
+            "kind": "clsact",
+            "handle": "ffff:",
+            "parent": "ffff:fff1",
+            "options": {}
+          }
+        ],
+        "lookup4": [
+          {
+            "dst": "198.51.100.0/24",
+            "nhid": 102,
+            "dev": "veth2",
+            "flags": []
+          }
+        ],
+        "lookup6": [
+          {
+            "dst": "2001:db8:2::/64",
+            "dev": "veth2",
+            "protocol": "kernel",
+            "metric": 256,
+            "flags": [],
+            "iif": "veth1",
+            "pref": "medium"
+          }
+        ]
+      },
+      "returncode": 0,
+      "stdout": "PING 198.51.100.2 (198.51.100.2) 56(84) bytes of data.\n64 bytes from 198.51.100.2: icmp_seq=1 ttl=63 time=0.107 ms\n64 bytes from 198.51.100.2: icmp_seq=2 ttl=63 time=0.040 ms\n64 bytes from 198.51.100.2: icmp_seq=3 ttl=63 time=0.029 ms\n64 bytes from 198.51.100.2: icmp_seq=4 ttl=63 time=0.022 ms\n64 bytes from 198.51.100.2: icmp_seq=5 ttl=63 time=0.025 ms\n64 bytes from 198.51.100.2: icmp_seq=6 ttl=63 time=0.026 ms\n64 bytes from 198.51.100.2: icmp_seq=7 ttl=63 time=0.020 ms\n64 bytes from 198.51.100.2: icmp_seq=8 ttl=63 time=0.021 ms\n64 bytes from 198.51.100.2: icmp_seq=9 ttl=63 time=0.021 ms\n64 bytes from 198.51.100.2: icmp_seq=10 ttl=63 time=0.023 ms\n\n--- 198.51.100.2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 987ms\nrtt min/avg/max/mdev = 0.020/0.033/0.107/0.025 ms\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-j",
+        "link",
+        "show",
+        "dev",
+        "veth0"
+      ],
+      "returncode": 0,
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vrf-h1\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"ea:2f:55:15:eb:fc\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "vrf",
+        "exec",
+        "vrf-h1",
+        "ping6",
+        "-c",
+        "10",
+        "-i",
+        "0.1",
+        "-w",
+        "5",
+        "2001:db8:2::2"
+      ],
+      "vrf": {
+        "ifindex": 8,
+        "ifname": "vrf-h1",
+        "flags": [
+          "NOARP",
+          "MASTER",
+          "UP",
+          "LOWER_UP"
+        ],
+        "mtu": 65575,
+        "qdisc": "noqueue",
+        "operstate": "UP",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "a2:f4:47:06:e4:27",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 1280,
+        "max_mtu": 65575,
+        "linkinfo": {
+          "info_kind": "vrf",
+          "info_data": {
+            "table": 1
+          }
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 65536,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
+      },
+      "routing_state": {
+        "nexthops": [
+          {
+            "id": 101,
+            "dev": "veth1",
+            "scope": "link",
+            "flags": []
+          },
+          {
+            "id": 102,
+            "dev": "veth2",
+            "scope": "link",
+            "flags": []
+          }
+        ],
+        "ipv4": [
+          {
+            "dst": "192.0.2.0/24",
+            "nhid": 101,
+            "dev": "veth1",
+            "flags": []
+          },
+          {
+            "dst": "198.18.0.0/24",
+            "dev": "eth0",
+            "protocol": "kernel",
+            "scope": "link",
+            "prefsrc": "198.18.0.2",
+            "flags": []
+          },
+          {
+            "dst": "198.51.100.0/24",
+            "nhid": 102,
+            "dev": "veth2",
+            "flags": []
+          }
+        ],
+        "ipv6": [
+          {
+            "dst": "2001:db8:1::/64",
+            "dev": "veth1",
+            "protocol": "kernel",
+            "metric": 256,
+            "flags": [],
+            "pref": "medium"
+          },
+          {
+            "dst": "2001:db8:1::/64",
+            "nhid": 101,
+            "dev": "veth1",
+            "metric": 1024,
+            "flags": [],
+            "pref": "medium"
+          },
+          {
+            "dst": "2001:db8:2::/64",
+            "dev": "veth2",
+            "protocol": "kernel",
+            "metric": 256,
+            "flags": [],
+            "pref": "medium"
+          },
+          {
+            "dst": "2001:db8:2::/64",
+            "nhid": 102,
+            "dev": "veth2",
+            "metric": 1024,
+            "flags": [],
+            "pref": "medium"
+          },
+          {
+            "dst": "fe80::/64",
+            "dev": "eth0",
+            "protocol": "kernel",
+            "metric": 256,
+            "flags": [],
+            "pref": "medium"
+          },
+          {
+            "dst": "fe80::/64",
+            "dev": "veth1",
+            "protocol": "kernel",
+            "metric": 256,
+            "flags": [],
+            "pref": "medium"
+          },
+          {
+            "dst": "fe80::/64",
+            "dev": "veth2",
+            "protocol": "kernel",
+            "metric": 256,
+            "flags": [],
+            "pref": "medium"
+          }
+        ],
+        "qdisc": [
+          {
+            "kind": "noqueue",
+            "handle": "0:",
+            "root": true,
+            "refcnt": 2,
+            "options": {}
+          },
+          {
+            "kind": "clsact",
+            "handle": "ffff:",
+            "parent": "ffff:fff1",
+            "options": {}
+          }
+        ],
+        "lookup4": [
+          {
+            "dst": "198.51.100.0/24",
+            "nhid": 102,
+            "dev": "veth2",
+            "flags": []
+          }
+        ],
+        "lookup6": [
+          {
+            "dst": "2001:db8:2::/64",
+            "dev": "veth2",
+            "protocol": "kernel",
+            "metric": 256,
+            "flags": [],
+            "iif": "veth1",
+            "pref": "medium"
+          }
+        ]
+      },
+      "returncode": 0,
+      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=0.122 ms\n64 bytes from 2001:db8:2::2: icmp_seq=2 ttl=63 time=0.047 ms\n64 bytes from 2001:db8:2::2: icmp_seq=3 ttl=63 time=0.012 ms\n64 bytes from 2001:db8:2::2: icmp_seq=4 ttl=63 time=0.024 ms\n64 bytes from 2001:db8:2::2: icmp_seq=5 ttl=63 time=0.029 ms\n64 bytes from 2001:db8:2::2: icmp_seq=6 ttl=63 time=0.014 ms\n64 bytes from 2001:db8:2::2: icmp_seq=7 ttl=63 time=0.017 ms\n64 bytes from 2001:db8:2::2: icmp_seq=8 ttl=63 time=0.015 ms\n64 bytes from 2001:db8:2::2: icmp_seq=9 ttl=63 time=0.014 ms\n64 bytes from 2001:db8:2::2: icmp_seq=10 ttl=63 time=0.106 ms\n\n--- 2001:db8:2::2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 988ms\nrtt min/avg/max/mdev = 0.012/0.040/0.122/0.038 ms\n",
+      "stderr": ""
+    },
+    {
+      "tool": "sysctl",
+      "arguments": [
+        "-qw",
+        "net.ipv6.conf.all.forwarding=0"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "sysctl",
+      "arguments": [
+        "-qw",
+        "net.ipv4.conf.all.forwarding=0"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "del",
+        "2001:db8:2::1/64",
+        "dev",
+        "veth2"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "del",
+        "198.51.100.1/24",
+        "dev",
+        "veth2"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "del",
+        "2001:db8:1::1/64",
+        "dev",
+        "veth1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "del",
+        "192.0.2.1/24",
+        "dev",
+        "veth1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "tc",
+      "arguments": [
+        "qdisc",
+        "del",
+        "dev",
+        "veth2",
+        "clsact"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "dev",
+        "veth2",
+        "down"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "dev",
+        "veth1",
+        "down"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "route",
+        "del",
+        "2001:db8:1::/64",
+        "vrf",
+        "vrf-h2"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "route",
+        "del",
+        "192.0.2.0/24",
+        "vrf",
+        "vrf-h2"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "del",
+        "2001:db8:2::2/64",
+        "dev",
+        "veth3"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "del",
+        "198.51.100.2/24",
+        "dev",
+        "veth3"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "dev",
+        "veth3",
+        "down"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-6",
+        "route",
+        "del",
+        "table",
+        "2",
+        "unreachable",
+        "default",
+        "metric",
+        "4278198272"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-4",
+        "route",
+        "del",
+        "table",
+        "2",
+        "unreachable",
+        "default",
+        "metric",
+        "4278198272"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "del",
+        "dev",
+        "vrf-h2"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "route",
+        "del",
+        "2001:db8:2::/64",
+        "vrf",
+        "vrf-h1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "route",
+        "del",
+        "198.51.100.0/24",
+        "vrf",
+        "vrf-h1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "del",
+        "2001:db8:1::2/64",
+        "dev",
+        "veth0"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "address",
+        "del",
+        "192.0.2.2/24",
+        "dev",
+        "veth0"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "dev",
+        "veth0",
+        "down"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-6",
+        "route",
+        "del",
+        "table",
+        "1",
+        "unreachable",
+        "default",
+        "metric",
+        "4278198272"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-4",
+        "route",
+        "del",
+        "table",
+        "1",
+        "unreachable",
+        "default",
+        "metric",
+        "4278198272"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "del",
+        "dev",
+        "vrf-h1"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-6",
+        "rule",
+        "add",
+        "pref",
+        "0",
+        "table",
+        "local"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-6",
+        "rule",
+        "del",
+        "pref",
+        "32765"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-4",
+        "rule",
+        "add",
+        "pref",
+        "0",
+        "table",
+        "local"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "-4",
+        "rule",
+        "del",
+        "pref",
+        "32765"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "missing_backend_control": {
+    "returncode": 1,
+    "stdout": "Failed to create netif\n",
+    "stderr": "Cannot open netlink socket: No such file or directory\n"
+  },
+  "mib_before": {
+    "ipv4": "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates OutTransmits\nIp: 2 64 2 0 0 0 0 0 2 2 0 0 0 0 0 0 0 0 0 2\nIcmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\nIcmp: 2 0 0 0 0 0 0 0 1 1 0 0 0 0 2 0 0 0 0 0 0 0 0 1 1 0 0 0 0\nIcmpMsg: InType0 InType8 OutType0 OutType8\nIcmpMsg: 1 1 1 1\nTcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\nTcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\nUdp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdp: 0 0 0 0 0 0 0 0 0\nUdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdpLite: 0 0 0 0 0 0 0 0 0\n",
+    "ipv6": "Ip6InReceives                   \t0\nIp6InHdrErrors                  \t0\nIp6InTooBigErrors               \t0\nIp6InNoRoutes                   \t0\nIp6InAddrErrors                 \t0\nIp6InUnknownProtos              \t0\nIp6InTruncatedPkts              \t0\nIp6InDiscards                   \t0\nIp6InDelivers                   \t0\nIp6OutForwDatagrams             \t0\nIp6OutRequests                  \t0\nIp6OutDiscards                  \t0\nIp6OutNoRoutes                  \t0\nIp6ReasmTimeout                 \t0\nIp6ReasmReqds                   \t0\nIp6ReasmOKs                     \t0\nIp6ReasmFails                   \t0\nIp6FragOKs                      \t0\nIp6FragFails                    \t0\nIp6FragCreates                  \t0\nIp6InMcastPkts                  \t0\nIp6OutMcastPkts                 \t0\nIp6InOctets                     \t0\nIp6OutOctets                    \t0\nIp6InMcastOctets                \t0\nIp6OutMcastOctets               \t0\nIp6InBcastOctets                \t0\nIp6OutBcastOctets               \t0\nIp6InNoECTPkts                  \t0\nIp6InECT1Pkts                   \t0\nIp6InECT0Pkts                   \t0\nIp6InCEPkts                     \t0\nIp6OutTransmits                 \t0\nIcmp6InMsgs                     \t0\nIcmp6InErrors                   \t0\nIcmp6OutMsgs                    \t0\nIcmp6OutErrors                  \t0\nIcmp6InCsumErrors               \t0\nIcmp6OutRateLimitHost           \t0\nIcmp6InDestUnreachs             \t0\nIcmp6InPktTooBigs               \t0\nIcmp6InTimeExcds                \t0\nIcmp6InParmProblems             \t0\nIcmp6InEchos                    \t0\nIcmp6InEchoReplies              \t0\nIcmp6InGroupMembQueries         \t0\nIcmp6InGroupMembResponses       \t0\nIcmp6InGroupMembReductions      \t0\nIcmp6InRouterSolicits           \t0\nIcmp6InRouterAdvertisements     \t0\nIcmp6InNeighborSolicits         \t0\nIcmp6InNeighborAdvertisements   \t0\nIcmp6InRedirects                \t0\nIcmp6InMLDv2Reports             \t0\nIcmp6OutDestUnreachs            \t0\nIcmp6OutPktTooBigs              \t0\nIcmp6OutTimeExcds               \t0\nIcmp6OutParmProblems            \t0\nIcmp6OutEchos                   \t0\nIcmp6OutEchoReplies             \t0\nIcmp6OutGroupMembQueries        \t0\nIcmp6OutGroupMembResponses      \t0\nIcmp6OutGroupMembReductions     \t0\nIcmp6OutRouterSolicits          \t0\nIcmp6OutRouterAdvertisements    \t0\nIcmp6OutNeighborSolicits        \t0\nIcmp6OutNeighborAdvertisements  \t0\nIcmp6OutRedirects               \t0\nIcmp6OutMLDv2Reports            \t0\nUdp6InDatagrams                 \t0\nUdp6NoPorts                     \t0\nUdp6InErrors                    \t0\nUdp6OutDatagrams                \t0\nUdp6RcvbufErrors                \t0\nUdp6SndbufErrors                \t0\nUdp6InCsumErrors                \t0\nUdp6IgnoredMulti                \t0\nUdp6MemErrors                   \t0\nUdpLite6InDatagrams             \t0\nUdpLite6NoPorts                 \t0\nUdpLite6InErrors                \t0\nUdpLite6OutDatagrams            \t0\nUdpLite6RcvbufErrors            \t0\nUdpLite6SndbufErrors            \t0\nUdpLite6InCsumErrors            \t0\nUdpLite6MemErrors               \t0\n"
+  },
+  "mib_after": {
+    "ipv4": "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates OutTransmits\nIp: 2 64 42 0 0 20 0 0 22 22 0 0 0 0 0 0 0 0 0 42\nIcmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\nIcmp: 22 0 0 0 0 0 0 0 11 11 0 0 0 0 22 0 0 0 0 0 0 0 0 11 11 0 0 0 0\nIcmpMsg: InType0 InType8 OutType0 OutType8\nIcmpMsg: 11 11 11 11\nTcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\nTcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\nUdp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdp: 0 0 0 0 0 0 0 0 0\nUdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdpLite: 0 0 0 0 0 0 0 0 0\n",
+    "ipv6": "Ip6InReceives                   \t92\nIp6InHdrErrors                  \t0\nIp6InTooBigErrors               \t0\nIp6InNoRoutes                   \t0\nIp6InAddrErrors                 \t0\nIp6InUnknownProtos              \t0\nIp6InTruncatedPkts              \t0\nIp6InDiscards                   \t0\nIp6InDelivers                   \t26\nIp6OutForwDatagrams             \t20\nIp6OutRequests                  \t88\nIp6OutDiscards                  \t7\nIp6OutNoRoutes                  \t0\nIp6ReasmTimeout                 \t0\nIp6ReasmReqds                   \t0\nIp6ReasmOKs                     \t0\nIp6ReasmFails                   \t0\nIp6FragOKs                      \t0\nIp6FragFails                    \t0\nIp6FragCreates                  \t0\nIp6InMcastPkts                  \t49\nIp6OutMcastPkts                 \t65\nIp6InOctets                     \t9336\nIp6OutOctets                    \t10928\nIp6InMcastOctets                \t4960\nIp6OutMcastOctets               \t6552\nIp6InBcastOctets                \t0\nIp6OutBcastOctets               \t0\nIp6InNoECTPkts                  \t92\nIp6InECT1Pkts                   \t0\nIp6InECT0Pkts                   \t0\nIp6InCEPkts                     \t0\nIp6OutTransmits                 \t108\nIcmp6InMsgs                     \t26\nIcmp6InErrors                   \t0\nIcmp6OutMsgs                    \t81\nIcmp6OutErrors                  \t0\nIcmp6InCsumErrors               \t0\nIcmp6OutRateLimitHost           \t0\nIcmp6InDestUnreachs             \t0\nIcmp6InPktTooBigs               \t0\nIcmp6InTimeExcds                \t0\nIcmp6InParmProblems             \t0\nIcmp6InEchos                    \t10\nIcmp6InEchoReplies              \t10\nIcmp6InGroupMembQueries         \t0\nIcmp6InGroupMembResponses       \t0\nIcmp6InGroupMembReductions      \t0\nIcmp6InRouterSolicits           \t0\nIcmp6InRouterAdvertisements     \t0\nIcmp6InNeighborSolicits         \t3\nIcmp6InNeighborAdvertisements   \t3\nIcmp6InRedirects                \t0\nIcmp6InMLDv2Reports             \t0\nIcmp6OutDestUnreachs            \t0\nIcmp6OutPktTooBigs              \t0\nIcmp6OutTimeExcds               \t0\nIcmp6OutParmProblems            \t0\nIcmp6OutEchos                   \t10\nIcmp6OutEchoReplies             \t10\nIcmp6OutGroupMembQueries        \t0\nIcmp6OutGroupMembResponses      \t0\nIcmp6OutGroupMembReductions     \t0\nIcmp6OutRouterSolicits          \t0\nIcmp6OutRouterAdvertisements    \t0\nIcmp6OutNeighborSolicits        \t12\nIcmp6OutNeighborAdvertisements  \t3\nIcmp6OutRedirects               \t0\nIcmp6OutMLDv2Reports            \t46\nIcmp6InType128                  \t10\nIcmp6InType129                  \t10\nIcmp6InType135                  \t3\nIcmp6InType136                  \t3\nIcmp6OutType128                 \t10\nIcmp6OutType129                 \t10\nIcmp6OutType135                 \t12\nIcmp6OutType136                 \t3\nIcmp6OutType143                 \t46\nUdp6InDatagrams                 \t0\nUdp6NoPorts                     \t0\nUdp6InErrors                    \t0\nUdp6OutDatagrams                \t0\nUdp6RcvbufErrors                \t0\nUdp6SndbufErrors                \t0\nUdp6InCsumErrors                \t0\nUdp6IgnoredMulti                \t0\nUdp6MemErrors                   \t0\nUdpLite6InDatagrams             \t0\nUdpLite6NoPorts                 \t0\nUdpLite6InErrors                \t0\nUdpLite6OutDatagrams            \t0\nUdpLite6RcvbufErrors            \t0\nUdpLite6SndbufErrors            \t0\nUdpLite6InCsumErrors            \t0\nUdpLite6MemErrors               \t0\n"
+  },
+  "vrf_binding_control": {
+    "baseline": {
+      "returncode": 0,
+      "stdout": "PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.\n64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.053 ms\n\n--- 127.0.0.1 ping statistics ---\n1 packets transmitted, 1 received, 0% packet loss, time 0ms\nrtt min/avg/max/mdev = 0.053/0.053/0.053/0.000 ms\n",
+      "stderr": ""
+    },
+    "unknown_vrf": {
+      "returncode": 2,
+      "stdout": "",
+      "stderr": "/tmp/ker-nexthop-cmake/ker-nexthop-exec-cv7ycph0/bin/original-ping: socktype: SOCK_RAW\n/tmp/ker-nexthop-cmake/ker-nexthop-exec-cv7ycph0/bin/original-ping: socket: No such device\n"
+    }
+  },
+  "cleanup_state": {
+    "links": [
+      {
+        "ifname": "lo"
+      },
+      {
+        "ifname": "eth0"
+      },
+      {
+        "ifname": "sit0"
+      },
+      {
+        "ifname": "veth1"
+      },
+      {
+        "ifname": "veth0"
+      },
+      {
+        "ifname": "veth3"
+      },
+      {
+        "ifname": "veth2"
+      }
+    ],
+    "qdisc": [
+      {
+        "kind": "noqueue",
+        "handle": "0:",
+        "root": true,
+        "refcnt": 2,
+        "options": {}
+      }
+    ],
+    "ipv4": "0\n",
+    "ipv6": "0\n"
+  },
+  "native_fixture": {
+    "sockets": 193,
+    "mptcp": 0,
+    "accepts": 0,
+    "live": 0,
+    "reads": 477,
+    "writes": 215,
+    "received": 402068,
+    "sent": 11180,
+    "infos": 0,
+    "full_info": 0,
+    "inq": 459,
+    "negotiated": 0,
+    "fallback": 0,
+    "fallback_info_eopnotsupp": 0,
+    "fallback_info_enoprotoopt": 0,
+    "channel_slots": 3,
+    "channels_opened": 220,
+    "namespaces_created": 0,
+    "namespaces_deleted": 0,
+    "netlinks": 183,
+    "diag_sends": 0,
+    "diag_receives": 0,
+    "max_live": 3,
+    "raw_sockets": 7,
+    "filter_sets": 0,
+    "filter_gets": 0,
+    "mp_join_syn_rx": 0,
+    "mp_join_ack_rx": 0,
+    "sendfile_calls": 0,
+    "imported_files": 0,
+    "udp_sockets": 3,
+    "epoll_creates": 0,
+    "epoll_controls": 0,
+    "epoll_waits": 0
+  },
+  "stats": {
+    "rx_reconfigure_discarded": 0,
+    "rx_decision_enabled": false,
+    "rx_decision_leases": 0,
+    "rx_decision_drops": 0,
+    "rx_decision_local": 0,
+    "rx_decision_forwarded": 0,
+    "rx_decision_local_cancelled": 0,
+    "rx_decision_settled": false,
+    "rx_pollers": [
+      {
+        "queue": 0,
+        "owner": 0,
+        "lcore": 0,
+        "cpu": 0,
+        "packets": 0,
+        "polls": 10364,
+        "stalled": 0,
+        "shutdown": 0,
+        "reconfigured": 0,
+        "starts": 1
+      }
+    ],
+    "exception_console_charged": 0,
+    "exception_general_charged": 0,
+    "exception_console_dropped": 0,
+    "exception_general_dropped": 0,
+    "exception_shared_arp": 0,
+    "exception_shared_selected": 0,
+    "exception_shared_icmp_error": 0,
+    "exception_shared_failed": 0,
+    "exception_fragment_dropped": 0,
+    "exception_selected": 0,
+    "exception_enqueued": 0,
+    "exception_to_host": 0,
+    "exception_to_host_dropped": 0,
+    "exception_host_received": 0,
+    "exception_from_host": 0,
+    "exception_wire_dropped": 0,
+    "exception_shutdown_dropped": 0,
+    "exception_rate_dropped": 0,
+    "exception_malformed": 0,
+    "rx_by_queue": [
+      0
+    ],
+    "host_receive_mode_restored": false,
+    "tx_tcp_checksum": 0,
+    "tx_udp_checksum": 0,
+    "tx_ip_checksum": 0,
+    "tx_tso4": 0,
+    "tx_tso6": 0,
+    "tx_checksum_fallback": 0,
+    "rx_rss_metadata": 0,
+    "bond": null,
+    "mtu_final": 1500,
+    "max_mtu": 9000,
+    "mtu_changes": 0,
+    "tx": 9,
+    "rx": 0,
+    "dropped": 0,
+    "tx_retries": 0,
+    "rx_retries": 0,
+    "tx_bytes": 1086,
+    "rx_bytes": 0,
+    "tx_dropped": 0,
+    "rx_dropped": 0,
+    "outstanding": 0,
+    "stop_requests": 0,
+    "control_eof": true,
+    "tx_multiseg": 0,
+    "rx_multiseg": 0,
+    "rx_startup_discarded": 0,
+    "rx_shutdown_discarded": 0,
+    "idle_waits": 10355,
+    "idle_timeouts": 10334,
+    "tx_flushes": 9,
+    "tx_timer_flushes": 0,
+    "tx_full_flushes": 0,
+    "tx_drain_flushes": 0,
+    "shutdown_timed_out": false,
+    "worker_exit_code": 0,
+    "io": {
+      "all_multicast_method": "off",
+      "tap_retry_safe": false,
+      "tx_offload_features": 0,
+      "tx_offload_flags": 0,
+      "tx_offload_mode": 0,
+      "tx_capture_stage": "before_offload",
+      "rss": null,
+      "queues": 1,
+      "data_tx_queue": 0,
+      "bond": null,
+      "driver": "net_tap",
+      "max_rx_queues": 64,
+      "max_tx_queues": 64,
+      "rx_descriptors": 0,
+      "tx_descriptors": 0,
+      "pool_rx_descriptors": 256,
+      "pool_tx_descriptors": 256,
+      "mbuf_pool_count": 4095,
+      "mac": "de:18:e5:2d:1f:fa",
+      "mtu": 1500,
+      "mbuf_mode": "large",
+      "port_id": 0,
+      "port_count": 1,
+      "socket_id": 0,
+      "process_type": "primary",
+      "numa": true,
+      "lcore_socket_id": 0,
+      "allocation_socket_id": 0,
+      "pool_socket_id": 0,
+      "eal_log_level": 8,
+      "log_level": 8,
+      "memory_base": "0x1000ef000",
+      "memory_bytes": 67108864,
+      "hugepages": false,
+      "memory_channels": 0,
+      "lcore_count": 1,
+      "main_lcore": 0,
+      "main_cpu": 0,
+      "link_up": true,
+      "promiscuous": false,
+      "idle_sleep_us": 1000,
+      "tx_delay_us": 0
+    },
+    "native": {
+      "buffer_allocations": 0,
+      "buffer_releases": 0,
+      "buffer_shutdown_releases": 0,
+      "buffers_live": 0,
+      "buffer_bytes": 0,
+      "buffer_option_guards_live": 0,
+      "active_opens": 0,
+      "passive_opens": 0,
+      "retransmitted_segments": 0,
+      "zero_window_probes": 0,
+      "out_of_order_queued": 0,
+      "udp_in_datagrams": 0,
+      "udp_out_datagrams": 0,
+      "udp_in_errors": 0,
+      "udp_no_ports": 0,
+      "udp6_in_datagrams": 0,
+      "udp6_out_datagrams": 0,
+      "udp6_in_errors": 0,
+      "udp6_no_ports": 0,
+      "ip6_frag_ok": 0,
+      "ip6_frag_creates": 0,
+      "ip6_reasm_ok": 0,
+      "ip6_reasm_fails": 0,
+      "ip6_reasm_timeouts": 0,
+      "ip_frag_ok": 0,
+      "ip_frag_creates": 0,
+      "ip_reasm_ok": 0,
+      "ip_reasm_fails": 0,
+      "tcp_ecn": 2,
+      "mptcp_capable_syn_tx": 0,
+      "mptcp_capable_syn_rx": 0,
+      "mptcp_capable_synack_rx": 0,
+      "mptcp_capable_ack_rx": 0,
+      "mptcp_fallback_synack": 0,
+      "mptcp_fallback_ack": 0
+    }
+  }
+}
