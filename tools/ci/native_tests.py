@@ -47,7 +47,9 @@ LINUX_CONNTRACK_PROFILE_TEST = "linux-original-netfilter-conntrack-dump-flush"
 LINUX_NETNS_NAME_PROFILE_TEST = "linux-original-net-netns-name"
 LINUX_FORWARDING_PROFILE_TEST = "linux-original-forwarding-router-vid1"
 LINUX_FORWARDING_PROFILE_TESTS = {LINUX_FORWARDING_PROFILE_TEST: "router_vid_1.sh",
-                                  "linux-original-forwarding-mtu": "min_max_mtu.sh"}
+                                  "linux-original-forwarding-mtu": "min_max_mtu.sh",
+                                  "linux-original-forwarding-router-broadcast": "router_broadcast.sh"}
+LINUX_BROADCAST_REALTIME_TEST = "broadcast-realtime-wrapper-contract"
 
 LINUX_AF_UNIX_SELFTESTS = (
     "linux-original-af-unix-diag_uid", "linux-original-af-unix-msg_oob",
@@ -769,10 +771,10 @@ def run_netns_name_profile(build: Path, junit: Path) -> None:
 
 
 def run_forwarding_profile(build: Path, junit: Path) -> None:
-    names = set(LINUX_FORWARDING_PROFILE_TESTS)
+    names = set(LINUX_FORWARDING_PROFILE_TESTS) | {LINUX_BROADCAST_REALTIME_TEST}
     inventory = ctest_inventory(build)
     require(all(sum(item['name'] == name for item in inventory) == 1 for name in names),
-            'forwarding profile must register both complete original shells exactly once')
+            'forwarding profile must register all three complete original shells and the realtime control exactly once')
     cache = (build / 'CMakeCache.txt').read_text()
     native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
                          if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
@@ -795,7 +797,7 @@ def run_forwarding_profile(build: Path, junit: Path) -> None:
         require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and evidence.get('program') == program and
                 evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native forwarding evidence')
         contract.validate_evidence(evidence)
-    summary('Original forwarding: VLAN 1 routing and complete min/max MTU shells, PASS ' + manifest['fingerprint'])
+    summary('Original forwarding: complete VLAN 1, min/max MTU and broadcast shells plus realtime ABI control, PASS ' + manifest['fingerprint'])
 
 
 def run_packetdrill_profile(build: Path, junit: Path) -> None:

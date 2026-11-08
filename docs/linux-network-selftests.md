@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh` 完整入口本地通过；其余 98 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh` 完整入口本地通过；其余 97 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 90/310，剩余 220；其中 85 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 225 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 91/310，剩余 219；其中 86 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 224 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -123,7 +123,13 @@ Ker 的目标应用包括网关和 WAF，因此优先迁移转发、路由、VLA
 
 `forwarding/min_max_mtu.sh` 使用同一原生 forwarding 配置，完整执行六项原版测试：普通 IPv4/IPv6 ping、最大/最小 MTU 配置、最大/最小边界流量。实际 veth 的 min/max 为 68/65535，超出边界的四次配置必须返回内核错误。最大 MTU 下的 IPv4/IPv6 原版 ping 分别发送 65507/65487 字节 payload，均收到全部十个回包；降低接口 MTU 后，两个相同包长的原版 ping 必须失败；最小 MTU 下 40 字节 IPv4 payload 必须成功。原版脚本明确不在最小 MTU 下测试 IPv6，保留这一合同，不创造额外通过项。
 
-共 128 条原版拓扑/配置/流量/清理命令，经真实 Netlink 和 ICMP 执行。六项均须明确输出 OK，不能用 XFAIL 或缺失子项抵扣；native socket/packet 必须归零，保留完整脚本缺失后端和无效 VRF 对照。CI 的 forwarding profile 同时强制运行两个完整入口并核对各自的独立 JSON/JUnit。
+共 128 条原版拓扑/配置/流量/清理命令，经真实 Netlink 和 ICMP 执行。六项均须明确输出 OK，不能用 XFAIL 或缺失子项抵扣；native socket/packet 必须归零，保留完整脚本缺失后端和无效 VRF 对照。CI 的 forwarding profile 强制运行 VLAN 1、MTU、广播三个完整入口及广播 realtime ABI 控制，核对各自的独立 JSON/JUnit。
+
+`forwarding/router_broadcast.sh` 保留原版 `ping_ipv4` 完整入口及全部 16 个结果。六个 veth、三个主机 VRF、三组 /24 地址和全部静态路由由 unchanged iproute2 配置到 Linux。原版分别关闭和开启 all、rp1、rp2 的 `bc_forwarding`，保留每次探测的 `-I`、10 次请求、0.1 秒间隔、5 秒 deadline、`-b` 和原版 literal grep；不改为“所有回复”或 ping 退出码的判定。两个同网段丢弃案例要求指定路由器来源缺失，允许原版合同之外的其他来源回复。
+
+每次探测前后记录真实 link/address/FIB、sysctl 和 `/proc/net/snmp`；本地四个定向广播转发案例各增加 20 个 `ForwDatagrams`，其余十二个为零。原版 ping 的 `2>&1` 字节顺序在 transport 内保留，GNU grep 以原始参数执行并记录实际输入、退出码和输出。保留 iputils 自身的广播/源地址提示，同时拒绝 backward-clock 诊断；私有 broadcast preload 通过已有 RPC 读取 native realtime，每次实际读取十次，另有必须通过的 host/null-timeval/fail-closed ABI 控制。未修改 Linux、iproute2 或上游 selftest。
+
+清理核对三个 VRF 删除、原版保留的六个 veth 均 down/unmastered 且无 global 地址/路由，forwarding、broadcast 和 echo sysctl 恢复观察到的初始值，native live socket/outstanding packet 归零且 worker 正常退出。保留缺失后端整个原版入口失败、未知 VRF 拒绝和同后端 loopback 成功的对照。本地 forwarding gate 4/4 通过，沿用 native fingerprint `b60a3229d073cfe2709134257f5e6279b75ecca52e78444919e713f78110ea2a`；hosted CI/review 资格另行核对。此批只增加一个默认入口。
 
 `forwarding/router_bridge.sh` 在专用 `config/native-linux-bridge-selftests.config` 中完整运行，启用真实 Linux bridge、VLAN filtering、VRF 和 multipath routing。原版 14 个阶段包含十次双栈 ping：初始连通、桥端口重新挂接后连通、移除 bridge self PVID 后隔离、恢复 PVID 后连通，以及先挂接端口再添加默认 PVID 后连通。保留原版全部 10 次请求、0.1 秒间隔、5 秒 deadline 和阶段间 sleep，预期失败的两个 ping 必须真实失败；不修改 Linux、iproute2 或原版 selftest。
 
