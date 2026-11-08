@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import re
+import signal
 from pathlib import Path
 import shlex
 import shutil
@@ -27,6 +28,8 @@ def forwarding_counts(content):
 
 
 def validate_evidence(report):
+    if report.get('program') == 'bridge_vlan_mcast.sh':
+        return common.load('bridge_mcast_contract','linux-bridge-mcast-contract.py').validate_evidence(report)
     if report.get('program') == 'bridge_locked_port.sh':
         return common.load('bridge_locked_contract','linux-bridge-locked-contract.py').validate_evidence(report)
     if report.get('program') == 'bridge_vlan_aware.sh':
@@ -126,7 +129,7 @@ def main():
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
     parser.add_argument('--program', choices=('router_bridge.sh', 'router_bridge_vlan.sh', 'router_bridge_1d.sh',
         'router_bridge_vlan_upper.sh', 'router_bridge_pvid_vlan_upper.sh', 'router_bridge_vlan_upper_pvid.sh',
-        'bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh'),
+        'bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh'),
         default='router_bridge.sh')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
@@ -140,7 +143,7 @@ def main():
             {'CONFIG_VETH=y', 'CONFIG_NET_VRF=y', 'CONFIG_VLAN_8021Q=y', 'CONFIG_IP_ROUTE_MULTIPATH=y',
              'CONFIG_IP_MULTIPLE_TABLES=y', 'CONFIG_IPV6_MULTIPLE_TABLES=y', 'CONFIG_BRIDGE=y', 'CONFIG_BRIDGE_VLAN_FILTERING=y', 'CONFIG_BRIDGE_IGMP_SNOOPING=y'}.issubset(config),
             'original forwarding test requires real native VLAN/VRF routing')
-    if args.program in ('bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh'):
+    if args.program in ('bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh'):
         require({'CONFIG_NET_CLS_ACT=y', 'CONFIG_NET_SCH_INGRESS=y', 'CONFIG_NET_CLS_FLOWER=y',
                  'CONFIG_NET_ACT_GACT=y'}.issubset(config), 'original multicast counter requires actual native ingress/flower/GACT')
     if args.program == 'bridge_locked_port.sh':
@@ -206,10 +209,12 @@ def main():
                 KER_FORWARDING_LOG=str(log), PATH=str(bins) + os.pathsep + environment['PATH'])
             if args.program == 'bridge_fdb_learning_limit.sh':
                 environment['KER_FORWARDING_BRIDGE_LEARNING'] = '1'
-            if args.program in ('bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh'):
+            if args.program in ('bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh'):
                 mode = {'bridge_mdb_port_down.sh': 'MDB_PORT', 'bridge_port_isolation.sh': 'ISOLATION',
-                        'bridge_vlan_unaware.sh': 'UNAWARE', 'bridge_vlan_aware.sh': 'UNAWARE', 'bridge_locked_port.sh': 'UNAWARE'}[args.program]
+                        'bridge_vlan_unaware.sh': 'UNAWARE', 'bridge_vlan_aware.sh': 'UNAWARE', 'bridge_locked_port.sh': 'UNAWARE', 'bridge_vlan_mcast.sh': 'UNAWARE'}[args.program]
                 environment['KER_FORWARDING_BRIDGE_' + mode] = '1'
+                if args.program == 'bridge_vlan_mcast.sh':
+                    environment['KER_FORWARDING_BRIDGE_MCAST'] = '1'
                 if args.program == 'bridge_locked_port.sh':
                     environment['KER_FORWARDING_BRIDGE_LOCKED'] = '1'
                 if args.program == 'bridge_vlan_aware.sh':
@@ -241,7 +246,7 @@ def main():
                 environment['KER_FORWARDING_BRIDGE_PVID_UPPER'] = '1'
             if args.program == 'router_bridge_vlan_upper_pvid.sh':
                 environment['KER_FORWARDING_BRIDGE_UPPER_PVID'] = '1'
-            if args.program in ('bridge_sticky_fdb.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh'):
+            if args.program in ('bridge_sticky_fdb.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh'):
                 if args.program == 'bridge_sticky_fdb.sh':
                     environment['KER_FORWARDING_BRIDGE_STICKY'] = '1'
                 environment['KER_MPTCP_NATIVE_PACKET_LOG'] = str(root / 'packet.jsonl')
@@ -282,6 +287,13 @@ def main():
                         report['vrf_binding_control'][control] = dict(returncode=result.returncode,
                             stdout=result.stdout, stderr=result.stderr)
                     report['mib_before'] = counters()
+                    monitor = None
+                    if args.program == 'bridge_vlan_mcast.sh':
+                        monitor_script = Path(__file__).with_name('linux-bridge-mcast-monitor.py')
+                        monitor = subprocess.Popen([sys.executable,str(monitor_script),'--ip',str(args.tools/'ip'),
+                            '--output',str(root/'mcast-monitor.json')],env=dict(environment,LD_PRELOAD=str(args.preload)),
+                            stdout=subprocess.DEVNULL,stderr=err,start_new_session=True)
+                        report['mcast_monitor_sha256'] = hashlib.sha256(monitor_script.read_bytes()).hexdigest()
                     child = subprocess.Popen(['bash', './' + args.program], cwd=work / 'forwarding', env=environment,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
                     try:
@@ -290,6 +302,15 @@ def main():
                         common.cleanup.kill_tree(child.pid)
                         common.cleanup.bounded_communicate(child, timeout=5)
                         raise
+                    finally:
+                        if monitor is not None:
+                            if monitor.poll() is None:monitor.send_signal(signal.SIGTERM)
+                            try:monitor.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                common.cleanup.kill_tree(monitor.pid);monitor.wait(timeout=5)
+                            report['mcast_monitor'] = json.loads((root/'mcast-monitor.json').read_text())
+                            require(monitor.returncode==0 and report['mcast_monitor']['error'] is None,
+                                    'native multicast monitor failed: '+str(report['mcast_monitor'].get('error')))
                     report['original'] = dict(returncode=child.returncode, stdout=stdout, stderr=stderr)
                     report['commands'] = [json.loads(line) for line in log.read_text().splitlines()]
                     require(child.returncode == 0 and (args.program == 'bridge_sticky_fdb.sh' or not stderr),
@@ -302,7 +323,7 @@ def main():
                     report['cleanup_state'] = dict(links=json.loads(clean.stdout), **{
                         family: diag.rpc(diag.FILE, '', '/proc/sys/net/' + family + '/conf/all/forwarding').decode()
                         for family in ('ipv4','ipv6')})
-                    if args.program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh'):
+                    if args.program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh'):
                         observed = {}
                         for key, query in (('addresses', [str(args.tools / 'ip'), '-j', 'address', 'show']),
                                 ('ipv4_routes', [str(args.tools / 'ip'), '-4', '-j', 'route', 'show', 'table', 'all']),
@@ -313,13 +334,13 @@ def main():
                             require(not clean.stderr, 'native MDB cleanup observation warning')
                             observed[key] = json.loads(clean.stdout)
                         report['cleanup_state'].update(observed)
-                    if args.program in ('bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh'):
+                    if args.program in ('bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh'):
                         fdb = subprocess.run([str(args.tools / 'bridge'), '-j', 'fdb', 'show'],
                             env=dict(environment, LD_PRELOAD=str(args.preload)),
                             capture_output=True, text=True, timeout=10, check=True)
                         require(not fdb.stderr, 'native sticky FDB cleanup observation warning')
                         report['cleanup_state']['fdb'] = json.loads(fdb.stdout)
-                    if args.program in ('bridge_sticky_fdb.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh'):
+                    if args.program in ('bridge_sticky_fdb.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh'):
                         packets = root / 'packet.jsonl'
                         report['packet_trace'] = [json.loads(line) for line in packets.read_text().splitlines()] if packets.exists() else []
                     common.fixture.stop(channel)
