@@ -27,6 +27,8 @@ def forwarding_counts(content):
 
 
 def validate_evidence(report):
+    if report.get('program') == 'bridge_mdb_host.sh':
+        return common.load('bridge_mdb_host_contract', 'linux-bridge-mdb-host-contract.py').validate_evidence(report)
     if report.get('program') == 'router_bridge_vlan_upper_pvid.sh':
         return common.load('bridge_upper_pvid_contract', 'linux-bridge-upper-pvid-contract.py').validate_evidence(report)
     if report.get('program') == 'router_bridge_pvid_vlan_upper.sh':
@@ -109,7 +111,8 @@ def main():
     for name in ('server', 'preload', 'tools', 'launcher', 'library', 'worker', 'pmd_dir', 'manifest', 'evidence'):
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
     parser.add_argument('--program', choices=('router_bridge.sh', 'router_bridge_vlan.sh', 'router_bridge_1d.sh',
-        'router_bridge_vlan_upper.sh', 'router_bridge_pvid_vlan_upper.sh', 'router_bridge_vlan_upper_pvid.sh'),
+        'router_bridge_vlan_upper.sh', 'router_bridge_pvid_vlan_upper.sh', 'router_bridge_vlan_upper_pvid.sh',
+        'bridge_mdb_host.sh'),
         default='router_bridge.sh')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
@@ -121,7 +124,7 @@ def main():
     config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
     require(manifest.get('config_fragment') == 'config/native-linux-bridge-selftests.config' and
             {'CONFIG_VETH=y', 'CONFIG_NET_VRF=y', 'CONFIG_VLAN_8021Q=y', 'CONFIG_IP_ROUTE_MULTIPATH=y',
-             'CONFIG_IP_MULTIPLE_TABLES=y', 'CONFIG_IPV6_MULTIPLE_TABLES=y', 'CONFIG_BRIDGE=y', 'CONFIG_BRIDGE_VLAN_FILTERING=y'}.issubset(config),
+             'CONFIG_IP_MULTIPLE_TABLES=y', 'CONFIG_IPV6_MULTIPLE_TABLES=y', 'CONFIG_BRIDGE=y', 'CONFIG_BRIDGE_VLAN_FILTERING=y', 'CONFIG_BRIDGE_IGMP_SNOOPING=y'}.issubset(config),
             'original forwarding test requires real native VLAN/VRF routing')
     source = Path(manifest['source']) / 'tools/testing/selftests/net'
     originals = {}
@@ -182,6 +185,8 @@ def main():
                 KER_MPTCP_FIXTURE_SOURCE=str(Path(__file__).resolve().parent),
                 KER_FORWARDING_IP=str(args.tools / 'ip'), KER_FORWARDING_BRIDGE=str(args.tools / 'bridge'), KER_FORWARDING_PRELOAD=str(args.preload),
                 KER_FORWARDING_LOG=str(log), PATH=str(bins) + os.pathsep + environment['PATH'])
+            if args.program == 'bridge_mdb_host.sh':
+                environment['KER_FORWARDING_BRIDGE_MDB_HOST'] = '1'
             if args.program == 'router_bridge_vlan.sh':
                 environment['KER_FORWARDING_BRIDGE_VLAN'] = '1'
             if args.program == 'router_bridge_1d.sh':
@@ -243,6 +248,17 @@ def main():
                     report['cleanup_state'] = dict(links=json.loads(clean.stdout), **{
                         family: diag.rpc(diag.FILE, '', '/proc/sys/net/' + family + '/conf/all/forwarding').decode()
                         for family in ('ipv4','ipv6')})
+                    if args.program == 'bridge_mdb_host.sh':
+                        observed = {}
+                        for key, query in (('addresses', [str(args.tools / 'ip'), '-j', 'address', 'show']),
+                                ('ipv4_routes', [str(args.tools / 'ip'), '-4', '-j', 'route', 'show', 'table', 'all']),
+                                ('ipv6_routes', [str(args.tools / 'ip'), '-6', '-j', 'route', 'show', 'table', 'all']),
+                                ('mdb', [str(args.tools / 'bridge'), '-j', '-d', 'mdb', 'show'])):
+                            clean = subprocess.run(query, env=dict(environment, LD_PRELOAD=str(args.preload)),
+                                capture_output=True, text=True, timeout=10, check=True)
+                            require(not clean.stderr, 'native MDB cleanup observation warning')
+                            observed[key] = json.loads(clean.stdout)
+                        report['cleanup_state'].update(observed)
                     common.fixture.stop(channel)
                     require(process.wait(timeout=20) == 0, 'native fixture shutdown failed')
                     native = json.loads(counts.read_text()); report['native_fixture'] = native
