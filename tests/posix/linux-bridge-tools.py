@@ -54,6 +54,14 @@ def main():
                 if state.stderr:
                     raise RuntimeError('native bridge observation warning: ' + state.stderr)
                 record['bridge_state'][key] = json.loads(state.stdout)
+            if os.environ.get('KER_FORWARDING_BRIDGE_VLAN') == '1':
+                for key, query in (
+                    ('port_vlans', [os.environ['KER_FORWARDING_BRIDGE'], '-j', 'vlan', 'show', 'dev', 'veth1']),
+                    ('host_vlans', [os.environ['KER_FORWARDING_IP'], '-d', '-j', 'link', 'show', 'type', 'vlan'])):
+                    state = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
+                    if state.stderr:
+                        raise RuntimeError('native VLAN observation warning: ' + state.stderr)
+                    record['bridge_state'][key] = json.loads(state.stdout)
             native_time_log = os.environ['KER_FORWARDING_LOG'] + '.native-time-' + str(os.getpid())
             env['KER_MPTCP_NATIVE_REALTIME'] = '1'
             env['KER_MPTCP_NATIVE_TIME_LOG'] = native_time_log
@@ -69,6 +77,12 @@ def main():
             except FileNotFoundError:
                 record['native_clock_reads'] = 0
             Path(native_time_log).unlink(missing_ok=True)
+        if tool == 'bridge' and os.environ.get('KER_FORWARDING_BRIDGE_VLAN') == '1':
+            state = subprocess.run([os.environ['KER_FORWARDING_BRIDGE'], '-j', 'vlan', 'show'],
+                                   env=env, capture_output=True, text=True, timeout=10, check=True)
+            if state.stderr:
+                raise RuntimeError('native VLAN observation warning: ' + state.stderr)
+            record['bridge_vlans_after'] = json.loads(state.stdout)
     with open(os.environ['KER_FORWARDING_LOG'], 'a') as stream:
         stream.write(json.dumps(record) + '\n')
     sys.stdout.write(record['stdout']); sys.stderr.write(record['stderr'])

@@ -27,6 +27,8 @@ def forwarding_counts(content):
 
 
 def validate_evidence(report):
+    if report.get('program') == 'router_bridge_vlan.sh':
+        return common.load('bridge_vlan_contract', 'linux-bridge-vlan-contract.py').validate_evidence(report)
     original = report.get('original', {})
     names = ['ping', 'ping6', 'ping', 'ping6', 'ping fails', 'ping6 fails', 'ping', 'ping6', 'ping', 'ping6']
     results = [re.fullmatch(r'TEST: (.*?)\s+\[ OK \]', line) for line in original.get('stdout', '').splitlines() if line.startswith('TEST:')]
@@ -98,7 +100,7 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('server', 'preload', 'tools', 'launcher', 'library', 'worker', 'pmd_dir', 'manifest', 'evidence'):
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
-    parser.add_argument('--program', choices=('router_bridge.sh',), default='router_bridge.sh')
+    parser.add_argument('--program', choices=('router_bridge.sh','router_bridge_vlan.sh'), default='router_bridge.sh')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if not args.inside:
@@ -170,6 +172,8 @@ def main():
                 KER_MPTCP_FIXTURE_SOURCE=str(Path(__file__).resolve().parent),
                 KER_FORWARDING_IP=str(args.tools / 'ip'), KER_FORWARDING_BRIDGE=str(args.tools / 'bridge'), KER_FORWARDING_PRELOAD=str(args.preload),
                 KER_FORWARDING_LOG=str(log), PATH=str(bins) + os.pathsep + environment['PATH'])
+            if args.program == 'router_bridge_vlan.sh':
+                environment['KER_FORWARDING_BRIDGE_VLAN'] = '1'
             negative = dict(environment, KER_MPTCP_SOCKET_CHANNEL=str(root / 'absent'), WAIT_TIMEOUT='1', INTERFACE_TIMEOUT='1')
             missing = subprocess.run(['bash', './' + args.program], cwd=work / 'forwarding', env=negative,
                                      capture_output=True, text=True, timeout=30)
