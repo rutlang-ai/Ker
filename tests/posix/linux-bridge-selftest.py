@@ -27,6 +27,8 @@ def forwarding_counts(content):
 
 
 def validate_evidence(report):
+    if report.get('program') == 'bridge_fdb_learning_limit.sh':
+        return common.load('bridge_learning_contract', 'linux-bridge-learning-contract.py').validate_evidence(report)
     if report.get('program') == 'bridge_sticky_fdb.sh':
         return common.load('bridge_sticky_contract', 'linux-bridge-sticky-contract.py').validate_evidence(report)
     if report.get('program') == 'bridge_mdb_host.sh':
@@ -114,7 +116,7 @@ def main():
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
     parser.add_argument('--program', choices=('router_bridge.sh', 'router_bridge_vlan.sh', 'router_bridge_1d.sh',
         'router_bridge_vlan_upper.sh', 'router_bridge_pvid_vlan_upper.sh', 'router_bridge_vlan_upper_pvid.sh',
-        'bridge_mdb_host.sh', 'bridge_sticky_fdb.sh'),
+        'bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh'),
         default='router_bridge.sh')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
@@ -187,6 +189,8 @@ def main():
                 KER_MPTCP_FIXTURE_SOURCE=str(Path(__file__).resolve().parent),
                 KER_FORWARDING_IP=str(args.tools / 'ip'), KER_FORWARDING_BRIDGE=str(args.tools / 'bridge'), KER_FORWARDING_PRELOAD=str(args.preload),
                 KER_FORWARDING_LOG=str(log), PATH=str(bins) + os.pathsep + environment['PATH'])
+            if args.program == 'bridge_fdb_learning_limit.sh':
+                environment['KER_FORWARDING_BRIDGE_LEARNING'] = '1'
             if args.program == 'bridge_mdb_host.sh':
                 environment['KER_FORWARDING_BRIDGE_MDB_HOST'] = '1'
             if args.program == 'router_bridge_vlan.sh':
@@ -259,7 +263,7 @@ def main():
                     report['cleanup_state'] = dict(links=json.loads(clean.stdout), **{
                         family: diag.rpc(diag.FILE, '', '/proc/sys/net/' + family + '/conf/all/forwarding').decode()
                         for family in ('ipv4','ipv6')})
-                    if args.program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh'):
+                    if args.program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh'):
                         observed = {}
                         for key, query in (('addresses', [str(args.tools / 'ip'), '-j', 'address', 'show']),
                                 ('ipv4_routes', [str(args.tools / 'ip'), '-4', '-j', 'route', 'show', 'table', 'all']),
@@ -270,12 +274,13 @@ def main():
                             require(not clean.stderr, 'native MDB cleanup observation warning')
                             observed[key] = json.loads(clean.stdout)
                         report['cleanup_state'].update(observed)
-                    if args.program == 'bridge_sticky_fdb.sh':
+                    if args.program in ('bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh'):
                         fdb = subprocess.run([str(args.tools / 'bridge'), '-j', 'fdb', 'show'],
                             env=dict(environment, LD_PRELOAD=str(args.preload)),
                             capture_output=True, text=True, timeout=10, check=True)
                         require(not fdb.stderr, 'native sticky FDB cleanup observation warning')
                         report['cleanup_state']['fdb'] = json.loads(fdb.stdout)
+                    if args.program == 'bridge_sticky_fdb.sh':
                         packets = root / 'packet.jsonl'
                         report['packet_trace'] = [json.loads(line) for line in packets.read_text().splitlines()] if packets.exists() else []
                     common.fixture.stop(channel)
