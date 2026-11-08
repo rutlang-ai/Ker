@@ -11,14 +11,14 @@
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
 | `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh` 完整入口本地通过；其余 105 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
-| `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh` 完整入口本地通过；其余 25 个尚未逐个接入 |
+| `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
 | `net/rds` | 2 | 尚未接入 |
 | 合计 | 310 | 逐个保留原版入口合同，不用 Ker 自编回归抵扣 |
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 82/310，剩余 228；其中 77 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 233 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 83/310，剩余 227；其中 78 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 232 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -160,3 +160,14 @@ Ker 的目标应用包括网关和 WAF，因此优先迁移转发、路由、VLA
 普通拓扑、地址、邻居、VRF 与规则均由原版工具经 native socket 执行；仅跨 namespace 的 veth fd 和 proc/sysctl 使用既有 runtime 适配器。原版 iputils 产生的特定 source-device warning 由 runner 原样记录，并检查实际 native 源地址、全部原版结果及真实规则计数；其他错误仍拒绝。
 
 本地完整入口通过，native fingerprint `367d168f2003a7a7194c5251918d3653d4f856dcf0b498e4b7c26214856ecca6`。额外证据合同核对 8 次探测、16 次 legacy raw 规则计数读取、8 次 nft 双栈 FIB 计数读取，以及四次清零、原版 VRF 转换顺序。两个 namespace 均删除，native live socket/outstanding packet 为零，worker 正常退出。缺失 backend 的原版脚本必须失败或跳过，不能计为成功。CI 的 `rpath-profile` gate 要求完整唯一入口、无 skip 的 JUnit、实际配置和相同 fingerprint 的 JSON；最终 hosted CI/review 资格单独确认。
+
+
+## 字符串偏移与 skb 边界
+
+完整原版 `netfilter/xt_string.sh` 和两个原版 lib.sh 在独立 `config/native-linux-xt-string-selftests.config` 中运行。实际启用 Linux 的 xt_string、TEXTSEARCH、BM、KMP、dummy 与 legacy IPv4 filter；不修改上游脚本、算法或协议实现。
+
+原版 socat 通过 native UDP 向 dummy 接口发送十份字节不变的 payload，保留 `-t 1`、全部偏移、`foo bar baz` 字符串，以及四条 BM/KMP × 两组 from/to 规则。八轮真实 OUTPUT 规则快照分别验证范围前、低位、包尾、跨 skb 数据块边界、第二块起点、最大 to 边界和范围外。1495 偏移时只有范围正确的 KMP 规则计数一次、1506 bytes；不将这个测试描述成 Ker 自编内容检测或 WAF 业务逻辑。
+
+普通 iproute2、iptables-legacy、socat 原版工具经现有 namespace/socket 适配进入同一常驻 Linux；stdin 传输保留原版文件字节，混合宿主 pipe/native UDP readiness 复用已有适配。宿主传输 namespace 的实际 IPv4 地址只满足 libc AI_ADDRCONFIG 查询，数据 socket 必须进入 native backend。
+
+本地完整入口及 CI gate 通过，fingerprint `81cee4f404d84696958a4698995d247b828417cd423294c1fb15eacdd05b1758`。要求十次真实 native UDP 创建、八次 reset/计数读取顺序、四条规则的精确参数及 packet/byte 计数。一个 native namespace 创建/删除，live socket/outstanding packet 为零，worker 正常退出；缺失 backend 的完整原版脚本必须失败。`xt-string-profile` gate 验证实际配置、唯一完整入口、无 skip 的 JUnit 和匹配 fingerprint 的 JSON；hosted CI/review 资格另行核对。

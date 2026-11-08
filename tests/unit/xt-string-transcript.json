@@ -1,0 +1,736 @@
+{
+  "status": "PASS_IMPORTED_LINUX",
+  "original": {
+    "returncode": 0,
+    "stdout": "PASS: string match tests\n",
+    "stderr": ""
+  },
+  "commands": [
+    {
+      "tool": "socat",
+      "arguments": [
+        "-h"
+      ],
+      "namespace": "",
+      "returncode": 0,
+      "stdout": "socat by Gerhard Rieger and contributors - see www.dest-unreach.org\nUsage:\nsocat [options] <bi-address> <bi-address>\n   options (general command line options):\n      -V     print version and feature information to stdout, and exit\n      -h|-?  print a help text describing command line options and addresses\n      -hh    like -h, plus a list of all common address option names\n      -hhh   like -hh, plus a list of all available address option names\n      -d[ddd]        increase verbosity (use up to 4 times; 2 are recommended)\n      -d0|1|2|3|4    set verbosity level (0: Errors; 4 all including Debug)\n      -D     analyze file descriptors before loop\n      --experimental enable experimental features\n      --statistics   output transfer statistics on exit\n      -ly[facility]  log to syslog, using facility (default is daemon)\n      -lf<logfile>   log to file\n      -ls            log to stderr (default if no other log)\n      -lm[facility]  mixed log mode (stderr during initialization, then syslog)\n      -lp<progname>  set the program name used for logging and vars\n      -lu            use microseconds for logging timestamps\n      -lh            add hostname to log messages\n      -v     verbose text dump of data traffic\n      -x     verbose hexadecimal dump of data traffic\n      -r <file>      raw dump of data flowing from left to right\n      -R <file>      raw dump of data flowing from right to left\n      -b<size_t>     set data buffer size (8192)\n      -s     sloppy (continue on error)\n      -S<sigmask>    log these signals, override default\n      -t<timeout>    wait seconds before closing second channel\n      -T<timeout>    total inactivity timeout in seconds\n      -u     unidirectional mode (left to right)\n      -U     unidirectional mode (right to left)\n      -g     do not check option groups\n      -L <lockfile>  try to obtain lock, or fail\n      -W <lockfile>  try to obtain lock, or wait\n      -0     do not prefer an IP version\n      -4     prefer IPv4 if version is not explicitly specified\n      -6     prefer IPv6 if version is not explicitly specified\n   bi-address:  /* is an address that may act both as data sync and source */\n      <single-address>\n      <single-address>!!<single-address>\n   single-address:\n      <address-head>[,<opts>]\n   address-head:\n      ABSTRACT-CLIENT:<filename>\t\tgroups=FD,SOCKET,RETRY,UNIX\n      ABSTRACT-CONNECT:<filename>\t\tgroups=FD,SOCKET,RETRY,UNIX\n      ABSTRACT-LISTEN:<filename>\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,UNIX\n      ABSTRACT-RECV:<filename>\t\t\tgroups=FD,SOCKET,RETRY,UNIX\n      ABSTRACT-RECVFROM:<filename>\t\tgroups=FD,SOCKET,CHILD,RETRY,UNIX\n      ABSTRACT-SENDTO:<filename>\t\tgroups=FD,SOCKET,RETRY,UNIX\n      ACCEPT-FD:<fdnum>\t\t\t\tgroups=FD,SOCKET,CHILD,RETRY,RANGE,UNIX,IP4,IP6,UDP,TCP,SCTP,DCCP,UDPLITE\n      CREATE:<filename>\t\t\t\tgroups=FD,REG,NAMED\n      DCCP-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,CHILD,RETRY,IP4,IP6,DCCP\n      DCCP-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,RANGE,IP4,IP6,DCCP\n      DCCP4-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,CHILD,RETRY,IP4,DCCP\n      DCCP4-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,RANGE,IP4,DCCP\n      DCCP6-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,CHILD,RETRY,IP6,DCCP\n      DCCP6-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,RANGE,IP6,DCCP\n      EXEC:<command-line>\t\t\tgroups=FD,FIFO,SOCKET,EXEC,FORK,TERMIOS,PTY,PARENT,UNIX\n      FD:<fdnum>\t\t\t\tgroups=FD,FIFO,CHR,BLK,REG,SOCKET,TERMIOS,UNIX,IP4,IP6,UDP,TCP,SCTP,DCCP,UDPLITE\n      GOPEN:<filename>\t\t\t\tgroups=FD,FIFO,CHR,BLK,REG,SOCKET,NAMED,OPEN,TERMIOS,UNIX\n      INTERFACE:<interface>\t\t\tgroups=FD,SOCKET,INTERFACE\n      IP-DATAGRAM:<host>:<protocol>\t\tgroups=FD,SOCKET,RANGE,IP4,IP6\n      IP-RECV:<protocol>\t\t\tgroups=FD,SOCKET,RANGE,IP4,IP6\n      IP-RECVFROM:<protocol>\t\t\tgroups=FD,SOCKET,CHILD,RANGE,IP4,IP6\n      IP-SENDTO:<host>:<protocol>\t\tgroups=FD,SOCKET,IP4,IP6\n      IP4-DATAGRAM:<host>:<protocol>\t\tgroups=FD,SOCKET,RANGE,IP4\n      IP4-RECV:<protocol>\t\t\tgroups=FD,SOCKET,RANGE,IP4\n      IP4-RECVFROM:<protocol>\t\t\tgroups=FD,SOCKET,CHILD,RANGE,IP4\n      IP4-SENDTO:<host>:<protocol>\t\tgroups=FD,SOCKET,IP4\n      IP6-DATAGRAM:<host>:<protocol>\t\tgroups=FD,SOCKET,RANGE,IP6\n      IP6-RECV:<protocol>\t\t\tgroups=FD,SOCKET,RANGE,IP6\n      IP6-RECVFROM:<protocol>\t\t\tgroups=FD,SOCKET,CHILD,RANGE,IP6\n      IP6-SENDTO:<host>:<protocol>\t\tgroups=FD,SOCKET,IP6\n      OPEN:<filename>\t\t\t\tgroups=FD,FIFO,CHR,BLK,REG,NAMED,OPEN,TERMIOS\n      OPENSSL:<host>:<port>\t\t\tgroups=FD,SOCKET,CHILD,RETRY,IP4,IP6,TCP,OPENSSL\n      OPENSSL-DTLS-CLIENT:<host>:<port>\t\tgroups=FD,SOCKET,CHILD,RETRY,IP4,IP6,UDP,OPENSSL\n      OPENSSL-DTLS-SERVER:<port>\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,RANGE,IP4,IP6,UDP,OPENSSL\n      OPENSSL-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,RANGE,IP4,IP6,TCP,OPENSSL\n      PIPE[:<filename>]\t\t\t\tgroups=FD,FIFO,NAMED,OPEN\n      POSIXMQ-BIDIRECTIONAL:<mqname>\t\tgroups=FD,NAMED,OPEN,RETRY,POSIXMQ\n      POSIXMQ-READ:<mqname>\t\t\tgroups=FD,NAMED,OPEN,RETRY,POSIXMQ\n      POSIXMQ-RECEIVE:<mqname>\t\t\tgroups=FD,NAMED,OPEN,CHILD,RETRY,POSIXMQ\n      POSIXMQ-SEND:<mqname>\t\t\tgroups=FD,NAMED,OPEN,CHILD,RETRY,POSIXMQ\n      POSIXMQ-WRITE:<mqname>\t\t\tgroups=FD,NAMED,OPEN,CHILD,RETRY,POSIXMQ\n      PROXY:<proxy-server>:<host>:<port>\tgroups=FD,SOCKET,CHILD,RETRY,IP4,IP6,TCP,HTTP\n      PTY\t\t\t\t\tgroups=FD,NAMED,TERMIOS,PTY\n      READLINE\t\t\t\t\tgroups=FD,READLINE,TERMIOS\n      SCTP-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,CHILD,RETRY,IP4,IP6,SCTP\n      SCTP-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,RANGE,IP4,IP6,SCTP\n      SCTP4-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,CHILD,RETRY,IP4,SCTP\n      SCTP4-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,RANGE,IP4,SCTP\n      SCTP6-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,CHILD,RETRY,IP6,SCTP\n      SCTP6-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,RANGE,IP6,SCTP\n      SHELL[:<shell-command>]\t\t\tgroups=FD,FIFO,SOCKET,EXEC,FORK,SHELL,TERMIOS,PTY,PARENT,UNIX\n      SOCKET-CONNECT:<domain>:<protocol>:<remote-address>\tgroups=FD,SOCKET,CHILD,RETRY\n      SOCKET-DATAGRAM:<domain>:<type>:<protocol>:<remote-address>\tgroups=FD,SOCKET,RANGE\n      SOCKET-LISTEN:<domain>:<protocol>:<local-address>\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,RANGE\n      SOCKET-RECV:<domain>:<type>:<protocol>:<local-address>\tgroups=FD,SOCKET,RANGE\n      SOCKET-RECVFROM:<domain>:<type>:<protocol>:<local-address>\tgroups=FD,SOCKET,CHILD,RANGE\n      SOCKET-SENDTO:<domain>:<type>:<protocol>:<remote-address>\tgroups=FD,SOCKET\n      SOCKETPAIR:<filename>\t\t\tgroups=FD,SOCKET\n      SOCKS4:<socks-server>:<host>:<port>\tgroups=FD,SOCKET,CHILD,RETRY,IP4,IP6,TCP,SOCKS\n      SOCKS4A:<socks-server>:<host>:<port>\tgroups=FD,SOCKET,CHILD,RETRY,IP4,IP6,TCP,SOCKS\n      SOCKS5-CONNECT:<socks-server>[:<socks-port>]:<target-host>:<target-port>\tgroups=FD,SOCKET,CHILD,RETRY,IP4,IP6,TCP,SOCKS\n      SOCKS5-LISTEN:<socks-server>[:<socks-port>]:<listen-host>:<listen-port>\tgroups=FD,SOCKET,CHILD,RETRY,IP4,IP6,TCP,SOCKS\n      STALL\t\t\t\t\tgroups=FD,FIFO\n      STDERR\t\t\t\t\tgroups=FD,FIFO,CHR,BLK,REG,SOCKET,TERMIOS,UNIX,IP4,IP6,UDP,TCP,SCTP,DCCP,UDPLITE\n      STDIN\t\t\t\t\tgroups=FD,FIFO,CHR,BLK,REG,SOCKET,TERMIOS,UNIX,IP4,IP6,UDP,TCP,SCTP,DCCP,UDPLITE\n      STDIO\t\t\t\t\tgroups=FD,FIFO,CHR,BLK,REG,SOCKET,TERMIOS,UNIX,IP4,IP6,UDP,TCP,SCTP,DCCP,UDPLITE\n      STDOUT\t\t\t\t\tgroups=FD,FIFO,CHR,BLK,REG,SOCKET,TERMIOS,UNIX,IP4,IP6,UDP,TCP,SCTP,DCCP,UDPLITE\n      SYSTEM:<shell-command>\t\t\tgroups=FD,FIFO,SOCKET,EXEC,FORK,TERMIOS,PTY,PARENT,UNIX\n      TCP-CONNECT:<host>:<port>\t\t\tgroups=FD,SOCKET,CHILD,RETRY,IP4,IP6,TCP\n      TCP-LISTEN:<port>\t\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,RANGE,IP4,IP6,TCP\n      TCP4-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,CHILD,RETRY,IP4,TCP\n      TCP4-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,RANGE,IP4,TCP\n      TCP6-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,CHILD,RETRY,IP6,TCP\n      TCP6-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY,RANGE,IP6,TCP\n      TEXT:<string>\t\t\t\tgroups=FD,FIFO\n      TUN[:<ip-addr>/<bits>]\t\t\tgroups=FD,CHR,OPEN,INTERFACE\n      UDP-CONNECT:<host>:<port>\t\t\tgroups=FD,SOCKET,IP4,IP6,UDP\n      UDP-DATAGRAM:<host>:<port>\t\tgroups=FD,SOCKET,RANGE,IP4,IP6,UDP\n      UDP-LISTEN:<port>\t\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RANGE,IP4,IP6,UDP\n      UDP-RECV:<port>\t\t\t\tgroups=FD,SOCKET,RANGE,IP4,IP6,UDP\n      UDP-RECVFROM:<port>\t\t\tgroups=FD,SOCKET,CHILD,RANGE,IP4,IP6,UDP\n      UDP-SENDTO:<host>:<port>\t\t\tgroups=FD,SOCKET,IP4,IP6,UDP\n      UDP4-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,IP4,UDP\n      UDP4-DATAGRAM:<host>:<port>\t\tgroups=FD,SOCKET,RANGE,IP4,UDP\n      UDP4-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RANGE,IP4,UDP\n      UDP4-RECV:<port>\t\t\t\tgroups=FD,SOCKET,RANGE,IP4,UDP\n      UDP4-RECVFROM:<port>\t\t\tgroups=FD,SOCKET,CHILD,RANGE,IP4,UDP\n      UDP4-SENDTO:<host>:<port>\t\t\tgroups=FD,SOCKET,IP4,UDP\n      UDP6-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,IP6,UDP\n      UDP6-DATAGRAM:<host>:<port>\t\tgroups=FD,SOCKET,RANGE,IP6,UDP\n      UDP6-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RANGE,IP6,UDP\n      UDP6-RECV:<port>\t\t\t\tgroups=FD,SOCKET,RANGE,IP6,UDP\n      UDP6-RECVFROM:<port>\t\t\tgroups=FD,SOCKET,CHILD,RANGE,IP6,UDP\n      UDP6-SENDTO:<host>:<port>\t\t\tgroups=FD,SOCKET,IP6,UDP\n      UDPLITE-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,IP4,IP6,UDP,UDPLITE\n      UDPLITE-DATAGRAM:<host>:<port>\t\tgroups=FD,SOCKET,RANGE,IP4,IP6,UDP,UDPLITE\n      UDPLITE-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RANGE,IP4,IP6,UDP,UDPLITE\n      UDPLITE-RECV:<port>\t\t\tgroups=FD,SOCKET,RANGE,IP4,IP6,UDP,UDPLITE\n      UDPLITE-RECVFROM:<port>\t\t\tgroups=FD,SOCKET,CHILD,RANGE,IP4,IP6,UDP,UDPLITE\n      UDPLITE-SENDTO:<host>:<port>\t\tgroups=FD,SOCKET,IP4,IP6,UDP,UDPLITE\n      UDPLITE4-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,IP4,UDP,UDPLITE\n      UDPLITE4-DATAGRAM:<remote-address>:<port>\tgroups=FD,SOCKET,RANGE,IP4,UDP,UDPLITE\n      UDPLITE4-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RANGE,IP4,UDP,UDPLITE\n      UDPLITE4-RECV:<port>\t\t\tgroups=FD,SOCKET,RANGE,IP4,UDP,UDPLITE\n      UDPLITE4-RECVFROM:<host>:<port>\t\tgroups=FD,SOCKET,CHILD,RANGE,IP4,UDP,UDPLITE\n      UDPLITE4-SENDTO:<host>:<port>\t\tgroups=FD,SOCKET,IP4,UDP,UDPLITE\n      UDPLITE6-CONNECT:<host>:<port>\t\tgroups=FD,SOCKET,IP6,UDP,UDPLITE\n      UDPLITE6-DATAGRAM:<host>:<port>\t\tgroups=FD,SOCKET,RANGE,IP6,UDP,UDPLITE\n      UDPLITE6-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RANGE,IP6,UDP,UDPLITE\n      UDPLITE6-RECV:<port>\t\t\tgroups=FD,SOCKET,RANGE,IP6,UDP,UDPLITE\n      UDPLITE6-RECVFROM:<port>\t\t\tgroups=FD,SOCKET,CHILD,RANGE,IP6,UDP,UDPLITE\n      UDPLITE6-SENDTO:<host>:<port>\t\tgroups=FD,SOCKET,IP6,UDP,UDPLITE\n      UNIX-CLIENT:<filename>\t\t\tgroups=FD,SOCKET,NAMED,RETRY,UNIX\n      UNIX-CONNECT:<filename>\t\t\tgroups=FD,SOCKET,NAMED,RETRY,UNIX\n      UNIX-LISTEN:<filename>\t\t\tgroups=FD,SOCKET,NAMED,LISTEN,CHILD,RETRY,UNIX\n      UNIX-RECV:<filename>\t\t\tgroups=FD,SOCKET,NAMED,RETRY,UNIX\n      UNIX-RECVFROM:<filename>\t\t\tgroups=FD,SOCKET,NAMED,CHILD,RETRY,UNIX\n      UNIX-SENDTO:<filename>\t\t\tgroups=FD,SOCKET,NAMED,RETRY,UNIX\n      VSOCK-CONNECT:<cid>:<port>\t\tgroups=FD,SOCKET,CHILD,RETRY\n      VSOCK-LISTEN:<port>\t\t\tgroups=FD,SOCKET,LISTEN,CHILD,RETRY\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "--version"
+      ],
+      "namespace": "",
+      "returncode": 0,
+      "stdout": "iptables v1.8.11 (legacy)\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "netns",
+        "add",
+        "netns-MS6X7u"
+      ],
+      "namespace": "",
+      "operation": "namespace",
+      "returncode": 0
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "lo",
+        "up"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "add",
+        "d0",
+        "type",
+        "dummy"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "link",
+        "set",
+        "d0",
+        "up"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "addr",
+        "add",
+        "10.1.2.1/24",
+        "dev",
+        "d0"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-A",
+        "OUTPUT",
+        "-o",
+        "d0",
+        "-m",
+        "string",
+        "--string",
+        "foo bar baz",
+        "--algo",
+        "bm",
+        "--from",
+        "1000",
+        "--to",
+        "1500"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-A",
+        "OUTPUT",
+        "-o",
+        "d0",
+        "-m",
+        "string",
+        "--string",
+        "foo bar baz",
+        "--algo",
+        "bm",
+        "--from",
+        "1400",
+        "--to",
+        "1600"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-A",
+        "OUTPUT",
+        "-o",
+        "d0",
+        "-m",
+        "string",
+        "--string",
+        "foo bar baz",
+        "--algo",
+        "kmp",
+        "--from",
+        "1000",
+        "--to",
+        "1500"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-A",
+        "OUTPUT",
+        "-o",
+        "d0",
+        "-m",
+        "string",
+        "--string",
+        "foo bar baz",
+        "--algo",
+        "kmp",
+        "--from",
+        "1400",
+        "--to",
+        "1600"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-Z",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "socat",
+      "arguments": [
+        "-t",
+        "1",
+        "-u",
+        "STDIN",
+        "UDP-SENDTO:10.1.2.2:27374"
+      ],
+      "namespace": "netns-MS6X7u",
+      "stdin": "foo bar baz",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "socat",
+      "arguments": [
+        "-t",
+        "1",
+        "-u",
+        "STDIN",
+        "UDP-SENDTO:10.1.2.2:27374"
+      ],
+      "namespace": "netns-MS6X7u",
+      "stdin": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 foo bar baz",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-v",
+        "-S",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "-P OUTPUT ACCEPT -c 2 1039\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1000 --to 1500 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1400 --to 1600 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1000 --to 1500 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1400 --to 1600 -c 0 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-Z",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "socat",
+      "arguments": [
+        "-t",
+        "1",
+        "-u",
+        "STDIN",
+        "UDP-SENDTO:10.1.2.2:27374"
+      ],
+      "namespace": "netns-MS6X7u",
+      "stdin": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            foo bar baz",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "socat",
+      "arguments": [
+        "-t",
+        "1",
+        "-u",
+        "STDIN",
+        "UDP-SENDTO:10.1.2.2:27374"
+      ],
+      "namespace": "netns-MS6X7u",
+      "stdin": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 foo bar baz",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-v",
+        "-S",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "-P OUTPUT ACCEPT -c 2 2411\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1000 --to 1500 -c 2 2411\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1400 --to 1600 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1000 --to 1500 -c 2 2411\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1400 --to 1600 -c 0 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-Z",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "socat",
+      "arguments": [
+        "-t",
+        "1",
+        "-u",
+        "STDIN",
+        "UDP-SENDTO:10.1.2.2:27374"
+      ],
+      "namespace": "netns-MS6X7u",
+      "stdin": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     foo bar baz",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-v",
+        "-S",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "-P OUTPUT ACCEPT -c 1 1500\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1000 --to 1500 -c 1 1500\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1400 --to 1600 -c 1 1500\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1000 --to 1500 -c 1 1500\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1400 --to 1600 -c 1 1500\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-Z",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "socat",
+      "arguments": [
+        "-t",
+        "1",
+        "-u",
+        "STDIN",
+        "UDP-SENDTO:10.1.2.2:27374"
+      ],
+      "namespace": "netns-MS6X7u",
+      "stdin": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           foo bar baz",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-v",
+        "-S",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "-P OUTPUT ACCEPT -c 1 1506\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1000 --to 1500 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1400 --to 1600 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1000 --to 1500 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1400 --to 1600 -c 1 1506\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-Z",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "socat",
+      "arguments": [
+        "-t",
+        "1",
+        "-u",
+        "STDIN",
+        "UDP-SENDTO:10.1.2.2:27374"
+      ],
+      "namespace": "netns-MS6X7u",
+      "stdin": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                foo bar baz",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-v",
+        "-S",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "-P OUTPUT ACCEPT -c 1 1511\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1000 --to 1500 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1400 --to 1600 -c 1 1511\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1000 --to 1500 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1400 --to 1600 -c 1 1511\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-Z",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "socat",
+      "arguments": [
+        "-t",
+        "1",
+        "-u",
+        "STDIN",
+        "UDP-SENDTO:10.1.2.2:27374"
+      ],
+      "namespace": "netns-MS6X7u",
+      "stdin": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         foo bar baz",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-v",
+        "-S",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "-P OUTPUT ACCEPT -c 1 1600\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1000 --to 1500 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1400 --to 1600 -c 1 1600\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1000 --to 1500 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1400 --to 1600 -c 1 1600\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-Z",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "socat",
+      "arguments": [
+        "-t",
+        "1",
+        "-u",
+        "STDIN",
+        "UDP-SENDTO:10.1.2.2:27374"
+      ],
+      "namespace": "netns-MS6X7u",
+      "stdin": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          foo bar baz",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-v",
+        "-S",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "-P OUTPUT ACCEPT -c 1 1601\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1000 --to 1500 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1400 --to 1600 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1000 --to 1500 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1400 --to 1600 -c 0 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-Z",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "socat",
+      "arguments": [
+        "-t",
+        "1",
+        "-u",
+        "STDIN",
+        "UDP-SENDTO:10.1.2.2:27374"
+      ],
+      "namespace": "netns-MS6X7u",
+      "stdin": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    foo bar baz",
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "tool": "iptables",
+      "arguments": [
+        "-v",
+        "-S",
+        "OUTPUT"
+      ],
+      "namespace": "netns-MS6X7u",
+      "returncode": 0,
+      "stdout": "-P OUTPUT ACCEPT -c 1 1611\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1000 --to 1500 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo bm --from 1400 --to 1600 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1000 --to 1500 -c 0 0\n-A OUTPUT -o d0 -m string --string \"foo bar baz\" --algo kmp --from 1400 --to 1600 -c 0 0\n",
+      "stderr": ""
+    },
+    {
+      "tool": "ip",
+      "arguments": [
+        "netns",
+        "del",
+        "netns-MS6X7u"
+      ],
+      "namespace": "",
+      "operation": "namespace",
+      "returncode": 0
+    }
+  ],
+  "native_fixture": {
+    "sockets": 49,
+    "mptcp": 0,
+    "accepts": 0,
+    "live": 0,
+    "reads": 14,
+    "writes": 17,
+    "received": 6736,
+    "sent": 12803,
+    "infos": 0,
+    "full_info": 0,
+    "inq": 14,
+    "negotiated": 0,
+    "fallback": 0,
+    "fallback_info_eopnotsupp": 0,
+    "fallback_info_enoprotoopt": 0,
+    "channel_slots": 2,
+    "channels_opened": 52,
+    "namespaces_created": 1,
+    "namespaces_deleted": 1,
+    "netlinks": 7,
+    "diag_sends": 17,
+    "diag_receives": 14,
+    "max_live": 2,
+    "raw_sockets": 32,
+    "filter_sets": 24,
+    "filter_gets": 52,
+    "mp_join_syn_rx": 0,
+    "mp_join_ack_rx": 0,
+    "sendfile_calls": 0,
+    "imported_files": 0,
+    "udp_sockets": 10,
+    "epoll_creates": 0,
+    "epoll_controls": 0,
+    "epoll_waits": 0
+  },
+  "stats": {
+    "rx_reconfigure_discarded": 0,
+    "rx_decision_enabled": false,
+    "rx_decision_leases": 0,
+    "rx_decision_drops": 0,
+    "rx_decision_local": 0,
+    "rx_decision_forwarded": 0,
+    "rx_decision_local_cancelled": 0,
+    "rx_decision_settled": false,
+    "rx_pollers": [
+      {
+        "queue": 0,
+        "owner": 0,
+        "lcore": 0,
+        "cpu": 0,
+        "packets": 0,
+        "polls": 1713,
+        "stalled": 0,
+        "shutdown": 0,
+        "reconfigured": 0,
+        "starts": 1
+      }
+    ],
+    "exception_console_charged": 0,
+    "exception_general_charged": 0,
+    "exception_console_dropped": 0,
+    "exception_general_dropped": 0,
+    "exception_shared_arp": 0,
+    "exception_shared_selected": 0,
+    "exception_shared_icmp_error": 0,
+    "exception_shared_failed": 0,
+    "exception_fragment_dropped": 0,
+    "exception_selected": 0,
+    "exception_enqueued": 0,
+    "exception_to_host": 0,
+    "exception_to_host_dropped": 0,
+    "exception_host_received": 0,
+    "exception_from_host": 0,
+    "exception_wire_dropped": 0,
+    "exception_shutdown_dropped": 0,
+    "exception_rate_dropped": 0,
+    "exception_malformed": 0,
+    "rx_by_queue": [
+      0
+    ],
+    "host_receive_mode_restored": false,
+    "tx_tcp_checksum": 0,
+    "tx_udp_checksum": 0,
+    "tx_ip_checksum": 0,
+    "tx_tso4": 0,
+    "tx_tso6": 0,
+    "tx_checksum_fallback": 0,
+    "rx_rss_metadata": 0,
+    "bond": null,
+    "mtu_final": 1500,
+    "max_mtu": 9000,
+    "mtu_changes": 0,
+    "tx": 5,
+    "rx": 0,
+    "dropped": 0,
+    "tx_retries": 0,
+    "rx_retries": 0,
+    "tx_bytes": 426,
+    "rx_bytes": 0,
+    "tx_dropped": 0,
+    "rx_dropped": 0,
+    "outstanding": 0,
+    "stop_requests": 0,
+    "control_eof": true,
+    "tx_multiseg": 0,
+    "rx_multiseg": 0,
+    "rx_startup_discarded": 0,
+    "rx_shutdown_discarded": 0,
+    "idle_waits": 1709,
+    "idle_timeouts": 1697,
+    "tx_flushes": 4,
+    "tx_timer_flushes": 0,
+    "tx_full_flushes": 0,
+    "tx_drain_flushes": 0,
+    "shutdown_timed_out": false,
+    "worker_exit_code": 0,
+    "io": {
+      "all_multicast_method": "off",
+      "tap_retry_safe": false,
+      "tx_offload_features": 0,
+      "tx_offload_flags": 0,
+      "tx_offload_mode": 0,
+      "tx_capture_stage": "before_offload",
+      "rss": null,
+      "queues": 1,
+      "data_tx_queue": 0,
+      "bond": null,
+      "driver": "net_tap",
+      "max_rx_queues": 64,
+      "max_tx_queues": 64,
+      "rx_descriptors": 0,
+      "tx_descriptors": 0,
+      "pool_rx_descriptors": 256,
+      "pool_tx_descriptors": 256,
+      "mbuf_pool_count": 4095,
+      "mac": "16:a4:a0:fa:be:36",
+      "mtu": 1500,
+      "mbuf_mode": "large",
+      "port_id": 0,
+      "port_count": 1,
+      "socket_id": 0,
+      "process_type": "primary",
+      "numa": true,
+      "lcore_socket_id": 0,
+      "allocation_socket_id": 0,
+      "pool_socket_id": 0,
+      "eal_log_level": 8,
+      "log_level": 8,
+      "memory_base": "0x1000ef000",
+      "memory_bytes": 67108864,
+      "hugepages": false,
+      "memory_channels": 0,
+      "lcore_count": 1,
+      "main_lcore": 0,
+      "main_cpu": 0,
+      "link_up": true,
+      "promiscuous": false,
+      "idle_sleep_us": 1000,
+      "tx_delay_us": 0
+    },
+    "native": {
+      "buffer_allocations": 0,
+      "buffer_releases": 0,
+      "buffer_shutdown_releases": 0,
+      "buffers_live": 0,
+      "buffer_bytes": 0,
+      "buffer_option_guards_live": 0,
+      "active_opens": 0,
+      "passive_opens": 0,
+      "retransmitted_segments": 0,
+      "zero_window_probes": 0,
+      "out_of_order_queued": 0,
+      "udp_in_datagrams": 0,
+      "udp_out_datagrams": 0,
+      "udp_in_errors": 0,
+      "udp_no_ports": 0,
+      "udp6_in_datagrams": 0,
+      "udp6_out_datagrams": 0,
+      "udp6_in_errors": 0,
+      "udp6_no_ports": 0,
+      "ip6_frag_ok": 0,
+      "ip6_frag_creates": 0,
+      "ip6_reasm_ok": 0,
+      "ip6_reasm_fails": 0,
+      "ip6_reasm_timeouts": 0,
+      "ip_frag_ok": 0,
+      "ip_frag_creates": 0,
+      "ip_reasm_ok": 0,
+      "ip_reasm_fails": 0,
+      "tcp_ecn": 2,
+      "mptcp_capable_syn_tx": 0,
+      "mptcp_capable_syn_rx": 0,
+      "mptcp_capable_synack_rx": 0,
+      "mptcp_capable_ack_rx": 0,
+      "mptcp_fallback_synack": 0,
+      "mptcp_fallback_ack": 0
+    }
+  },
+  "missing_backend_control": {
+    "returncode": 250,
+    "stdout": "Failed to create namespace netns\nFAIL: rules match data before --from\nFAIL: only two rules should match at low offset\nFAIL: all rules should match at end of packet\nFAIL: only kmp with proper --to should match pattern spanning fragments\nFAIL: two rules should match pattern at start of second fragment\nFAIL: two rules should match pattern at end of largest --to\n",
+    "stderr": "native XT_STRING transport: [Errno 2] No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCannot open netlink socket: No such file or directory\nCould not open socket to kernel: No such file or directory\nCould not open socket to kernel: No such file or directory\nCould not open socket to kernel: No such file or directory\nCould not open socket to kernel: No such file or directory\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\n2026/11/07 17:08:48 original-socat[676062] E socket(2, 2, 17): No such file or directory\n2026/11/07 17:08:48 original-socat[676094] E socket(2, 2, 17): No such file or directory\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\n2026/11/07 17:08:49 original-socat[676221] E socket(2, 2, 17): No such file or directory\n2026/11/07 17:08:49 original-socat[676255] E socket(2, 2, 17): No such file or directory\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\n2026/11/07 17:08:49 original-socat[676374] E socket(2, 2, 17): No such file or directory\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\n2026/11/07 17:08:49 original-socat[676493] E socket(2, 2, 17): No such file or directory\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\n2026/11/07 17:08:49 original-socat[676612] E socket(2, 2, 17): No such file or directory\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\n2026/11/07 17:08:49 original-socat[676734] E socket(2, 2, 17): No such file or directory\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\n2026/11/07 17:08:50 original-socat[676857] E socket(2, 2, 17): No such file or directory\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\n2026/11/07 17:08:50 original-socat[676951] E socket(2, 2, 17): No such file or directory\niptables v1.8.11 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)\nPerhaps iptables or your kernel needs to be upgraded.\nnative XT_STRING transport: [Errno 2] No such file or directory\n"
+  }
+}

@@ -28,6 +28,7 @@ LINUX_PROTOCOL_SELFTESTS = (
 LINUX_NET_PROFILE_TESTS = {"linux-original-net-tun", "linux-original-net-reuseport_addr_any"}
 LINUX_MACVTAP_PROFILE_TEST = "linux-original-net-tap"
 LINUX_NETLINK_DUMPS_PROFILE_TEST = "linux-original-net-netlink-dumps"
+LINUX_XT_STRING_PROFILE_TEST = "linux-original-netfilter-xt-string"
 LINUX_RPATH_PROFILE_TEST = "linux-original-netfilter-rpath"
 LINUX_RPATH_REALTIME_TEST = "rpath-realtime-wrapper-contract"
 LINUX_IPIP_PROFILE_TEST = "linux-original-netfilter-conntrack-ipip-mtu"
@@ -499,6 +500,35 @@ def run_netlink_dumps_profile(build: Path, junit: Path) -> None:
     summary('Original Netlink dumps: three complete lifecycle cases, PASS ' + manifest['fingerprint'])
 
 
+def run_xt_string_profile(build: Path, junit: Path) -> None:
+    name = LINUX_XT_STRING_PROFILE_TEST
+    require(sum(item['name'] == name for item in ctest_inventory(build)) == 1,
+            'xt_string profile must register the complete original entry exactly once')
+    cache = (build / 'CMakeCache.txt').read_text()
+    native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
+                         if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
+    require(native_build, 'xt_string profile has no native kernel path')
+    manifest = json.loads((Path(native_build) / 'native-linux.json').read_text())
+    config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
+    require(manifest.get('config_fragment') == 'config/native-linux-xt-string-selftests.config' and
+            {'CONFIG_DUMMY=y', 'CONFIG_NETFILTER_XTABLES=y', 'CONFIG_IP_NF_IPTABLES=y',
+             'CONFIG_IP_NF_FILTER=y', 'CONFIG_NETFILTER_XT_MATCH_STRING=y', 'CONFIG_TEXTSEARCH=y',
+             'CONFIG_TEXTSEARCH_BM=y', 'CONFIG_TEXTSEARCH_KMP=y'}.issubset(config),
+            'xt_string requires its real native string/BM/KMP profile')
+    result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
+                            '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+    require(junit.is_file(), 'xt_string CTest did not produce JUnit')
+    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    evidence = json.loads((build / (name + '.json')).read_text())
+    require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
+            evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native xt_string evidence')
+    script = Path(__file__).resolve().parents[2] / 'tests/posix/linux-xt-string-selftest.py'
+    spec = importlib.util.spec_from_file_location('xt_string_contract', script)
+    contract = importlib.util.module_from_spec(spec); spec.loader.exec_module(contract)
+    contract.validate_evidence(evidence)
+    summary('Original xt_string: ten UDP probes, eight complete BM/KMP counter windows, PASS ' + manifest['fingerprint'])
+
+
 def run_rpath_profile(build: Path, junit: Path) -> None:
     name = LINUX_RPATH_PROFILE_TEST
     inventory = ctest_inventory(build)
@@ -538,7 +568,9 @@ def run_rpath_profile(build: Path, junit: Path) -> None:
 
 def run_ipip_profile(build: Path, junit: Path) -> None:
     name = LINUX_IPIP_PROFILE_TEST
-    require(sum(item['name'] == name for item in ctest_inventory(build)) == 1,
+    control = 'linux-mixed-poll-timeout-control'
+    require(sum(item['name'] == name for item in ctest_inventory(build)) == 1 and
+            sum(item['name'] == control for item in ctest_inventory(build)) == 1,
             'IPIP profile must register the complete original entry exactly once')
     cache = (build / 'CMakeCache.txt').read_text()
     native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
@@ -551,9 +583,9 @@ def run_ipip_profile(build: Path, junit: Path) -> None:
              'CONFIG_IP_NF_IPTABLES=y', 'CONFIG_IP_NF_FILTER=y', 'CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y'}.issubset(config),
             'IPIP shell requires its real native tunnel/conntrack profile')
     result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
-                            '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+                            '--output-junit', str(junit), '--parallel', '1', '-R', '^(' + name + '|' + control + ')$'], check=False)
     require(junit.is_file(), 'IPIP CTest did not produce JUnit')
-    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    report_junit(junit, expected={name, control}, required={name, control}, ctest_returncode=result.returncode)
     evidence = json.loads((build / (name + '.json')).read_text())
     require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
             evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native IPIP evidence')
@@ -823,6 +855,7 @@ def run_join_profile(build: Path, junit: Path) -> None:
 
 
 def validate_default_profile_inventory(names: set[str]) -> None:
+    require(LINUX_XT_STRING_PROFILE_TEST not in names, "xt_string requires its native string/BM/KMP profile")
     require(LINUX_RPATH_PROFILE_TEST not in names, 'rpath shell requires its native rpfilter/fib profile')
     require(LINUX_IPIP_PROFILE_TEST not in names, 'IPIP shell requires its native tunnel profile')
     require(LINUX_NAT_PROFILE_TEST not in names, 'NAT shell requires its native nftables profile')
@@ -1166,8 +1199,8 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "netns-name-profile", "forwarding-profile", "conntrack-profile", "nat-profile", "ipip-profile", "rpath-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
-        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile|netns-name-profile|forwarding-profile|conntrack-profile|nat-profile|ipip-profile|rpath-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "sockopt-profile", "connect-profile", "join-profile", "packetdrill-profile", "net-profile", "macvtap-profile", "netlink-dumps-profile", "netns-name-profile", "forwarding-profile", "conntrack-profile", "nat-profile", "ipip-profile", "rpath-profile", "xt-string-profile", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | sockopt-profile|connect-profile|join-profile|packetdrill-profile|net-profile|macvtap-profile|netlink-dumps-profile|netns-name-profile|forwarding-profile|conntrack-profile|nat-profile|ipip-profile|rpath-profile|xt-string-profile CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
         if len(argv) != 2:
@@ -1211,6 +1244,11 @@ def main(argv: list[str]) -> int:
         if len(argv) != 4:
             raise RuntimeError("net-profile requires build directory and JUnit output path")
         run_net_profile(build, Path(argv[3]))
+        return 0
+    if group == "xt-string-profile":
+        if len(argv) != 4:
+            raise RuntimeError("xt-string-profile requires build directory and JUnit output path")
+        run_xt_string_profile(build, Path(argv[3]))
         return 0
     if group == "rpath-profile":
         if len(argv) != 4:
