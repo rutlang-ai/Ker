@@ -161,6 +161,7 @@ def main():
             env['KER_MPTCP_NATIVE_TIME_LOG'] = native_time_log
         else:
             if tool not in ('ip', 'bridge', 'mausezahn') and not (
+                    tool == 'ethtool' and os.environ.get('KER_FORWARDING_BRIDGE_AWARE') == '1') and not (
                     tool == 'tc' and (os.environ.get('KER_FORWARDING_BRIDGE_MDB_PORT') == '1' or
                                       os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1' or
                                       os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1')):
@@ -190,16 +191,27 @@ def main():
         if observe_isolation:
             record['isolation_before'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         observe_unaware = (os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' and
-                           (tool in ('bridge', 'tc', 'mausezahn') or tool == 'ip' and
+                           not (tool == 'tc' and words == ['-j']) and
+                           (tool in ('bridge', 'tc', 'mausezahn', 'ethtool') or tool == 'ip' and
                             ('promisc' in words or words == ['-d', '-j', 'link', 'show', 'dev', 'br0', 'type', 'bridge'])))
         if observe_unaware:
             record['unaware_before'] = packet_bridge_snapshot(env, tool == 'mausezahn')
+        if tool == 'ethtool':
+            features = subprocess.run([os.environ['KER_FORWARDING_ETHTOOL'], '--json', '--show-features', words[1]],
+                env=env, capture_output=True, text=True, timeout=10, check=True)
+            if features.stderr: raise RuntimeError('native ethtool feature query warning: ' + features.stderr)
+            record['ethtool_features_before'] = json.loads(features.stdout)
         if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1':
             record['started_monotonic'] = time.monotonic()
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
         if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1':
             record['finished_monotonic'] = time.monotonic()
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        if tool == 'ethtool':
+            features = subprocess.run([os.environ['KER_FORWARDING_ETHTOOL'], '--json', '--show-features', words[1]],
+                env=env, capture_output=True, text=True, timeout=10, check=True)
+            if features.stderr: raise RuntimeError('native ethtool feature query warning: ' + features.stderr)
+            record['ethtool_features_after'] = json.loads(features.stdout)
         if 'unaware_before' in record:
             record['unaware_after'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         if 'isolation_before' in record:
