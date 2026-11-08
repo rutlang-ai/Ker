@@ -1,4 +1,4 @@
-"""All four complete bridge entries and the native realtime ABI control are mandatory."""
+"""All five complete bridge entries and the native realtime ABI control are mandatory."""
 import json
 from pathlib import Path
 import subprocess
@@ -18,6 +18,7 @@ class BridgeProfileTests(unittest.TestCase):
             'router_bridge_vlan.sh': 'bridge-vlan-transcript.json',
             'router_bridge_1d.sh': 'bridge-1d-transcript.json',
             'router_bridge_vlan_upper.sh': 'bridge-vlan-upper-transcript.json',
+            'router_bridge_pvid_vlan_upper.sh': 'bridge-pvid-upper-transcript.json',
         }
         control = native_tests.LINUX_BRIDGE_REALTIME_TEST
         cases = [('complete', None), ('wrong-profile', None), ('missing-vlan', None),
@@ -62,7 +63,9 @@ class BridgeProfileTests(unittest.TestCase):
                         elif mutation == 'failed-evidence': report['status'] = 'FAIL'
                         elif mutation == 'wrong-program': report['program'] = 'wrong.sh'
                         elif mutation == 'missing-phase':
-                            if program in ('router_bridge_1d.sh', 'router_bridge_vlan_upper.sh'):
+                            if program == 'router_bridge_pvid_vlan_upper.sh':
+                                report['commands'] = [r for r in report['commands'] if 'upper_after' not in r]
+                            elif program in ('router_bridge_1d.sh', 'router_bridge_vlan_upper.sh'):
                                 report['commands'] = [r for r in report['commands'] if 'port_after' not in r]
                             else:
                                 report['commands'] = [r for r in report['commands'] if r['tool'] != 'bridge']
