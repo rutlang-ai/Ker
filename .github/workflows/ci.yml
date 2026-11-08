@@ -570,7 +570,7 @@ jobs:
           python3 tools/ci/native_tests.py netns-name-profile \
             build-native-netns-name "$RUNNER_TEMP/native-netns-name-ctest.xml"
 
-      - name: Run complete original forwarding routing and MTU shells
+      - name: Run complete original forwarding routing, MTU and broadcast shells
         if: steps.native.outputs.present == 'true'
         shell: bash
         env:
@@ -834,6 +834,7 @@ jobs:
             ${{ runner.temp }}/native-linux-forwarding-build/native-linux.json
             build-native-forwarding/linux-original-forwarding-router-vid1.json
             build-native-forwarding/linux-original-forwarding-mtu.json
+            build-native-forwarding/linux-original-forwarding-router-broadcast.json
             ${{ runner.temp }}/native-conntrack-ctest.xml
             ${{ runner.temp }}/native-linux-conntrack-build/native-linux.json
             build-native-conntrack/linux-original-netfilter-conntrack-dump-flush.json

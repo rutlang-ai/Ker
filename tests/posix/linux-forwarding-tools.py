@@ -16,6 +16,25 @@ spec = importlib.util.spec_from_file_location('forwarding_diag', root / 'linux-m
 diag = importlib.util.module_from_spec(spec); spec.loader.exec_module(diag)
 
 
+def broadcast_snapshot(env):
+    state = {}
+    for key, query in (
+        ('links', ['-d', '-j', 'link', 'show']),
+        ('addresses', ['-j', 'address', 'show']),
+        ('routes', ['-4', '-j', 'route', 'show', 'table', 'all'])):
+        result = subprocess.run([os.environ['KER_FORWARDING_IP'], *query],
+                                env=env, capture_output=True, text=True, timeout=10, check=True)
+        if result.stderr:
+            raise RuntimeError('native broadcast observation warning: ' + result.stderr)
+        state[key] = json.loads(result.stdout)
+    state['sysctls'] = {name: diag.rpc(diag.FILE, '', '/proc/sys/' + name.replace('.', '/')).decode().strip()
+        for name in ('net.ipv4.conf.all.forwarding', 'net.ipv4.conf.all.bc_forwarding',
+            'net.ipv4.conf.veth1.bc_forwarding', 'net.ipv4.conf.veth2.bc_forwarding',
+            'net.ipv4.icmp_echo_ignore_broadcasts')}
+    state['snmp'] = diag.rpc(diag.FILE, '', '/proc/net/snmp').decode()
+    return state
+
+
 def main():
     tool, words = Path(sys.argv[0]).name, sys.argv[1:]
     record = dict(tool=tool, arguments=words)
@@ -43,10 +62,26 @@ def main():
             env['KER_FORWARDING_VRF'] = vrf
             command = [os.environ['KER_FORWARDING_' + program.upper()], *arguments]
             record['vrf'] = objects[0]
+            if os.environ.get('KER_FORWARDING_BROADCAST') == '1':
+                record['broadcast_before'] = broadcast_snapshot(env)
+                native_time_log = os.environ['KER_FORWARDING_LOG'] + '.native-time-' + str(os.getpid())
+                env['KER_MPTCP_NATIVE_REALTIME'] = '1'
+                env['KER_MPTCP_NATIVE_TIME_LOG'] = native_time_log
         else:
             command = [os.environ['KER_FORWARDING_IP'], *words]
-        result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
-        record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        broadcast = words[:2] == ['vrf', 'exec'] and os.environ.get('KER_FORWARDING_BROADCAST') == '1'
+        # Preserve the upstream shell's 2>&1 stream before its literal grep.
+        result = subprocess.run(command, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT if broadcast else subprocess.PIPE,
+                                text=True, timeout=30)
+        record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr or '')
+        if words[:2] == ['vrf', 'exec'] and os.environ.get('KER_FORWARDING_BROADCAST') == '1':
+            record['broadcast_after'] = broadcast_snapshot(env)
+            try:
+                record['native_clock_reads'] = Path(native_time_log).stat().st_size
+            except FileNotFoundError:
+                record['native_clock_reads'] = 0
+            Path(native_time_log).unlink(missing_ok=True)
     with open(os.environ['KER_FORWARDING_LOG'], 'a') as stream:
         stream.write(json.dumps(record) + '\n')
     sys.stdout.write(record['stdout']); sys.stderr.write(record['stderr'])

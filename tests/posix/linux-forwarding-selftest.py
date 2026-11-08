@@ -49,6 +49,8 @@ def forwarding_counts(content):
 
 
 def validate_evidence(report):
+    if report.get('program') == 'router_broadcast.sh':
+        return common.load('broadcast_contract', 'linux-broadcast-contract.py').validate_evidence(report)
     if report.get('program') == 'min_max_mtu.sh':
         return common.load('mtu_contract', 'linux-forwarding-mtu-contract.py').validate_evidence(report)
     original = report.get('original', {})
@@ -77,13 +79,13 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('server', 'preload', 'tools', 'launcher', 'library', 'worker', 'pmd_dir', 'manifest', 'evidence'):
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
-    parser.add_argument('--program', choices=('router_vid_1.sh', 'min_max_mtu.sh'), default='router_vid_1.sh')
+    parser.add_argument('--program', choices=('router_vid_1.sh', 'min_max_mtu.sh', 'router_broadcast.sh'), default='router_vid_1.sh')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
                                *sys.argv[1:], '--inside']).returncode
-    validator = validate_evidence if args.program == 'router_vid_1.sh' else common.load('mtu_contract', 'linux-forwarding-mtu-contract.py').validate_evidence
+    validator = validate_evidence
     manifest = json.loads(args.manifest.read_text())
     config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
     require(manifest.get('config_fragment') == 'config/native-linux-forwarding.config' and
@@ -149,6 +151,15 @@ def main():
                 KER_MPTCP_FIXTURE_SOURCE=str(Path(__file__).resolve().parent),
                 KER_FORWARDING_IP=str(args.tools / 'ip'), KER_FORWARDING_PRELOAD=str(args.preload),
                 KER_FORWARDING_LOG=str(log), PATH=str(bins) + os.pathsep + environment['PATH'])
+            if args.program == 'router_broadcast.sh':
+                environment['KER_FORWARDING_BROADCAST'] = '1'
+                grep = Path(shutil.which('grep', path=os.environ['PATH'])).resolve()
+                environment['KER_BROADCAST_GREP'] = str(grep)
+                report['grep'] = dict(path=str(grep), sha256=hashlib.sha256(grep.read_bytes()).hexdigest())
+                shim = Path(__file__).with_name('linux-broadcast-grep.py')
+                (bins / 'grep').write_text('#!' + sys.executable + '\n' + shim.read_text())
+                (bins / 'grep').chmod(0o700)
+                report['grep_transport_sha256'] = hashlib.sha256(shim.read_bytes()).hexdigest()
             negative = dict(environment, KER_MPTCP_SOCKET_CHANNEL=str(root / 'absent'), WAIT_TIMEOUT='1', INTERFACE_TIMEOUT='1')
             missing = subprocess.run(['bash', './' + args.program], cwd=work / 'forwarding', env=negative,
                                      capture_output=True, text=True, timeout=30)
@@ -193,6 +204,21 @@ def main():
                     require(child.returncode == 0 and not stderr,
                             'original forwarding shell failed: ' + stdout + stderr)
                     report['mib_after'] = counters()
+                    if args.program == 'router_broadcast.sh':
+                        observed = {}
+                        for key, query in (('links', ['-d', '-j', 'link', 'show']),
+                                ('addresses', ['-j', 'address', 'show']),
+                                ('routes', ['-4', '-j', 'route', 'show', 'table', 'all'])):
+                            clean = subprocess.run([str(args.tools / 'ip'), *query],
+                                env=dict(environment, LD_PRELOAD=str(args.preload)),
+                                capture_output=True, text=True, timeout=10, check=True)
+                            require(not clean.stderr, 'native broadcast cleanup observation warning')
+                            observed[key] = json.loads(clean.stdout)
+                        report['cleanup_state'] = dict(**observed, sysctls={
+                            name: diag.rpc(diag.FILE, '', '/proc/sys/' + name.replace('.', '/')).decode().strip()
+                            for name in ('net.ipv4.conf.all.forwarding', 'net.ipv6.conf.all.forwarding',
+                                'net.ipv4.conf.all.bc_forwarding', 'net.ipv4.conf.veth1.bc_forwarding',
+                                'net.ipv4.conf.veth2.bc_forwarding', 'net.ipv4.icmp_echo_ignore_broadcasts')})
                     common.fixture.stop(channel)
                     require(process.wait(timeout=20) == 0, 'native fixture shutdown failed')
                     native = json.loads(counts.read_text()); report['native_fixture'] = native
