@@ -43,7 +43,11 @@
 /* A thread per socket preserves blocking accept/connect/read on one original
  * kernel. Only the harness transport runs in the host; all IP socket syscalls
  * below go through the real POSIX facade. No fork occurs in the kernel owner. */
-struct client { int host, native, ns, input, upload, retire; size_t input_size, uploaded;
+struct client { int host, native, ns, input, upload, retire;
+#ifdef KER_BRIDGE_PACKET_SELFTEST
+    int packet;
+#endif
+    size_t input_size, uploaded;
     pid_t pid; atomic_int active, finished; pthread_t thread; pthread_cond_t work;
 #ifdef KER_NETLINK_DUMPS_SELFTEST
     int message_queue;
@@ -94,6 +98,43 @@ static atomic_ulong reads_count, writes_count, received_bytes, sent_bytes, infos
 static atomic_uint negotiated_count, fallback_count, raw_count, filter_sets, filter_gets;
 static atomic_uint fallback_info_unsupported, fallback_info_no_proto;
 static atomic_ulong sendfile_calls, imported_files;
+
+#ifdef KER_BRIDGE_PACKET_SELFTEST
+#include <linux/if_packet.h>
+static atomic_ulong bridge_packet_sockets, bridge_packet_sends, bridge_packet_bytes, bridge_packet_trace_errors;
+static pthread_mutex_t packet_trace_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Observe the actual successful native send. Never construct or alter frames. */
+static void trace_bridge_packet(struct client *client, const void *bytes, size_t length,
+                                ssize_t result, const void *peer, socklen_t peer_length)
+{
+    if (!client->packet || result < 0) return;
+    int saved = errno;
+    atomic_fetch_add(&bridge_packet_sends, 1);
+    atomic_fetch_add(&bridge_packet_bytes, (unsigned long)result);
+    struct sockaddr_ll address = {0};
+    if (peer && peer_length == sizeof(address)) memcpy(&address, peer, sizeof(address));
+    else {
+        socklen_t size = sizeof(address);
+        if (getsockname(client->native, (void *)&address, &size) || size != sizeof(address))
+            memset(&address, 0, sizeof(address));
+    }
+    const char *path = getenv("KER_MPTCP_NATIVE_PACKET_LOG");
+    pthread_mutex_lock(&packet_trace_lock);
+    FILE *stream = path ? fopen(path, "a") : NULL;
+    if (stream) {
+        fprintf(stream, "{\"length\":%zu,\"result\":%zd,\"family\":%u,\"ifindex\":%d,\"frame_hex\":\"",
+                length, result, (unsigned)address.sll_family, address.sll_ifindex);
+        const unsigned char *frame = bytes;
+        for (size_t i = 0; i < length; ++i) fprintf(stream, "%02x", frame[i]);
+        fputs("\"}\n", stream);
+        if (ferror(stream)) atomic_fetch_add(&bridge_packet_trace_errors, 1);
+        if (fclose(stream)) atomic_fetch_add(&bridge_packet_trace_errors, 1);
+    } else atomic_fetch_add(&bridge_packet_trace_errors, 1);
+    pthread_mutex_unlock(&packet_trace_lock);
+    errno = saved;
+}
+#endif
 
 static int observe_connection(int fd)
 {
@@ -207,7 +248,7 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
 #endif
     if (m->operation == MS_SOCKET) {
         int packet = 0;
-#ifdef KER_PACKETDRILL_SELFTEST
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_BRIDGE_PACKET_SELFTEST)
         packet = m->a == AF_PACKET && m->b == SOCK_RAW;
 #endif
         int netlink = m->a == AF_NETLINK && ((m->b & ~SOCK_CLOEXEC) == SOCK_RAW || (m->b & ~SOCK_CLOEXEC) == SOCK_DGRAM) &&
@@ -270,6 +311,10 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
             }
         }
         if (dccp) atomic_fetch_add(&dccp_count, 1);
+#endif
+#ifdef KER_BRIDGE_PACKET_SELFTEST
+        client->packet = packet;
+        if (packet) atomic_fetch_add(&bridge_packet_sockets, 1);
 #endif
         atomic_fetch_add(&sockets_count, 1); mark_active(client);
 #ifdef KER_NETWORK_SELFTEST
@@ -528,6 +573,9 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         if (m->a == MS_WRITE_PROC_TARGET && !client->proc_path[0]) { errno = EINVAL; return -1; }
 #endif
         ssize_t result = write(fd, data, input);
+#ifdef KER_BRIDGE_PACKET_SELFTEST
+        trace_bridge_packet(client, data, input, result, NULL, 0);
+#endif
 #ifdef KER_MACVTAP_SELFTEST
         if (result < 0 && errno == EINVAL) atomic_fetch_add(&macvtap_write_einval, 1);
         if (result >= 0) {
@@ -582,6 +630,15 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
             return result;
         }
 #endif
+#ifdef KER_BRIDGE_PACKET_SELFTEST
+        if (m->a == SIOCGIFHWADDR || m->a == SIOCGIFINDEX || m->a == SIOCGIFADDR ||
+            m->a == SIOCGIFFLAGS || m->a == SIOCGIFMTU) {
+            if (input != sizeof(struct ifreq)) { errno = EINVAL; return -1; }
+            long result = ioctl(fd, m->a, data);
+            if (!result) m->length = sizeof(struct ifreq);
+            return result;
+        }
+#endif
         if (m->a != FIONREAD && m->a != TIOCOUTQ && m->a != 0x894b) { errno = EOPNOTSUPP; return -1; }
         int value = 0;
         long result = ioctl(fd, m->a, &value);
@@ -610,6 +667,9 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
             .msg_control = io.control ? data + sizeof(io) + io.data : NULL, .msg_controllen = io.control,
             .msg_name = io.name ? data + sizeof(io) + io.data + io.control : NULL, .msg_namelen = io.name};
         ssize_t result = sending ? sendmsg(fd, &msg, (int)io.flags) : recvmsg(fd, &msg, (int)io.flags);
+#ifdef KER_BRIDGE_PACKET_SELFTEST
+        if (sending) trace_bridge_packet(client, iov.iov_base, iov.iov_len, result, msg.msg_name, msg.msg_namelen);
+#endif
         if (result >= 0) {
             if (!sending) {
                 size_t copied = (size_t)result < io.data ? (size_t)result : io.data;
@@ -859,6 +919,14 @@ int main(int argc, char **argv)
         atomic_load(&creation_attempts), atomic_load(&creation_eafnosupport),
         atomic_load(&creation_eprotonosupport), atomic_load(&creation_tcp), atomic_load(&creation_udp));
     extra = creation_counts;
+#endif
+#ifdef KER_BRIDGE_PACKET_SELFTEST
+    char bridge_packet_counts[1024];
+    snprintf(bridge_packet_counts, sizeof(bridge_packet_counts),
+        "%s,\"bridge_packet_sockets\":%lu,\"bridge_packet_sends\":%lu,\"bridge_packet_bytes\":%lu,\"bridge_packet_trace_errors\":%lu",
+        extra, atomic_load(&bridge_packet_sockets), atomic_load(&bridge_packet_sends),
+        atomic_load(&bridge_packet_bytes), atomic_load(&bridge_packet_trace_errors));
+    extra = bridge_packet_counts;
 #endif
     fprintf(stats, "{\"sockets\":%u,\"mptcp\":%u,\"accepts\":%u,\"live\":%u,"
         "\"reads\":%lu,\"writes\":%lu,\"received\":%lu,\"sent\":%lu,"

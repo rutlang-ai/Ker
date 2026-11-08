@@ -38,7 +38,8 @@ LINUX_BRIDGE_PROFILE_TESTS = {LINUX_BRIDGE_PROFILE_TEST: "router_bridge.sh",
                               "linux-original-forwarding-router-bridge-vlan-upper": "router_bridge_vlan_upper.sh",
                               "linux-original-forwarding-router-bridge-pvid-vlan-upper": "router_bridge_pvid_vlan_upper.sh",
                               "linux-original-forwarding-router-bridge-vlan-upper-pvid": "router_bridge_vlan_upper_pvid.sh",
-                              "linux-original-forwarding-bridge-mdb-host": "bridge_mdb_host.sh"}
+                              "linux-original-forwarding-bridge-mdb-host": "bridge_mdb_host.sh",
+                              "linux-original-forwarding-bridge-sticky-fdb": "bridge_sticky_fdb.sh"}
 LINUX_XT_STRING_PROFILE_TEST = "linux-original-netfilter-xt-string"
 LINUX_RPATH_PROFILE_TEST = "linux-original-netfilter-rpath"
 LINUX_RPATH_REALTIME_TEST = "rpath-realtime-wrapper-contract"
@@ -549,7 +550,7 @@ def run_bridge_profile(build: Path, junit: Path) -> None:
     control = LINUX_BRIDGE_REALTIME_TEST
     inventory = [item['name'] for item in ctest_inventory(build)]
     require(all(inventory.count(name) == 1 for name in names) and inventory.count(control) == 1,
-            'bridge profile must register all seven complete original entries and clock control exactly once')
+            'bridge profile must register all eight complete original entries and clock control exactly once')
     cache = (build / 'CMakeCache.txt').read_text()
     native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
                          if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
@@ -576,7 +577,7 @@ def run_bridge_profile(build: Path, junit: Path) -> None:
                 evidence.get('fingerprint') == manifest.get('fingerprint') and
                 evidence.get('program') == program, 'wrong native bridge/VLAN evidence')
         contract.validate_evidence(evidence)
-    summary('Original routed bridge/PVID, VLAN switching, 802.1D and VLAN uppers: seven complete shells including host MDB, PASS ' + manifest['fingerprint'])
+    summary('Original routed bridge/PVID, VLAN switching, 802.1D and VLAN uppers: eight complete shells including host MDB and sticky FDB, PASS ' + manifest['fingerprint'])
 
 
 def run_xt_string_profile(build: Path, junit: Path) -> None:

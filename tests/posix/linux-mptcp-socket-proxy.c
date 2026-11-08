@@ -176,7 +176,7 @@ long ker_netlink_syscall(long operation, ...)
 int __wrap_socket(int domain, int type, int protocol)
 {
     int packet = 0;
-#ifdef KER_PACKETDRILL_SELFTEST
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_BRIDGE_PACKET_SELFTEST)
     packet = domain == AF_PACKET && type == SOCK_RAW;
 #endif
     int netlink = domain == AF_NETLINK && ((type & ~SOCK_CLOEXEC) == SOCK_RAW || (type & ~SOCK_CLOEXEC) == SOCK_DGRAM) &&
@@ -442,6 +442,19 @@ int __wrap_ioctl(int fd, unsigned long request, ...)
         if (result >= 0) {
             if (m.length != sizeof(struct timeval)) { errno = EPROTO; return -1; }
             memcpy(value, data, sizeof(struct timeval));
+        }
+        return result;
+    }
+#endif
+#ifdef KER_BRIDGE_PACKET_SELFTEST
+    if (request == SIOCGIFHWADDR || request == SIOCGIFINDEX || request == SIOCGIFADDR ||
+        request == SIOCGIFFLAGS || request == SIOCGIFMTU) {
+        unsigned char data[MS_MAX]; memcpy(data, value, sizeof(struct ifreq));
+        struct ms_message m = {.operation = MS_IOCTL, .a = (uint32_t)request, .length = sizeof(struct ifreq)};
+        int result = (int)exchange(fd, &m, data, NULL);
+        if (result >= 0) {
+            if (m.length != sizeof(struct ifreq)) { errno = EPROTO; return -1; }
+            memcpy(value, data, sizeof(struct ifreq));
         }
         return result;
     }
