@@ -1,8 +1,81 @@
 {
-  "program": "router_bridge.sh",
   "status": "PASS_IMPORTED_LINUX",
+  "program": "router_bridge.sh",
   "revision": "7fdb7c1824a1f9979d648d7ae28ac446bcee9c6e",
   "fingerprint": "6ee942b2c8460007ae8131a5f0764b4ff646c6efd9d0340d2b282d025eadedf5",
+  "source_hashes": {
+    "forwarding/router_bridge.sh": "7a8b1fdc7ee3a68ef05f344c71d7463c421d86a096856b4a43785bc69a6b11d0",
+    "forwarding/lib.sh": "8fb499582bb13c830e7fe9cbcb0baffc0bedf552d12c3c9241b65ecf14414537",
+    "lib.sh": "875a357f3264e3126af195e97a36217ba6e44c0812afc1b6b8a414f1984dcccd",
+    "forwarding/Makefile": "2c66e188a0a956c79dfbedd3a3449fd455e94e0a2a5b07550aaed0b79f745d96"
+  },
+  "iproute2": {
+    "version": "6.12.0",
+    "archive_sha256": "bbd141ef7b5d0127cc2152843ba61f274dc32814fa3e0f13e7d07a080bef53d9",
+    "source_hashes": {
+      "misc/ss.c": "7ca064fff1bf2650486d2d2c4cca009775e842e67d308a7632a0675f54c21712",
+      "misc/nstat.c": "274712c43536c6636ad03ddfab8cde4eeec0045b57ca1085dd17885f7c8b5343",
+      "lib/libnetlink.c": "f2698818203f27380ddc18cfefc79d7d99d1717cf7becbbd2b3f92b9c2b5193c",
+      "tc/tc.c": "e9b2e36053ee6e20f79d44a0cab3e1661300ecf9e9783c5fcd03357aa696a101",
+      "tc/q_netem.c": "999a1f78f6685c8567f68806b5430194de8d6d7416aec7fcf03b1255981fb57a",
+      "ip/ip.c": "9668158b877e99f8dee354953f557a4b42b286d56a8e52a97adf88f369b18c33",
+      "ip/ipmptcp.c": "d9eaaa4046a3ba2bbdae92ecbfe7c7e329b1b90986cd2a3290a6640d5ff7bf4d",
+      "bridge/bridge.c": "270301668c63c6c96f1cab4e676f40598eacd716d4659a9983e13b614cd2c59d",
+      "bridge/vlan.c": "4bf4aa7696ed931d04106449a65be6aa3cf83eeefa1b6886f5de3898ad11c090"
+    },
+    "binaries": {
+      "ss": "d84bbff6151132da388383cee656fd42ba8a1038f8f622249e9d12bb5eb0f9f8",
+      "nstat": "f5dec5e0a282d4027ffa873ac2a6b1681078631f35f8ec2b408c469775331c6d",
+      "tc": "ce2ade230c443b97b5c6d783f0292ce19dbb800fe2896f057e46ca3c182dc3ff",
+      "ip": "da433fdbb1d6c9a4a3bf739a754f0cd9b924a8f1a60bb28676157b0285c6f3d3",
+      "bridge": "7c23211320c7b3ead9bddea655935e7022f96c9f6fe93c2a7aa138ad44197342"
+    }
+  },
+  "preload_sha256": "faf7fcb75b37ff2106b8692bc1c80ba68de45645c1966e704e76c060699ed245",
+  "library_sha256": "0650ec219a551546d5454cb3691b86ad06fa975f930185d57434924f0c718175",
+  "server_sha256": "a8eaebc1f891f902856a920ab351a9841ea65fe4a70621b3ccba4a436ad36633",
+  "transport_sha256": "02d5d323821c6e62ae88c3a6f52e7f089cd4a9136b1fa14fc6f91a518efe420f",
+  "framework_tools": {
+    "mausezahn": {
+      "path": "/tmp/ker-forwarding-tools/usr/bin/mausezahn",
+      "sha256": "c9473c9be92edecdcc9993ba6be05c8ca96da86811e36474f3ba79338ced7d54"
+    },
+    "jq": {
+      "path": "/usr/bin/jq",
+      "sha256": "136748786226819bf582738e8be963638c9d721aa0c5d1d650b506a2a52ddb97"
+    }
+  },
+  "ping_tools": {
+    "ping": {
+      "path": "/tmp/ker-pr542-ubuntu-ping/usr/bin/ping",
+      "sha256": "2369424506d87f336f41e6df9ebb07cee14e93dfff9b526f04c55bd1aebc937f"
+    },
+    "ping6": {
+      "path": "/tmp/ker-pr542-ubuntu-ping/usr/bin/ping",
+      "sha256": "2369424506d87f336f41e6df9ebb07cee14e93dfff9b526f04c55bd1aebc937f"
+    }
+  },
+  "missing_backend_control": {
+    "returncode": 1,
+    "stdout": "Failed to create netif\n",
+    "stderr": "Cannot open netlink socket: No such file or directory\n"
+  },
+  "vrf_binding_control": {
+    "baseline": {
+      "returncode": 0,
+      "stdout": "PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.\n64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.062 ms\n\n--- 127.0.0.1 ping statistics ---\n1 packets transmitted, 1 received, 0% packet loss, time 0ms\nrtt min/avg/max/mdev = 0.062/0.062/0.062/0.000 ms\n",
+      "stderr": ""
+    },
+    "unknown_vrf": {
+      "returncode": 2,
+      "stdout": "",
+      "stderr": "/tmp/ker-pr544-repair-cmake/ker-bridge-exec-7wc1wi6d/bin/original-ping: socktype: SOCK_RAW\n/tmp/ker-pr544-repair-cmake/ker-bridge-exec-7wc1wi6d/bin/original-ping: socket: No such device\n"
+    }
+  },
+  "mib_before": {
+    "ipv4": "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates OutTransmits\nIp: 2 64 2 0 0 0 0 0 2 2 0 0 0 0 0 0 0 0 0 2\nIcmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\nIcmp: 2 0 0 0 0 0 0 0 1 1 0 0 0 0 2 0 0 0 0 0 0 0 0 1 1 0 0 0 0\nIcmpMsg: InType0 InType8 OutType0 OutType8\nIcmpMsg: 1 1 1 1\nTcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\nTcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\nUdp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdp: 0 0 0 0 0 0 0 0 0\nUdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdpLite: 0 0 0 0 0 0 0 0 0\n",
+    "ipv6": "Ip6InReceives                   \t0\nIp6InHdrErrors                  \t0\nIp6InTooBigErrors               \t0\nIp6InNoRoutes                   \t0\nIp6InAddrErrors                 \t0\nIp6InUnknownProtos              \t0\nIp6InTruncatedPkts              \t0\nIp6InDiscards                   \t0\nIp6InDelivers                   \t0\nIp6OutForwDatagrams             \t0\nIp6OutRequests                  \t0\nIp6OutDiscards                  \t0\nIp6OutNoRoutes                  \t0\nIp6ReasmTimeout                 \t0\nIp6ReasmReqds                   \t0\nIp6ReasmOKs                     \t0\nIp6ReasmFails                   \t0\nIp6FragOKs                      \t0\nIp6FragFails                    \t0\nIp6FragCreates                  \t0\nIp6InMcastPkts                  \t0\nIp6OutMcastPkts                 \t0\nIp6InOctets                     \t0\nIp6OutOctets                    \t0\nIp6InMcastOctets                \t0\nIp6OutMcastOctets               \t0\nIp6InBcastOctets                \t0\nIp6OutBcastOctets               \t0\nIp6InNoECTPkts                  \t0\nIp6InECT1Pkts                   \t0\nIp6InECT0Pkts                   \t0\nIp6InCEPkts                     \t0\nIp6OutTransmits                 \t0\nIcmp6InMsgs                     \t0\nIcmp6InErrors                   \t0\nIcmp6OutMsgs                    \t0\nIcmp6OutErrors                  \t0\nIcmp6InCsumErrors               \t0\nIcmp6OutRateLimitHost           \t0\nIcmp6InDestUnreachs             \t0\nIcmp6InPktTooBigs               \t0\nIcmp6InTimeExcds                \t0\nIcmp6InParmProblems             \t0\nIcmp6InEchos                    \t0\nIcmp6InEchoReplies              \t0\nIcmp6InGroupMembQueries         \t0\nIcmp6InGroupMembResponses       \t0\nIcmp6InGroupMembReductions      \t0\nIcmp6InRouterSolicits           \t0\nIcmp6InRouterAdvertisements     \t0\nIcmp6InNeighborSolicits         \t0\nIcmp6InNeighborAdvertisements   \t0\nIcmp6InRedirects                \t0\nIcmp6InMLDv2Reports             \t0\nIcmp6OutDestUnreachs            \t0\nIcmp6OutPktTooBigs              \t0\nIcmp6OutTimeExcds               \t0\nIcmp6OutParmProblems            \t0\nIcmp6OutEchos                   \t0\nIcmp6OutEchoReplies             \t0\nIcmp6OutGroupMembQueries        \t0\nIcmp6OutGroupMembResponses      \t0\nIcmp6OutGroupMembReductions     \t0\nIcmp6OutRouterSolicits          \t0\nIcmp6OutRouterAdvertisements    \t0\nIcmp6OutNeighborSolicits        \t0\nIcmp6OutNeighborAdvertisements  \t0\nIcmp6OutRedirects               \t0\nIcmp6OutMLDv2Reports            \t0\nUdp6InDatagrams                 \t0\nUdp6NoPorts                     \t0\nUdp6InErrors                    \t0\nUdp6OutDatagrams                \t0\nUdp6RcvbufErrors                \t0\nUdp6SndbufErrors                \t0\nUdp6InCsumErrors                \t0\nUdp6IgnoredMulti                \t0\nUdp6MemErrors                   \t0\nUdpLite6InDatagrams             \t0\nUdpLite6NoPorts                 \t0\nUdpLite6InErrors                \t0\nUdpLite6OutDatagrams            \t0\nUdpLite6RcvbufErrors            \t0\nUdpLite6SndbufErrors            \t0\nUdpLite6InCsumErrors            \t0\nUdpLite6MemErrors               \t0\n"
+  },
   "original": {
     "returncode": 0,
     "stdout": "TEST: ping                                                          [ OK ]\nTEST: ping6                                                         [ OK ]\nINFO: Remaster bridge slave\nTEST: ping                                                          [ OK ]\nTEST: ping6                                                         [ OK ]\nINFO: Remove PVID from the bridge\nTEST: ping fails                                                    [ OK ]\nTEST: ping6 fails                                                   [ OK ]\nINFO: Add PVID to the bridge\nTEST: ping                                                          [ OK ]\nTEST: ping6                                                         [ OK ]\nINFO: Add bridge PVID after enslaving port\nTEST: ping                                                          [ OK ]\nTEST: ping6                                                         [ OK ]\n",
@@ -74,7 +147,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "5: veth0@veth1: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether 76:96:52:c8:a7:62 brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "5: veth0@veth1: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether 1e:87:dc:f0:33:a3 brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -86,7 +159,7 @@
         "veth1"
       ],
       "returncode": 0,
-      "stdout": "4: veth1@veth0: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether 1e:01:48:a4:70:b6 brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "4: veth1@veth0: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether 16:e3:a2:9d:b2:14 brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -98,7 +171,7 @@
         "veth2"
       ],
       "returncode": 0,
-      "stdout": "7: veth2@veth3: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether f2:8f:49:3f:20:c8 brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "7: veth2@veth3: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether aa:8b:55:83:32:31 brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -110,7 +183,7 @@
         "veth3"
       ],
       "returncode": 0,
-      "stdout": "6: veth3@veth2: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether de:17:bd:c4:df:12 brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "6: veth3@veth2: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether ce:63:d9:c8:81:4b brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -479,7 +552,7 @@
         "veth1"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":4,\"link\":\"veth0\",\"ifname\":\"veth1\",\"flags\":[\"BROADCAST\",\"MULTICAST\"],\"mtu\":1500,\"qdisc\":\"noop\",\"operstate\":\"DOWN\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"1e:01:48:a4:70:b6\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":4,\"link\":\"veth0\",\"ifname\":\"veth1\",\"flags\":[\"BROADCAST\",\"MULTICAST\"],\"mtu\":1500,\"qdisc\":\"noop\",\"operstate\":\"DOWN\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"16:e3:a2:9d:b2:14\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -490,7 +563,7 @@
         "name",
         "br1",
         "address",
-        "1e:01:48:a4:70:b6",
+        "16:e3:a2:9d:b2:14",
         "type",
         "bridge",
         "vlan_filtering",
@@ -655,7 +728,7 @@
         "up"
       ],
       "returncode": 0,
-      "stdout": "5: veth0@veth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master vveth0 state UP mode DEFAULT group default qlen 1000\n    link/ether 76:96:52:c8:a7:62 brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "5: veth0@veth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master vveth0 state UP mode DEFAULT group default qlen 1000\n    link/ether 1e:87:dc:f0:33:a3 brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -668,7 +741,7 @@
         "up"
       ],
       "returncode": 0,
-      "stdout": "4: veth1@veth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master br1 state UP mode DEFAULT group default qlen 1000\n    link/ether 1e:01:48:a4:70:b6 brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "4: veth1@veth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master br1 state UP mode DEFAULT group default qlen 1000\n    link/ether 16:e3:a2:9d:b2:14 brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -681,7 +754,7 @@
         "up"
       ],
       "returncode": 0,
-      "stdout": "7: veth2@veth3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether f2:8f:49:3f:20:c8 brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "7: veth2@veth3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether aa:8b:55:83:32:31 brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -694,7 +767,7 @@
         "up"
       ],
       "returncode": 0,
-      "stdout": "6: veth3@veth2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master vveth3 state UP mode DEFAULT group default qlen 1000\n    link/ether de:17:bd:c4:df:12 brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "6: veth3@veth2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master vveth3 state UP mode DEFAULT group default qlen 1000\n    link/ether ce:63:d9:c8:81:4b brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -707,7 +780,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"76:96:52:c8:a7:62\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"1e:87:dc:f0:33:a3\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -741,7 +814,7 @@
         "group": "default",
         "txqlen": 1000,
         "link_type": "ether",
-        "address": "46:0a:3e:42:cf:ac",
+        "address": "5a:0b:ca:81:be:32",
         "broadcast": "ff:ff:ff:ff:ff:ff",
         "promiscuity": 0,
         "allmulti": 0,
@@ -766,25 +839,162 @@
       "bridge_state": {
         "link": [
           {
+            "ifindex": 10,
             "ifname": "br1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 0,
+            "allmulti": 0,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
               "info_kind": "bridge",
               "info_data": {
-                "vlan_filtering": 1
+                "forward_delay": 1500,
+                "hello_time": 200,
+                "max_age": 2000,
+                "ageing_time": 30000,
+                "stp_state": 0,
+                "priority": 32768,
+                "vlan_filtering": 1,
+                "vlan_protocol": "802.1Q",
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "root_port": 0,
+                "root_path_cost": 0,
+                "topology_change": 0,
+                "topology_change_detected": 0,
+                "hello_timer": 0.0,
+                "tcn_timer": 0.0,
+                "topology_change_timer": 0.0,
+                "gc_timer": 294.39,
+                "fdb_n_learned": 1,
+                "fdb_max_learned": 0,
+                "vlan_default_pvid": 1,
+                "vlan_stats_enabled": 0,
+                "vlan_stats_per_port": 0,
+                "group_fwd_mask": "0",
+                "group_addr": "01:80:c2:00:00:00",
+                "mcast_snooping": 1,
+                "no_linklocal_learn": 0,
+                "mcast_vlan_snooping": 0,
+                "mst_enabled": 0,
+                "mcast_router": 1,
+                "mcast_query_use_ifaddr": 0,
+                "mcast_querier": 0,
+                "mcast_hash_elasticity": 16,
+                "mcast_hash_max": 4096,
+                "mcast_last_member_cnt": 2,
+                "mcast_startup_query_cnt": 2,
+                "mcast_last_member_intvl": 100,
+                "mcast_membership_intvl": 26000,
+                "mcast_querier_intvl": 25500,
+                "mcast_query_intvl": 12500,
+                "mcast_query_response_intvl": 1000,
+                "mcast_startup_query_intvl": 3125,
+                "mcast_stats_enabled": 0,
+                "mcast_igmp_version": 2,
+                "mcast_mld_version": 1
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "port": [
           {
+            "ifindex": 4,
+            "link": "veth0",
             "ifname": "veth1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
             "master": "br1",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 1,
+            "allmulti": 1,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
+              "info_kind": "veth",
               "info_slave_kind": "bridge",
               "info_slave_data": {
-                "state": "forwarding"
+                "state": "forwarding",
+                "priority": 32,
+                "cost": 2,
+                "hairpin": false,
+                "guard": false,
+                "root_block": false,
+                "fastleave": false,
+                "learning": true,
+                "flood": true,
+                "id": "0x8001",
+                "no": "0x1",
+                "designated_port": 32769,
+                "designated_cost": 0,
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "hold_timer": 0.0,
+                "message_age_timer": 0.0,
+                "forward_delay_timer": 9.36,
+                "topology_change_ack": 0,
+                "config_pending": 0,
+                "proxy_arp": false,
+                "proxy_arp_wifi": false,
+                "multicast_router": 1,
+                "mcast_flood": true,
+                "bcast_flood": true,
+                "mcast_to_unicast": false,
+                "neigh_suppress": false,
+                "neigh_vlan_suppress": false,
+                "group_fwd_mask": "0",
+                "group_fwd_mask_str": "0x0",
+                "vlan_tunnel": false,
+                "isolated": false,
+                "locked": false,
+                "mab": false
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "vlans": [
@@ -803,8 +1013,9 @@
         ]
       },
       "returncode": 0,
-      "stdout": "PING 192.0.2.130 (192.0.2.130) 56(84) bytes of data.\n64 bytes from 192.0.2.130: icmp_seq=1 ttl=63 time=0.095 ms\n64 bytes from 192.0.2.130: icmp_seq=2 ttl=63 time=0.070 ms\n64 bytes from 192.0.2.130: icmp_seq=3 ttl=63 time=0.068 ms\n64 bytes from 192.0.2.130: icmp_seq=4 ttl=63 time=0.072 ms\n64 bytes from 192.0.2.130: icmp_seq=5 ttl=63 time=0.068 ms\n64 bytes from 192.0.2.130: icmp_seq=6 ttl=63 time=0.065 ms\n64 bytes from 192.0.2.130: icmp_seq=7 ttl=63 time=0.064 ms\n64 bytes from 192.0.2.130: icmp_seq=8 ttl=63 time=0.067 ms\n64 bytes from 192.0.2.130: icmp_seq=9 ttl=63 time=0.065 ms\n64 bytes from 192.0.2.130: icmp_seq=10 ttl=63 time=0.065 ms\n\n--- 192.0.2.130 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 983ms\nrtt min/avg/max/mdev = 0.064/0.069/0.095/0.008 ms\n",
-      "stderr": ""
+      "stdout": "PING 192.0.2.130 (192.0.2.130) 56(84) bytes of data.\n64 bytes from 192.0.2.130: icmp_seq=1 ttl=63 time=0.131 ms\n64 bytes from 192.0.2.130: icmp_seq=2 ttl=63 time=0.145 ms\n64 bytes from 192.0.2.130: icmp_seq=3 ttl=63 time=0.135 ms\n64 bytes from 192.0.2.130: icmp_seq=4 ttl=63 time=0.134 ms\n64 bytes from 192.0.2.130: icmp_seq=5 ttl=63 time=0.169 ms\n64 bytes from 192.0.2.130: icmp_seq=6 ttl=63 time=0.141 ms\n64 bytes from 192.0.2.130: icmp_seq=7 ttl=63 time=0.137 ms\n64 bytes from 192.0.2.130: icmp_seq=8 ttl=63 time=0.126 ms\n64 bytes from 192.0.2.130: icmp_seq=9 ttl=63 time=0.118 ms\n64 bytes from 192.0.2.130: icmp_seq=10 ttl=63 time=0.118 ms\n\n--- 192.0.2.130 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 989ms\nrtt min/avg/max/mdev = 0.118/0.135/0.169/0.014 ms\n",
+      "stderr": "",
+      "native_clock_reads": 10
     },
     {
       "tool": "ip",
@@ -816,7 +1027,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"76:96:52:c8:a7:62\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"1e:87:dc:f0:33:a3\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -850,7 +1061,7 @@
         "group": "default",
         "txqlen": 1000,
         "link_type": "ether",
-        "address": "46:0a:3e:42:cf:ac",
+        "address": "5a:0b:ca:81:be:32",
         "broadcast": "ff:ff:ff:ff:ff:ff",
         "promiscuity": 0,
         "allmulti": 0,
@@ -875,25 +1086,162 @@
       "bridge_state": {
         "link": [
           {
+            "ifindex": 10,
             "ifname": "br1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 0,
+            "allmulti": 0,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
               "info_kind": "bridge",
               "info_data": {
-                "vlan_filtering": 1
+                "forward_delay": 1500,
+                "hello_time": 200,
+                "max_age": 2000,
+                "ageing_time": 30000,
+                "stp_state": 0,
+                "priority": 32768,
+                "vlan_filtering": 1,
+                "vlan_protocol": "802.1Q",
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "root_port": 0,
+                "root_path_cost": 0,
+                "topology_change": 0,
+                "topology_change_detected": 0,
+                "hello_timer": 0.0,
+                "tcn_timer": 0.0,
+                "topology_change_timer": 0.0,
+                "gc_timer": 293.26,
+                "fdb_n_learned": 1,
+                "fdb_max_learned": 0,
+                "vlan_default_pvid": 1,
+                "vlan_stats_enabled": 0,
+                "vlan_stats_per_port": 0,
+                "group_fwd_mask": "0",
+                "group_addr": "01:80:c2:00:00:00",
+                "mcast_snooping": 1,
+                "no_linklocal_learn": 0,
+                "mcast_vlan_snooping": 0,
+                "mst_enabled": 0,
+                "mcast_router": 1,
+                "mcast_query_use_ifaddr": 0,
+                "mcast_querier": 0,
+                "mcast_hash_elasticity": 16,
+                "mcast_hash_max": 4096,
+                "mcast_last_member_cnt": 2,
+                "mcast_startup_query_cnt": 2,
+                "mcast_last_member_intvl": 100,
+                "mcast_membership_intvl": 26000,
+                "mcast_querier_intvl": 25500,
+                "mcast_query_intvl": 12500,
+                "mcast_query_response_intvl": 1000,
+                "mcast_startup_query_intvl": 3125,
+                "mcast_stats_enabled": 0,
+                "mcast_igmp_version": 2,
+                "mcast_mld_version": 1
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "port": [
           {
+            "ifindex": 4,
+            "link": "veth0",
             "ifname": "veth1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
             "master": "br1",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 1,
+            "allmulti": 1,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
+              "info_kind": "veth",
               "info_slave_kind": "bridge",
               "info_slave_data": {
-                "state": "forwarding"
+                "state": "forwarding",
+                "priority": 32,
+                "cost": 2,
+                "hairpin": false,
+                "guard": false,
+                "root_block": false,
+                "fastleave": false,
+                "learning": true,
+                "flood": true,
+                "id": "0x8001",
+                "no": "0x1",
+                "designated_port": 32769,
+                "designated_cost": 0,
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "hold_timer": 0.0,
+                "message_age_timer": 0.0,
+                "forward_delay_timer": 8.23,
+                "topology_change_ack": 0,
+                "config_pending": 0,
+                "proxy_arp": false,
+                "proxy_arp_wifi": false,
+                "multicast_router": 1,
+                "mcast_flood": true,
+                "bcast_flood": true,
+                "mcast_to_unicast": false,
+                "neigh_suppress": false,
+                "neigh_vlan_suppress": false,
+                "group_fwd_mask": "0",
+                "group_fwd_mask_str": "0x0",
+                "vlan_tunnel": false,
+                "isolated": false,
+                "locked": false,
+                "mab": false
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "vlans": [
@@ -912,8 +1260,9 @@
         ]
       },
       "returncode": 0,
-      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=0.092 ms\n64 bytes from 2001:db8:2::2: icmp_seq=2 ttl=63 time=0.043 ms\n64 bytes from 2001:db8:2::2: icmp_seq=3 ttl=63 time=0.061 ms\n64 bytes from 2001:db8:2::2: icmp_seq=4 ttl=63 time=0.038 ms\n64 bytes from 2001:db8:2::2: icmp_seq=5 ttl=63 time=0.060 ms\n64 bytes from 2001:db8:2::2: icmp_seq=6 ttl=63 time=0.051 ms\n64 bytes from 2001:db8:2::2: icmp_seq=7 ttl=63 time=0.025 ms\n64 bytes from 2001:db8:2::2: icmp_seq=8 ttl=63 time=0.050 ms\n64 bytes from 2001:db8:2::2: icmp_seq=9 ttl=63 time=0.051 ms\n64 bytes from 2001:db8:2::2: icmp_seq=10 ttl=63 time=0.028 ms\n\n--- 2001:db8:2::2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 984ms\nrtt min/avg/max/mdev = 0.025/0.049/0.092/0.018 ms\n",
-      "stderr": ""
+      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=0.315 ms\n64 bytes from 2001:db8:2::2: icmp_seq=2 ttl=63 time=0.192 ms\n64 bytes from 2001:db8:2::2: icmp_seq=3 ttl=63 time=0.207 ms\n64 bytes from 2001:db8:2::2: icmp_seq=4 ttl=63 time=0.188 ms\n64 bytes from 2001:db8:2::2: icmp_seq=5 ttl=63 time=0.216 ms\n64 bytes from 2001:db8:2::2: icmp_seq=6 ttl=63 time=0.274 ms\n64 bytes from 2001:db8:2::2: icmp_seq=7 ttl=63 time=0.188 ms\n64 bytes from 2001:db8:2::2: icmp_seq=8 ttl=63 time=0.197 ms\n64 bytes from 2001:db8:2::2: icmp_seq=9 ttl=63 time=0.197 ms\n64 bytes from 2001:db8:2::2: icmp_seq=10 ttl=63 time=0.322 ms\n\n--- 2001:db8:2::2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 990ms\nrtt min/avg/max/mdev = 0.188/0.229/0.322/0.050 ms\n",
+      "stderr": "",
+      "native_clock_reads": 10
     },
     {
       "tool": "ip",
@@ -952,7 +1301,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"76:96:52:c8:a7:62\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"1e:87:dc:f0:33:a3\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -986,7 +1335,7 @@
         "group": "default",
         "txqlen": 1000,
         "link_type": "ether",
-        "address": "46:0a:3e:42:cf:ac",
+        "address": "5a:0b:ca:81:be:32",
         "broadcast": "ff:ff:ff:ff:ff:ff",
         "promiscuity": 0,
         "allmulti": 0,
@@ -1011,25 +1360,162 @@
       "bridge_state": {
         "link": [
           {
+            "ifindex": 10,
             "ifname": "br1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 0,
+            "allmulti": 0,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
               "info_kind": "bridge",
               "info_data": {
-                "vlan_filtering": 1
+                "forward_delay": 1500,
+                "hello_time": 200,
+                "max_age": 2000,
+                "ageing_time": 30000,
+                "stp_state": 0,
+                "priority": 32768,
+                "vlan_filtering": 1,
+                "vlan_protocol": "802.1Q",
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "root_port": 0,
+                "root_path_cost": 0,
+                "topology_change": 0,
+                "topology_change_detected": 0,
+                "hello_timer": 0.0,
+                "tcn_timer": 0.0,
+                "topology_change_timer": 0.0,
+                "gc_timer": 289.87,
+                "fdb_n_learned": 0,
+                "fdb_max_learned": 0,
+                "vlan_default_pvid": 1,
+                "vlan_stats_enabled": 0,
+                "vlan_stats_per_port": 0,
+                "group_fwd_mask": "0",
+                "group_addr": "01:80:c2:00:00:00",
+                "mcast_snooping": 1,
+                "no_linklocal_learn": 0,
+                "mcast_vlan_snooping": 0,
+                "mst_enabled": 0,
+                "mcast_router": 1,
+                "mcast_query_use_ifaddr": 0,
+                "mcast_querier": 0,
+                "mcast_hash_elasticity": 16,
+                "mcast_hash_max": 4096,
+                "mcast_last_member_cnt": 2,
+                "mcast_startup_query_cnt": 2,
+                "mcast_last_member_intvl": 100,
+                "mcast_membership_intvl": 26000,
+                "mcast_querier_intvl": 25500,
+                "mcast_query_intvl": 12500,
+                "mcast_query_response_intvl": 1000,
+                "mcast_startup_query_intvl": 3125,
+                "mcast_stats_enabled": 0,
+                "mcast_igmp_version": 2,
+                "mcast_mld_version": 1
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "port": [
           {
+            "ifindex": 4,
+            "link": "veth0",
             "ifname": "veth1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
             "master": "br1",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 1,
+            "allmulti": 1,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
+              "info_kind": "veth",
               "info_slave_kind": "bridge",
               "info_slave_data": {
-                "state": "forwarding"
+                "state": "forwarding",
+                "priority": 32,
+                "cost": 2,
+                "hairpin": false,
+                "guard": false,
+                "root_block": false,
+                "fastleave": false,
+                "learning": true,
+                "flood": true,
+                "id": "0x8001",
+                "no": "0x1",
+                "designated_port": 32769,
+                "designated_cost": 0,
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "hold_timer": 0.0,
+                "message_age_timer": 0.0,
+                "forward_delay_timer": 14.79,
+                "topology_change_ack": 0,
+                "config_pending": 0,
+                "proxy_arp": false,
+                "proxy_arp_wifi": false,
+                "multicast_router": 1,
+                "mcast_flood": true,
+                "bcast_flood": true,
+                "mcast_to_unicast": false,
+                "neigh_suppress": false,
+                "neigh_vlan_suppress": false,
+                "group_fwd_mask": "0",
+                "group_fwd_mask_str": "0x0",
+                "vlan_tunnel": false,
+                "isolated": false,
+                "locked": false,
+                "mab": false
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "vlans": [
@@ -1048,8 +1534,9 @@
         ]
       },
       "returncode": 0,
-      "stdout": "PING 192.0.2.130 (192.0.2.130) 56(84) bytes of data.\n64 bytes from 192.0.2.130: icmp_seq=1 ttl=63 time=0.067 ms\n64 bytes from 192.0.2.130: icmp_seq=2 ttl=63 time=0.029 ms\n64 bytes from 192.0.2.130: icmp_seq=3 ttl=63 time=0.016 ms\n64 bytes from 192.0.2.130: icmp_seq=4 ttl=63 time=0.016 ms\n64 bytes from 192.0.2.130: icmp_seq=5 ttl=63 time=0.016 ms\n64 bytes from 192.0.2.130: icmp_seq=6 ttl=63 time=0.016 ms\n64 bytes from 192.0.2.130: icmp_seq=7 ttl=63 time=0.028 ms\n64 bytes from 192.0.2.130: icmp_seq=8 ttl=63 time=0.030 ms\n64 bytes from 192.0.2.130: icmp_seq=9 ttl=63 time=0.034 ms\n64 bytes from 192.0.2.130: icmp_seq=10 ttl=63 time=0.032 ms\n\n--- 192.0.2.130 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 989ms\nrtt min/avg/max/mdev = 0.016/0.028/0.067/0.014 ms\n",
-      "stderr": ""
+      "stdout": "PING 192.0.2.130 (192.0.2.130) 56(84) bytes of data.\n64 bytes from 192.0.2.130: icmp_seq=1 ttl=63 time=0.229 ms\n64 bytes from 192.0.2.130: icmp_seq=2 ttl=63 time=0.166 ms\n64 bytes from 192.0.2.130: icmp_seq=3 ttl=63 time=0.232 ms\n64 bytes from 192.0.2.130: icmp_seq=4 ttl=63 time=0.195 ms\n64 bytes from 192.0.2.130: icmp_seq=5 ttl=63 time=0.222 ms\n64 bytes from 192.0.2.130: icmp_seq=6 ttl=63 time=0.197 ms\n64 bytes from 192.0.2.130: icmp_seq=7 ttl=63 time=0.228 ms\n64 bytes from 192.0.2.130: icmp_seq=8 ttl=63 time=0.202 ms\n64 bytes from 192.0.2.130: icmp_seq=9 ttl=63 time=0.184 ms\n64 bytes from 192.0.2.130: icmp_seq=10 ttl=63 time=0.206 ms\n\n--- 192.0.2.130 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 990ms\nrtt min/avg/max/mdev = 0.166/0.206/0.232/0.020 ms\n",
+      "stderr": "",
+      "native_clock_reads": 10
     },
     {
       "tool": "ip",
@@ -1061,7 +1548,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"76:96:52:c8:a7:62\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"1e:87:dc:f0:33:a3\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -1095,7 +1582,7 @@
         "group": "default",
         "txqlen": 1000,
         "link_type": "ether",
-        "address": "46:0a:3e:42:cf:ac",
+        "address": "5a:0b:ca:81:be:32",
         "broadcast": "ff:ff:ff:ff:ff:ff",
         "promiscuity": 0,
         "allmulti": 0,
@@ -1120,25 +1607,162 @@
       "bridge_state": {
         "link": [
           {
+            "ifindex": 10,
             "ifname": "br1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 0,
+            "allmulti": 0,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
               "info_kind": "bridge",
               "info_data": {
-                "vlan_filtering": 1
+                "forward_delay": 1500,
+                "hello_time": 200,
+                "max_age": 2000,
+                "ageing_time": 30000,
+                "stp_state": 0,
+                "priority": 32768,
+                "vlan_filtering": 1,
+                "vlan_protocol": "802.1Q",
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "root_port": 0,
+                "root_path_cost": 0,
+                "topology_change": 0,
+                "topology_change_detected": 0,
+                "hello_timer": 0.0,
+                "tcn_timer": 0.0,
+                "topology_change_timer": 0.0,
+                "gc_timer": 288.7,
+                "fdb_n_learned": 1,
+                "fdb_max_learned": 0,
+                "vlan_default_pvid": 1,
+                "vlan_stats_enabled": 0,
+                "vlan_stats_per_port": 0,
+                "group_fwd_mask": "0",
+                "group_addr": "01:80:c2:00:00:00",
+                "mcast_snooping": 1,
+                "no_linklocal_learn": 0,
+                "mcast_vlan_snooping": 0,
+                "mst_enabled": 0,
+                "mcast_router": 1,
+                "mcast_query_use_ifaddr": 0,
+                "mcast_querier": 0,
+                "mcast_hash_elasticity": 16,
+                "mcast_hash_max": 4096,
+                "mcast_last_member_cnt": 2,
+                "mcast_startup_query_cnt": 2,
+                "mcast_last_member_intvl": 100,
+                "mcast_membership_intvl": 26000,
+                "mcast_querier_intvl": 25500,
+                "mcast_query_intvl": 12500,
+                "mcast_query_response_intvl": 1000,
+                "mcast_startup_query_intvl": 3125,
+                "mcast_stats_enabled": 0,
+                "mcast_igmp_version": 2,
+                "mcast_mld_version": 1
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "port": [
           {
+            "ifindex": 4,
+            "link": "veth0",
             "ifname": "veth1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
             "master": "br1",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 1,
+            "allmulti": 1,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
+              "info_kind": "veth",
               "info_slave_kind": "bridge",
               "info_slave_data": {
-                "state": "forwarding"
+                "state": "forwarding",
+                "priority": 32,
+                "cost": 2,
+                "hairpin": false,
+                "guard": false,
+                "root_block": false,
+                "fastleave": false,
+                "learning": true,
+                "flood": true,
+                "id": "0x8001",
+                "no": "0x1",
+                "designated_port": 32769,
+                "designated_cost": 0,
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "hold_timer": 0.0,
+                "message_age_timer": 0.0,
+                "forward_delay_timer": 13.62,
+                "topology_change_ack": 0,
+                "config_pending": 0,
+                "proxy_arp": false,
+                "proxy_arp_wifi": false,
+                "multicast_router": 1,
+                "mcast_flood": true,
+                "bcast_flood": true,
+                "mcast_to_unicast": false,
+                "neigh_suppress": false,
+                "neigh_vlan_suppress": false,
+                "group_fwd_mask": "0",
+                "group_fwd_mask_str": "0x0",
+                "vlan_tunnel": false,
+                "isolated": false,
+                "locked": false,
+                "mab": false
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "vlans": [
@@ -1157,8 +1781,9 @@
         ]
       },
       "returncode": 0,
-      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=0.055 ms\n64 bytes from 2001:db8:2::2: icmp_seq=2 ttl=63 time=0.043 ms\n64 bytes from 2001:db8:2::2: icmp_seq=3 ttl=63 time=0.025 ms\n64 bytes from 2001:db8:2::2: icmp_seq=4 ttl=63 time=0.029 ms\n64 bytes from 2001:db8:2::2: icmp_seq=5 ttl=63 time=0.032 ms\n64 bytes from 2001:db8:2::2: icmp_seq=6 ttl=63 time=0.028 ms\n64 bytes from 2001:db8:2::2: icmp_seq=7 ttl=63 time=0.044 ms\n64 bytes from 2001:db8:2::2: icmp_seq=8 ttl=63 time=0.030 ms\n64 bytes from 2001:db8:2::2: icmp_seq=9 ttl=63 time=0.028 ms\n64 bytes from 2001:db8:2::2: icmp_seq=10 ttl=63 time=0.046 ms\n\n--- 2001:db8:2::2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 984ms\nrtt min/avg/max/mdev = 0.025/0.036/0.055/0.009 ms\n",
-      "stderr": ""
+      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=0.171 ms\n64 bytes from 2001:db8:2::2: icmp_seq=2 ttl=63 time=0.140 ms\n64 bytes from 2001:db8:2::2: icmp_seq=3 ttl=63 time=0.136 ms\n64 bytes from 2001:db8:2::2: icmp_seq=4 ttl=63 time=0.139 ms\n64 bytes from 2001:db8:2::2: icmp_seq=5 ttl=63 time=0.152 ms\n64 bytes from 2001:db8:2::2: icmp_seq=6 ttl=63 time=0.133 ms\n64 bytes from 2001:db8:2::2: icmp_seq=7 ttl=63 time=0.151 ms\n64 bytes from 2001:db8:2::2: icmp_seq=8 ttl=63 time=0.162 ms\n64 bytes from 2001:db8:2::2: icmp_seq=9 ttl=63 time=0.140 ms\n64 bytes from 2001:db8:2::2: icmp_seq=10 ttl=63 time=0.120 ms\n\n--- 2001:db8:2::2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 990ms\nrtt min/avg/max/mdev = 0.120/0.144/0.171/0.014 ms\n",
+      "stderr": "",
+      "native_clock_reads": 10
     },
     {
       "tool": "bridge",
@@ -1185,7 +1810,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"76:96:52:c8:a7:62\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"1e:87:dc:f0:33:a3\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -1219,7 +1844,7 @@
         "group": "default",
         "txqlen": 1000,
         "link_type": "ether",
-        "address": "46:0a:3e:42:cf:ac",
+        "address": "5a:0b:ca:81:be:32",
         "broadcast": "ff:ff:ff:ff:ff:ff",
         "promiscuity": 0,
         "allmulti": 0,
@@ -1244,25 +1869,162 @@
       "bridge_state": {
         "link": [
           {
+            "ifindex": 10,
             "ifname": "br1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 0,
+            "allmulti": 0,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
               "info_kind": "bridge",
               "info_data": {
-                "vlan_filtering": 1
+                "forward_delay": 1500,
+                "hello_time": 200,
+                "max_age": 2000,
+                "ageing_time": 30000,
+                "stp_state": 0,
+                "priority": 32768,
+                "vlan_filtering": 1,
+                "vlan_protocol": "802.1Q",
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "root_port": 0,
+                "root_path_cost": 0,
+                "topology_change": 0,
+                "topology_change_detected": 0,
+                "hello_timer": 0.0,
+                "tcn_timer": 0.0,
+                "topology_change_timer": 0.0,
+                "gc_timer": 285.55,
+                "fdb_n_learned": 1,
+                "fdb_max_learned": 0,
+                "vlan_default_pvid": 1,
+                "vlan_stats_enabled": 0,
+                "vlan_stats_per_port": 0,
+                "group_fwd_mask": "0",
+                "group_addr": "01:80:c2:00:00:00",
+                "mcast_snooping": 1,
+                "no_linklocal_learn": 0,
+                "mcast_vlan_snooping": 0,
+                "mst_enabled": 0,
+                "mcast_router": 1,
+                "mcast_query_use_ifaddr": 0,
+                "mcast_querier": 0,
+                "mcast_hash_elasticity": 16,
+                "mcast_hash_max": 4096,
+                "mcast_last_member_cnt": 2,
+                "mcast_startup_query_cnt": 2,
+                "mcast_last_member_intvl": 100,
+                "mcast_membership_intvl": 26000,
+                "mcast_querier_intvl": 25500,
+                "mcast_query_intvl": 12500,
+                "mcast_query_response_intvl": 1000,
+                "mcast_startup_query_intvl": 3125,
+                "mcast_stats_enabled": 0,
+                "mcast_igmp_version": 2,
+                "mcast_mld_version": 1
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "port": [
           {
+            "ifindex": 4,
+            "link": "veth0",
             "ifname": "veth1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
             "master": "br1",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 1,
+            "allmulti": 1,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
+              "info_kind": "veth",
               "info_slave_kind": "bridge",
               "info_slave_data": {
-                "state": "forwarding"
+                "state": "forwarding",
+                "priority": 32,
+                "cost": 2,
+                "hairpin": false,
+                "guard": false,
+                "root_block": false,
+                "fastleave": false,
+                "learning": true,
+                "flood": true,
+                "id": "0x8001",
+                "no": "0x1",
+                "designated_port": 32769,
+                "designated_cost": 0,
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "hold_timer": 0.0,
+                "message_age_timer": 0.0,
+                "forward_delay_timer": 10.47,
+                "topology_change_ack": 0,
+                "config_pending": 0,
+                "proxy_arp": false,
+                "proxy_arp_wifi": false,
+                "multicast_router": 1,
+                "mcast_flood": true,
+                "bcast_flood": true,
+                "mcast_to_unicast": false,
+                "neigh_suppress": false,
+                "neigh_vlan_suppress": false,
+                "group_fwd_mask": "0",
+                "group_fwd_mask_str": "0x0",
+                "vlan_tunnel": false,
+                "isolated": false,
+                "locked": false,
+                "mab": false
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "vlans": [
@@ -1277,8 +2039,9 @@
         ]
       },
       "returncode": 1,
-      "stdout": "PING 192.0.2.130 (192.0.2.130) 56(84) bytes of data.\n\n--- 192.0.2.130 ping statistics ---\n46 packets transmitted, 0 received, 100% packet loss, time 4942ms\n\n",
-      "stderr": ""
+      "stdout": "PING 192.0.2.130 (192.0.2.130) 56(84) bytes of data.\n\n--- 192.0.2.130 ping statistics ---\n46 packets transmitted, 0 received, 100% packet loss, time 4943ms\n\n",
+      "stderr": "",
+      "native_clock_reads": 46
     },
     {
       "tool": "ip",
@@ -1290,7 +2053,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"76:96:52:c8:a7:62\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"1e:87:dc:f0:33:a3\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -1324,7 +2087,7 @@
         "group": "default",
         "txqlen": 1000,
         "link_type": "ether",
-        "address": "46:0a:3e:42:cf:ac",
+        "address": "5a:0b:ca:81:be:32",
         "broadcast": "ff:ff:ff:ff:ff:ff",
         "promiscuity": 0,
         "allmulti": 0,
@@ -1349,25 +2112,162 @@
       "bridge_state": {
         "link": [
           {
+            "ifindex": 10,
             "ifname": "br1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 0,
+            "allmulti": 0,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
               "info_kind": "bridge",
               "info_data": {
-                "vlan_filtering": 1
+                "forward_delay": 1500,
+                "hello_time": 200,
+                "max_age": 2000,
+                "ageing_time": 30000,
+                "stp_state": 0,
+                "priority": 32768,
+                "vlan_filtering": 1,
+                "vlan_protocol": "802.1Q",
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "root_port": 0,
+                "root_path_cost": 0,
+                "topology_change": 0,
+                "topology_change_detected": 0,
+                "hello_timer": 0.0,
+                "tcn_timer": 0.0,
+                "topology_change_timer": 0.0,
+                "gc_timer": 280.39,
+                "fdb_n_learned": 1,
+                "fdb_max_learned": 0,
+                "vlan_default_pvid": 1,
+                "vlan_stats_enabled": 0,
+                "vlan_stats_per_port": 0,
+                "group_fwd_mask": "0",
+                "group_addr": "01:80:c2:00:00:00",
+                "mcast_snooping": 1,
+                "no_linklocal_learn": 0,
+                "mcast_vlan_snooping": 0,
+                "mst_enabled": 0,
+                "mcast_router": 1,
+                "mcast_query_use_ifaddr": 0,
+                "mcast_querier": 0,
+                "mcast_hash_elasticity": 16,
+                "mcast_hash_max": 4096,
+                "mcast_last_member_cnt": 2,
+                "mcast_startup_query_cnt": 2,
+                "mcast_last_member_intvl": 100,
+                "mcast_membership_intvl": 26000,
+                "mcast_querier_intvl": 25500,
+                "mcast_query_intvl": 12500,
+                "mcast_query_response_intvl": 1000,
+                "mcast_startup_query_intvl": 3125,
+                "mcast_stats_enabled": 0,
+                "mcast_igmp_version": 2,
+                "mcast_mld_version": 1
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "port": [
           {
+            "ifindex": 4,
+            "link": "veth0",
             "ifname": "veth1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
             "master": "br1",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 1,
+            "allmulti": 1,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
+              "info_kind": "veth",
               "info_slave_kind": "bridge",
               "info_slave_data": {
-                "state": "forwarding"
+                "state": "forwarding",
+                "priority": 32,
+                "cost": 2,
+                "hairpin": false,
+                "guard": false,
+                "root_block": false,
+                "fastleave": false,
+                "learning": true,
+                "flood": true,
+                "id": "0x8001",
+                "no": "0x1",
+                "designated_port": 32769,
+                "designated_cost": 0,
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "hold_timer": 0.0,
+                "message_age_timer": 0.0,
+                "forward_delay_timer": 5.32,
+                "topology_change_ack": 0,
+                "config_pending": 0,
+                "proxy_arp": false,
+                "proxy_arp_wifi": false,
+                "multicast_router": 1,
+                "mcast_flood": true,
+                "bcast_flood": true,
+                "mcast_to_unicast": false,
+                "neigh_suppress": false,
+                "neigh_vlan_suppress": false,
+                "group_fwd_mask": "0",
+                "group_fwd_mask_str": "0x0",
+                "vlan_tunnel": false,
+                "isolated": false,
+                "locked": false,
+                "mab": false
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "vlans": [
@@ -1382,8 +2282,9 @@
         ]
       },
       "returncode": 1,
-      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n\n--- 2001:db8:2::2 ping statistics ---\n46 packets transmitted, 0 received, 100% packet loss, time 4949ms\n\n",
-      "stderr": ""
+      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n\n--- 2001:db8:2::2 ping statistics ---\n46 packets transmitted, 0 received, 100% packet loss, time 4940ms\n\n",
+      "stderr": "",
+      "native_clock_reads": 46
     },
     {
       "tool": "bridge",
@@ -1412,7 +2313,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"76:96:52:c8:a7:62\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"1e:87:dc:f0:33:a3\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -1446,7 +2347,7 @@
         "group": "default",
         "txqlen": 1000,
         "link_type": "ether",
-        "address": "46:0a:3e:42:cf:ac",
+        "address": "5a:0b:ca:81:be:32",
         "broadcast": "ff:ff:ff:ff:ff:ff",
         "promiscuity": 0,
         "allmulti": 0,
@@ -1471,25 +2372,162 @@
       "bridge_state": {
         "link": [
           {
+            "ifindex": 10,
             "ifname": "br1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 0,
+            "allmulti": 0,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
               "info_kind": "bridge",
               "info_data": {
-                "vlan_filtering": 1
+                "forward_delay": 1500,
+                "hello_time": 200,
+                "max_age": 2000,
+                "ageing_time": 30000,
+                "stp_state": 0,
+                "priority": 32768,
+                "vlan_filtering": 1,
+                "vlan_protocol": "802.1Q",
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "root_port": 0,
+                "root_path_cost": 0,
+                "topology_change": 0,
+                "topology_change_detected": 0,
+                "hello_timer": 0.0,
+                "tcn_timer": 0.0,
+                "topology_change_timer": 0.0,
+                "gc_timer": 273.2,
+                "fdb_n_learned": 1,
+                "fdb_max_learned": 0,
+                "vlan_default_pvid": 1,
+                "vlan_stats_enabled": 0,
+                "vlan_stats_per_port": 0,
+                "group_fwd_mask": "0",
+                "group_addr": "01:80:c2:00:00:00",
+                "mcast_snooping": 1,
+                "no_linklocal_learn": 0,
+                "mcast_vlan_snooping": 0,
+                "mst_enabled": 0,
+                "mcast_router": 1,
+                "mcast_query_use_ifaddr": 0,
+                "mcast_querier": 0,
+                "mcast_hash_elasticity": 16,
+                "mcast_hash_max": 4096,
+                "mcast_last_member_cnt": 2,
+                "mcast_startup_query_cnt": 2,
+                "mcast_last_member_intvl": 100,
+                "mcast_membership_intvl": 26000,
+                "mcast_querier_intvl": 25500,
+                "mcast_query_intvl": 12500,
+                "mcast_query_response_intvl": 1000,
+                "mcast_startup_query_intvl": 3125,
+                "mcast_stats_enabled": 0,
+                "mcast_igmp_version": 2,
+                "mcast_mld_version": 1
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "port": [
           {
+            "ifindex": 4,
+            "link": "veth0",
             "ifname": "veth1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
             "master": "br1",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 1,
+            "allmulti": 1,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
+              "info_kind": "veth",
               "info_slave_kind": "bridge",
               "info_slave_data": {
-                "state": "forwarding"
+                "state": "forwarding",
+                "priority": 32,
+                "cost": 2,
+                "hairpin": false,
+                "guard": false,
+                "root_block": false,
+                "fastleave": false,
+                "learning": true,
+                "flood": true,
+                "id": "0x8001",
+                "no": "0x1",
+                "designated_port": 32769,
+                "designated_cost": 0,
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "hold_timer": 0.0,
+                "message_age_timer": 0.0,
+                "forward_delay_timer": 0.0,
+                "topology_change_ack": 0,
+                "config_pending": 0,
+                "proxy_arp": false,
+                "proxy_arp_wifi": false,
+                "multicast_router": 1,
+                "mcast_flood": true,
+                "bcast_flood": true,
+                "mcast_to_unicast": false,
+                "neigh_suppress": false,
+                "neigh_vlan_suppress": false,
+                "group_fwd_mask": "0",
+                "group_fwd_mask_str": "0x0",
+                "vlan_tunnel": false,
+                "isolated": false,
+                "locked": false,
+                "mab": false
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "vlans": [
@@ -1508,8 +2546,9 @@
         ]
       },
       "returncode": 0,
-      "stdout": "PING 192.0.2.130 (192.0.2.130) 56(84) bytes of data.\n64 bytes from 192.0.2.130: icmp_seq=1 ttl=63 time=0.040 ms\n64 bytes from 192.0.2.130: icmp_seq=2 ttl=63 time=0.024 ms\n64 bytes from 192.0.2.130: icmp_seq=3 ttl=63 time=0.021 ms\n64 bytes from 192.0.2.130: icmp_seq=4 ttl=63 time=0.020 ms\n64 bytes from 192.0.2.130: icmp_seq=5 ttl=63 time=0.019 ms\n64 bytes from 192.0.2.130: icmp_seq=6 ttl=63 time=0.029 ms\n64 bytes from 192.0.2.130: icmp_seq=7 ttl=63 time=0.022 ms\n64 bytes from 192.0.2.130: icmp_seq=8 ttl=63 time=0.020 ms\n64 bytes from 192.0.2.130: icmp_seq=9 ttl=63 time=0.021 ms\n64 bytes from 192.0.2.130: icmp_seq=10 ttl=63 time=0.023 ms\n\n--- 192.0.2.130 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 989ms\nrtt min/avg/max/mdev = 0.019/0.023/0.040/0.006 ms\n",
-      "stderr": ""
+      "stdout": "PING 192.0.2.130 (192.0.2.130) 56(84) bytes of data.\n64 bytes from 192.0.2.130: icmp_seq=1 ttl=63 time=0.126 ms\n64 bytes from 192.0.2.130: icmp_seq=2 ttl=63 time=0.074 ms\n64 bytes from 192.0.2.130: icmp_seq=3 ttl=63 time=0.068 ms\n64 bytes from 192.0.2.130: icmp_seq=4 ttl=63 time=0.067 ms\n64 bytes from 192.0.2.130: icmp_seq=5 ttl=63 time=0.067 ms\n64 bytes from 192.0.2.130: icmp_seq=6 ttl=63 time=0.069 ms\n64 bytes from 192.0.2.130: icmp_seq=7 ttl=63 time=0.067 ms\n64 bytes from 192.0.2.130: icmp_seq=8 ttl=63 time=0.068 ms\n64 bytes from 192.0.2.130: icmp_seq=9 ttl=63 time=0.067 ms\n64 bytes from 192.0.2.130: icmp_seq=10 ttl=63 time=0.075 ms\n\n--- 192.0.2.130 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 987ms\nrtt min/avg/max/mdev = 0.067/0.074/0.126/0.017 ms\n",
+      "stderr": "",
+      "native_clock_reads": 10
     },
     {
       "tool": "ip",
@@ -1521,7 +2560,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"76:96:52:c8:a7:62\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"1e:87:dc:f0:33:a3\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -1555,7 +2594,7 @@
         "group": "default",
         "txqlen": 1000,
         "link_type": "ether",
-        "address": "46:0a:3e:42:cf:ac",
+        "address": "5a:0b:ca:81:be:32",
         "broadcast": "ff:ff:ff:ff:ff:ff",
         "promiscuity": 0,
         "allmulti": 0,
@@ -1580,25 +2619,162 @@
       "bridge_state": {
         "link": [
           {
+            "ifindex": 10,
             "ifname": "br1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 0,
+            "allmulti": 0,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
               "info_kind": "bridge",
               "info_data": {
-                "vlan_filtering": 1
+                "forward_delay": 1500,
+                "hello_time": 200,
+                "max_age": 2000,
+                "ageing_time": 30000,
+                "stp_state": 0,
+                "priority": 32768,
+                "vlan_filtering": 1,
+                "vlan_protocol": "802.1Q",
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "root_port": 0,
+                "root_path_cost": 0,
+                "topology_change": 0,
+                "topology_change_detected": 0,
+                "hello_timer": 0.0,
+                "tcn_timer": 0.0,
+                "topology_change_timer": 0.0,
+                "gc_timer": 272.1,
+                "fdb_n_learned": 1,
+                "fdb_max_learned": 0,
+                "vlan_default_pvid": 1,
+                "vlan_stats_enabled": 0,
+                "vlan_stats_per_port": 0,
+                "group_fwd_mask": "0",
+                "group_addr": "01:80:c2:00:00:00",
+                "mcast_snooping": 1,
+                "no_linklocal_learn": 0,
+                "mcast_vlan_snooping": 0,
+                "mst_enabled": 0,
+                "mcast_router": 1,
+                "mcast_query_use_ifaddr": 0,
+                "mcast_querier": 0,
+                "mcast_hash_elasticity": 16,
+                "mcast_hash_max": 4096,
+                "mcast_last_member_cnt": 2,
+                "mcast_startup_query_cnt": 2,
+                "mcast_last_member_intvl": 100,
+                "mcast_membership_intvl": 26000,
+                "mcast_querier_intvl": 25500,
+                "mcast_query_intvl": 12500,
+                "mcast_query_response_intvl": 1000,
+                "mcast_startup_query_intvl": 3125,
+                "mcast_stats_enabled": 0,
+                "mcast_igmp_version": 2,
+                "mcast_mld_version": 1
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "port": [
           {
+            "ifindex": 4,
+            "link": "veth0",
             "ifname": "veth1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
             "master": "br1",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 1,
+            "allmulti": 1,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
+              "info_kind": "veth",
               "info_slave_kind": "bridge",
               "info_slave_data": {
-                "state": "forwarding"
+                "state": "forwarding",
+                "priority": 32,
+                "cost": 2,
+                "hairpin": false,
+                "guard": false,
+                "root_block": false,
+                "fastleave": false,
+                "learning": true,
+                "flood": true,
+                "id": "0x8001",
+                "no": "0x1",
+                "designated_port": 32769,
+                "designated_cost": 0,
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "hold_timer": 0.0,
+                "message_age_timer": 0.0,
+                "forward_delay_timer": 0.0,
+                "topology_change_ack": 0,
+                "config_pending": 0,
+                "proxy_arp": false,
+                "proxy_arp_wifi": false,
+                "multicast_router": 1,
+                "mcast_flood": true,
+                "bcast_flood": true,
+                "mcast_to_unicast": false,
+                "neigh_suppress": false,
+                "neigh_vlan_suppress": false,
+                "group_fwd_mask": "0",
+                "group_fwd_mask_str": "0x0",
+                "vlan_tunnel": false,
+                "isolated": false,
+                "locked": false,
+                "mab": false
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "vlans": [
@@ -1617,8 +2793,9 @@
         ]
       },
       "returncode": 0,
-      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=0.038 ms\n64 bytes from 2001:db8:2::2: icmp_seq=2 ttl=63 time=0.028 ms\n64 bytes from 2001:db8:2::2: icmp_seq=3 ttl=63 time=0.018 ms\n64 bytes from 2001:db8:2::2: icmp_seq=4 ttl=63 time=0.018 ms\n64 bytes from 2001:db8:2::2: icmp_seq=5 ttl=63 time=0.009 ms\n64 bytes from 2001:db8:2::2: icmp_seq=6 ttl=63 time=0.028 ms\n64 bytes from 2001:db8:2::2: icmp_seq=7 ttl=63 time=0.030 ms\n64 bytes from 2001:db8:2::2: icmp_seq=8 ttl=63 time=0.024 ms\n64 bytes from 2001:db8:2::2: icmp_seq=9 ttl=63 time=0.029 ms\n64 bytes from 2001:db8:2::2: icmp_seq=10 ttl=63 time=0.024 ms\n\n--- 2001:db8:2::2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 984ms\nrtt min/avg/max/mdev = 0.009/0.024/0.038/0.007 ms\n",
-      "stderr": ""
+      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=0.126 ms\n64 bytes from 2001:db8:2::2: icmp_seq=2 ttl=63 time=0.087 ms\n64 bytes from 2001:db8:2::2: icmp_seq=3 ttl=63 time=0.082 ms\n64 bytes from 2001:db8:2::2: icmp_seq=4 ttl=63 time=0.083 ms\n64 bytes from 2001:db8:2::2: icmp_seq=5 ttl=63 time=0.083 ms\n64 bytes from 2001:db8:2::2: icmp_seq=6 ttl=63 time=0.082 ms\n64 bytes from 2001:db8:2::2: icmp_seq=7 ttl=63 time=0.119 ms\n64 bytes from 2001:db8:2::2: icmp_seq=8 ttl=63 time=0.085 ms\n64 bytes from 2001:db8:2::2: icmp_seq=9 ttl=63 time=0.084 ms\n64 bytes from 2001:db8:2::2: icmp_seq=10 ttl=63 time=0.082 ms\n\n--- 2001:db8:2::2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 989ms\nrtt min/avg/max/mdev = 0.082/0.091/0.126/0.015 ms\n",
+      "stderr": "",
+      "native_clock_reads": 10
     },
     {
       "tool": "ip",
@@ -1689,7 +2866,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"76:96:52:c8:a7:62\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"1e:87:dc:f0:33:a3\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -1723,7 +2900,7 @@
         "group": "default",
         "txqlen": 1000,
         "link_type": "ether",
-        "address": "46:0a:3e:42:cf:ac",
+        "address": "5a:0b:ca:81:be:32",
         "broadcast": "ff:ff:ff:ff:ff:ff",
         "promiscuity": 0,
         "allmulti": 0,
@@ -1748,25 +2925,162 @@
       "bridge_state": {
         "link": [
           {
+            "ifindex": 10,
             "ifname": "br1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 0,
+            "allmulti": 0,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
               "info_kind": "bridge",
               "info_data": {
-                "vlan_filtering": 1
+                "forward_delay": 1500,
+                "hello_time": 200,
+                "max_age": 2000,
+                "ageing_time": 30000,
+                "stp_state": 0,
+                "priority": 32768,
+                "vlan_filtering": 1,
+                "vlan_protocol": "802.1Q",
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "root_port": 0,
+                "root_path_cost": 0,
+                "topology_change": 0,
+                "topology_change_detected": 0,
+                "hello_timer": 0.0,
+                "tcn_timer": 0.0,
+                "topology_change_timer": 0.0,
+                "gc_timer": 268.85,
+                "fdb_n_learned": 0,
+                "fdb_max_learned": 0,
+                "vlan_default_pvid": 1,
+                "vlan_stats_enabled": 0,
+                "vlan_stats_per_port": 0,
+                "group_fwd_mask": "0",
+                "group_addr": "01:80:c2:00:00:00",
+                "mcast_snooping": 1,
+                "no_linklocal_learn": 0,
+                "mcast_vlan_snooping": 0,
+                "mst_enabled": 0,
+                "mcast_router": 1,
+                "mcast_query_use_ifaddr": 0,
+                "mcast_querier": 0,
+                "mcast_hash_elasticity": 16,
+                "mcast_hash_max": 4096,
+                "mcast_last_member_cnt": 2,
+                "mcast_startup_query_cnt": 2,
+                "mcast_last_member_intvl": 100,
+                "mcast_membership_intvl": 26000,
+                "mcast_querier_intvl": 25500,
+                "mcast_query_intvl": 12500,
+                "mcast_query_response_intvl": 1000,
+                "mcast_startup_query_intvl": 3125,
+                "mcast_stats_enabled": 0,
+                "mcast_igmp_version": 2,
+                "mcast_mld_version": 1
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "port": [
           {
+            "ifindex": 4,
+            "link": "veth0",
             "ifname": "veth1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
             "master": "br1",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 1,
+            "allmulti": 1,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
+              "info_kind": "veth",
               "info_slave_kind": "bridge",
               "info_slave_data": {
-                "state": "forwarding"
+                "state": "forwarding",
+                "priority": 32,
+                "cost": 2,
+                "hairpin": false,
+                "guard": false,
+                "root_block": false,
+                "fastleave": false,
+                "learning": true,
+                "flood": true,
+                "id": "0x8001",
+                "no": "0x1",
+                "designated_port": 32769,
+                "designated_cost": 0,
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "hold_timer": 0.0,
+                "message_age_timer": 0.0,
+                "forward_delay_timer": 14.86,
+                "topology_change_ack": 0,
+                "config_pending": 0,
+                "proxy_arp": false,
+                "proxy_arp_wifi": false,
+                "multicast_router": 1,
+                "mcast_flood": true,
+                "bcast_flood": true,
+                "mcast_to_unicast": false,
+                "neigh_suppress": false,
+                "neigh_vlan_suppress": false,
+                "group_fwd_mask": "0",
+                "group_fwd_mask_str": "0x0",
+                "vlan_tunnel": false,
+                "isolated": false,
+                "locked": false,
+                "mab": false
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "vlans": [
@@ -1785,8 +3099,9 @@
         ]
       },
       "returncode": 0,
-      "stdout": "PING 192.0.2.130 (192.0.2.130) 56(84) bytes of data.\n64 bytes from 192.0.2.130: icmp_seq=1 ttl=63 time=0.074 ms\n64 bytes from 192.0.2.130: icmp_seq=2 ttl=63 time=0.025 ms\n64 bytes from 192.0.2.130: icmp_seq=3 ttl=63 time=0.033 ms\n64 bytes from 192.0.2.130: icmp_seq=4 ttl=63 time=0.028 ms\n64 bytes from 192.0.2.130: icmp_seq=5 ttl=63 time=0.029 ms\n64 bytes from 192.0.2.130: icmp_seq=6 ttl=63 time=0.027 ms\n64 bytes from 192.0.2.130: icmp_seq=7 ttl=63 time=0.025 ms\n64 bytes from 192.0.2.130: icmp_seq=8 ttl=63 time=0.014 ms\n64 bytes from 192.0.2.130: icmp_seq=9 ttl=63 time=0.028 ms\n64 bytes from 192.0.2.130: icmp_seq=10 ttl=63 time=0.027 ms\n\n--- 192.0.2.130 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 990ms\nrtt min/avg/max/mdev = 0.014/0.031/0.074/0.015 ms\n",
-      "stderr": ""
+      "stdout": "PING 192.0.2.130 (192.0.2.130) 56(84) bytes of data.\n64 bytes from 192.0.2.130: icmp_seq=1 ttl=63 time=0.106 ms\n64 bytes from 192.0.2.130: icmp_seq=2 ttl=63 time=0.070 ms\n64 bytes from 192.0.2.130: icmp_seq=3 ttl=63 time=0.082 ms\n64 bytes from 192.0.2.130: icmp_seq=4 ttl=63 time=0.092 ms\n64 bytes from 192.0.2.130: icmp_seq=5 ttl=63 time=0.071 ms\n64 bytes from 192.0.2.130: icmp_seq=6 ttl=63 time=0.072 ms\n64 bytes from 192.0.2.130: icmp_seq=7 ttl=63 time=0.095 ms\n64 bytes from 192.0.2.130: icmp_seq=8 ttl=63 time=0.083 ms\n64 bytes from 192.0.2.130: icmp_seq=9 ttl=63 time=0.081 ms\n64 bytes from 192.0.2.130: icmp_seq=10 ttl=63 time=0.082 ms\n\n--- 192.0.2.130 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 981ms\nrtt min/avg/max/mdev = 0.070/0.083/0.106/0.010 ms\n",
+      "stderr": "",
+      "native_clock_reads": 10
     },
     {
       "tool": "ip",
@@ -1798,7 +3113,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"76:96:52:c8:a7:62\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vveth0\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"1e:87:dc:f0:33:a3\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -1832,7 +3147,7 @@
         "group": "default",
         "txqlen": 1000,
         "link_type": "ether",
-        "address": "46:0a:3e:42:cf:ac",
+        "address": "5a:0b:ca:81:be:32",
         "broadcast": "ff:ff:ff:ff:ff:ff",
         "promiscuity": 0,
         "allmulti": 0,
@@ -1857,25 +3172,162 @@
       "bridge_state": {
         "link": [
           {
+            "ifindex": 10,
             "ifname": "br1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 0,
+            "allmulti": 0,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
               "info_kind": "bridge",
               "info_data": {
-                "vlan_filtering": 1
+                "forward_delay": 1500,
+                "hello_time": 200,
+                "max_age": 2000,
+                "ageing_time": 30000,
+                "stp_state": 0,
+                "priority": 32768,
+                "vlan_filtering": 1,
+                "vlan_protocol": "802.1Q",
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "root_port": 0,
+                "root_path_cost": 0,
+                "topology_change": 0,
+                "topology_change_detected": 0,
+                "hello_timer": 0.0,
+                "tcn_timer": 0.0,
+                "topology_change_timer": 0.0,
+                "gc_timer": 267.76,
+                "fdb_n_learned": 1,
+                "fdb_max_learned": 0,
+                "vlan_default_pvid": 1,
+                "vlan_stats_enabled": 0,
+                "vlan_stats_per_port": 0,
+                "group_fwd_mask": "0",
+                "group_addr": "01:80:c2:00:00:00",
+                "mcast_snooping": 1,
+                "no_linklocal_learn": 0,
+                "mcast_vlan_snooping": 0,
+                "mst_enabled": 0,
+                "mcast_router": 1,
+                "mcast_query_use_ifaddr": 0,
+                "mcast_querier": 0,
+                "mcast_hash_elasticity": 16,
+                "mcast_hash_max": 4096,
+                "mcast_last_member_cnt": 2,
+                "mcast_startup_query_cnt": 2,
+                "mcast_last_member_intvl": 100,
+                "mcast_membership_intvl": 26000,
+                "mcast_querier_intvl": 25500,
+                "mcast_query_intvl": 12500,
+                "mcast_query_response_intvl": 1000,
+                "mcast_startup_query_intvl": 3125,
+                "mcast_stats_enabled": 0,
+                "mcast_igmp_version": 2,
+                "mcast_mld_version": 1
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "port": [
           {
+            "ifindex": 4,
+            "link": "veth0",
             "ifname": "veth1",
+            "flags": [
+              "BROADCAST",
+              "MULTICAST",
+              "UP",
+              "LOWER_UP"
+            ],
+            "mtu": 1500,
+            "qdisc": "noqueue",
             "master": "br1",
+            "operstate": "UP",
+            "linkmode": "DEFAULT",
+            "group": "default",
+            "txqlen": 1000,
+            "link_type": "ether",
+            "address": "16:e3:a2:9d:b2:14",
+            "broadcast": "ff:ff:ff:ff:ff:ff",
+            "promiscuity": 1,
+            "allmulti": 1,
+            "min_mtu": 68,
+            "max_mtu": 65535,
             "linkinfo": {
+              "info_kind": "veth",
               "info_slave_kind": "bridge",
               "info_slave_data": {
-                "state": "forwarding"
+                "state": "forwarding",
+                "priority": 32,
+                "cost": 2,
+                "hairpin": false,
+                "guard": false,
+                "root_block": false,
+                "fastleave": false,
+                "learning": true,
+                "flood": true,
+                "id": "0x8001",
+                "no": "0x1",
+                "designated_port": 32769,
+                "designated_cost": 0,
+                "bridge_id": "8000.16:e3:a2:9d:b2:14",
+                "root_id": "8000.16:e3:a2:9d:b2:14",
+                "hold_timer": 0.0,
+                "message_age_timer": 0.0,
+                "forward_delay_timer": 13.77,
+                "topology_change_ack": 0,
+                "config_pending": 0,
+                "proxy_arp": false,
+                "proxy_arp_wifi": false,
+                "multicast_router": 1,
+                "mcast_flood": true,
+                "bcast_flood": true,
+                "mcast_to_unicast": false,
+                "neigh_suppress": false,
+                "neigh_vlan_suppress": false,
+                "group_fwd_mask": "0",
+                "group_fwd_mask_str": "0x0",
+                "vlan_tunnel": false,
+                "isolated": false,
+                "locked": false,
+                "mab": false
               }
-            }
+            },
+            "inet6_addr_gen_mode": "eui64",
+            "num_tx_queues": 1,
+            "gso_max_size": 65536,
+            "gso_max_segs": 65535,
+            "tso_max_size": 524280,
+            "tso_max_segs": 65535,
+            "gro_max_size": 65536,
+            "gso_ipv4_max_size": 65536,
+            "gro_ipv4_max_size": 65536
           }
         ],
         "vlans": [
@@ -1894,8 +3346,9 @@
         ]
       },
       "returncode": 0,
-      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=0.075 ms\n64 bytes from 2001:db8:2::2: icmp_seq=2 ttl=63 time=0.051 ms\n64 bytes from 2001:db8:2::2: icmp_seq=3 ttl=63 time=0.039 ms\n64 bytes from 2001:db8:2::2: icmp_seq=4 ttl=63 time=0.059 ms\n64 bytes from 2001:db8:2::2: icmp_seq=5 ttl=63 time=0.021 ms\n64 bytes from 2001:db8:2::2: icmp_seq=6 ttl=63 time=0.032 ms\n64 bytes from 2001:db8:2::2: icmp_seq=7 ttl=63 time=0.021 ms\n64 bytes from 2001:db8:2::2: icmp_seq=8 ttl=63 time=0.030 ms\n64 bytes from 2001:db8:2::2: icmp_seq=9 ttl=63 time=0.018 ms\n64 bytes from 2001:db8:2::2: icmp_seq=10 ttl=63 time=0.023 ms\n\n--- 2001:db8:2::2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 984ms\nrtt min/avg/max/mdev = 0.018/0.036/0.075/0.018 ms\n",
-      "stderr": ""
+      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=0.141 ms\n64 bytes from 2001:db8:2::2: icmp_seq=2 ttl=63 time=0.090 ms\n64 bytes from 2001:db8:2::2: icmp_seq=3 ttl=63 time=0.087 ms\n64 bytes from 2001:db8:2::2: icmp_seq=4 ttl=63 time=0.087 ms\n64 bytes from 2001:db8:2::2: icmp_seq=5 ttl=63 time=0.087 ms\n64 bytes from 2001:db8:2::2: icmp_seq=6 ttl=63 time=0.085 ms\n64 bytes from 2001:db8:2::2: icmp_seq=7 ttl=63 time=0.086 ms\n64 bytes from 2001:db8:2::2: icmp_seq=8 ttl=63 time=0.090 ms\n64 bytes from 2001:db8:2::2: icmp_seq=9 ttl=63 time=0.122 ms\n64 bytes from 2001:db8:2::2: icmp_seq=10 ttl=63 time=0.083 ms\n\n--- 2001:db8:2::2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 983ms\nrtt min/avg/max/mdev = 0.083/0.095/0.141/0.018 ms\n",
+      "stderr": "",
+      "native_clock_reads": 10
     },
     {
       "tool": "sysctl",
@@ -2329,53 +3782,256 @@
       "stderr": ""
     }
   ],
-  "missing_backend_control": {
-    "returncode": 1,
-    "stdout": "Failed to create netif\n",
-    "stderr": "Cannot open netlink socket: No such file or directory\n"
-  },
-  "mib_before": {
-    "ipv4": "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates OutTransmits\nIp: 2 64 2 0 0 0 0 0 2 2 0 0 0 0 0 0 0 0 0 2\nIcmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\nIcmp: 2 0 0 0 0 0 0 0 1 1 0 0 0 0 2 0 0 0 0 0 0 0 0 1 1 0 0 0 0\nIcmpMsg: InType0 InType8 OutType0 OutType8\nIcmpMsg: 1 1 1 1\nTcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\nTcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\nUdp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdp: 0 0 0 0 0 0 0 0 0\nUdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdpLite: 0 0 0 0 0 0 0 0 0\n",
-    "ipv6": "Ip6InReceives                   \t0\nIp6InHdrErrors                  \t0\nIp6InTooBigErrors               \t0\nIp6InNoRoutes                   \t0\nIp6InAddrErrors                 \t0\nIp6InUnknownProtos              \t0\nIp6InTruncatedPkts              \t0\nIp6InDiscards                   \t0\nIp6InDelivers                   \t0\nIp6OutForwDatagrams             \t0\nIp6OutRequests                  \t0\nIp6OutDiscards                  \t0\nIp6OutNoRoutes                  \t0\nIp6ReasmTimeout                 \t0\nIp6ReasmReqds                   \t0\nIp6ReasmOKs                     \t0\nIp6ReasmFails                   \t0\nIp6FragOKs                      \t0\nIp6FragFails                    \t0\nIp6FragCreates                  \t0\nIp6InMcastPkts                  \t0\nIp6OutMcastPkts                 \t0\nIp6InOctets                     \t0\nIp6OutOctets                    \t0\nIp6InMcastOctets                \t0\nIp6OutMcastOctets               \t0\nIp6InBcastOctets                \t0\nIp6OutBcastOctets               \t0\nIp6InNoECTPkts                  \t0\nIp6InECT1Pkts                   \t0\nIp6InECT0Pkts                   \t0\nIp6InCEPkts                     \t0\nIp6OutTransmits                 \t0\nIcmp6InMsgs                     \t0\nIcmp6InErrors                   \t0\nIcmp6OutMsgs                    \t0\nIcmp6OutErrors                  \t0\nIcmp6InCsumErrors               \t0\nIcmp6OutRateLimitHost           \t0\nIcmp6InDestUnreachs             \t0\nIcmp6InPktTooBigs               \t0\nIcmp6InTimeExcds                \t0\nIcmp6InParmProblems             \t0\nIcmp6InEchos                    \t0\nIcmp6InEchoReplies              \t0\nIcmp6InGroupMembQueries         \t0\nIcmp6InGroupMembResponses       \t0\nIcmp6InGroupMembReductions      \t0\nIcmp6InRouterSolicits           \t0\nIcmp6InRouterAdvertisements     \t0\nIcmp6InNeighborSolicits         \t0\nIcmp6InNeighborAdvertisements   \t0\nIcmp6InRedirects                \t0\nIcmp6InMLDv2Reports             \t0\nIcmp6OutDestUnreachs            \t0\nIcmp6OutPktTooBigs              \t0\nIcmp6OutTimeExcds               \t0\nIcmp6OutParmProblems            \t0\nIcmp6OutEchos                   \t0\nIcmp6OutEchoReplies             \t0\nIcmp6OutGroupMembQueries        \t0\nIcmp6OutGroupMembResponses      \t0\nIcmp6OutGroupMembReductions     \t0\nIcmp6OutRouterSolicits          \t0\nIcmp6OutRouterAdvertisements    \t0\nIcmp6OutNeighborSolicits        \t0\nIcmp6OutNeighborAdvertisements  \t0\nIcmp6OutRedirects               \t0\nIcmp6OutMLDv2Reports            \t0\nUdp6InDatagrams                 \t0\nUdp6NoPorts                     \t0\nUdp6InErrors                    \t0\nUdp6OutDatagrams                \t0\nUdp6RcvbufErrors                \t0\nUdp6SndbufErrors                \t0\nUdp6InCsumErrors                \t0\nUdp6IgnoredMulti                \t0\nUdp6MemErrors                   \t0\nUdpLite6InDatagrams             \t0\nUdpLite6NoPorts                 \t0\nUdpLite6InErrors                \t0\nUdpLite6OutDatagrams            \t0\nUdpLite6RcvbufErrors            \t0\nUdpLite6SndbufErrors            \t0\nUdpLite6InCsumErrors            \t0\nUdpLite6MemErrors               \t0\n"
-  },
   "mib_after": {
     "ipv4": "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates OutTransmits\nIp: 2 64 163 0 0 80 0 0 82 130 0 0 0 0 0 0 0 0 0 210\nIcmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\nIcmp: 82 0 0 0 0 0 0 0 41 41 0 0 0 0 128 0 0 0 0 0 0 0 0 87 41 0 0 0 0\nIcmpMsg: InType0 InType8 OutType0 OutType8\nIcmpMsg: 41 41 41 87\nTcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\nTcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\nUdp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdp: 0 0 0 0 0 0 0 0 0\nUdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdpLite: 0 0 0 0 0 0 0 0 0\n",
-    "ipv6": "Ip6InReceives                   \t233\nIp6InHdrErrors                  \t0\nIp6InTooBigErrors               \t0\nIp6InNoRoutes                   \t0\nIp6InAddrErrors                 \t0\nIp6InUnknownProtos              \t0\nIp6InTruncatedPkts              \t0\nIp6InDiscards                   \t0\nIp6InDelivers                   \t94\nIp6OutForwDatagrams             \t80\nIp6OutRequests                  \t218\nIp6OutDiscards                  \t5\nIp6OutNoRoutes                  \t0\nIp6ReasmTimeout                 \t0\nIp6ReasmReqds                   \t0\nIp6ReasmOKs                     \t0\nIp6ReasmFails                   \t0\nIp6FragOKs                      \t0\nIp6FragFails                    \t0\nIp6FragCreates                  \t0\nIp6InMcastPkts                  \t64\nIp6OutMcastPkts                 \t80\nIp6InOctets                     \t24080\nIp6OutOctets                    \t30692\nIp6InMcastOctets                \t6808\nIp6OutMcastOctets               \t8420\nIp6InBcastOctets                \t0\nIp6OutBcastOctets               \t0\nIp6InNoECTPkts                  \t233\nIp6InECT1Pkts                   \t0\nIp6InECT0Pkts                   \t0\nIp6InCEPkts                     \t0\nIp6OutTransmits                 \t298\nIcmp6InMsgs                     \t94\nIcmp6InErrors                   \t0\nIcmp6OutMsgs                    \t213\nIcmp6OutErrors                  \t0\nIcmp6InCsumErrors               \t0\nIcmp6OutRateLimitHost           \t0\nIcmp6InDestUnreachs             \t0\nIcmp6InPktTooBigs               \t0\nIcmp6InTimeExcds                \t0\nIcmp6InParmProblems             \t0\nIcmp6InEchos                    \t40\nIcmp6InEchoReplies              \t40\nIcmp6InGroupMembQueries         \t0\nIcmp6InGroupMembResponses       \t0\nIcmp6InGroupMembReductions      \t0\nIcmp6InRouterSolicits           \t0\nIcmp6InRouterAdvertisements     \t0\nIcmp6InNeighborSolicits         \t7\nIcmp6InNeighborAdvertisements   \t7\nIcmp6InRedirects                \t0\nIcmp6InMLDv2Reports             \t0\nIcmp6OutDestUnreachs            \t0\nIcmp6OutPktTooBigs              \t0\nIcmp6OutTimeExcds               \t0\nIcmp6OutParmProblems            \t0\nIcmp6OutEchos                   \t86\nIcmp6OutEchoReplies             \t40\nIcmp6OutGroupMembQueries        \t0\nIcmp6OutGroupMembResponses      \t0\nIcmp6OutGroupMembReductions     \t0\nIcmp6OutRouterSolicits          \t1\nIcmp6OutRouterAdvertisements    \t0\nIcmp6OutNeighborSolicits        \t20\nIcmp6OutNeighborAdvertisements  \t7\nIcmp6OutRedirects               \t0\nIcmp6OutMLDv2Reports            \t59\nIcmp6InType128                  \t40\nIcmp6InType129                  \t40\nIcmp6InType135                  \t7\nIcmp6InType136                  \t7\nIcmp6OutType128                 \t86\nIcmp6OutType129                 \t40\nIcmp6OutType133                 \t1\nIcmp6OutType135                 \t20\nIcmp6OutType136                 \t7\nIcmp6OutType143                 \t59\nUdp6InDatagrams                 \t0\nUdp6NoPorts                     \t0\nUdp6InErrors                    \t0\nUdp6OutDatagrams                \t0\nUdp6RcvbufErrors                \t0\nUdp6SndbufErrors                \t0\nUdp6InCsumErrors                \t0\nUdp6IgnoredMulti                \t0\nUdp6MemErrors                   \t0\nUdpLite6InDatagrams             \t0\nUdpLite6NoPorts                 \t0\nUdpLite6InErrors                \t0\nUdpLite6OutDatagrams            \t0\nUdpLite6RcvbufErrors            \t0\nUdpLite6SndbufErrors            \t0\nUdpLite6InCsumErrors            \t0\nUdpLite6MemErrors               \t0\n"
-  },
-  "vrf_binding_control": {
-    "baseline": {
-      "returncode": 0,
-      "stdout": "PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.\n64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.035 ms\n\n--- 127.0.0.1 ping statistics ---\n1 packets transmitted, 1 received, 0% packet loss, time 0ms\nrtt min/avg/max/mdev = 0.035/0.035/0.035/0.000 ms\n",
-      "stderr": ""
-    },
-    "unknown_vrf": {
-      "returncode": 2,
-      "stdout": "",
-      "stderr": "/tmp/ker-bridge-cmake/ker-bridge-exec-8kj_h4dg/bin/original-ping: socktype: SOCK_RAW\n/tmp/ker-bridge-cmake/ker-bridge-exec-8kj_h4dg/bin/original-ping: socket: No such device\n"
-    }
+    "ipv6": "Ip6InReceives                   \t237\nIp6InHdrErrors                  \t0\nIp6InTooBigErrors               \t0\nIp6InNoRoutes                   \t0\nIp6InAddrErrors                 \t0\nIp6InUnknownProtos              \t0\nIp6InTruncatedPkts              \t0\nIp6InDiscards                   \t0\nIp6InDelivers                   \t96\nIp6OutForwDatagrams             \t80\nIp6OutRequests                  \t223\nIp6OutDiscards                  \t6\nIp6OutNoRoutes                  \t0\nIp6ReasmTimeout                 \t0\nIp6ReasmReqds                   \t0\nIp6ReasmOKs                     \t0\nIp6ReasmFails                   \t0\nIp6FragOKs                      \t0\nIp6FragFails                    \t0\nIp6FragCreates                  \t0\nIp6InMcastPkts                  \t66\nIp6OutMcastPkts                 \t83\nIp6InOctets                     \t24328\nIp6OutOctets                    \t31076\nIp6InMcastOctets                \t6920\nIp6OutMcastOctets               \t8668\nIp6InBcastOctets                \t0\nIp6OutBcastOctets               \t0\nIp6InNoECTPkts                  \t237\nIp6InECT1Pkts                   \t0\nIp6InECT0Pkts                   \t0\nIp6InCEPkts                     \t0\nIp6OutTransmits                 \t303\nIcmp6InMsgs                     \t96\nIcmp6InErrors                   \t0\nIcmp6OutMsgs                    \t217\nIcmp6OutErrors                  \t0\nIcmp6InCsumErrors               \t0\nIcmp6OutRateLimitHost           \t0\nIcmp6InDestUnreachs             \t0\nIcmp6InPktTooBigs               \t0\nIcmp6InTimeExcds                \t0\nIcmp6InParmProblems             \t0\nIcmp6InEchos                    \t40\nIcmp6InEchoReplies              \t40\nIcmp6InGroupMembQueries         \t0\nIcmp6InGroupMembResponses       \t0\nIcmp6InGroupMembReductions      \t0\nIcmp6InRouterSolicits           \t0\nIcmp6InRouterAdvertisements     \t0\nIcmp6InNeighborSolicits         \t8\nIcmp6InNeighborAdvertisements   \t8\nIcmp6InRedirects                \t0\nIcmp6InMLDv2Reports             \t0\nIcmp6OutDestUnreachs            \t0\nIcmp6OutPktTooBigs              \t0\nIcmp6OutTimeExcds               \t0\nIcmp6OutParmProblems            \t0\nIcmp6OutEchos                   \t86\nIcmp6OutEchoReplies             \t40\nIcmp6OutGroupMembQueries        \t0\nIcmp6OutGroupMembResponses      \t0\nIcmp6OutGroupMembReductions     \t0\nIcmp6OutRouterSolicits          \t0\nIcmp6OutRouterAdvertisements    \t0\nIcmp6OutNeighborSolicits        \t21\nIcmp6OutNeighborAdvertisements  \t8\nIcmp6OutRedirects               \t0\nIcmp6OutMLDv2Reports            \t62\nIcmp6InType128                  \t40\nIcmp6InType129                  \t40\nIcmp6InType135                  \t8\nIcmp6InType136                  \t8\nIcmp6OutType128                 \t86\nIcmp6OutType129                 \t40\nIcmp6OutType135                 \t21\nIcmp6OutType136                 \t8\nIcmp6OutType143                 \t62\nUdp6InDatagrams                 \t0\nUdp6NoPorts                     \t0\nUdp6InErrors                    \t0\nUdp6OutDatagrams                \t0\nUdp6RcvbufErrors                \t0\nUdp6SndbufErrors                \t0\nUdp6InCsumErrors                \t0\nUdp6IgnoredMulti                \t0\nUdp6MemErrors                   \t0\nUdpLite6InDatagrams             \t0\nUdpLite6NoPorts                 \t0\nUdpLite6InErrors                \t0\nUdpLite6OutDatagrams            \t0\nUdpLite6RcvbufErrors            \t0\nUdpLite6SndbufErrors            \t0\nUdpLite6InCsumErrors            \t0\nUdpLite6MemErrors               \t0\n"
   },
   "cleanup_state": {
     "links": [
       {
-        "ifname": "lo"
+        "ifindex": 1,
+        "ifname": "lo",
+        "flags": [
+          "LOOPBACK",
+          "UP",
+          "LOWER_UP"
+        ],
+        "mtu": 65536,
+        "qdisc": "noqueue",
+        "operstate": "UNKNOWN",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "loopback",
+        "address": "00:00:00:00:00:00",
+        "broadcast": "00:00:00:00:00:00",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 0,
+        "max_mtu": 0,
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 524280,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
       },
       {
-        "ifname": "eth0"
+        "ifindex": 2,
+        "ifname": "eth0",
+        "flags": [
+          "BROADCAST",
+          "MULTICAST",
+          "UP",
+          "LOWER_UP"
+        ],
+        "mtu": 1500,
+        "qdisc": "pfifo_fast",
+        "operstate": "UP",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "56:96:31:d1:50:87",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 68,
+        "max_mtu": 65535,
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 65536,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536,
+        "parentbus": "virtio",
+        "parentdev": "virtio0"
       },
       {
-        "ifname": "sit0"
+        "ifindex": 3,
+        "link": null,
+        "ifname": "sit0",
+        "flags": [
+          "NOARP"
+        ],
+        "mtu": 1480,
+        "qdisc": "noop",
+        "operstate": "DOWN",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "sit",
+        "address": "0.0.0.0",
+        "broadcast": "0.0.0.0",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 1280,
+        "max_mtu": 65555,
+        "linkinfo": {
+          "info_kind": "sit",
+          "info_data": {
+            "proto": "ip6ip",
+            "remote": "any",
+            "local": "any",
+            "ttl": 64,
+            "pmtudisc": false
+          }
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 65536,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
       },
       {
-        "ifname": "veth1"
+        "ifindex": 4,
+        "link": "veth0",
+        "ifname": "veth1",
+        "flags": [
+          "BROADCAST",
+          "MULTICAST",
+          "M-DOWN"
+        ],
+        "mtu": 1500,
+        "qdisc": "noqueue",
+        "operstate": "DOWN",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "16:e3:a2:9d:b2:14",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 68,
+        "max_mtu": 65535,
+        "linkinfo": {
+          "info_kind": "veth"
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 524280,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
       },
       {
-        "ifname": "veth0"
+        "ifindex": 5,
+        "link": "veth1",
+        "ifname": "veth0",
+        "flags": [
+          "BROADCAST",
+          "MULTICAST",
+          "M-DOWN"
+        ],
+        "mtu": 1500,
+        "qdisc": "noqueue",
+        "operstate": "DOWN",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "1e:87:dc:f0:33:a3",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 68,
+        "max_mtu": 65535,
+        "linkinfo": {
+          "info_kind": "veth"
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 524280,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
       },
       {
-        "ifname": "veth3"
+        "ifindex": 6,
+        "link": "veth2",
+        "ifname": "veth3",
+        "flags": [
+          "BROADCAST",
+          "MULTICAST",
+          "M-DOWN"
+        ],
+        "mtu": 1500,
+        "qdisc": "noqueue",
+        "operstate": "DOWN",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "ce:63:d9:c8:81:4b",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 68,
+        "max_mtu": 65535,
+        "linkinfo": {
+          "info_kind": "veth"
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 524280,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
       },
       {
-        "ifname": "veth2"
+        "ifindex": 7,
+        "link": "veth3",
+        "ifname": "veth2",
+        "flags": [
+          "BROADCAST",
+          "MULTICAST",
+          "M-DOWN"
+        ],
+        "mtu": 1500,
+        "qdisc": "noqueue",
+        "operstate": "DOWN",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "aa:8b:55:83:32:31",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 68,
+        "max_mtu": 65535,
+        "linkinfo": {
+          "info_kind": "veth"
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 524280,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
       }
     ],
     "ipv4": "0\n",
@@ -2433,7 +4089,7 @@
         "lcore": 0,
         "cpu": 0,
         "packets": 0,
-        "polls": 33797,
+        "polls": 33884,
         "stalled": 0,
         "shutdown": 0,
         "reconfigured": 0,
@@ -2479,7 +4135,7 @@
     "dropped": 0,
     "tx_retries": 0,
     "rx_retries": 0,
-    "tx_bytes": 1096,
+    "tx_bytes": 1156,
     "rx_bytes": 0,
     "tx_dropped": 0,
     "rx_dropped": 0,
@@ -2490,9 +4146,9 @@
     "rx_multiseg": 0,
     "rx_startup_discarded": 0,
     "rx_shutdown_discarded": 0,
-    "idle_waits": 33788,
-    "idle_timeouts": 33767,
-    "tx_flushes": 9,
+    "idle_waits": 33874,
+    "idle_timeouts": 33848,
+    "tx_flushes": 10,
     "tx_timer_flushes": 0,
     "tx_full_flushes": 0,
     "tx_drain_flushes": 0,
@@ -2517,7 +4173,7 @@
       "pool_rx_descriptors": 256,
       "pool_tx_descriptors": 256,
       "mbuf_pool_count": 4095,
-      "mac": "ee:52:0d:2b:65:f7",
+      "mac": "56:96:31:d1:50:87",
       "mtu": 1500,
       "mbuf_mode": "large",
       "port_id": 0,
@@ -2579,5 +4235,7 @@
       "mptcp_fallback_synack": 0,
       "mptcp_fallback_ack": 0
     }
-  }
+  },
+  "server_stdout": "",
+  "server_stderr": "EAL: Detected CPU lcores: 128\nEAL: Detected NUMA nodes: 1\nEAL: Error creating '/var/run/dpdk': Permission denied\nEAL: No DPDK runtime directory created\nEAL: Detected shared linkage of DPDK\nEAL: Selected IOVA mode 'VA'\nKER_MPTCP_FIXTURE_CHANNELS_DRAINED\nKER_MPTCP_FIXTURE_NATIVE_HALTED\nKER_MPTCP_FIXTURE_TASKS_RETIRED\n"
 }

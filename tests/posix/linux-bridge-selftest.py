@@ -35,6 +35,8 @@ def validate_evidence(report):
     pings = [r for r in rows if r['arguments'][:2] == ['vrf', 'exec']]
     require(len(pings) == 10 and [r['returncode'] for r in pings] == [0,0,0,0,1,1,0,0,0,0], 'missing original bridge/PVID reachability and isolation matrix')
     for index, r in enumerate(pings):
+        require(r.get('native_clock_reads', 0) > 0,
+                'original bridge ping did not use native realtime for its SO_TIMESTAMP clock domain')
         require(r['arguments'] == ['vrf', 'exec', 'vveth0', 'ping' if index % 2 == 0 else 'ping6', '-c', '10', '-i', '0.1', '-w', '5', '192.0.2.130' if index % 2 == 0 else '2001:db8:2::2'], 'modified original bridge traffic or timing')
         require(r['vrf']['linkinfo']['info_kind'] == 'vrf', 'bridge ping did not use native VRF')
         require(('10 received' if r['returncode'] == 0 else '0 received') in r['stdout'] and not r['stderr'], 'wrong actual native bridge ping output')

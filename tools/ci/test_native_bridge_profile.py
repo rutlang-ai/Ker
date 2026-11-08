@@ -12,11 +12,14 @@ import native_tests
 class BridgeProfileTests(unittest.TestCase):
     def test_candidate_bound_native_bridge_gate(self):
         fixture = Path(__file__).resolve().parents[2] / 'tests/unit/bridge-transcript.json'
-        for mutation in ('complete', 'missing-entry', 'duplicate-entry', 'wrong-profile', 'missing-vlan',
-                         'skipped', 'wrong-fingerprint', 'failed-evidence', 'missing-phase', 'leaked-bridge'):
+        for mutation in ('complete', 'missing-entry', 'duplicate-entry', 'missing-control', 'wrong-profile', 'missing-vlan',
+                         'skipped', 'skipped-control', 'failed-control', 'wrong-fingerprint', 'failed-evidence', 'missing-phase', 'leaked-bridge'):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary); name = native_tests.LINUX_BRIDGE_PROFILE_TEST
-                inventory = [] if mutation == 'missing-entry' else [dict(name=name)]
+                control = native_tests.LINUX_BRIDGE_REALTIME_TEST
+                inventory = [] if mutation == 'missing-entry' else [dict(name=name), dict(name=control)]
+                if mutation == 'missing-control':
+                    inventory = [dict(name=name)]
                 if mutation == 'duplicate-entry':
                     inventory.append(dict(name=name))
                 (root / 'CMakeCache.txt').write_text(f'KER_NATIVE_LINUX_BUILD:PATH={root}\n')
@@ -28,8 +31,13 @@ class BridgeProfileTests(unittest.TestCase):
                 if mutation == 'missing-vlan':
                     options.remove('CONFIG_BRIDGE_VLAN_FILTERING=y')
                 (root / '.config').write_text('\n'.join(options) + '\n')
-                junit = root / 'junit.xml'; junit.write_text(f'<testsuite><testcase name="{name}">' +
-                    ('<skipped/>' if mutation == 'skipped' else '') + '</testcase></testsuite>')
+                junit = root / 'junit.xml'; junit.write_text(
+                    f'<testsuite><testcase name="{name}">' +
+                    ('<skipped/>' if mutation == 'skipped' else '') + '</testcase>' +
+                    f'<testcase name="{control}">' +
+                    ('<skipped/>' if mutation == 'skipped-control' else
+                     '<failure message="control failed"/>' if mutation == 'failed-control' else '') +
+                    '</testcase></testsuite>')
                 evidence = json.loads(fixture.read_text()); evidence['fingerprint'] = 'candidate'
                 if mutation == 'wrong-fingerprint':
                     evidence['fingerprint'] = 'other'

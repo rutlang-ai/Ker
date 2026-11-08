@@ -54,12 +54,21 @@ def main():
                 if state.stderr:
                     raise RuntimeError('native bridge observation warning: ' + state.stderr)
                 record['bridge_state'][key] = json.loads(state.stdout)
+            native_time_log = os.environ['KER_FORWARDING_LOG'] + '.native-time-' + str(os.getpid())
+            env['KER_MPTCP_NATIVE_REALTIME'] = '1'
+            env['KER_MPTCP_NATIVE_TIME_LOG'] = native_time_log
         else:
             if tool not in ('ip', 'bridge'):
                 raise RuntimeError('unsupported native tool: ' + tool)
             command = [os.environ['KER_FORWARDING_' + tool.upper()], *words]
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        if words[:2] == ['vrf', 'exec']:
+            try:
+                record['native_clock_reads'] = Path(native_time_log).stat().st_size
+            except FileNotFoundError:
+                record['native_clock_reads'] = 0
+            Path(native_time_log).unlink(missing_ok=True)
     with open(os.environ['KER_FORWARDING_LOG'], 'a') as stream:
         stream.write(json.dumps(record) + '\n')
     sys.stdout.write(record['stdout']); sys.stderr.write(record['stderr'])

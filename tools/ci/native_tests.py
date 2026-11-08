@@ -30,6 +30,7 @@ LINUX_MACVTAP_PROFILE_TEST = "linux-original-net-tap"
 LINUX_NETLINK_DUMPS_PROFILE_TEST = "linux-original-net-netlink-dumps"
 LINUX_NEXTHOP_PROFILE_TEST = "linux-original-forwarding-router-nh"
 LINUX_BRIDGE_PROFILE_TEST = "linux-original-forwarding-router-bridge"
+LINUX_BRIDGE_REALTIME_TEST = "bridge-realtime-wrapper-contract"
 LINUX_XT_STRING_PROFILE_TEST = "linux-original-netfilter-xt-string"
 LINUX_RPATH_PROFILE_TEST = "linux-original-netfilter-rpath"
 LINUX_RPATH_REALTIME_TEST = "rpath-realtime-wrapper-contract"
@@ -533,8 +534,10 @@ def run_nexthop_profile(build: Path, junit: Path) -> None:
 
 def run_bridge_profile(build: Path, junit: Path) -> None:
     name = LINUX_BRIDGE_PROFILE_TEST
-    require(sum(item['name'] == name for item in ctest_inventory(build)) == 1,
-            'bridge profile must register the complete original entry exactly once')
+    control = LINUX_BRIDGE_REALTIME_TEST
+    inventory = [item['name'] for item in ctest_inventory(build)]
+    require(inventory.count(name) == 1 and inventory.count(control) == 1,
+            'bridge profile must register the original entry and realtime ABI control exactly once')
     cache = (build / 'CMakeCache.txt').read_text()
     native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
                          if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
@@ -546,10 +549,12 @@ def run_bridge_profile(build: Path, junit: Path) -> None:
              'CONFIG_IP_MULTIPLE_TABLES=y', 'CONFIG_IPV6_MULTIPLE_TABLES=y', 'CONFIG_BRIDGE=y',
              'CONFIG_BRIDGE_VLAN_FILTERING=y'}.issubset(config),
             'bridge requires its real native bridge/VLAN/VRF profile')
+    required = {name, control}
+    selection = '^(' + '|'.join(re.escape(item) for item in sorted(required)) + ')$'
     result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
-                            '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+                            '--output-junit', str(junit), '--parallel', '1', '-R', selection], check=False)
     require(junit.is_file(), 'bridge CTest did not produce JUnit')
-    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    report_junit(junit, expected=required, required=required, ctest_returncode=result.returncode)
     evidence = json.loads((build / (name + '.json')).read_text())
     require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
             evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native bridge evidence')
