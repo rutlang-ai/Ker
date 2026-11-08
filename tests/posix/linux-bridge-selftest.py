@@ -27,6 +27,8 @@ def forwarding_counts(content):
 
 
 def validate_evidence(report):
+    if report.get('program') == 'router_bridge_vlan_upper_pvid.sh':
+        return common.load('bridge_upper_pvid_contract', 'linux-bridge-upper-pvid-contract.py').validate_evidence(report)
     if report.get('program') == 'router_bridge_pvid_vlan_upper.sh':
         return common.load('bridge_pvid_upper_contract', 'linux-bridge-pvid-upper-contract.py').validate_evidence(report)
     if report.get('program') == 'router_bridge_vlan_upper.sh':
@@ -106,7 +108,9 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('server', 'preload', 'tools', 'launcher', 'library', 'worker', 'pmd_dir', 'manifest', 'evidence'):
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
-    parser.add_argument('--program', choices=('router_bridge.sh','router_bridge_vlan.sh','router_bridge_1d.sh','router_bridge_vlan_upper.sh','router_bridge_pvid_vlan_upper.sh'), default='router_bridge.sh')
+    parser.add_argument('--program', choices=('router_bridge.sh', 'router_bridge_vlan.sh', 'router_bridge_1d.sh',
+        'router_bridge_vlan_upper.sh', 'router_bridge_pvid_vlan_upper.sh', 'router_bridge_vlan_upper_pvid.sh'),
+        default='router_bridge.sh')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if not args.inside:
@@ -186,6 +190,8 @@ def main():
                 environment['KER_FORWARDING_BRIDGE_VLAN_UPPER'] = '1'
             if args.program == 'router_bridge_pvid_vlan_upper.sh':
                 environment['KER_FORWARDING_BRIDGE_PVID_UPPER'] = '1'
+            if args.program == 'router_bridge_vlan_upper_pvid.sh':
+                environment['KER_FORWARDING_BRIDGE_UPPER_PVID'] = '1'
             negative = dict(environment, KER_MPTCP_SOCKET_CHANNEL=str(root / 'absent'), WAIT_TIMEOUT='1', INTERFACE_TIMEOUT='1')
             missing = subprocess.run(['bash', './' + args.program], cwd=work / 'forwarding', env=negative,
                                      capture_output=True, text=True, timeout=30)
