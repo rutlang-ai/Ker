@@ -18,15 +18,19 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_bridge_pr
     add_test(NAME bridge-realtime-wrapper-contract COMMAND ker-bridge-realtime-wrapper-test)
     set_tests_properties(bridge-realtime-wrapper-contract PROPERTIES
         ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:ker-linux-bridge-preload>")
-    add_test(NAME linux-original-forwarding-router-bridge
-        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-bridge-selftest.py"
-            --server "$<TARGET_FILE:ker-linux-network-server>"
-            --preload "$<TARGET_FILE:ker-linux-bridge-preload>" --tools "${KER_MPTCP_DIAG_TOOLS_DIR}"
-            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
-            --worker "$<TARGET_FILE:ker-io-worker>" --pmd-dir "${ker_session_pmd_dir}"
-            --manifest "${ker_native_manifest}"
-            --evidence "${PROJECT_BINARY_DIR}/linux-original-forwarding-router-bridge.json")
-    set_tests_properties(linux-original-forwarding-router-bridge PROPERTIES TIMEOUT 240 RUN_SERIAL TRUE
-        LABELS "linux-upstream;original-linux;protocol-selftest;dpdk;bridge-profile"
-        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    foreach(program router_bridge router_bridge_vlan)
+        string(REPLACE "_" "-" test_suffix "${program}")
+        add_test(NAME linux-original-forwarding-${test_suffix}
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-bridge-selftest.py"
+                --program "${program}.sh"
+                --server "$<TARGET_FILE:ker-linux-network-server>"
+                --preload "$<TARGET_FILE:ker-linux-bridge-preload>" --tools "${KER_MPTCP_DIAG_TOOLS_DIR}"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker>" --pmd-dir "${ker_session_pmd_dir}"
+                --manifest "${ker_native_manifest}"
+                --evidence "${PROJECT_BINARY_DIR}/linux-original-forwarding-${test_suffix}.json")
+        set_tests_properties(linux-original-forwarding-${test_suffix} PROPERTIES TIMEOUT 240 RUN_SERIAL TRUE
+            LABELS "linux-upstream;original-linux;protocol-selftest;dpdk;bridge-profile"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    endforeach()
 endif()

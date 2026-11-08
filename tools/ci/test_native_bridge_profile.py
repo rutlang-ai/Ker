@@ -1,4 +1,4 @@
-"""The complete original bridge entry and its real native VLAN facilities are mandatory."""
+"""Both original bridge entries and the native realtime ABI control are mandatory."""
 import json
 from pathlib import Path
 import subprocess
@@ -11,54 +11,67 @@ import native_tests
 
 class BridgeProfileTests(unittest.TestCase):
     def test_candidate_bound_native_bridge_gate(self):
-        fixture = Path(__file__).resolve().parents[2] / 'tests/unit/bridge-transcript.json'
-        for mutation in ('complete', 'missing-entry', 'duplicate-entry', 'missing-control', 'wrong-profile', 'missing-vlan',
-                         'skipped', 'skipped-control', 'failed-control', 'wrong-fingerprint', 'failed-evidence', 'missing-phase', 'leaked-bridge'):
-            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary); name = native_tests.LINUX_BRIDGE_PROFILE_TEST
-                control = native_tests.LINUX_BRIDGE_REALTIME_TEST
-                inventory = [] if mutation == 'missing-entry' else [dict(name=name), dict(name=control)]
-                if mutation == 'missing-control':
-                    inventory = [dict(name=name)]
-                if mutation == 'duplicate-entry':
-                    inventory.append(dict(name=name))
+        fixtures = Path(__file__).resolve().parents[2] / 'tests/unit'
+        files = dict(native_tests.LINUX_BRIDGE_PROFILE_TESTS)
+        control = native_tests.LINUX_BRIDGE_REALTIME_TEST
+        cases = [('complete', None), ('wrong-profile', None), ('missing-vlan', None),
+                 ('missing-control', None), ('duplicate-control', None),
+                 ('skipped-control', None), ('failed-control', None), ('failed-ctest', None)]
+        evidence_mutations = ('missing-entry', 'duplicate-entry', 'skipped-entry',
+                              'wrong-fingerprint', 'failed-evidence', 'wrong-program',
+                              'missing-phase', 'leaked-bridge', 'missing-clock')
+        cases.extend((mutation, target) for target in files for mutation in evidence_mutations)
+        for mutation, target in cases:
+            with self.subTest(mutation=mutation, target=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                expected = set(files) | {control}
+                inventory = [dict(name=name) for name in sorted(expected)]
+                affected = target or next(iter(files))
+                if mutation == 'missing-entry': inventory.remove(dict(name=affected))
+                elif mutation == 'duplicate-entry': inventory.append(dict(name=affected))
+                elif mutation == 'missing-control': inventory.remove(dict(name=control))
+                elif mutation == 'duplicate-control': inventory.append(dict(name=control))
                 (root / 'CMakeCache.txt').write_text(f'KER_NATIVE_LINUX_BUILD:PATH={root}\n')
                 (root / 'native-linux.json').write_text(json.dumps(dict(
                     config_fragment='wrong' if mutation == 'wrong-profile' else 'config/native-linux-bridge-selftests.config',
                     kernel=str(root), fingerprint='candidate')))
-                options = ['CONFIG_' + option + '=y' for option in
-                           ('VETH', 'NET_VRF', 'VLAN_8021Q', 'IP_ROUTE_MULTIPATH', 'IP_MULTIPLE_TABLES', 'IPV6_MULTIPLE_TABLES', 'BRIDGE', 'BRIDGE_VLAN_FILTERING')]
-                if mutation == 'missing-vlan':
-                    options.remove('CONFIG_BRIDGE_VLAN_FILTERING=y')
+                options = ['CONFIG_' + name + '=y' for name in
+                           ('VETH', 'NET_VRF', 'VLAN_8021Q', 'IP_ROUTE_MULTIPATH',
+                            'IP_MULTIPLE_TABLES', 'IPV6_MULTIPLE_TABLES', 'BRIDGE', 'BRIDGE_VLAN_FILTERING')]
+                if mutation == 'missing-vlan': options.remove('CONFIG_BRIDGE_VLAN_FILTERING=y')
                 (root / '.config').write_text('\n'.join(options) + '\n')
-                junit = root / 'junit.xml'; junit.write_text(
-                    f'<testsuite><testcase name="{name}">' +
-                    ('<skipped/>' if mutation == 'skipped' else '') + '</testcase>' +
-                    f'<testcase name="{control}">' +
-                    ('<skipped/>' if mutation == 'skipped-control' else
-                     '<failure message="control failed"/>' if mutation == 'failed-control' else '') +
-                    '</testcase></testsuite>')
-                evidence = json.loads(fixture.read_text()); evidence['fingerprint'] = 'candidate'
-                if mutation == 'wrong-fingerprint':
-                    evidence['fingerprint'] = 'other'
-                elif mutation == 'failed-evidence':
-                    evidence['status'] = 'FAIL'
-                elif mutation == 'missing-phase':
-                    evidence['commands'] = [r for r in evidence['commands'] if 'vlan_default_pvid' not in r['arguments']]
-                elif mutation == 'leaked-bridge':
-                    evidence['cleanup_state']['links'].append(dict(ifname='br1'))
-                (root / (name + '.json')).write_text(json.dumps(evidence))
+                junit = root / 'junit.xml'
+                entries = []
+                for name in sorted(expected):
+                    status = ('<skipped/>' if mutation == 'skipped-control' and name == control or
+                              mutation == 'skipped-entry' and name == target else
+                              '<failure message="failed"/>' if mutation == 'failed-control' and name == control else '')
+                    entries.append(f'<testcase name="{name}">{status}</testcase>')
+                junit.write_text('<testsuite>' + ''.join(entries) + '</testsuite>')
+                for name, program in files.items():
+                    filename = 'bridge-transcript.json' if program == 'router_bridge.sh' else 'bridge-vlan-transcript.json'
+                    report = json.loads((fixtures / filename).read_text())
+                    report['fingerprint'] = 'candidate'
+                    if name == target:
+                        if mutation == 'wrong-fingerprint': report['fingerprint'] = 'other'
+                        elif mutation == 'failed-evidence': report['status'] = 'FAIL'
+                        elif mutation == 'wrong-program': report['program'] = 'wrong.sh'
+                        elif mutation == 'missing-phase': report['commands'] = [r for r in report['commands'] if r['tool'] != 'bridge']
+                        elif mutation == 'leaked-bridge': report['cleanup_state']['links'].append(dict(ifname='br1'))
+                        elif mutation == 'missing-clock':
+                            next(r for r in report['commands'] if r['arguments'][:2] == ['vrf', 'exec']).pop('native_clock_reads')
+                    (root / (name + '.json')).write_text(json.dumps(report))
+                result = subprocess.CompletedProcess([], 1 if mutation == 'failed-ctest' else 0)
                 with mock.patch.object(native_tests, 'ctest_inventory', return_value=inventory), \
-                     mock.patch.object(native_tests.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
-                    if mutation == 'complete':
-                        native_tests.run_bridge_profile(root, junit)
+                     mock.patch.object(native_tests.subprocess, 'run', return_value=result):
+                    if mutation == 'complete': native_tests.run_bridge_profile(root, junit)
                     else:
-                        with self.assertRaises(RuntimeError):
-                            native_tests.run_bridge_profile(root, junit)
+                        with self.assertRaises(RuntimeError): native_tests.run_bridge_profile(root, junit)
 
-    def test_default_graph_excludes_bridge_entry(self):
-        with self.assertRaisesRegex(RuntimeError, 'bridge'):
-            native_tests.validate_default_profile_inventory({native_tests.LINUX_BRIDGE_PROFILE_TEST})
+    def test_default_graph_excludes_both_bridge_entries(self):
+        for name in native_tests.LINUX_BRIDGE_PROFILE_TESTS:
+            with self.subTest(name=name), self.assertRaisesRegex(RuntimeError, 'bridge'):
+                native_tests.validate_default_profile_inventory({name})
 
 
 if __name__ == '__main__':

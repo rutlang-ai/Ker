@@ -32,6 +32,8 @@ LINUX_NEXTHOP_PROFILE_TEST = "linux-original-forwarding-router-nh"
 LINUX_NEXTHOP_REALTIME_TEST = "nexthop-realtime-wrapper-contract"
 LINUX_BRIDGE_PROFILE_TEST = "linux-original-forwarding-router-bridge"
 LINUX_BRIDGE_REALTIME_TEST = "bridge-realtime-wrapper-contract"
+LINUX_BRIDGE_PROFILE_TESTS = {LINUX_BRIDGE_PROFILE_TEST: "router_bridge.sh",
+                              "linux-original-forwarding-router-bridge-vlan": "router_bridge_vlan.sh"}
 LINUX_XT_STRING_PROFILE_TEST = "linux-original-netfilter-xt-string"
 LINUX_RPATH_PROFILE_TEST = "linux-original-netfilter-rpath"
 LINUX_RPATH_REALTIME_TEST = "rpath-realtime-wrapper-contract"
@@ -536,11 +538,11 @@ def run_nexthop_profile(build: Path, junit: Path) -> None:
 
 
 def run_bridge_profile(build: Path, junit: Path) -> None:
-    name = LINUX_BRIDGE_PROFILE_TEST
+    names = set(LINUX_BRIDGE_PROFILE_TESTS)
     control = LINUX_BRIDGE_REALTIME_TEST
     inventory = [item['name'] for item in ctest_inventory(build)]
-    require(inventory.count(name) == 1 and inventory.count(control) == 1,
-            'bridge profile must register the original entry and realtime ABI control exactly once')
+    require(all(inventory.count(name) == 1 for name in names) and inventory.count(control) == 1,
+            'bridge profile must register both original entries and realtime ABI control exactly once')
     cache = (build / 'CMakeCache.txt').read_text()
     native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
                          if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
@@ -552,20 +554,22 @@ def run_bridge_profile(build: Path, junit: Path) -> None:
              'CONFIG_IP_MULTIPLE_TABLES=y', 'CONFIG_IPV6_MULTIPLE_TABLES=y', 'CONFIG_BRIDGE=y',
              'CONFIG_BRIDGE_VLAN_FILTERING=y'}.issubset(config),
             'bridge requires its real native bridge/VLAN/VRF profile')
-    required = {name, control}
+    required = names | {control}
     selection = '^(' + '|'.join(re.escape(item) for item in sorted(required)) + ')$'
     result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
                             '--output-junit', str(junit), '--parallel', '1', '-R', selection], check=False)
     require(junit.is_file(), 'bridge CTest did not produce JUnit')
     report_junit(junit, expected=required, required=required, ctest_returncode=result.returncode)
-    evidence = json.loads((build / (name + '.json')).read_text())
-    require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
-            evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native bridge evidence')
-    script = Path(__file__).resolve().parents[2] / 'tests/posix/linux-bridge-selftest.py'
-    spec = importlib.util.spec_from_file_location('bridge_contract', script)
+    contract_script = Path(__file__).resolve().parents[2] / 'tests/posix/linux-bridge-selftest.py'
+    spec = importlib.util.spec_from_file_location('bridge_contract', contract_script)
     contract = importlib.util.module_from_spec(spec); spec.loader.exec_module(contract)
-    contract.validate_evidence(evidence)
-    summary('Original routed bridge: complete dual-stack remaster/PVID reachability and isolation, PASS ' + manifest['fingerprint'])
+    for name, program in LINUX_BRIDGE_PROFILE_TESTS.items():
+        evidence = json.loads((build / (name + '.json')).read_text())
+        require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
+                evidence.get('fingerprint') == manifest.get('fingerprint') and
+                evidence.get('program') == program, 'wrong native bridge/VLAN evidence')
+        contract.validate_evidence(evidence)
+    summary('Original routed bridge/PVID and VLAN switching: both complete shells, PASS ' + manifest['fingerprint'])
 
 
 def run_xt_string_profile(build: Path, junit: Path) -> None:
@@ -924,7 +928,7 @@ def run_join_profile(build: Path, junit: Path) -> None:
 
 def validate_default_profile_inventory(names: set[str]) -> None:
     require(LINUX_NEXTHOP_PROFILE_TEST not in names, "nexthop requires its native nexthop/clsact/VRF profile")
-    require(LINUX_BRIDGE_PROFILE_TEST not in names, "bridge requires its native bridge/VLAN/VRF profile")
+    require(not names.intersection(LINUX_BRIDGE_PROFILE_TESTS), "bridge requires its native bridge/VLAN/VRF profile")
     require(LINUX_XT_STRING_PROFILE_TEST not in names, "xt_string requires its native string/BM/KMP profile")
     require(LINUX_RPATH_PROFILE_TEST not in names, 'rpath shell requires its native rpfilter/fib profile')
     require(LINUX_IPIP_PROFILE_TEST not in names, 'IPIP shell requires its native tunnel profile')

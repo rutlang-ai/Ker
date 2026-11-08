@@ -695,7 +695,7 @@ jobs:
           python3 tools/ci/native_tests.py nexthop-profile \
             build-native-nexthop "$RUNNER_TEMP/native-nexthop-ctest.xml"
 
-      - name: Run complete original routed bridge and PVID shell
+      - name: Run complete original routed bridge, PVID and VLAN shells
         if: steps.native.outputs.present == 'true'
         shell: bash
         env:
@@ -851,6 +851,7 @@ jobs:
             ${{ runner.temp }}/native-bridge-ctest.xml
             ${{ runner.temp }}/native-linux-bridge-selftests-build/native-linux.json
             build-native-bridge/linux-original-forwarding-router-bridge.json
+            build-native-bridge/linux-original-forwarding-router-bridge-vlan.json
             ${{ runner.temp }}/native-xt-string-ctest.xml
             ${{ runner.temp }}/native-linux-xt-string-selftests-build/native-linux.json
             build-native-xt-string/linux-original-netfilter-xt-string.json
