@@ -28,7 +28,8 @@ def bridge_snapshot(env):
         if state.stderr:
             raise RuntimeError('native bridge VLAN upper observation warning: ' + state.stderr)
         result[key] = json.loads(state.stdout)
-    if os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':
+    if (os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1' or
+            os.environ.get('KER_FORWARDING_BRIDGE_MDB_PORT') == '1'):
         state = subprocess.run([os.environ['KER_FORWARDING_BRIDGE'], '-j', '-d', 'mdb', 'show'],
                                env=env, capture_output=True, text=True, timeout=10, check=True)
         if state.stderr:
@@ -58,6 +59,22 @@ def learning_snapshot(env):
         if result.stderr:
             raise RuntimeError('native FDB learning observation warning: ' + result.stderr)
         state[key] = json.loads(result.stdout)
+    return state
+
+
+def mdb_port_snapshot(env, traffic=False):
+    state = bridge_snapshot(env)
+    query = [os.environ['KER_FORWARDING_IP'], '-s', '-d', '-j', 'link', 'show']
+    result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
+    if result.stderr:
+        raise RuntimeError('native MDB port observation warning: ' + result.stderr)
+    state['links'] = json.loads(result.stdout)
+    if traffic:
+        query = [os.environ['KER_FORWARDING_TC'], '-j', '-s', 'filter', 'show', 'dev', 'veth3', 'ingress']
+        result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
+        if result.stderr:
+            raise RuntimeError('native multicast flower observation warning: ' + result.stderr)
+        state['filters'] = json.loads(result.stdout)
     return state
 
 
@@ -124,7 +141,8 @@ def main():
             env['KER_MPTCP_NATIVE_REALTIME'] = '1'
             env['KER_MPTCP_NATIVE_TIME_LOG'] = native_time_log
         else:
-            if tool not in ('ip', 'bridge', 'mausezahn'):
+            if tool not in ('ip', 'bridge', 'mausezahn') and not (
+                    tool == 'tc' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_PORT') == '1'):
                 raise RuntimeError('unsupported native tool: ' + tool)
             command = [os.environ['KER_FORWARDING_' + tool.upper()], *words]
         if tool == 'bridge' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':
@@ -138,8 +156,15 @@ def main():
                  words[3:4] in (['master'], ['nomaster']) or
                  tool == 'ip' and words[:5] == ['link', 'set', 'dev', 'veth5', 'addr'])):
             record['learning_before'] = learning_snapshot(env)
+        observe_mdb_port = (os.environ.get('KER_FORWARDING_BRIDGE_MDB_PORT') == '1' and
+                            (tool in ('bridge', 'tc', 'mausezahn') or tool == 'ip' and
+                             words[:4] == ['link', 'set', 'dev', 'veth2']))
+        if observe_mdb_port:
+            record['mdb_port_before'] = mdb_port_snapshot(env, tool == 'mausezahn')
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        if observe_mdb_port:
+            record['mdb_port_after'] = mdb_port_snapshot(env, tool == 'mausezahn')
         if 'learning_before' in record:
             record['learning_after'] = learning_snapshot(env)
         if tool in ('bridge', 'mausezahn') and os.environ.get('KER_FORWARDING_BRIDGE_STICKY') == '1':

@@ -1,4 +1,4 @@
-"""All nine complete bridge entries and the native realtime ABI control are mandatory."""
+"""All ten complete bridge entries and the native realtime ABI control are mandatory."""
 import json
 from pathlib import Path
 import subprocess
@@ -23,11 +23,13 @@ class BridgeProfileTests(unittest.TestCase):
             'bridge_mdb_host.sh': 'bridge-mdb-host-transcript.json',
             'bridge_sticky_fdb.sh': 'bridge-sticky-transcript.json',
             'bridge_fdb_learning_limit.sh': 'bridge-learning-transcript.json',
+            'bridge_mdb_port_down.sh': 'bridge-mdb-port-transcript.json',
         }
         control = native_tests.LINUX_BRIDGE_REALTIME_TEST
         cases = [('complete', None), ('wrong-profile', None), ('missing-vlan', None), ('missing-snooping', None),
                  ('missing-control', None), ('duplicate-control', None),
                  ('skipped-control', None), ('failed-control', None), ('failed-ctest', None)]
+        cases.extend(('missing-tc', option) for option in ('NET_CLS_ACT', 'NET_SCH_INGRESS', 'NET_CLS_FLOWER', 'NET_ACT_GACT'))
         evidence_mutations = ('missing-entry', 'duplicate-entry', 'skipped-entry',
                               'wrong-fingerprint', 'failed-evidence', 'wrong-program',
                               'missing-phase', 'leaked-bridge', 'missing-proof')
@@ -48,7 +50,8 @@ class BridgeProfileTests(unittest.TestCase):
                     kernel=str(root), fingerprint='candidate')))
                 options = ['CONFIG_' + name + '=y' for name in
                            ('VETH', 'NET_VRF', 'VLAN_8021Q', 'IP_ROUTE_MULTIPATH',
-                            'IP_MULTIPLE_TABLES', 'IPV6_MULTIPLE_TABLES', 'BRIDGE', 'BRIDGE_VLAN_FILTERING', 'BRIDGE_IGMP_SNOOPING')]
+                            'IP_MULTIPLE_TABLES', 'IPV6_MULTIPLE_TABLES', 'BRIDGE', 'BRIDGE_VLAN_FILTERING', 'BRIDGE_IGMP_SNOOPING', 'NET_CLS_ACT', 'NET_SCH_INGRESS', 'NET_CLS_FLOWER', 'NET_ACT_GACT')]
+                if mutation == 'missing-tc': options.remove('CONFIG_' + target + '=y')
                 if mutation == 'missing-vlan': options.remove('CONFIG_BRIDGE_VLAN_FILTERING=y')
                 if mutation == 'missing-snooping': options.remove('CONFIG_BRIDGE_IGMP_SNOOPING=y')
                 (root / '.config').write_text('\n'.join(options) + '\n')
@@ -77,11 +80,13 @@ class BridgeProfileTests(unittest.TestCase):
                             else:
                                 report['commands'] = [r for r in report['commands'] if r['tool'] != 'bridge']
                         elif mutation == 'leaked-bridge':
-                            report['cleanup_state']['links'].append(dict(ifname='br0' if program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh') else 'br1'))
+                            report['cleanup_state']['links'].append(dict(ifname='br0' if program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh') else 'br1'))
                         elif mutation == 'missing-proof' and program == 'bridge_mdb_host.sh':
                             next(r for r in report['commands'] if r['tool'] == 'bridge').pop('mdb_after')
                         elif mutation == 'missing-proof' and program == 'bridge_fdb_learning_limit.sh':
                             next(r for r in report['commands'] if r['arguments'][:2] == ['vrf', 'exec']).pop('learning_after')
+                        elif mutation == 'missing-proof' and program == 'bridge_mdb_port_down.sh':
+                            report['packet_trace'] = []
                         elif mutation == 'missing-proof' and program == 'bridge_sticky_fdb.sh':
                             report['packet_trace'] = []
                         elif mutation == 'missing-proof':

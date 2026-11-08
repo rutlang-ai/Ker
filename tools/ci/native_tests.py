@@ -40,7 +40,8 @@ LINUX_BRIDGE_PROFILE_TESTS = {LINUX_BRIDGE_PROFILE_TEST: "router_bridge.sh",
                               "linux-original-forwarding-router-bridge-vlan-upper-pvid": "router_bridge_vlan_upper_pvid.sh",
                               "linux-original-forwarding-bridge-mdb-host": "bridge_mdb_host.sh",
                               "linux-original-forwarding-bridge-sticky-fdb": "bridge_sticky_fdb.sh",
-                              "linux-original-forwarding-bridge-fdb-learning-limit": "bridge_fdb_learning_limit.sh"}
+                              "linux-original-forwarding-bridge-fdb-learning-limit": "bridge_fdb_learning_limit.sh",
+                              "linux-original-forwarding-bridge-mdb-port-down": "bridge_mdb_port_down.sh"}
 LINUX_XT_STRING_PROFILE_TEST = "linux-original-netfilter-xt-string"
 LINUX_RPATH_PROFILE_TEST = "linux-original-netfilter-rpath"
 LINUX_RPATH_REALTIME_TEST = "rpath-realtime-wrapper-contract"
@@ -551,7 +552,7 @@ def run_bridge_profile(build: Path, junit: Path) -> None:
     control = LINUX_BRIDGE_REALTIME_TEST
     inventory = [item['name'] for item in ctest_inventory(build)]
     require(all(inventory.count(name) == 1 for name in names) and inventory.count(control) == 1,
-            'bridge profile must register all nine complete original entries and clock control exactly once')
+            'bridge profile must register all ten complete original entries and clock control exactly once')
     cache = (build / 'CMakeCache.txt').read_text()
     native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
                          if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
@@ -561,7 +562,9 @@ def run_bridge_profile(build: Path, junit: Path) -> None:
     require(manifest.get('config_fragment') == 'config/native-linux-bridge-selftests.config' and
             {'CONFIG_VETH=y', 'CONFIG_NET_VRF=y', 'CONFIG_VLAN_8021Q=y', 'CONFIG_IP_ROUTE_MULTIPATH=y',
              'CONFIG_IP_MULTIPLE_TABLES=y', 'CONFIG_IPV6_MULTIPLE_TABLES=y', 'CONFIG_BRIDGE=y',
-             'CONFIG_BRIDGE_VLAN_FILTERING=y', 'CONFIG_BRIDGE_IGMP_SNOOPING=y'}.issubset(config),
+             'CONFIG_BRIDGE_VLAN_FILTERING=y', 'CONFIG_BRIDGE_IGMP_SNOOPING=y',
+             'CONFIG_NET_CLS_ACT=y', 'CONFIG_NET_SCH_INGRESS=y', 'CONFIG_NET_CLS_FLOWER=y',
+             'CONFIG_NET_ACT_GACT=y'}.issubset(config),
             'bridge requires its real native bridge/VLAN/VRF profile')
     required = names | {control}
     selection = '^(' + '|'.join(re.escape(item) for item in sorted(required)) + ')$'
@@ -578,7 +581,7 @@ def run_bridge_profile(build: Path, junit: Path) -> None:
                 evidence.get('fingerprint') == manifest.get('fingerprint') and
                 evidence.get('program') == program, 'wrong native bridge/VLAN evidence')
         contract.validate_evidence(evidence)
-    summary('Original routed bridge/PVID, VLAN switching, 802.1D and VLAN uppers: nine complete shells including host MDB, sticky FDB and learning limits, PASS ' + manifest['fingerprint'])
+    summary('Original routed bridge/PVID, VLAN switching, 802.1D and VLAN uppers: ten complete shells including host/port-down MDB, sticky FDB and learning limits, PASS ' + manifest['fingerprint'])
 
 
 def run_xt_string_profile(build: Path, junit: Path) -> None:
