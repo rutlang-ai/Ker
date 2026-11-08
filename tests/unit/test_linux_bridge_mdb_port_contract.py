@@ -22,7 +22,7 @@ class BridgeMdbPortContractTests(unittest.TestCase):
                  'wrong-byte-counter', 'tc-delete-missing', 'missing-send', 'wrong-send-count', 'send-failed',
                  'missing-packet', 'duplicate-packet', 'short-packet-send', 'wrong-packet-source', 'wrong-packet-dest',
                  'wrong-packet-protocol', 'wrong-udp-port', 'wrong-ifindex', 'source-not-sent',
-                 'first-peer-not-reached', 'reordered-mdb-delete', 'bridge-leaked', 'vrf-leaked', 'veth-left-up',
+                 'query-missing-traversal', 'reordered-mdb-delete', 'bridge-leaked', 'vrf-leaked', 'veth-left-up',
                  'mdb-leaked', 'route-leaked', 'missing-cleanup', 'host-fallback', 'ignored-vrf', 'wrong-send-bytes',
                  'packet-trace-error', 'live-socket', 'outstanding-packet', 'forced-stop')
         for case in cases:
@@ -37,6 +37,9 @@ class BridgeMdbPortContractTests(unittest.TestCase):
                     objects = json.loads(query['stdout']); rule(objects)['options']['actions'][0]['stats'][field] = value; query['stdout'] = json.dumps(objects)
                 if case == 'asynchronous-first-send':
                     stats = rule(after['filters'])['options']['actions'][0]['stats']; stats.update(packets=0, bytes=0, drops=0)
+                    for dev, direction in (('veth2', 'tx'), ('veth3', 'rx')):
+                        links[dev]['stats64'][direction] = copy.deepcopy(
+                            next(x for x in mz[0]['mdb_port_before']['links'] if x['ifname'] == dev)['stats64'][direction])
                 elif case == 'payload-fill-variation':
                     frame = bytearray.fromhex(r['packet_trace'][0]['frame_hex']); frame[42] ^= 1
                     frame[40:42] = b'\x00\x00'  # IPv4 UDP permits an omitted checksum.
@@ -81,8 +84,17 @@ class BridgeMdbPortContractTests(unittest.TestCase):
                 elif case in ('wrong-packet-source', 'wrong-packet-dest', 'wrong-packet-protocol', 'wrong-udp-port'):
                     frame = bytearray.fromhex(r['packet_trace'][0]['frame_hex']); frame[{'wrong-packet-source':6,'wrong-packet-dest':0,'wrong-packet-protocol':23,'wrong-udp-port':36}[case]] ^= 1; r['packet_trace'][0]['frame_hex'] = frame.hex()
                 elif case == 'wrong-ifindex': r['packet_trace'][0]['ifindex'] = -1
-                elif case in ('source-not-sent', 'first-peer-not-reached'):
-                    dev, direction = ('veth0', 'tx') if case == 'source-not-sent' else ('veth3', 'rx'); links[dev]['stats64'][direction] = copy.deepcopy(next(x for x in mz[0]['mdb_port_before']['links'] if x['ifname'] == dev)['stats64'][direction])
+                elif case == 'source-not-sent':
+                    dev, direction = 'veth0', 'tx'
+                    next(x for x in queries[0]['mdb_port_after']['links'] if x['ifname'] == dev)['stats64'][direction] = copy.deepcopy(
+                        next(x for x in mz[0]['mdb_port_before']['links'] if x['ifname'] == dev)['stats64'][direction])
+                elif case == 'query-missing-traversal':
+                    query_after = queries[0]['mdb_port_after']
+                    query_links = {x['ifname']: x for x in query_after['links']}
+                    before_links = {x['ifname']: x for x in mz[0]['mdb_port_before']['links']}
+                    self.assertEqual(rule(json.loads(queries[0]['stdout']))['options']['actions'][0]['stats']['packets'], 1)
+                    for dev, direction in (('veth2', 'tx'), ('veth3', 'rx')):
+                        query_links[dev]['stats64'][direction] = copy.deepcopy(before_links[dev]['stats64'][direction])
                 elif case == 'reordered-mdb-delete': rows.remove(bridge[3]); rows.append(bridge[3])
                 elif case in ('bridge-leaked', 'vrf-leaked'): r['cleanup_state']['links'].append(dict(ifname='br0' if case == 'bridge-leaked' else 'vveth3'))
                 elif case == 'veth-left-up': next(x for x in r['cleanup_state']['links'] if x['ifname'] == 'veth2')['flags'].append('UP')
@@ -96,7 +108,14 @@ class BridgeMdbPortContractTests(unittest.TestCase):
                 elif case == 'live-socket': r['native_fixture']['live'] = 1
                 elif case == 'outstanding-packet': r['stats']['outstanding'] = 1
                 elif case == 'forced-stop': r['stats']['shutdown_timed_out'] = True
-                if case in ('complete', 'asynchronous-first-send', 'payload-fill-variation'): contract.validate_evidence(r)
+                if case == 'asynchronous-first-send':
+                    early = rule(after['filters'])['options']['actions'][0]['stats']
+                    self.assertEqual((early['packets'], early['bytes'], early['drops']), (0, 0, 0))
+                    for dev, direction in (('veth2', 'tx'), ('veth3', 'rx')):
+                        self.assertEqual(links[dev]['stats64'][direction],
+                                         next(x for x in mz[0]['mdb_port_before']['links'] if x['ifname'] == dev)['stats64'][direction])
+                    contract.validate_evidence(r)
+                elif case in ('complete', 'payload-fill-variation'): contract.validate_evidence(r)
                 else:
                     with self.assertRaises(RuntimeError): contract.validate_evidence(r)
 

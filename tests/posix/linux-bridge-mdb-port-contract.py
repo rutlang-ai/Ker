@@ -92,16 +92,17 @@ def validate_evidence(report):
     for index, (sender, query, packet) in enumerate(zip(traffic, queries, packets)):
         present = index == 0
         require('mdb_port_before' in sender and 'mdb_port_after' in sender, 'native multicast send state proof missing')
-        before, after = sender['mdb_port_before'], sender['mdb_port_after']
-        a, b = state_proof(before, present, True), state_proof(after, present, True)
+        before, immediate = sender['mdb_port_before'], sender['mdb_port_after']
+        a = state_proof(before, present, True)
+        state_proof(immediate, present, True)
         flower(before['filters'], 0)
         # The unchanged original sleep1 precedes its decisive tc query; no earlier
         # snapshot imposes an extra packet-delivery deadline.
-        early = [r for r in after['filters'] if r.get('options', {}).get('handle') == 101]
+        early = [r for r in immediate['filters'] if r.get('options', {}).get('handle') == 101]
         require(len(early) == 1, 'native multicast filter vanished during send')
         early_count = early[0]['options']['actions'][0]['stats']['packets']
         require(early_count in ((0, 1) if present else (0,)), 'unexpected early native multicast counter')
-        flower(after['filters'], early_count); flower(json.loads(query['stdout']), int(present))
+        flower(immediate['filters'], early_count)
         frame = bytes.fromhex(packet['frame_hex'])
         require(packet.get('family') == 17 and packet.get('ifindex') == a['veth0']['ifindex'] and
                 packet.get('length') == packet.get('result') == len(frame) == 106 and
@@ -112,9 +113,13 @@ def validate_evidence(report):
                 struct.unpack('!HHH', frame[34:40]) == (2048, 4096, 72) and len(frame[42:]) == 64,
                 'original native multicast Ethernet/IP/UDP packet or sender changed')
         require('mdb_port_before' in query and 'mdb_port_after' in query, 'decisive native flower query state missing')
-        state_proof(query['mdb_port_after'], present, True)
+        # The original script waits one second between send and this query.
+        # Delivery and bridge-port counters are judged at this post-wait state,
+        # never at the immediate snapshot taken by the send wrapper.
+        query_links = state_proof(query['mdb_port_after'], present, True)
+        flower(json.loads(query['stdout']), int(present))
         for dev, direction in [('veth0', 'tx'), ('veth1', 'rx')] + ([('veth2', 'tx'), ('veth3', 'rx')] if present else []):
-            x, y = a[dev]['stats64'][direction], b[dev]['stats64'][direction]
+            x, y = a[dev]['stats64'][direction], query_links[dev]['stats64'][direction]
             require(y['packets'] - x['packets'] >= 1 and y['bytes'] - x['bytes'] >= len(frame),
                     'actual native multicast frame did not traverse expected bridge ingress/peer')
     downs = [r for r in rows if r['arguments'] == ['link', 'set', 'dev', 'veth2', 'down']]
