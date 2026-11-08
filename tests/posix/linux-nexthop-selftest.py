@@ -37,6 +37,7 @@ def validate_evidence(report):
         ['vrf','exec','vrf-h1','ping6','-c','10','-i','0.1','-w','5','2001:db8:2::2']],
         'modified or missing original nexthop ping arguments')
     require(all(r['returncode'] == 0 and '10 received' in r['stdout'] and not r['stderr'] and
+                r.get('native_clock_reads', 0) > 0 and
                 r['vrf']['linkinfo']['info_kind'] == 'vrf' for r in pings),
             'original dual-stack traffic did not traverse the native VRF')
     require([r['arguments'] for r in rows if r['returncode']] == [

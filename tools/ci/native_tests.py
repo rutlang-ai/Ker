@@ -29,6 +29,7 @@ LINUX_NET_PROFILE_TESTS = {"linux-original-net-tun", "linux-original-net-reusepo
 LINUX_MACVTAP_PROFILE_TEST = "linux-original-net-tap"
 LINUX_NETLINK_DUMPS_PROFILE_TEST = "linux-original-net-netlink-dumps"
 LINUX_NEXTHOP_PROFILE_TEST = "linux-original-forwarding-router-nh"
+LINUX_NEXTHOP_REALTIME_TEST = "nexthop-realtime-wrapper-contract"
 LINUX_BRIDGE_PROFILE_TEST = "linux-original-forwarding-router-bridge"
 LINUX_BRIDGE_REALTIME_TEST = "bridge-realtime-wrapper-contract"
 LINUX_XT_STRING_PROFILE_TEST = "linux-original-netfilter-xt-string"
@@ -505,8 +506,10 @@ def run_netlink_dumps_profile(build: Path, junit: Path) -> None:
 
 def run_nexthop_profile(build: Path, junit: Path) -> None:
     name = LINUX_NEXTHOP_PROFILE_TEST
-    require(sum(item['name'] == name for item in ctest_inventory(build)) == 1,
-            'nexthop profile must register the complete original entry exactly once')
+    control = LINUX_NEXTHOP_REALTIME_TEST
+    inventory = [item['name'] for item in ctest_inventory(build)]
+    require(inventory.count(name) == 1 and inventory.count(control) == 1,
+            'nexthop profile must register the complete original entry and realtime ABI control exactly once')
     cache = (build / 'CMakeCache.txt').read_text()
     native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
                          if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
@@ -519,9 +522,9 @@ def run_nexthop_profile(build: Path, junit: Path) -> None:
              'CONFIG_NET_SCH_INGRESS=y'}.issubset(config),
             'nexthop requires its real native nexthop/clsact/VRF profile')
     result = subprocess.run(['ctest', '--test-dir', str(build), '--no-tests=error', '--output-on-failure',
-                            '--output-junit', str(junit), '--parallel', '1', '-R', '^' + name + '$'], check=False)
+                            '--output-junit', str(junit), '--parallel', '1', '-R', '^(' + name + '|' + control + ')$'], check=False)
     require(junit.is_file(), 'nexthop CTest did not produce JUnit')
-    report_junit(junit, expected={name}, required={name}, ctest_returncode=result.returncode)
+    report_junit(junit, expected={name, control}, required={name, control}, ctest_returncode=result.returncode)
     evidence = json.loads((build / (name + '.json')).read_text())
     require(evidence.get('status') == 'PASS_IMPORTED_LINUX' and
             evidence.get('fingerprint') == manifest.get('fingerprint'), 'wrong native nexthop evidence')

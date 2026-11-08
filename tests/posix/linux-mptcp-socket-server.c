@@ -285,7 +285,7 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     }
     if (fd < 0) { errno = ENOTCONN; return -1; }
     switch (m->operation) {
-#if defined(KER_RPATH_SELFTEST) || defined(KER_BRIDGE_SELFTEST)
+#if defined(KER_RPATH_SELFTEST) || defined(KER_BRIDGE_SELFTEST) || defined(KER_NEXTHOP_SELFTEST)
     case MS_REALTIME_GET: {
         int64_t seconds;
         long nanoseconds;

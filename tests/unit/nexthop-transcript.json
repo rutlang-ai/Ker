@@ -1,8 +1,82 @@
 {
-  "program": "router_nh.sh",
   "status": "PASS_IMPORTED_LINUX",
+  "program": "router_nh.sh",
   "revision": "7fdb7c1824a1f9979d648d7ae28ac446bcee9c6e",
   "fingerprint": "6414aae9fd58c1f5012289ba99c8f3bab5a883982a6b2da969d4964f06a1cc3d",
+  "source_hashes": {
+    "forwarding/router_nh.sh": "3ac46614fd28ef2869b5bd5902776e5c38bc6d0cc6cea7eb0b4a87e44830f144",
+    "forwarding/lib.sh": "8fb499582bb13c830e7fe9cbcb0baffc0bedf552d12c3c9241b65ecf14414537",
+    "forwarding/tc_common.sh": "4aed88ec9b90364edf2fbd2611237cdc78d57a2e931280124bd750b3b26e0369",
+    "lib.sh": "875a357f3264e3126af195e97a36217ba6e44c0812afc1b6b8a414f1984dcccd",
+    "forwarding/Makefile": "2c66e188a0a956c79dfbedd3a3449fd455e94e0a2a5b07550aaed0b79f745d96"
+  },
+  "iproute2": {
+    "version": "6.12.0",
+    "archive_sha256": "bbd141ef7b5d0127cc2152843ba61f274dc32814fa3e0f13e7d07a080bef53d9",
+    "source_hashes": {
+      "misc/ss.c": "7ca064fff1bf2650486d2d2c4cca009775e842e67d308a7632a0675f54c21712",
+      "misc/nstat.c": "274712c43536c6636ad03ddfab8cde4eeec0045b57ca1085dd17885f7c8b5343",
+      "lib/libnetlink.c": "f2698818203f27380ddc18cfefc79d7d99d1717cf7becbbd2b3f92b9c2b5193c",
+      "tc/tc.c": "e9b2e36053ee6e20f79d44a0cab3e1661300ecf9e9783c5fcd03357aa696a101",
+      "tc/q_netem.c": "999a1f78f6685c8567f68806b5430194de8d6d7416aec7fcf03b1255981fb57a",
+      "ip/ip.c": "9668158b877e99f8dee354953f557a4b42b286d56a8e52a97adf88f369b18c33",
+      "ip/ipmptcp.c": "d9eaaa4046a3ba2bbdae92ecbfe7c7e329b1b90986cd2a3290a6640d5ff7bf4d",
+      "bridge/bridge.c": "270301668c63c6c96f1cab4e676f40598eacd716d4659a9983e13b614cd2c59d",
+      "bridge/vlan.c": "4bf4aa7696ed931d04106449a65be6aa3cf83eeefa1b6886f5de3898ad11c090"
+    },
+    "binaries": {
+      "ss": "d84bbff6151132da388383cee656fd42ba8a1038f8f622249e9d12bb5eb0f9f8",
+      "nstat": "f5dec5e0a282d4027ffa873ac2a6b1681078631f35f8ec2b408c469775331c6d",
+      "tc": "ce2ade230c443b97b5c6d783f0292ce19dbb800fe2896f057e46ca3c182dc3ff",
+      "ip": "da433fdbb1d6c9a4a3bf739a754f0cd9b924a8f1a60bb28676157b0285c6f3d3",
+      "bridge": "7c23211320c7b3ead9bddea655935e7022f96c9f6fe93c2a7aa138ad44197342"
+    }
+  },
+  "preload_sha256": "4a25c5782dd609725b6e54487eddbc94adac29159566373ae77eb1fa764f582a",
+  "library_sha256": "12af88e26ff51942a50562ab647a3d8fdd2715eff594fe8fd0523bc4f7646bd3",
+  "server_sha256": "cd4bf9fc1f4b87f216ccd76fc5420d3c893a2b44b8a2ab30b3313a8ff7b65282",
+  "transport_sha256": "b72901e5092bc7e71828f0773c1166240f691f20285be5aaf58694a32232984c",
+  "framework_tools": {
+    "mausezahn": {
+      "path": "/tmp/ker-forwarding-tools/usr/bin/mausezahn",
+      "sha256": "c9473c9be92edecdcc9993ba6be05c8ca96da86811e36474f3ba79338ced7d54"
+    },
+    "jq": {
+      "path": "/usr/bin/jq",
+      "sha256": "136748786226819bf582738e8be963638c9d721aa0c5d1d650b506a2a52ddb97"
+    }
+  },
+  "ping_tools": {
+    "ping": {
+      "path": "/usr/bin/ping",
+      "sha256": "8808523ae346fa99f2d2642897fb6acc67a3744c3e47502604c39d45fa6a17f5"
+    },
+    "ping6": {
+      "path": "/usr/bin/ping",
+      "sha256": "8808523ae346fa99f2d2642897fb6acc67a3744c3e47502604c39d45fa6a17f5"
+    }
+  },
+  "missing_backend_control": {
+    "returncode": 1,
+    "stdout": "Failed to create netif\n",
+    "stderr": "Cannot open netlink socket: No such file or directory\n"
+  },
+  "vrf_binding_control": {
+    "baseline": {
+      "returncode": 0,
+      "stdout": "PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.\n64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.041 ms\n\n--- 127.0.0.1 ping statistics ---\n1 packets transmitted, 1 received, 0% packet loss, time 0ms\nrtt min/avg/max/mdev = 0.041/0.041/0.041/0.000 ms\n",
+      "stderr": ""
+    },
+    "unknown_vrf": {
+      "returncode": 2,
+      "stdout": "",
+      "stderr": "/tmp/ker-pr545-repair-cmake/ker-nexthop-exec-ja4fu6f6/bin/original-ping: socktype: SOCK_RAW\n/tmp/ker-pr545-repair-cmake/ker-nexthop-exec-ja4fu6f6/bin/original-ping: socket: No such device\n"
+    }
+  },
+  "mib_before": {
+    "ipv4": "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates OutTransmits\nIp: 2 64 2 0 0 0 0 0 2 2 0 0 0 0 0 0 0 0 0 2\nIcmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\nIcmp: 2 0 0 0 0 0 0 0 1 1 0 0 0 0 2 0 0 0 0 0 0 0 0 1 1 0 0 0 0\nIcmpMsg: InType0 InType8 OutType0 OutType8\nIcmpMsg: 1 1 1 1\nTcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\nTcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\nUdp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdp: 0 0 0 0 0 0 0 0 0\nUdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdpLite: 0 0 0 0 0 0 0 0 0\n",
+    "ipv6": "Ip6InReceives                   \t0\nIp6InHdrErrors                  \t0\nIp6InTooBigErrors               \t0\nIp6InNoRoutes                   \t0\nIp6InAddrErrors                 \t0\nIp6InUnknownProtos              \t0\nIp6InTruncatedPkts              \t0\nIp6InDiscards                   \t0\nIp6InDelivers                   \t0\nIp6OutForwDatagrams             \t0\nIp6OutRequests                  \t0\nIp6OutDiscards                  \t0\nIp6OutNoRoutes                  \t0\nIp6ReasmTimeout                 \t0\nIp6ReasmReqds                   \t0\nIp6ReasmOKs                     \t0\nIp6ReasmFails                   \t0\nIp6FragOKs                      \t0\nIp6FragFails                    \t0\nIp6FragCreates                  \t0\nIp6InMcastPkts                  \t0\nIp6OutMcastPkts                 \t0\nIp6InOctets                     \t0\nIp6OutOctets                    \t0\nIp6InMcastOctets                \t0\nIp6OutMcastOctets               \t0\nIp6InBcastOctets                \t0\nIp6OutBcastOctets               \t0\nIp6InNoECTPkts                  \t0\nIp6InECT1Pkts                   \t0\nIp6InECT0Pkts                   \t0\nIp6InCEPkts                     \t0\nIp6OutTransmits                 \t0\nIcmp6InMsgs                     \t0\nIcmp6InErrors                   \t0\nIcmp6OutMsgs                    \t0\nIcmp6OutErrors                  \t0\nIcmp6InCsumErrors               \t0\nIcmp6OutRateLimitHost           \t0\nIcmp6InDestUnreachs             \t0\nIcmp6InPktTooBigs               \t0\nIcmp6InTimeExcds                \t0\nIcmp6InParmProblems             \t0\nIcmp6InEchos                    \t0\nIcmp6InEchoReplies              \t0\nIcmp6InGroupMembQueries         \t0\nIcmp6InGroupMembResponses       \t0\nIcmp6InGroupMembReductions      \t0\nIcmp6InRouterSolicits           \t0\nIcmp6InRouterAdvertisements     \t0\nIcmp6InNeighborSolicits         \t0\nIcmp6InNeighborAdvertisements   \t0\nIcmp6InRedirects                \t0\nIcmp6InMLDv2Reports             \t0\nIcmp6OutDestUnreachs            \t0\nIcmp6OutPktTooBigs              \t0\nIcmp6OutTimeExcds               \t0\nIcmp6OutParmProblems            \t0\nIcmp6OutEchos                   \t0\nIcmp6OutEchoReplies             \t0\nIcmp6OutGroupMembQueries        \t0\nIcmp6OutGroupMembResponses      \t0\nIcmp6OutGroupMembReductions     \t0\nIcmp6OutRouterSolicits          \t0\nIcmp6OutRouterAdvertisements    \t0\nIcmp6OutNeighborSolicits        \t0\nIcmp6OutNeighborAdvertisements  \t0\nIcmp6OutRedirects               \t0\nIcmp6OutMLDv2Reports            \t0\nUdp6InDatagrams                 \t0\nUdp6NoPorts                     \t0\nUdp6InErrors                    \t0\nUdp6OutDatagrams                \t0\nUdp6RcvbufErrors                \t0\nUdp6SndbufErrors                \t0\nUdp6InCsumErrors                \t0\nUdp6IgnoredMulti                \t0\nUdp6MemErrors                   \t0\nUdpLite6InDatagrams             \t0\nUdpLite6NoPorts                 \t0\nUdpLite6InErrors                \t0\nUdpLite6OutDatagrams            \t0\nUdpLite6RcvbufErrors            \t0\nUdpLite6SndbufErrors            \t0\nUdpLite6InCsumErrors            \t0\nUdpLite6MemErrors               \t0\n"
+  },
   "original": {
     "returncode": 0,
     "stdout": "TEST: ping                                                          [ OK ]\nTEST: ping6                                                         [ OK ]\n",
@@ -74,7 +148,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "5: veth0@veth1: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether ea:2f:55:15:eb:fc brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "5: veth0@veth1: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether 8a:a3:10:e2:18:aa brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -86,7 +160,7 @@
         "veth1"
       ],
       "returncode": 0,
-      "stdout": "4: veth1@veth0: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether 72:61:44:aa:f1:ce brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "4: veth1@veth0: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether 6a:7d:8f:ec:bf:df brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -98,7 +172,7 @@
         "veth2"
       ],
       "returncode": 0,
-      "stdout": "7: veth2@veth3: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether 8a:e3:8d:55:5f:57 brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "7: veth2@veth3: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether 32:27:69:37:5e:4f brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -110,7 +184,7 @@
         "veth3"
       ],
       "returncode": 0,
-      "stdout": "6: veth3@veth2: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether d2:66:5b:46:af:58 brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "6: veth3@veth2: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000\n    link/ether 0a:21:16:e8:d7:0a brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -123,7 +197,7 @@
         "veth1"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":4,\"link\":\"veth0\",\"ifname\":\"veth1\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"M-DOWN\"],\"mtu\":1500,\"qdisc\":\"noop\",\"operstate\":\"DOWN\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"72:61:44:aa:f1:ce\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":4,\"link\":\"veth0\",\"ifname\":\"veth1\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"M-DOWN\"],\"mtu\":1500,\"qdisc\":\"noop\",\"operstate\":\"DOWN\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"6a:7d:8f:ec:bf:df\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -619,7 +693,7 @@
         "up"
       ],
       "returncode": 0,
-      "stdout": "5: veth0@veth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master vrf-h1 state UP mode DEFAULT group default qlen 1000\n    link/ether ea:2f:55:15:eb:fc brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "5: veth0@veth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master vrf-h1 state UP mode DEFAULT group default qlen 1000\n    link/ether 8a:a3:10:e2:18:aa brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -632,7 +706,7 @@
         "up"
       ],
       "returncode": 0,
-      "stdout": "4: veth1@veth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether 72:61:44:aa:f1:ce brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "4: veth1@veth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether 6a:7d:8f:ec:bf:df brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -645,7 +719,7 @@
         "up"
       ],
       "returncode": 0,
-      "stdout": "7: veth2@veth3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether 8a:e3:8d:55:5f:57 brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "7: veth2@veth3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether 32:27:69:37:5e:4f brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -658,7 +732,7 @@
         "up"
       ],
       "returncode": 0,
-      "stdout": "6: veth3@veth2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master vrf-h2 state UP mode DEFAULT group default qlen 1000\n    link/ether d2:66:5b:46:af:58 brd ff:ff:ff:ff:ff:ff\n",
+      "stdout": "6: veth3@veth2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master vrf-h2 state UP mode DEFAULT group default qlen 1000\n    link/ether 0a:21:16:e8:d7:0a brd ff:ff:ff:ff:ff:ff\n",
       "stderr": ""
     },
     {
@@ -753,7 +827,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vrf-h1\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"ea:2f:55:15:eb:fc\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vrf-h1\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"8a:a3:10:e2:18:aa\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -787,7 +861,7 @@
         "group": "default",
         "txqlen": 1000,
         "link_type": "ether",
-        "address": "a2:f4:47:06:e4:27",
+        "address": "3e:10:31:3a:a5:18",
         "broadcast": "ff:ff:ff:ff:ff:ff",
         "promiscuity": 0,
         "allmulti": 0,
@@ -940,8 +1014,9 @@
         ]
       },
       "returncode": 0,
-      "stdout": "PING 198.51.100.2 (198.51.100.2) 56(84) bytes of data.\n64 bytes from 198.51.100.2: icmp_seq=1 ttl=63 time=0.107 ms\n64 bytes from 198.51.100.2: icmp_seq=2 ttl=63 time=0.040 ms\n64 bytes from 198.51.100.2: icmp_seq=3 ttl=63 time=0.029 ms\n64 bytes from 198.51.100.2: icmp_seq=4 ttl=63 time=0.022 ms\n64 bytes from 198.51.100.2: icmp_seq=5 ttl=63 time=0.025 ms\n64 bytes from 198.51.100.2: icmp_seq=6 ttl=63 time=0.026 ms\n64 bytes from 198.51.100.2: icmp_seq=7 ttl=63 time=0.020 ms\n64 bytes from 198.51.100.2: icmp_seq=8 ttl=63 time=0.021 ms\n64 bytes from 198.51.100.2: icmp_seq=9 ttl=63 time=0.021 ms\n64 bytes from 198.51.100.2: icmp_seq=10 ttl=63 time=0.023 ms\n\n--- 198.51.100.2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 987ms\nrtt min/avg/max/mdev = 0.020/0.033/0.107/0.025 ms\n",
-      "stderr": ""
+      "stdout": "PING 198.51.100.2 (198.51.100.2) 56(84) bytes of data.\n64 bytes from 198.51.100.2: icmp_seq=1 ttl=63 time=0.160 ms\n64 bytes from 198.51.100.2: icmp_seq=2 ttl=63 time=0.119 ms\n64 bytes from 198.51.100.2: icmp_seq=3 ttl=63 time=0.126 ms\n64 bytes from 198.51.100.2: icmp_seq=4 ttl=63 time=0.132 ms\n64 bytes from 198.51.100.2: icmp_seq=5 ttl=63 time=0.135 ms\n64 bytes from 198.51.100.2: icmp_seq=6 ttl=63 time=0.134 ms\n64 bytes from 198.51.100.2: icmp_seq=7 ttl=63 time=0.128 ms\n64 bytes from 198.51.100.2: icmp_seq=8 ttl=63 time=0.134 ms\n64 bytes from 198.51.100.2: icmp_seq=9 ttl=63 time=0.122 ms\n64 bytes from 198.51.100.2: icmp_seq=10 ttl=63 time=0.138 ms\n\n--- 198.51.100.2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 983ms\nrtt min/avg/max/mdev = 0.119/0.132/0.160/0.010 ms\n",
+      "stderr": "",
+      "native_clock_reads": 10
     },
     {
       "tool": "ip",
@@ -953,7 +1028,7 @@
         "veth0"
       ],
       "returncode": 0,
-      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vrf-h1\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"ea:2f:55:15:eb:fc\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
+      "stdout": "[{\"ifindex\":5,\"link\":\"veth1\",\"ifname\":\"veth0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"vrf-h1\",\"operstate\":\"UP\",\"linkmode\":\"DEFAULT\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"8a:a3:10:e2:18:aa\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\"}]\n",
       "stderr": ""
     },
     {
@@ -987,7 +1062,7 @@
         "group": "default",
         "txqlen": 1000,
         "link_type": "ether",
-        "address": "a2:f4:47:06:e4:27",
+        "address": "3e:10:31:3a:a5:18",
         "broadcast": "ff:ff:ff:ff:ff:ff",
         "promiscuity": 0,
         "allmulti": 0,
@@ -1140,8 +1215,9 @@
         ]
       },
       "returncode": 0,
-      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=0.122 ms\n64 bytes from 2001:db8:2::2: icmp_seq=2 ttl=63 time=0.047 ms\n64 bytes from 2001:db8:2::2: icmp_seq=3 ttl=63 time=0.012 ms\n64 bytes from 2001:db8:2::2: icmp_seq=4 ttl=63 time=0.024 ms\n64 bytes from 2001:db8:2::2: icmp_seq=5 ttl=63 time=0.029 ms\n64 bytes from 2001:db8:2::2: icmp_seq=6 ttl=63 time=0.014 ms\n64 bytes from 2001:db8:2::2: icmp_seq=7 ttl=63 time=0.017 ms\n64 bytes from 2001:db8:2::2: icmp_seq=8 ttl=63 time=0.015 ms\n64 bytes from 2001:db8:2::2: icmp_seq=9 ttl=63 time=0.014 ms\n64 bytes from 2001:db8:2::2: icmp_seq=10 ttl=63 time=0.106 ms\n\n--- 2001:db8:2::2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 988ms\nrtt min/avg/max/mdev = 0.012/0.040/0.122/0.038 ms\n",
-      "stderr": ""
+      "stdout": "PING 2001:db8:2::2 (2001:db8:2::2) 56 data bytes\n64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=0.139 ms\n64 bytes from 2001:db8:2::2: icmp_seq=2 ttl=63 time=0.087 ms\n64 bytes from 2001:db8:2::2: icmp_seq=3 ttl=63 time=0.093 ms\n64 bytes from 2001:db8:2::2: icmp_seq=4 ttl=63 time=0.073 ms\n64 bytes from 2001:db8:2::2: icmp_seq=5 ttl=63 time=0.069 ms\n64 bytes from 2001:db8:2::2: icmp_seq=6 ttl=63 time=0.091 ms\n64 bytes from 2001:db8:2::2: icmp_seq=7 ttl=63 time=0.059 ms\n64 bytes from 2001:db8:2::2: icmp_seq=8 ttl=63 time=0.055 ms\n64 bytes from 2001:db8:2::2: icmp_seq=9 ttl=63 time=0.117 ms\n64 bytes from 2001:db8:2::2: icmp_seq=10 ttl=63 time=0.131 ms\n\n--- 2001:db8:2::2 ping statistics ---\n10 packets transmitted, 10 received, 0% packet loss, time 985ms\nrtt min/avg/max/mdev = 0.055/0.091/0.139/0.027 ms\n",
+      "stderr": "",
+      "native_clock_reads": 10
     },
     {
       "tool": "sysctl",
@@ -1533,53 +1609,256 @@
       "stderr": ""
     }
   ],
-  "missing_backend_control": {
-    "returncode": 1,
-    "stdout": "Failed to create netif\n",
-    "stderr": "Cannot open netlink socket: No such file or directory\n"
-  },
-  "mib_before": {
-    "ipv4": "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates OutTransmits\nIp: 2 64 2 0 0 0 0 0 2 2 0 0 0 0 0 0 0 0 0 2\nIcmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\nIcmp: 2 0 0 0 0 0 0 0 1 1 0 0 0 0 2 0 0 0 0 0 0 0 0 1 1 0 0 0 0\nIcmpMsg: InType0 InType8 OutType0 OutType8\nIcmpMsg: 1 1 1 1\nTcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\nTcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\nUdp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdp: 0 0 0 0 0 0 0 0 0\nUdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdpLite: 0 0 0 0 0 0 0 0 0\n",
-    "ipv6": "Ip6InReceives                   \t0\nIp6InHdrErrors                  \t0\nIp6InTooBigErrors               \t0\nIp6InNoRoutes                   \t0\nIp6InAddrErrors                 \t0\nIp6InUnknownProtos              \t0\nIp6InTruncatedPkts              \t0\nIp6InDiscards                   \t0\nIp6InDelivers                   \t0\nIp6OutForwDatagrams             \t0\nIp6OutRequests                  \t0\nIp6OutDiscards                  \t0\nIp6OutNoRoutes                  \t0\nIp6ReasmTimeout                 \t0\nIp6ReasmReqds                   \t0\nIp6ReasmOKs                     \t0\nIp6ReasmFails                   \t0\nIp6FragOKs                      \t0\nIp6FragFails                    \t0\nIp6FragCreates                  \t0\nIp6InMcastPkts                  \t0\nIp6OutMcastPkts                 \t0\nIp6InOctets                     \t0\nIp6OutOctets                    \t0\nIp6InMcastOctets                \t0\nIp6OutMcastOctets               \t0\nIp6InBcastOctets                \t0\nIp6OutBcastOctets               \t0\nIp6InNoECTPkts                  \t0\nIp6InECT1Pkts                   \t0\nIp6InECT0Pkts                   \t0\nIp6InCEPkts                     \t0\nIp6OutTransmits                 \t0\nIcmp6InMsgs                     \t0\nIcmp6InErrors                   \t0\nIcmp6OutMsgs                    \t0\nIcmp6OutErrors                  \t0\nIcmp6InCsumErrors               \t0\nIcmp6OutRateLimitHost           \t0\nIcmp6InDestUnreachs             \t0\nIcmp6InPktTooBigs               \t0\nIcmp6InTimeExcds                \t0\nIcmp6InParmProblems             \t0\nIcmp6InEchos                    \t0\nIcmp6InEchoReplies              \t0\nIcmp6InGroupMembQueries         \t0\nIcmp6InGroupMembResponses       \t0\nIcmp6InGroupMembReductions      \t0\nIcmp6InRouterSolicits           \t0\nIcmp6InRouterAdvertisements     \t0\nIcmp6InNeighborSolicits         \t0\nIcmp6InNeighborAdvertisements   \t0\nIcmp6InRedirects                \t0\nIcmp6InMLDv2Reports             \t0\nIcmp6OutDestUnreachs            \t0\nIcmp6OutPktTooBigs              \t0\nIcmp6OutTimeExcds               \t0\nIcmp6OutParmProblems            \t0\nIcmp6OutEchos                   \t0\nIcmp6OutEchoReplies             \t0\nIcmp6OutGroupMembQueries        \t0\nIcmp6OutGroupMembResponses      \t0\nIcmp6OutGroupMembReductions     \t0\nIcmp6OutRouterSolicits          \t0\nIcmp6OutRouterAdvertisements    \t0\nIcmp6OutNeighborSolicits        \t0\nIcmp6OutNeighborAdvertisements  \t0\nIcmp6OutRedirects               \t0\nIcmp6OutMLDv2Reports            \t0\nUdp6InDatagrams                 \t0\nUdp6NoPorts                     \t0\nUdp6InErrors                    \t0\nUdp6OutDatagrams                \t0\nUdp6RcvbufErrors                \t0\nUdp6SndbufErrors                \t0\nUdp6InCsumErrors                \t0\nUdp6IgnoredMulti                \t0\nUdp6MemErrors                   \t0\nUdpLite6InDatagrams             \t0\nUdpLite6NoPorts                 \t0\nUdpLite6InErrors                \t0\nUdpLite6OutDatagrams            \t0\nUdpLite6RcvbufErrors            \t0\nUdpLite6SndbufErrors            \t0\nUdpLite6InCsumErrors            \t0\nUdpLite6MemErrors               \t0\n"
-  },
   "mib_after": {
     "ipv4": "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates OutTransmits\nIp: 2 64 42 0 0 20 0 0 22 22 0 0 0 0 0 0 0 0 0 42\nIcmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\nIcmp: 22 0 0 0 0 0 0 0 11 11 0 0 0 0 22 0 0 0 0 0 0 0 0 11 11 0 0 0 0\nIcmpMsg: InType0 InType8 OutType0 OutType8\nIcmpMsg: 11 11 11 11\nTcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\nTcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\nUdp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdp: 0 0 0 0 0 0 0 0 0\nUdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\nUdpLite: 0 0 0 0 0 0 0 0 0\n",
-    "ipv6": "Ip6InReceives                   \t92\nIp6InHdrErrors                  \t0\nIp6InTooBigErrors               \t0\nIp6InNoRoutes                   \t0\nIp6InAddrErrors                 \t0\nIp6InUnknownProtos              \t0\nIp6InTruncatedPkts              \t0\nIp6InDiscards                   \t0\nIp6InDelivers                   \t26\nIp6OutForwDatagrams             \t20\nIp6OutRequests                  \t88\nIp6OutDiscards                  \t7\nIp6OutNoRoutes                  \t0\nIp6ReasmTimeout                 \t0\nIp6ReasmReqds                   \t0\nIp6ReasmOKs                     \t0\nIp6ReasmFails                   \t0\nIp6FragOKs                      \t0\nIp6FragFails                    \t0\nIp6FragCreates                  \t0\nIp6InMcastPkts                  \t49\nIp6OutMcastPkts                 \t65\nIp6InOctets                     \t9336\nIp6OutOctets                    \t10928\nIp6InMcastOctets                \t4960\nIp6OutMcastOctets               \t6552\nIp6InBcastOctets                \t0\nIp6OutBcastOctets               \t0\nIp6InNoECTPkts                  \t92\nIp6InECT1Pkts                   \t0\nIp6InECT0Pkts                   \t0\nIp6InCEPkts                     \t0\nIp6OutTransmits                 \t108\nIcmp6InMsgs                     \t26\nIcmp6InErrors                   \t0\nIcmp6OutMsgs                    \t81\nIcmp6OutErrors                  \t0\nIcmp6InCsumErrors               \t0\nIcmp6OutRateLimitHost           \t0\nIcmp6InDestUnreachs             \t0\nIcmp6InPktTooBigs               \t0\nIcmp6InTimeExcds                \t0\nIcmp6InParmProblems             \t0\nIcmp6InEchos                    \t10\nIcmp6InEchoReplies              \t10\nIcmp6InGroupMembQueries         \t0\nIcmp6InGroupMembResponses       \t0\nIcmp6InGroupMembReductions      \t0\nIcmp6InRouterSolicits           \t0\nIcmp6InRouterAdvertisements     \t0\nIcmp6InNeighborSolicits         \t3\nIcmp6InNeighborAdvertisements   \t3\nIcmp6InRedirects                \t0\nIcmp6InMLDv2Reports             \t0\nIcmp6OutDestUnreachs            \t0\nIcmp6OutPktTooBigs              \t0\nIcmp6OutTimeExcds               \t0\nIcmp6OutParmProblems            \t0\nIcmp6OutEchos                   \t10\nIcmp6OutEchoReplies             \t10\nIcmp6OutGroupMembQueries        \t0\nIcmp6OutGroupMembResponses      \t0\nIcmp6OutGroupMembReductions     \t0\nIcmp6OutRouterSolicits          \t0\nIcmp6OutRouterAdvertisements    \t0\nIcmp6OutNeighborSolicits        \t12\nIcmp6OutNeighborAdvertisements  \t3\nIcmp6OutRedirects               \t0\nIcmp6OutMLDv2Reports            \t46\nIcmp6InType128                  \t10\nIcmp6InType129                  \t10\nIcmp6InType135                  \t3\nIcmp6InType136                  \t3\nIcmp6OutType128                 \t10\nIcmp6OutType129                 \t10\nIcmp6OutType135                 \t12\nIcmp6OutType136                 \t3\nIcmp6OutType143                 \t46\nUdp6InDatagrams                 \t0\nUdp6NoPorts                     \t0\nUdp6InErrors                    \t0\nUdp6OutDatagrams                \t0\nUdp6RcvbufErrors                \t0\nUdp6SndbufErrors                \t0\nUdp6InCsumErrors                \t0\nUdp6IgnoredMulti                \t0\nUdp6MemErrors                   \t0\nUdpLite6InDatagrams             \t0\nUdpLite6NoPorts                 \t0\nUdpLite6InErrors                \t0\nUdpLite6OutDatagrams            \t0\nUdpLite6RcvbufErrors            \t0\nUdpLite6SndbufErrors            \t0\nUdpLite6InCsumErrors            \t0\nUdpLite6MemErrors               \t0\n"
-  },
-  "vrf_binding_control": {
-    "baseline": {
-      "returncode": 0,
-      "stdout": "PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.\n64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.053 ms\n\n--- 127.0.0.1 ping statistics ---\n1 packets transmitted, 1 received, 0% packet loss, time 0ms\nrtt min/avg/max/mdev = 0.053/0.053/0.053/0.000 ms\n",
-      "stderr": ""
-    },
-    "unknown_vrf": {
-      "returncode": 2,
-      "stdout": "",
-      "stderr": "/tmp/ker-nexthop-cmake/ker-nexthop-exec-cv7ycph0/bin/original-ping: socktype: SOCK_RAW\n/tmp/ker-nexthop-cmake/ker-nexthop-exec-cv7ycph0/bin/original-ping: socket: No such device\n"
-    }
+    "ipv6": "Ip6InReceives                   \t89\nIp6InHdrErrors                  \t0\nIp6InTooBigErrors               \t0\nIp6InNoRoutes                   \t0\nIp6InAddrErrors                 \t0\nIp6InUnknownProtos              \t0\nIp6InTruncatedPkts              \t0\nIp6InDiscards                   \t0\nIp6InDelivers                   \t26\nIp6OutForwDatagrams             \t20\nIp6OutRequests                  \t86\nIp6OutDiscards                  \t7\nIp6OutNoRoutes                  \t0\nIp6ReasmTimeout                 \t0\nIp6ReasmReqds                   \t0\nIp6ReasmOKs                     \t0\nIp6ReasmFails                   \t0\nIp6FragOKs                      \t0\nIp6FragFails                    \t0\nIp6FragCreates                  \t0\nIp6InMcastPkts                  \t46\nIp6OutMcastPkts                 \t63\nIp6InOctets                     \t9168\nIp6OutOctets                    \t10696\nIp6InMcastOctets                \t4792\nIp6OutMcastOctets               \t6320\nIp6InBcastOctets                \t0\nIp6OutBcastOctets               \t0\nIp6InNoECTPkts                  \t89\nIp6InECT1Pkts                   \t0\nIp6InECT0Pkts                   \t0\nIp6InCEPkts                     \t0\nIp6OutTransmits                 \t106\nIcmp6InMsgs                     \t26\nIcmp6InErrors                   \t0\nIcmp6OutMsgs                    \t79\nIcmp6OutErrors                  \t0\nIcmp6InCsumErrors               \t0\nIcmp6OutRateLimitHost           \t0\nIcmp6InDestUnreachs             \t0\nIcmp6InPktTooBigs               \t0\nIcmp6InTimeExcds                \t0\nIcmp6InParmProblems             \t0\nIcmp6InEchos                    \t10\nIcmp6InEchoReplies              \t10\nIcmp6InGroupMembQueries         \t0\nIcmp6InGroupMembResponses       \t0\nIcmp6InGroupMembReductions      \t0\nIcmp6InRouterSolicits           \t0\nIcmp6InRouterAdvertisements     \t0\nIcmp6InNeighborSolicits         \t3\nIcmp6InNeighborAdvertisements   \t3\nIcmp6InRedirects                \t0\nIcmp6InMLDv2Reports             \t0\nIcmp6OutDestUnreachs            \t0\nIcmp6OutPktTooBigs              \t0\nIcmp6OutTimeExcds               \t0\nIcmp6OutParmProblems            \t0\nIcmp6OutEchos                   \t10\nIcmp6OutEchoReplies             \t10\nIcmp6OutGroupMembQueries        \t0\nIcmp6OutGroupMembResponses      \t0\nIcmp6OutGroupMembReductions     \t0\nIcmp6OutRouterSolicits          \t1\nIcmp6OutRouterAdvertisements    \t0\nIcmp6OutNeighborSolicits        \t12\nIcmp6OutNeighborAdvertisements  \t3\nIcmp6OutRedirects               \t0\nIcmp6OutMLDv2Reports            \t43\nIcmp6InType128                  \t10\nIcmp6InType129                  \t10\nIcmp6InType135                  \t3\nIcmp6InType136                  \t3\nIcmp6OutType128                 \t10\nIcmp6OutType129                 \t10\nIcmp6OutType133                 \t1\nIcmp6OutType135                 \t12\nIcmp6OutType136                 \t3\nIcmp6OutType143                 \t43\nUdp6InDatagrams                 \t0\nUdp6NoPorts                     \t0\nUdp6InErrors                    \t0\nUdp6OutDatagrams                \t0\nUdp6RcvbufErrors                \t0\nUdp6SndbufErrors                \t0\nUdp6InCsumErrors                \t0\nUdp6IgnoredMulti                \t0\nUdp6MemErrors                   \t0\nUdpLite6InDatagrams             \t0\nUdpLite6NoPorts                 \t0\nUdpLite6InErrors                \t0\nUdpLite6OutDatagrams            \t0\nUdpLite6RcvbufErrors            \t0\nUdpLite6SndbufErrors            \t0\nUdpLite6InCsumErrors            \t0\nUdpLite6MemErrors               \t0\n"
   },
   "cleanup_state": {
     "links": [
       {
-        "ifname": "lo"
+        "ifindex": 1,
+        "ifname": "lo",
+        "flags": [
+          "LOOPBACK",
+          "UP",
+          "LOWER_UP"
+        ],
+        "mtu": 65536,
+        "qdisc": "noqueue",
+        "operstate": "UNKNOWN",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "loopback",
+        "address": "00:00:00:00:00:00",
+        "broadcast": "00:00:00:00:00:00",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 0,
+        "max_mtu": 0,
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 524280,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
       },
       {
-        "ifname": "eth0"
+        "ifindex": 2,
+        "ifname": "eth0",
+        "flags": [
+          "BROADCAST",
+          "MULTICAST",
+          "UP",
+          "LOWER_UP"
+        ],
+        "mtu": 1500,
+        "qdisc": "pfifo_fast",
+        "operstate": "UP",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "6a:f6:bb:5e:3f:25",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 68,
+        "max_mtu": 65535,
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 65536,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536,
+        "parentbus": "virtio",
+        "parentdev": "virtio0"
       },
       {
-        "ifname": "sit0"
+        "ifindex": 3,
+        "link": null,
+        "ifname": "sit0",
+        "flags": [
+          "NOARP"
+        ],
+        "mtu": 1480,
+        "qdisc": "noop",
+        "operstate": "DOWN",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "sit",
+        "address": "0.0.0.0",
+        "broadcast": "0.0.0.0",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 1280,
+        "max_mtu": 65555,
+        "linkinfo": {
+          "info_kind": "sit",
+          "info_data": {
+            "proto": "ip6ip",
+            "remote": "any",
+            "local": "any",
+            "ttl": 64,
+            "pmtudisc": false
+          }
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 65536,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
       },
       {
-        "ifname": "veth1"
+        "ifindex": 4,
+        "link": "veth0",
+        "ifname": "veth1",
+        "flags": [
+          "BROADCAST",
+          "MULTICAST",
+          "M-DOWN"
+        ],
+        "mtu": 1500,
+        "qdisc": "noqueue",
+        "operstate": "DOWN",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "6a:7d:8f:ec:bf:df",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 68,
+        "max_mtu": 65535,
+        "linkinfo": {
+          "info_kind": "veth"
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 524280,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
       },
       {
-        "ifname": "veth0"
+        "ifindex": 5,
+        "link": "veth1",
+        "ifname": "veth0",
+        "flags": [
+          "BROADCAST",
+          "MULTICAST",
+          "M-DOWN"
+        ],
+        "mtu": 1500,
+        "qdisc": "noqueue",
+        "operstate": "DOWN",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "8a:a3:10:e2:18:aa",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 68,
+        "max_mtu": 65535,
+        "linkinfo": {
+          "info_kind": "veth"
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 524280,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
       },
       {
-        "ifname": "veth3"
+        "ifindex": 6,
+        "link": "veth2",
+        "ifname": "veth3",
+        "flags": [
+          "BROADCAST",
+          "MULTICAST",
+          "M-DOWN"
+        ],
+        "mtu": 1500,
+        "qdisc": "noqueue",
+        "operstate": "DOWN",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "0a:21:16:e8:d7:0a",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 68,
+        "max_mtu": 65535,
+        "linkinfo": {
+          "info_kind": "veth"
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 524280,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
       },
       {
-        "ifname": "veth2"
+        "ifindex": 7,
+        "link": "veth3",
+        "ifname": "veth2",
+        "flags": [
+          "BROADCAST",
+          "MULTICAST",
+          "M-DOWN"
+        ],
+        "mtu": 1500,
+        "qdisc": "noqueue",
+        "operstate": "DOWN",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "32:27:69:37:5e:4f",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "allmulti": 0,
+        "min_mtu": 68,
+        "max_mtu": 65535,
+        "linkinfo": {
+          "info_kind": "veth"
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 1,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "tso_max_size": 524280,
+        "tso_max_segs": 65535,
+        "gro_max_size": 65536,
+        "gso_ipv4_max_size": 65536,
+        "gro_ipv4_max_size": 65536
       }
     ],
     "qdisc": [
@@ -1646,7 +1925,7 @@
         "lcore": 0,
         "cpu": 0,
         "packets": 0,
-        "polls": 10364,
+        "polls": 10131,
         "stalled": 0,
         "shutdown": 0,
         "reconfigured": 0,
@@ -1687,12 +1966,12 @@
     "mtu_final": 1500,
     "max_mtu": 9000,
     "mtu_changes": 0,
-    "tx": 9,
+    "tx": 10,
     "rx": 0,
     "dropped": 0,
     "tx_retries": 0,
     "rx_retries": 0,
-    "tx_bytes": 1086,
+    "tx_bytes": 1036,
     "rx_bytes": 0,
     "tx_dropped": 0,
     "rx_dropped": 0,
@@ -1703,8 +1982,8 @@
     "rx_multiseg": 0,
     "rx_startup_discarded": 0,
     "rx_shutdown_discarded": 0,
-    "idle_waits": 10355,
-    "idle_timeouts": 10334,
+    "idle_waits": 10122,
+    "idle_timeouts": 10099,
     "tx_flushes": 9,
     "tx_timer_flushes": 0,
     "tx_full_flushes": 0,
@@ -1730,7 +2009,7 @@
       "pool_rx_descriptors": 256,
       "pool_tx_descriptors": 256,
       "mbuf_pool_count": 4095,
-      "mac": "de:18:e5:2d:1f:fa",
+      "mac": "6a:f6:bb:5e:3f:25",
       "mtu": 1500,
       "mbuf_mode": "large",
       "port_id": 0,
@@ -1792,5 +2071,7 @@
       "mptcp_fallback_synack": 0,
       "mptcp_fallback_ack": 0
     }
-  }
+  },
+  "server_stdout": "",
+  "server_stderr": "EAL: Detected CPU lcores: 128\nEAL: Detected NUMA nodes: 1\nEAL: Error creating '/var/run/dpdk': Permission denied\nEAL: No DPDK runtime directory created\nEAL: Detected shared linkage of DPDK\nEAL: Selected IOVA mode 'VA'\nKER_MPTCP_FIXTURE_CHANNELS_DRAINED\nKER_MPTCP_FIXTURE_NATIVE_HALTED\nKER_MPTCP_FIXTURE_TASKS_RETIRED\n"
 }
