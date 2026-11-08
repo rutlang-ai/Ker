@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh` 完整入口本地通过；其余 105 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh` 完整入口本地通过；其余 104 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 83/310，剩余 227；其中 78 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 232 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 84/310，剩余 226；其中 79 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 231 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -124,6 +124,12 @@ Ker 的目标应用包括网关和 WAF，因此优先迁移转发、路由、VLA
 `forwarding/min_max_mtu.sh` 使用同一原生 forwarding 配置，完整执行六项原版测试：普通 IPv4/IPv6 ping、最大/最小 MTU 配置、最大/最小边界流量。实际 veth 的 min/max 为 68/65535，超出边界的四次配置必须返回内核错误。最大 MTU 下的 IPv4/IPv6 原版 ping 分别发送 65507/65487 字节 payload，均收到全部十个回包；降低接口 MTU 后，两个相同包长的原版 ping 必须失败；最小 MTU 下 40 字节 IPv4 payload 必须成功。原版脚本明确不在最小 MTU 下测试 IPv6，保留这一合同，不创造额外通过项。
 
 共 128 条原版拓扑/配置/流量/清理命令，经真实 Netlink 和 ICMP 执行。六项均须明确输出 OK，不能用 XFAIL 或缺失子项抵扣；native socket/packet 必须归零，保留完整脚本缺失后端和无效 VRF 对照。CI 的 forwarding profile 同时强制运行两个完整入口并核对各自的独立 JSON/JUnit。
+
+`forwarding/router_bridge.sh` 在专用 `config/native-linux-bridge-selftests.config` 中完整运行，启用真实 Linux bridge、VLAN filtering、VRF 和 multipath routing。原版 14 个阶段包含十次双栈 ping：初始连通、桥端口重新挂接后连通、移除 bridge self PVID 后隔离、恢复 PVID 后连通，以及先挂接端口再添加默认 PVID 后连通。保留原版全部 10 次请求、0.1 秒间隔、5 秒 deadline 和阶段间 sleep，预期失败的两个 ping 必须真实失败；不修改 Linux、iproute2 或原版 selftest。
+
+iproute2 6.12.0 的 unchanged `bridge` 工具和 `ip` 使用同一原生 Netlink 通道。每次 ping 前读取真实 bridge 类型、VLAN filtering、端口 master/forwarding 状态和 VLAN 1 flags，要求仅隔离阶段缺失 PVID/untagged。完整 110 条原版命令还须保留 remaster、default PVID 0→1 的顺序及成功清理。实际 IPv4/IPv6 forwarding MIB 各至少增加 80；结束后 br1/VRF 设备消失、forwarding sysctl 恢复、live socket/outstanding packet 为零，worker 正常退出。保留完整入口缺失 backend、未知 VRF 与同后端 loopback 对照。
+
+本地完整原版及 `bridge-profile` CI gate 通过，native fingerprint 为 `6ee942b2c8460007ae8131a5f0764b4ff646c6efd9d0340d2b282d025eadedf5`，并使用 hosted CI 对应的 Ubuntu iputils 20240117 ping 验证。gate 要求实际配置、唯一原版入口、无 skip 的 JUnit 和匹配 fingerprint 的完整 JSON；最终提交的 hosted CI/review 资格仍须单独核对。该程序计一个默认入口。
 
 ## Conntrack zone dump/flush
 
