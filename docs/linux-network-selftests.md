@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh` 完整入口本地通过；其余 92 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh` 完整入口本地通过；其余 91 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 96/310，剩余 214；其中 91 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 219 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 97/310，剩余 213；其中 92 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 218 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -267,3 +267,11 @@ Ker 的桥接测试配置启用真实 `CONFIG_NET_CLS_ACT`、`CONFIG_NET_SCH_ING
 普通与报文专用私有 preload 都复用已有的 native gettimeofday 适配，给 iputils 的原版 SO_TIMESTAMP 使用同一 Linux 时钟；新增独立报文 preload ABI 控制，覆盖宿主透传、NULL timeval/旧 timezone ABI 及缺少 native descriptor 时的 ENOTCONN。四次原版 ping 必须记录真实 native realtime 读取。生产 API、Linux 协议、原版脚本、工具和内核配置均无改动，沿用 TC profile fingerprint `6bfdfffd796cdfb3d21525ca18c2cd5c86d79ccdfce80dbaf54f0238e903329e`。
 
 清理后 bridge、三个 VRF 消失，六个 veth 关闭并解除 master，promisc/全局地址/路由及 bridge FDB 回收，native socket/outstanding packet 为零且 worker 正常关闭。原版 tc JSON 能力探测、两个完整 qdisc/filter 增删窗口和缺失 backend/未知 VRF 对照均强制核验。CI 要求 11 个完整原版入口及两种时钟 ABI 控制共 13 项，独立 JSON/JUnit 无 skip；最终 hosted CI/review 单独确认。本项新增一个完整默认入口。
+
+## VLAN-unaware 桥的学习、老化与泛洪
+
+完整未修改的 `forwarding/bridge_vlan_unaware.sh` 执行四个默认函数，保留 ping、ping6、FDB learning、Unknown unicast flood 和 Unregistered multicast flood 五行原版结果。实际 br0 的 vlan_filtering=0、mcast_snooping=0、ageing_time=1000 centiseconds，两个主机位于独立 VRF。两个原版 ping 均发送并接收十包，使用真实 native realtime 适配。
+
+学习测试先关闭源端口未知单播泛洪，确认目标 MAC 尚未学习且目的 ingress TC counter 为零；原版 Mausezahn 以目标源 MAC 发送后，实际动态 VID 0 FDB 条目出现在 veth1/br0，后续已知单播到达目标。原版 ageing_time 加十秒的等待保持完整，20 秒后条目消失；关闭 learning 后再次发送仍不能学习。随后分别关闭、开启未知单播 flood 和 mcast_flood，四次原版探测对应实际 flower counter 0、1、0、1。全部八次 AF_PACKET 发送均为 98 字节，六次原版 TC 查询核对 0/1 packet、0/84 IP bytes 和相同 drop 数；源端口与桥接计数以原版 sleep 后的查询为准，不增加更早投递期限。
+
+合同核对完整 qdisc/filter 与 promisc 生命周期、原版参数、FDB 查询顺序和真实单调时间跨度。保留 Mausezahn 未指定的负载填充与报文字段自由度。结束时 br0、两个 VRF、目标 FDB、promisc、全局地址和路由清空，veth 关闭解除 master，native socket/outstanding packet 为零且 worker 正常关闭。缺失 backend 与未知 VRF 对照必须失败。沿用原生 TC profile `6bfdfffd796cdfb3d21525ca18c2cd5c86d79ccdfce80dbaf54f0238e903329e`；上游源码、脚本、工具、生产 API 和内核配置均未修改。CI 强制十二个完整入口和两个时钟 ABI 控制共十四项，独立 JSON/JUnit 无 skip。本项新增一个完整默认入口；hosted CI/review 资格仍单独确认。
