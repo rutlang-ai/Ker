@@ -180,13 +180,13 @@ int __wrap_socket(int domain, int type, int protocol)
     packet = domain == AF_PACKET && type == SOCK_RAW;
 #endif
     int netlink = domain == AF_NETLINK && ((type & ~SOCK_CLOEXEC) == SOCK_RAW || (type & ~SOCK_CLOEXEC) == SOCK_DGRAM) &&
-                  (protocol == NETLINK_SOCK_DIAG || protocol == NETLINK_ROUTE || protocol == NETLINK_GENERIC || protocol == NETLINK_NETFILTER);
+                  (protocol == NETLINK_SOCK_DIAG || protocol == NETLINK_ROUTE || protocol == NETLINK_GENERIC || protocol == NETLINK_NETFILTER || protocol == NETLINK_XFRM);
     int raw = (domain == AF_INET || domain == AF_INET6) &&
               (((type & ~SOCK_CLOEXEC) == SOCK_RAW &&
                  (protocol == IPPROTO_RAW || (domain == AF_INET && protocol == IPPROTO_ICMP) ||
                   (domain == AF_INET6 && protocol == IPPROTO_ICMPV6))) ||
                ((type & ~SOCK_CLOEXEC) == SOCK_DGRAM &&
-                 (protocol == 0 || (domain == AF_INET && protocol == IPPROTO_ICMP) ||
+                 (protocol == 0 || protocol == IPPROTO_UDP || (domain == AF_INET && protocol == IPPROTO_ICMP) ||
                   (domain == AF_INET6 && protocol == IPPROTO_ICMPV6))));
     int udp = 0;
 #ifdef KER_NETWORK_SELFTEST

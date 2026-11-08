@@ -268,7 +268,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             bc bison flex libcap-dev libelf-dev liblz4-dev libncurses-dev \
-            libssl-dev libz-dev libzstd-dev rsync iptables socat
+            libssl-dev libz-dev libzstd-dev rsync iptables socat traceroute
 
       - name: Build the pinned Linux/LKL runtime
         if: steps.native.outputs.present == 'true'
@@ -866,6 +866,7 @@ jobs:
             build-native-bridge/linux-original-forwarding-bridge-vlan-aware.json
             build-native-bridge/linux-original-forwarding-bridge-locked-port.json
             build-native-bridge/linux-original-forwarding-bridge-vlan-mcast.json
+            build-native-bridge/linux-original-forwarding-ip6-forward-instats-vrf.json
             ${{ runner.temp }}/native-xt-string-ctest.xml
             ${{ runner.temp }}/native-linux-xt-string-selftests-build/native-linux.json
             build-native-xt-string/linux-original-netfilter-xt-string.json

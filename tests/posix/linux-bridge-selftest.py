@@ -28,6 +28,8 @@ def forwarding_counts(content):
 
 
 def validate_evidence(report):
+    if report.get('program') == 'ip6_forward_instats_vrf.sh':
+        return common.load('instats_contract', 'linux-forwarding-instats-contract.py').validate_evidence(report)
     if report.get('program') == 'bridge_vlan_mcast.sh':
         return common.load('bridge_mcast_contract','linux-bridge-mcast-contract.py').validate_evidence(report)
     if report.get('program') == 'bridge_locked_port.sh':

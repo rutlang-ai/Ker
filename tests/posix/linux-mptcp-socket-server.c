@@ -252,13 +252,13 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         packet = m->a == AF_PACKET && m->b == SOCK_RAW;
 #endif
         int netlink = m->a == AF_NETLINK && ((m->b & ~SOCK_CLOEXEC) == SOCK_RAW || (m->b & ~SOCK_CLOEXEC) == SOCK_DGRAM) &&
-                  (m->c == NETLINK_SOCK_DIAG || m->c == NETLINK_ROUTE || m->c == NETLINK_GENERIC || m->c == NETLINK_NETFILTER);
+                  (m->c == NETLINK_SOCK_DIAG || m->c == NETLINK_ROUTE || m->c == NETLINK_GENERIC || m->c == NETLINK_NETFILTER || m->c == NETLINK_XFRM);
         int raw = (m->a == AF_INET || m->a == AF_INET6) &&
                 (((m->b & ~SOCK_CLOEXEC) == SOCK_RAW &&
                    (m->c == IPPROTO_RAW || (m->a == AF_INET && m->c == IPPROTO_ICMP) ||
                     (m->a == AF_INET6 && m->c == IPPROTO_ICMPV6))) ||
                  ((m->b & ~SOCK_CLOEXEC) == SOCK_DGRAM &&
-                   (m->c == 0 || (m->a == AF_INET && m->c == IPPROTO_ICMP) ||
+                   (m->c == 0 || m->c == IPPROTO_UDP || (m->a == AF_INET && m->c == IPPROTO_ICMP) ||
                     (m->a == AF_INET6 && m->c == IPPROTO_ICMPV6))));
         int udp = 0;
 #ifdef KER_NETWORK_SELFTEST

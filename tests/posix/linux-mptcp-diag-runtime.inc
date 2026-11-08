@@ -218,6 +218,20 @@ static int diag_control(struct ms_message *m, unsigned char *data, size_t input,
             for (const char *p = file + 14; *p; p++)
                 if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_' || *p == '-' || *p == '/')) found = 0;
         }
+        /* Read per-device counters from the calling native namespace. Keep
+         * the pathname constrained to one real Linux interface name; never
+         * fall back to host procfs or accept additional path components. */
+        if (!strncmp(file, "/proc/net/dev_snmp6/", 20)) {
+            const char *name = file + 20;
+            size_t size = strlen(name);
+            if (size > 0 && size < 16 && !strstr(name, "..")) {
+                int valid = 1;
+                for (const char *p = name; *p; p++)
+                    if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                          (*p >= '0' && *p <= '9') || *p == '_' || *p == '-' || *p == '.' || *p == ':')) valid = 0;
+                if (valid) found = 1;
+            }
+        }
         if (!found) { errno = EOPNOTSUPP; return 1; }
         /* /proc/net resolves via the process leader. The resident fixture has
          * several host threads in different native namespaces; select the

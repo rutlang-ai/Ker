@@ -137,7 +137,7 @@ long ker_linux_selftest_call(unsigned operation, const unsigned long a[6])
                (a[2] == LKL_IPPROTO_RAW || (a[0] == LKL_AF_INET && a[2] == LKL_IPPROTO_ICMP) ||
                 (a[0] == LKL_AF_INET6 && a[2] == IPPROTO_ICMPV6))) ||
               ((a[1] & ~O_CLOEXEC) == LKL_SOCK_DGRAM &&
-               (a[2] == 0 || (a[0] == LKL_AF_INET && a[2] == LKL_IPPROTO_ICMP) ||
+               (a[2] == 0 || a[2] == LKL_IPPROTO_UDP || (a[0] == LKL_AF_INET && a[2] == LKL_IPPROTO_ICMP) ||
                 (a[0] == LKL_AF_INET6 && a[2] == IPPROTO_ICMPV6))))) return -EOPNOTSUPP;
         return export_file(lkl_sys_socket((int)a[0], (int)a[1], (int)a[2]), KER_FD_SOCKET,
                            (a[1] & O_CLOEXEC) ? O_CLOEXEC : 0);
