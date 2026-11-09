@@ -49,7 +49,7 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
     add_executable(ker-linux-mptcp-diag-connect "${mptcp_root}/mptcp_connect.c"
         $<TARGET_OBJECTS:ker-linux-mptcp-socket-proxy>)
     target_include_directories(ker-linux-mptcp-diag-connect PRIVATE "${ao_headers}")
-    target_compile_options(ker-linux-mptcp-diag-connect PRIVATE -Wno-error -UNDEBUG)
+    target_compile_options(ker-linux-mptcp-diag-connect PRIVATE -O2 -Wno-error -UNDEBUG)
     target_link_libraries(ker-linux-mptcp-diag-connect PRIVATE ${CMAKE_DL_LIBS})
     target_link_options(ker-linux-mptcp-diag-connect PRIVATE -Wl,--wrap=sendfile)
     add_library(ker-linux-mptcp-diag-preload SHARED tests/posix/linux-mptcp-socket-proxy.c)
