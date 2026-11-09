@@ -28,6 +28,12 @@ def bridge_snapshot(env):
         if state.stderr:
             raise RuntimeError('native bridge VLAN upper observation warning: ' + state.stderr)
         result[key] = json.loads(state.stdout)
+    if os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':
+        state = subprocess.run([os.environ['KER_FORWARDING_BRIDGE'], '-j', '-d', 'mdb', 'show'],
+                               env=env, capture_output=True, text=True, timeout=10, check=True)
+        if state.stderr:
+            raise RuntimeError('native bridge MDB observation warning: ' + state.stderr)
+        result['mdb'] = json.loads(state.stdout)
     return result
 
 
@@ -95,8 +101,12 @@ def main():
             if tool not in ('ip', 'bridge'):
                 raise RuntimeError('unsupported native tool: ' + tool)
             command = [os.environ['KER_FORWARDING_' + tool.upper()], *words]
+        if tool == 'bridge' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':
+            record['mdb_before'] = bridge_snapshot(env)
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        if tool == 'bridge' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':
+            record['mdb_after'] = bridge_snapshot(env)
         if words[:2] == ['vrf', 'exec']:
             try:
                 record['native_clock_reads'] = Path(native_time_log).stat().st_size

@@ -1,4 +1,4 @@
-"""All six complete bridge entries and the native realtime ABI control are mandatory."""
+"""All seven complete bridge entries and the native realtime ABI control are mandatory."""
 import json
 from pathlib import Path
 import subprocess
@@ -20,14 +20,15 @@ class BridgeProfileTests(unittest.TestCase):
             'router_bridge_vlan_upper.sh': 'bridge-vlan-upper-transcript.json',
             'router_bridge_pvid_vlan_upper.sh': 'bridge-pvid-upper-transcript.json',
             'router_bridge_vlan_upper_pvid.sh': 'bridge-upper-pvid-transcript.json',
+            'bridge_mdb_host.sh': 'bridge-mdb-host-transcript.json',
         }
         control = native_tests.LINUX_BRIDGE_REALTIME_TEST
-        cases = [('complete', None), ('wrong-profile', None), ('missing-vlan', None),
+        cases = [('complete', None), ('wrong-profile', None), ('missing-vlan', None), ('missing-snooping', None),
                  ('missing-control', None), ('duplicate-control', None),
                  ('skipped-control', None), ('failed-control', None), ('failed-ctest', None)]
         evidence_mutations = ('missing-entry', 'duplicate-entry', 'skipped-entry',
                               'wrong-fingerprint', 'failed-evidence', 'wrong-program',
-                              'missing-phase', 'leaked-bridge', 'missing-clock')
+                              'missing-phase', 'leaked-bridge', 'missing-proof')
         cases.extend((mutation, target) for target in files for mutation in evidence_mutations)
         for mutation, target in cases:
             with self.subTest(mutation=mutation, target=target), tempfile.TemporaryDirectory() as temporary:
@@ -45,8 +46,9 @@ class BridgeProfileTests(unittest.TestCase):
                     kernel=str(root), fingerprint='candidate')))
                 options = ['CONFIG_' + name + '=y' for name in
                            ('VETH', 'NET_VRF', 'VLAN_8021Q', 'IP_ROUTE_MULTIPATH',
-                            'IP_MULTIPLE_TABLES', 'IPV6_MULTIPLE_TABLES', 'BRIDGE', 'BRIDGE_VLAN_FILTERING')]
+                            'IP_MULTIPLE_TABLES', 'IPV6_MULTIPLE_TABLES', 'BRIDGE', 'BRIDGE_VLAN_FILTERING', 'BRIDGE_IGMP_SNOOPING')]
                 if mutation == 'missing-vlan': options.remove('CONFIG_BRIDGE_VLAN_FILTERING=y')
+                if mutation == 'missing-snooping': options.remove('CONFIG_BRIDGE_IGMP_SNOOPING=y')
                 (root / '.config').write_text('\n'.join(options) + '\n')
                 entries = []
                 for name in sorted(expected):
@@ -72,8 +74,11 @@ class BridgeProfileTests(unittest.TestCase):
                                 report['commands'] = [r for r in report['commands'] if 'port_after' not in r]
                             else:
                                 report['commands'] = [r for r in report['commands'] if r['tool'] != 'bridge']
-                        elif mutation == 'leaked-bridge': report['cleanup_state']['links'].append(dict(ifname='br1'))
-                        elif mutation == 'missing-clock':
+                        elif mutation == 'leaked-bridge':
+                            report['cleanup_state']['links'].append(dict(ifname='br0' if program == 'bridge_mdb_host.sh' else 'br1'))
+                        elif mutation == 'missing-proof' and program == 'bridge_mdb_host.sh':
+                            next(r for r in report['commands'] if r['tool'] == 'bridge').pop('mdb_after')
+                        elif mutation == 'missing-proof':
                             next(r for r in report['commands'] if r['arguments'][:2] == ['vrf', 'exec']).pop('native_clock_reads')
                     (root / (name + '.json')).write_text(json.dumps(report))
                 result = subprocess.CompletedProcess([], 1 if mutation == 'failed-ctest' else 0)

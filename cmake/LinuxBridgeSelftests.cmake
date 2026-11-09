@@ -19,7 +19,7 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_bridge_pr
     set_tests_properties(bridge-realtime-wrapper-contract PROPERTIES
         ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:ker-linux-bridge-preload>")
     foreach(program router_bridge router_bridge_vlan router_bridge_1d router_bridge_vlan_upper
-            router_bridge_pvid_vlan_upper router_bridge_vlan_upper_pvid)
+            router_bridge_pvid_vlan_upper router_bridge_vlan_upper_pvid bridge_mdb_host)
         string(REPLACE "_" "-" test_suffix "${program}")
         add_test(NAME linux-original-forwarding-${test_suffix}
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-bridge-selftest.py"

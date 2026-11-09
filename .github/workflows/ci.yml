@@ -857,6 +857,7 @@ jobs:
             build-native-bridge/linux-original-forwarding-router-bridge-vlan-upper.json
             build-native-bridge/linux-original-forwarding-router-bridge-pvid-vlan-upper.json
             build-native-bridge/linux-original-forwarding-router-bridge-vlan-upper-pvid.json
+            build-native-bridge/linux-original-forwarding-bridge-mdb-host.json
             ${{ runner.temp }}/native-xt-string-ctest.xml
             ${{ runner.temp }}/native-linux-xt-string-selftests-build/native-linux.json
             build-native-xt-string/linux-original-netfilter-xt-string.json
