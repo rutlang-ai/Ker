@@ -35,8 +35,8 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_bridge_pr
     target_compile_definitions(ker-linux-network-server PRIVATE KER_BRIDGE_PACKET_SELFTEST=1)
     add_dependencies(ker-linux-network-server ker-linux-bridge-packet-preload)
     foreach(program router_bridge router_bridge_vlan router_bridge_1d router_bridge_vlan_upper
-            router_bridge_pvid_vlan_upper router_bridge_vlan_upper_pvid bridge_mdb_host bridge_sticky_fdb bridge_fdb_learning_limit bridge_mdb_port_down bridge_port_isolation)
-        if(program STREQUAL "bridge_sticky_fdb" OR program STREQUAL "bridge_mdb_port_down" OR program STREQUAL "bridge_port_isolation")
+            router_bridge_pvid_vlan_upper router_bridge_vlan_upper_pvid bridge_mdb_host bridge_sticky_fdb bridge_fdb_learning_limit bridge_mdb_port_down bridge_port_isolation bridge_vlan_unaware)
+        if(program STREQUAL "bridge_sticky_fdb" OR program STREQUAL "bridge_mdb_port_down" OR program STREQUAL "bridge_port_isolation" OR program STREQUAL "bridge_vlan_unaware")
             set(bridge_selftest_preload ker-linux-bridge-packet-preload)
         else()
             set(bridge_selftest_preload ker-linux-bridge-preload)

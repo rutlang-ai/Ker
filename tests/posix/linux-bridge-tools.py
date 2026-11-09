@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 root = Path(os.environ['KER_MPTCP_FIXTURE_SOURCE'])
 spec = importlib.util.spec_from_file_location('forwarding_diag', root / 'linux-mptcp-diag-shim.py')
@@ -70,17 +71,25 @@ def packet_bridge_snapshot(env, traffic=False):
         raise RuntimeError('native MDB port observation warning: ' + result.stderr)
     state['links'] = json.loads(result.stdout)
     if traffic:
-        query = [os.environ['KER_FORWARDING_TC'], '-j', '-s', 'filter', 'show', 'dev', 'veth3', 'ingress']
-        result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
-        if result.stderr:
-            raise RuntimeError('native multicast flower observation warning: ' + result.stderr)
-        state['filters'] = json.loads(result.stdout)
-        if os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1':
-            query = [os.environ['KER_FORWARDING_BRIDGE'], '-j', 'fdb', 'show', 'br', 'br0']
+        devices = ('veth0', 'veth3') if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' else ('veth3',)
+        filters = {}
+        for device in devices:
+            query = [os.environ['KER_FORWARDING_TC'], '-j', '-s', 'filter', 'show', 'dev', device, 'ingress']
             result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
             if result.stderr:
-                raise RuntimeError('native isolation FDB observation warning: ' + result.stderr)
-            state['fdb'] = json.loads(result.stdout)
+                raise RuntimeError('native bridge flower observation warning: ' + result.stderr)
+            filters[device] = json.loads(result.stdout)
+        if len(devices) == 1:
+            state['filters'] = filters['veth3']
+        else:
+            state['filters_by_device'] = filters
+    if (os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or
+            traffic and os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1'):
+        query = [os.environ['KER_FORWARDING_BRIDGE'], '-j', 'fdb', 'show', 'br', 'br0']
+        result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
+        if result.stderr:
+            raise RuntimeError('native bridge FDB observation warning: ' + result.stderr)
+        state['fdb'] = json.loads(result.stdout)
     return state
 
 
@@ -111,7 +120,9 @@ def main():
             env['KER_FORWARDING_VRF'] = vrf
             command = [os.environ['KER_FORWARDING_' + program.upper()], *arguments]
             record['vrf'] = objects[0]
-            if os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1':
+            if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1':
+                record['unaware_before'] = packet_bridge_snapshot(env)
+            elif os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1':
                 record['isolation_before'] = packet_bridge_snapshot(env)
             elif os.environ.get('KER_FORWARDING_BRIDGE_LEARNING') == '1':
                 record['learning_before'] = learning_snapshot(env)
@@ -151,7 +162,8 @@ def main():
         else:
             if tool not in ('ip', 'bridge', 'mausezahn') and not (
                     tool == 'tc' and (os.environ.get('KER_FORWARDING_BRIDGE_MDB_PORT') == '1' or
-                                      os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1')):
+                                      os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1' or
+                                      os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1')):
                 raise RuntimeError('unsupported native tool: ' + tool)
             command = [os.environ['KER_FORWARDING_' + tool.upper()], *words]
         if tool == 'bridge' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':
@@ -177,8 +189,19 @@ def main():
                               tool == 'ip' and words[:3] == ['link', 'set', 'veth3'] and 'promisc' in words))
         if observe_isolation:
             record['isolation_before'] = packet_bridge_snapshot(env, tool == 'mausezahn')
+        observe_unaware = (os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' and
+                           (tool in ('bridge', 'tc', 'mausezahn') or tool == 'ip' and
+                            ('promisc' in words or words == ['-d', '-j', 'link', 'show', 'dev', 'br0', 'type', 'bridge'])))
+        if observe_unaware:
+            record['unaware_before'] = packet_bridge_snapshot(env, tool == 'mausezahn')
+        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1':
+            record['started_monotonic'] = time.monotonic()
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
+        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1':
+            record['finished_monotonic'] = time.monotonic()
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        if 'unaware_before' in record:
+            record['unaware_after'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         if 'isolation_before' in record:
             record['isolation_after'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         if observe_mdb_port:
