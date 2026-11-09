@@ -450,36 +450,56 @@ class KerRunControlTests(unittest.TestCase):
         outer, inner = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         inner.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         nonce = bytes.fromhex('223344556677889900aabbccddeeff11')
+        poll_gate_r, poll_gate_w = os.pipe2(os.O_CLOEXEC)
         child = os.fork()
         if child == 0:
             outer.close()
+            os.close(poll_gate_w)
             try:
                 instance = relay.KerRunControl(inner.detach(), nonce, 31)
                 instance.state = 'READY'
                 instance.readiness = _Readiness(b'C' * 16, 37, b'P' * 32)
-                instance.poll(lambda: None)
+                if os.read(poll_gate_r, 1) != b'P':
+                    os._exit(40)
+                os.close(poll_gate_r)
+                try:
+                    instance.poll(lambda: None)
+                except PermissionError:
+                    instance.channel.close()
+                    os.close(instance.parent_pidfd)
+                    os._exit(0)
                 os._exit(41)
-            except PermissionError:
-                os._exit(0)
             except BaseException:
                 os._exit(42)
         inner.close()
+        os.close(poll_gate_r)
         sender = os.fork()
         if sender == 0:
             inner.close()
+            os.close(poll_gate_w)
             try:
                 read_fd, write_fd = os.pipe()
-                record = wire.pack_verify(nonce, 31, 1)
-                _send_record(outer, record, read_fd)
-                os.close(read_fd)
-                os.close(write_fd)
+                try:
+                    record = wire.pack_verify(nonce, 31, 1)
+                    _send_record(outer, record, read_fd)
+                finally:
+                    os.close(read_fd)
+                    os.close(write_fd)
+                outer.close()
                 os._exit(0)
             except BaseException:
                 os._exit(43)
         outer.close()
         _, sender_status = os.waitpid(sender, 0)
-        self.assertEqual(os.waitstatus_to_exitcode(sender_status), 0)
+        try:
+            os.write(poll_gate_w, b'P')
+        except BrokenPipeError:
+            pass
+        finally:
+            os.close(poll_gate_w)
         _, child_status = os.waitpid(child, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(sender_status), 0)
+        self.assertNotEqual(sender, child, 'request sender must be a relay sibling')
         self.assertEqual(os.waitstatus_to_exitcode(child_status), 0)
 
     def test_unknown_request_closes_attached_right_and_fails_closed(self):
