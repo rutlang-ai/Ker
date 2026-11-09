@@ -181,6 +181,7 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('server', 'preload', 'tools', 'launcher', 'library', 'worker', 'pmd_dir', 'manifest', 'evidence'):
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
+    parser.add_argument('--filter-control', type=Path)
     parser.add_argument('--program', choices=('router_bridge.sh', 'router_bridge_vlan.sh', 'router_bridge_1d.sh',
         'router_bridge_vlan_upper.sh', 'router_bridge_pvid_vlan_upper.sh', 'router_bridge_vlan_upper_pvid.sh',
         'bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh', 'bridge_igmp.sh', 'bridge_mld.sh', 'bridge_mdb.sh', 'bridge_mdb_max.sh', 'pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh', 'tc_flower_l2_miss.sh', 'tc_flower_cfm.sh'),
@@ -372,6 +373,15 @@ def main():
                              '--ready', str(observer_ready), '--stop', str(observer_stop)],
                             env=observer_environment, stdout=observer_out, stderr=observer_err,
                             start_new_session=True)
+                    if args.program == 'bridge_locked_port.sh':
+                        require(args.filter_control is not None, 'locked-port native classic-BPF control is required')
+                        filter_control = subprocess.run([str(args.filter_control)],
+                            env=dict(environment, LD_PRELOAD=str(args.preload)), capture_output=True, text=True, timeout=10)
+                        report['classic_filter_control'] = dict(returncode=filter_control.returncode,
+                            stdout=filter_control.stdout, stderr=filter_control.stderr)
+                        require(filter_control.returncode == 0 and
+                            filter_control.stdout.strip() == 'BRIDGE_FILTER_CONTROL_PASS valid=0 invalid_native=EINVAL verifier_limit_native=EINVAL null_client=EINVAL oversized_rpc=EINVAL' and
+                            not filter_control.stderr, 'native classic-BPF marshal/errno control failed')
                     diag = common.load('forwarding_native_proc', 'linux-mptcp-diag-shim.py')
                     os.environ['KER_MPTCP_SOCKET_CHANNEL'] = str(channel)
                     def counters():
@@ -496,6 +506,8 @@ def main():
                     native = json.loads(counts.read_text()); report['native_fixture'] = native
                     require(native['netlinks'] > 0 and native['raw_sockets'] > 0 and native['live'] == 0,
                             'original native forwarding matrix or cleanup incomplete')
+                    if args.program == 'bridge_locked_port.sh':
+                        require(native['filter_sets'] >= 1, 'native classic-BPF filter was not installed')
                     report['stats'] = json.loads(stats.read_text())
                     require(report['stats'].get('outstanding') == 0 and report['stats'].get('worker_exit_code') == 0 and
                             report['stats'].get('control_eof') is True and report['stats'].get('shutdown_timed_out') is False,
