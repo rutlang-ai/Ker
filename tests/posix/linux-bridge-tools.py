@@ -86,7 +86,8 @@ def packet_bridge_snapshot(env, traffic=False, pedit_counter_sample=False):
         raise RuntimeError('native MDB port observation warning: ' + result.stderr)
     state['links'] = json.loads(result.stdout)
     if traffic:
-        devices = (('veth0','veth1','veth2','veth3') if (os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or (os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1')) else
+        devices = (('veth0','veth1') if os.environ.get('KER_FORWARDING_BRIDGE_CFM') == '1' else
+                   ('veth0','veth1','veth2','veth3') if (os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or (os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1')) else
                    ('br0','veth3') if os.environ.get('KER_FORWARDING_BRIDGE_MDB_API') == '1' else
                    ('veth0','veth1','veth3') if os.environ.get('KER_FORWARDING_BRIDGE_LOCKED') == '1' else
                    ('veth0', 'veth3') if (os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1') else ('veth3',))
@@ -115,7 +116,7 @@ def packet_bridge_snapshot(env, traffic=False, pedit_counter_sample=False):
                     os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or
                     os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1'):
         state['egress_filters'] = {}
-        for device in ('veth1','veth2'):
+        for device in (('veth0','veth1') if os.environ.get('KER_FORWARDING_BRIDGE_CFM') == '1' else ('veth1','veth2')):
             observed = subprocess.run([os.environ['KER_FORWARDING_TC'],'-j','-s','filter','show','dev',device,'egress'],
                 env=env,capture_output=True,text=True,timeout=10,check=True)
             if observed.stderr: raise RuntimeError('native multicast egress counter warning: '+observed.stderr)
@@ -274,7 +275,7 @@ def main():
                       (tool == 'mausezahn' or tool == 'tc' and words[:4] == ['-j','-s','filter','show'] or
                        tool == 'ip' and words[:4] == ['link','set','dev','br0']))
         observe_pedit = os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' and tool in ('tc','mausezahn')
-        observe_range = os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' and tool in ('tc','mausezahn')
+        observe_range = os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' and tool in ('tc','mausezahn') and not (tool == 'tc' and words == ['-j'])
         if observe_range:
             record['range_before'] = packet_bridge_snapshot(env, True)
         observe_l2 = os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1' and tool in ('tc','mausezahn','bridge')
