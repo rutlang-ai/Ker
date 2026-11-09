@@ -59,7 +59,7 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_bridge_pr
         if(program STREQUAL "ip6_forward_instats_vrf")
             set(forwarding_selftest_runner "${PROJECT_SOURCE_DIR}/tests/posix/linux-forwarding-selftest.py")
             set(forwarding_selftest_extra --poll-control "$<TARGET_FILE:ker-linux-forwarding-instats-poll-control>")
-        elseif(program STREQUAL "pedit_ip" OR program STREQUAL "pedit_l4port")
+        elseif(program STREQUAL "pedit_ip" OR program STREQUAL "pedit_l4port" OR program STREQUAL "pedit_dsfield")
             set(forwarding_selftest_extra --packet-observer "${PROJECT_SOURCE_DIR}/tests/posix/linux-pedit-packet-observer.py")
         endif()
         string(REPLACE "_" "-" test_suffix "${program}")
