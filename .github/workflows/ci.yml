@@ -267,7 +267,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            bc bison flex libcap-dev libelf-dev liblz4-dev libncurses-dev \
+            bc dc bison flex libcap-dev libelf-dev liblz4-dev libncurses-dev \
             libssl-dev libz-dev libzstd-dev rsync iptables socat traceroute
 
       - name: Build the pinned Linux/LKL runtime

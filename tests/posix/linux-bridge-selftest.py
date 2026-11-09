@@ -27,6 +27,37 @@ def forwarding_counts(content):
     return dict(ipv4=ipv4['ForwDatagrams'], ipv6=int(ipv6['Ip6OutForwDatagrams']))
 
 
+def framework_tool_names(program):
+    names = ('mausezahn', 'jq')
+    if program in ('bridge_mdb.sh', 'bridge_mdb_max.sh'):
+        names += ('dc',)
+    return names
+
+
+def framework_tool_provenance(program, which=shutil.which):
+    tools = {}
+    missing = []
+    for name in framework_tool_names(program):
+        path = which(name)
+        if path is None:
+            tools[name] = dict(path=None, sha256=None)
+            missing.append(name)
+        else:
+            tools[name] = dict(path=path,
+                sha256=hashlib.sha256(Path(path).read_bytes()).hexdigest())
+    return tools, missing
+
+
+def missing_framework_tools_message(program, missing):
+    if not missing:
+        return None
+    details = ', '.join(missing)
+    if 'dc' in missing:
+        return (f'original {program} requires dc (GNU dc) for the pinned Linux '
+                'IGMPv3/MLDv2 checksum calculation')
+    return f'original forwarding framework requires {details}'
+
+
 def validate_evidence(report):
     if report.get('program') == 'bridge_mdb.sh':
         return common.load('bridge_mdb_contract', 'linux-bridge-mdb-contract.py').validate_evidence(report)
@@ -185,10 +216,12 @@ def main():
                 'STABLE_MAC_ADDRS', 'KSFT_MACHINE_SLOW', 'LOW_AGEING_TIME'}
     environment = {k: v for k, v in os.environ.items() if k not in controls and not k.startswith('KER_')}
     environment['LC_ALL'] = 'C'
-    require(shutil.which('mausezahn') is not None and shutil.which('jq') is not None,
-            'original forwarding framework requires mausezahn and jq')
-    report['framework_tools'] = {name: dict(path=shutil.which(name), sha256=hashlib.sha256(
-        Path(shutil.which(name)).read_bytes()).hexdigest()) for name in ('mausezahn', 'jq')}
+    report['framework_tools'], missing_tools = framework_tool_provenance(args.program)
+    missing_tools_message = missing_framework_tools_message(args.program, missing_tools)
+    if missing_tools_message:
+        report['error'] = missing_tools_message
+        args.evidence.write_text(json.dumps(report, indent=2) + '\n')
+        raise RuntimeError(missing_tools_message)
     try:
         for command in (['ip', 'link', 'set', 'lo', 'up'],
                         ['ip', 'link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink'],
