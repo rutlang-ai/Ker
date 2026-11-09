@@ -35,11 +35,11 @@ def normalized(rows):
     return hashlib.sha256(json.dumps(result, separators=(',', ':')).encode()).hexdigest()
 
 
-def topology(state):
+def topology(state, vlan_filtering=1):
     devices = links(state)
     bridge = devices['br1']
     require(bridge['linkinfo']['info_kind'] == 'bridge' and 'UP' in bridge['flags'] and
-            bridge['linkinfo']['info_data']['vlan_filtering'] == 1 and
+            bridge['linkinfo']['info_data']['vlan_filtering'] == vlan_filtering and
             bridge['linkinfo']['info_data']['vlan_protocol'] == '802.1Q', 'native PEDIT VLAN bridge missing')
     tables = []
     for host, port, vrf, number in (('veth0','veth1','vveth0',1), ('veth3','veth2','vveth3',2)):
@@ -471,7 +471,7 @@ def validate_evidence(report):
     validate_boundaries(report,rows)
 
 
-def validate_boundaries(report, rows, *, source_hashes=None, expected_sends=80, expected_bytes=11520):
+def validate_boundaries(report, rows, *, source_hashes=None, expected_sends=80, expected_bytes=11520, observation_key='pedit_after'):
     source_hashes = SOURCE_HASHES if source_hashes is None else source_hashes
     require(report['source_hashes'] == source_hashes and report['original_tc_hit_timeout_ms'] == 1000,
             'pinned original PEDIT/helper source or busywait changed')
@@ -489,7 +489,7 @@ def validate_boundaries(report, rows, *, source_hashes=None, expected_sends=80, 
     require(not any(r.get('dev') in ('br1','veth0','veth1','veth2','veth3','vveth0','vveth3') or str(r.get('table')) in ('1','2')
                     for family in ('ipv4','ipv6') for r in cleanup[family+'_routes']) and
             all(cleanup[family].strip() == '0' for family in ('ipv4','ipv6')), 'native PEDIT routes/forwarding leaked')
-    require(all(not value for value in all_filters(next(x for x in reversed(rows) if x['tool'] == 'tc')['pedit_after']).values()),
+    require(all(not value for value in all_filters(next(x for x in reversed(rows) if x['tool'] == 'tc')[observation_key]).values()),
             'native PEDIT filter cleanup incomplete')
     require(report['missing_backend_control']['returncode'] != 0 and
             report['vrf_binding_control']['baseline']['returncode'] == 0 and
