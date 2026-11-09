@@ -13,7 +13,7 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
     target_link_options(ker-linux-mptcp-socket-control PRIVATE
         -Wl,--wrap=socket -Wl,--wrap=close -Wl,--wrap=__read_chk)
     target_link_libraries(ker-linux-mptcp-socket-control PRIVATE ${CMAKE_DL_LIBS})
-    foreach(read_chk_mode static preload)
+    foreach(read_chk_mode static preload fallback)
         add_executable(ker-linux-mptcp-read-chk-${read_chk_mode}-contract tests/posix/linux-mptcp-read-chk-contract.c)
         target_include_directories(ker-linux-mptcp-read-chk-${read_chk_mode}-contract PRIVATE "${ao_headers}")
         target_compile_options(ker-linux-mptcp-read-chk-${read_chk_mode}-contract PRIVATE -Wall -Wextra -Werror -UNDEBUG)
@@ -21,7 +21,7 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
         if(read_chk_mode STREQUAL preload)
             target_compile_definitions(ker-linux-mptcp-read-chk-${read_chk_mode}-contract PRIVATE
                 KER_MPTCP_DIAG_PRELOAD=1 __wrap___read_chk=__read_chk)
-        else()
+        elseif(read_chk_mode STREQUAL static)
             target_link_options(ker-linux-mptcp-read-chk-${read_chk_mode}-contract PRIVATE -Wl,--wrap=__read_chk)
         endif()
         add_test(NAME linux-mptcp-read-chk-${read_chk_mode}-contract
