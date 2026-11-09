@@ -43,9 +43,28 @@ def flower(rows,family,protocol,drop,count):
 
 
 def filters(state,family,protocol,count,active):
+    return filters_bounded(state,family,protocol,count,count,active)
+
+
+def bounded_flower(rows,family,protocol,drop,minimum,maximum):
+    require(len(rows)==2 and sum('options'in r for r in rows)==1,'native port-range rule missing/duplicated/polluted')
+    rule=next(r for r in rows if 'options'in r);actions=rule['options']['actions']
+    require(len(actions)==1,'native port-range action missing/duplicated')
+    count=actions[0]['stats']['packets']
+    require(type(count)is int and minimum<=count<=maximum,
+            'native port-range counter regressed or exceeded the original polling target')
+    flower(rows,family,protocol,drop,count)
+    return count
+
+
+def filters_bounded(state,family,protocol,minimum,maximum,active):
+    counts={}
     for key,rows in ip.all_filters(state).items():
-        if key in active:flower(rows,family,protocol,key[1]=='egress',count)
+        if key in active:
+            counts[key]=bounded_flower(rows,family,protocol,key[1]=='egress',minimum,maximum)
         else:require(rows==[],'native port-range classifier leaked onto another locus')
+    require(set(counts)==set(active),'native port-range ingress/egress polling loci missing')
+    return counts
 
 
 def validate_evidence(report):
@@ -73,18 +92,37 @@ def validate_evidence(report):
         queries=[]
         for phase,(sender,(sport,dport))in enumerate(zip(senders,PORTS)):
             devices=ip.topology(sender['range_before'],vlan_filtering=0);ip.topology(sender['range_after'],vlan_filtering=0)
-            filters(sender['range_before'],family,protocol,min(phase,3),active)
+            previous=min(phase,3);target=min(phase+1,3)if phase in(0,1,2)else 3
+            filters(sender['range_before'],family,protocol,previous,active)
+            if phase in(0,1,2):
+                observed_counts=filters_bounded(sender['range_after'],family,protocol,previous,target,active)
+            else:
+                filters(sender['range_after'],family,protocol,target,active)
             i=rows.index(sender);last=i+1;observed=[]
             while last<len(rows)and rows[last]['tool']=='tc'and rows[last]['arguments'][:4]==['-j','-s','filter','show']:
                 observed.append(rows[last]);last+=1
             if phase in (0,1,2,7):
-                require(len(observed)>=2 and observed[-1]['arguments'][-2:]==list(egress)and
-                        all(x['arguments'][-2:]==list(ingress)for x in observed[:-1]),'original port-range counter windows missing/reordered')
-                count=min(phase+1,3)
+                require(len(observed)>=2,'original port-range counter windows missing')
+                query_counts={ingress:[],egress:[]};egress_started=False
+                last_native=observed_counts if phase in(0,1,2)else {ingress:target,egress:target}
                 for query in observed:
-                    drop=query is observed[-1]
-                    flower(json.loads(query['stdout']),family,protocol,drop,count)
-                    filters(query['range_after'],family,protocol,count,active)
+                    locus=tuple(query['arguments'][-2:]);require(locus in active,'original port-range query used wrong locus')
+                    if locus==egress:egress_started=True
+                    else:require(not egress_started,'original port-range ingress query followed egress polling')
+                    drop=locus==egress
+                    count=bounded_flower(json.loads(query['stdout']),family,protocol,drop,previous,target)
+                    require(not query_counts[locus]or count>=query_counts[locus][-1],
+                            'original port-range counter polling regressed')
+                    query_counts[locus].append(count)
+                    for key,state in (('before',query['range_before']),('after',query['range_after'])):
+                        native=filters_bounded(state,family,protocol,previous,target,active)
+                        for polled,value in native.items():
+                            require(value>=last_native[polled],
+                                    'native port-range before/after counter observation regressed')
+                            last_native[polled]=value
+                require(all(query_counts[locus]and query_counts[locus][-1]==target for locus in active),
+                        'final original successful ingress/egress query missed its exact target')
+                filters(observed[-1]['range_after'],family,protocol,target,active)
                 queries.extend(observed)
             else:require(observed==[],'extra original port-range query window')
             src='192.0.2.1'if family==4 else'2001:db8:1::1';dst='192.0.2.2'if family==4 else'2001:db8:1::2'

@@ -13,7 +13,9 @@ contract=importlib.util.module_from_spec(spec);spec.loader.exec_module(contract)
 class FlowerPortRangeContractTests(unittest.TestCase):
     def test_complete_original_ranges_and_negative_delivery(self):
         fixture=json.loads(Path(__file__).with_name('tc-flower-port-range-transcript.json').read_text())
-        cases=['complete','delayed-observation','sender-default-variation','missing-result','original-fails','skip','warning',
+        cases=['complete','delayed-observation','sender-default-variation','delayed-ingress-poll','delayed-egress-poll',
+               'delayed-both-polls','poll-regression','poll-over-target','poll-final-not-reached','poll-nonmatching-hit',
+               'missing-result','original-fails','skip','warning',
                'missing-command','reordered-command','query-missing','wrong-source-bound','wrong-destination-bound','scalar-range',
                'wrong-address','wrong-protocol','wrong-verdict','wrong-binding','hardware-rule','counter-not-hit','counter-out-of-range-hit',
                'wrong-bytes','wrong-drops','wrong-native-actual','other-locus','rule-leaks','query-stale','wrong-peer','wrong-master',
@@ -34,6 +36,38 @@ class FlowerPortRangeContractTests(unittest.TestCase):
                 def action(state,drop=False):return options(state,drop)['actions'][0]
                 def output(row,fn):
                     obj=json.loads(row['stdout']);detail=next(x for x in obj if 'options'in x)['options'];fn(detail);row['stdout']=json.dumps(obj)
+                def set_count(state,locus,count,protocol='udp',family=4):
+                    table=state['filters_by_device']['veth1'] if locus=='ingress' else state['egress_filters']['veth2']
+                    rule=next(x for x in table if 'options'in x);action=rule['options']['actions'][0]
+                    action['stats'].update(packets=count,bytes=count*((142 if protocol=='udp' else 154)+(20 if family==6 else 0)-(0 if locus=='egress' else 14)),
+                                           drops=count if locus=='egress' else 0)
+                def set_output(row,locus,count):
+                    size=142 if locus=='egress' else 128
+                    output(row,lambda o:o['actions'][0]['stats'].update(packets=count,bytes=count*size,
+                           drops=count if locus=='egress' else 0))
+                def insert_delayed(loci):
+                    # The first valid send is IPv4/UDP, target 1. Insert real
+                    # repeated original tc-show commands with an intermediate
+                    # counter, then retain the captured exact-target poll.
+                    send=traffic[0];base=rows.index(send);q_ing,q_egr=rows[base+1:base+3]
+                    sender=copy.deepcopy(send['range_after'])
+                    set_count(sender,'ingress',0 if 'ingress' in loci else 1)
+                    set_count(sender,'egress',0 if 'egress' in loci else 1)
+                    send['range_after']=sender
+                    for locus,q in (('ingress',q_ing),('egress',q_egr)):
+                        for snapshot,state in (('before',q['range_before']),('after',q['range_after'])):
+                            current=1 if locus not in loci or snapshot=='after' else 0
+                            set_count(state,'ingress',current if locus=='ingress' else 1)
+                            set_count(state,'egress',current if locus=='egress' else (0 if 'egress' in loci else 1))
+                        if locus in loci:
+                            prior=copy.deepcopy(q);set_output(prior,locus,0)
+                            for state in (prior['range_before'],prior['range_after']):
+                                set_count(state,'ingress',0 if locus=='ingress' else 1)
+                                set_count(state,'egress',0 if locus=='egress' or 'egress' in loci else 1)
+                            qindex=rows.index(q);previous=rows[qindex-1]
+                            midpoint=(previous['finished_monotonic']+q['started_monotonic'])/2
+                            prior['started_monotonic']=midpoint-0.0001;prior['finished_monotonic']=midpoint
+                            rows.insert(qindex,prior)
                 if isinstance(case,tuple):
                     if case[0]=='frame-missing':r['packet_trace'].pop(case[1])
                     elif case[0]=='rule-missing':rows[case[1]].pop(case[2])
@@ -41,6 +75,21 @@ class FlowerPortRangeContractTests(unittest.TestCase):
                         packet=r['packet_trace'][case[1]];data=bytearray.fromhex(packet['frame_hex']);data[34 if case[1]<16 else 54]^=1;packet['frame_hex']=data.hex()
                 elif case=='delayed-observation':
                     for row in traffic:row['range_after']=copy.deepcopy(row['range_before'])
+                elif case=='delayed-ingress-poll':insert_delayed({'ingress'})
+                elif case=='delayed-egress-poll':insert_delayed({'egress'})
+                elif case=='delayed-both-polls':insert_delayed({'ingress','egress'})
+                elif case in ('poll-regression','poll-over-target','poll-final-not-reached','poll-nonmatching-hit'):
+                    insert_delayed({'ingress'})
+                    first=traffic[0];q=rows[rows.index(first)+1]
+                    if case=='poll-regression':
+                        output(q,lambda o:o['actions'][0]['stats'].update(packets=1,bytes=128))
+                        set_count(q['range_after'],'ingress',1)
+                        later=rows[rows.index(q)+1];output(later,lambda o:o['actions'][0]['stats'].update(packets=0,bytes=0))
+                    elif case=='poll-over-target':output(q,lambda o:o['actions'][0]['stats'].update(packets=2,bytes=2*128))
+                    elif case=='poll-final-not-reached':
+                        later=rows[rows.index(q)+1];output(later,lambda o:o['actions'][0]['stats'].update(packets=0,bytes=0))
+                        set_count(later['range_after'],'ingress',0)
+                    else:output(q,lambda o:o['actions'][0]['stats'].update(packets=0,bytes=0,drops=1))
                 elif case=='sender-default-variation':
                     for n,packet in enumerate(r['packet_trace']):
                         b=bytearray.fromhex(packet['frame_hex']);b[-100:]=bytes((x+n)%256 for x in range(100))
@@ -103,7 +152,8 @@ class FlowerPortRangeContractTests(unittest.TestCase):
                 elif case=='wrong-tool-source':r['iproute2']['source_hashes']['tc/tc.c']='bad'
                 elif case=='wrong-timeout':r['original_tc_hit_timeout_ms']=100
                 elif case=='chronology-reversed':q1['finished_monotonic']=q1['started_monotonic']-1
-                if case in ('complete','delayed-observation','sender-default-variation'):contract.validate_evidence(r)
+                if case in ('complete','delayed-observation','sender-default-variation','delayed-ingress-poll',
+                            'delayed-egress-poll','delayed-both-polls'):contract.validate_evidence(r)
                 else:
                     with self.assertRaises((RuntimeError,KeyError,ValueError,IndexError,StopIteration)):contract.validate_evidence(r)
 
