@@ -409,6 +409,29 @@ ssize_t __wrap_read(int fd, void *buffer, size_t length)
     errno = saved_errno;
     return result;
 }
+#ifndef KER_MPTCP_DIAG_PRELOAD
+extern ssize_t __real___read_chk(int fd, void *buffer, size_t length, size_t buffer_size);
+#endif
+static ssize_t real_checked_read(int fd, void *buffer, size_t length, size_t buffer_size)
+{
+#ifdef KER_MPTCP_DIAG_PRELOAD
+    ssize_t (*function)(int, void *, size_t, size_t) = dlsym(RTLD_NEXT, "__read_chk");
+    if (!function) {
+        if (length > buffer_size) abort();
+        errno = ENOSYS; return -1;
+    }
+    return function(fd, buffer, length, buffer_size);
+#else
+    return __real___read_chk(fd, buffer, length, buffer_size);
+#endif
+}
+ssize_t __wrap___read_chk(int fd, void *buffer, size_t length, size_t buffer_size)
+{
+    /* Preserve glibc's checked-read overflow behavior before any adapter RPC. */
+    if (length > buffer_size || !is_network(fd))
+        return real_checked_read(fd, buffer, length, buffer_size);
+    return __wrap_read(fd, buffer, length);
+}
 ssize_t __wrap_write(int fd, const void *buffer, size_t length)
 {
     if (!is_network(fd)) return syscall(SYS_write, fd, buffer, length);
