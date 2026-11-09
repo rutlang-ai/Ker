@@ -180,7 +180,7 @@ def main():
     parser.add_argument('--packet-observer', type=Path)
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
-    require(args.program != 'pedit_ip.sh' or args.packet_observer is not None,
+    require(args.program not in ('pedit_ip.sh', 'pedit_l4port.sh') or args.packet_observer is not None,
             'original PEDIT test requires the passive native packet observer')
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
@@ -265,7 +265,7 @@ def main():
                 KER_MPTCP_FIXTURE_SOURCE=str(Path(__file__).resolve().parent),
                 KER_FORWARDING_IP=str(args.tools / 'ip'), KER_FORWARDING_BRIDGE=str(args.tools / 'bridge'), KER_FORWARDING_PRELOAD=str(args.preload),
                 KER_FORWARDING_LOG=str(log), PATH=str(bins) + os.pathsep + environment['PATH'])
-            if args.program == 'pedit_ip.sh':
+            if args.program in ('pedit_ip.sh', 'pedit_l4port.sh'):
                 observer_ready, observer_stop = root / 'pedit-observer.ready', root / 'pedit-observer.stop'
                 observer_output = root / 'pedit-observer.jsonl'
                 observer_stdout = root / 'pedit-observer.stdout'
@@ -348,7 +348,7 @@ def main():
                     while not channel.exists():
                         require(process.poll() is None and time.monotonic() < deadline, 'native namespace fixture startup failed')
                         time.sleep(0.01)
-                    if args.program == 'pedit_ip.sh':
+                    if args.program in ('pedit_ip.sh', 'pedit_l4port.sh'):
                         observer_out = observer_stdout.open('w+')
                         observer_err = observer_stderr.open('w+')
                         observer_environment = dict(environment, LD_PRELOAD=str(args.preload),
