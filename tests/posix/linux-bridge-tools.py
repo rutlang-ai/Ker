@@ -62,7 +62,7 @@ def learning_snapshot(env):
     return state
 
 
-def mdb_port_snapshot(env, traffic=False):
+def packet_bridge_snapshot(env, traffic=False):
     state = bridge_snapshot(env)
     query = [os.environ['KER_FORWARDING_IP'], '-s', '-d', '-j', 'link', 'show']
     result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
@@ -75,6 +75,12 @@ def mdb_port_snapshot(env, traffic=False):
         if result.stderr:
             raise RuntimeError('native multicast flower observation warning: ' + result.stderr)
         state['filters'] = json.loads(result.stdout)
+        if os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1':
+            query = [os.environ['KER_FORWARDING_BRIDGE'], '-j', 'fdb', 'show', 'br', 'br0']
+            result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
+            if result.stderr:
+                raise RuntimeError('native isolation FDB observation warning: ' + result.stderr)
+            state['fdb'] = json.loads(result.stdout)
     return state
 
 
@@ -105,7 +111,9 @@ def main():
             env['KER_FORWARDING_VRF'] = vrf
             command = [os.environ['KER_FORWARDING_' + program.upper()], *arguments]
             record['vrf'] = objects[0]
-            if os.environ.get('KER_FORWARDING_BRIDGE_LEARNING') == '1':
+            if os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1':
+                record['isolation_before'] = packet_bridge_snapshot(env)
+            elif os.environ.get('KER_FORWARDING_BRIDGE_LEARNING') == '1':
                 record['learning_before'] = learning_snapshot(env)
             elif (os.environ.get('KER_FORWARDING_BRIDGE_VLAN_UPPER') == '1' or
                     os.environ.get('KER_FORWARDING_BRIDGE_PVID_UPPER') == '1' or
@@ -142,7 +150,8 @@ def main():
             env['KER_MPTCP_NATIVE_TIME_LOG'] = native_time_log
         else:
             if tool not in ('ip', 'bridge', 'mausezahn') and not (
-                    tool == 'tc' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_PORT') == '1'):
+                    tool == 'tc' and (os.environ.get('KER_FORWARDING_BRIDGE_MDB_PORT') == '1' or
+                                      os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1')):
                 raise RuntimeError('unsupported native tool: ' + tool)
             command = [os.environ['KER_FORWARDING_' + tool.upper()], *words]
         if tool == 'bridge' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':
@@ -160,11 +169,20 @@ def main():
                             (tool in ('bridge', 'tc', 'mausezahn') or tool == 'ip' and
                              words[:4] == ['link', 'set', 'dev', 'veth2']))
         if observe_mdb_port:
-            record['mdb_port_before'] = mdb_port_snapshot(env, tool == 'mausezahn')
+            record['mdb_port_before'] = packet_bridge_snapshot(env, tool == 'mausezahn')
+        observe_isolation = (os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1' and
+                             (tool in ('tc', 'mausezahn') or tool == 'ip' and
+                              words[:3] == ['link', 'set', 'dev'] and
+                              words[3:4] in (['veth1'], ['veth2'], ['veth4']) and 'isolated' in words or
+                              tool == 'ip' and words[:3] == ['link', 'set', 'veth3'] and 'promisc' in words))
+        if observe_isolation:
+            record['isolation_before'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        if 'isolation_before' in record:
+            record['isolation_after'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         if observe_mdb_port:
-            record['mdb_port_after'] = mdb_port_snapshot(env, tool == 'mausezahn')
+            record['mdb_port_after'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         if 'learning_before' in record:
             record['learning_after'] = learning_snapshot(env)
         if tool in ('bridge', 'mausezahn') and os.environ.get('KER_FORWARDING_BRIDGE_STICKY') == '1':

@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh` 完整入口本地通过；其余 93 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh` 完整入口本地通过；其余 92 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 95/310，剩余 215；其中 90 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 220 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 96/310，剩余 214；其中 91 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 219 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -257,3 +257,13 @@ iproute2 6.12.0 的 unchanged `bridge` 工具和 `ip` 使用同一原生 Netlink
 每次 MDB 增删与持久性查询均观察真实端口 DOWN、桥接配置及目标条目的出现/消失，绑定实际 br0 ifindex 与 veth2；运行期间不排斥无关的动态 IPv6 MDB。完整 TC qdisc/filter 增删、查询必须全部成功，原版 tc 二进制 hash 与 pinned 工具来源匹配。清理后 br0、两个 VRF 消失，四个 veth DOWN/解除 master、MDB/地址/路由清空，native socket/outstanding packet 为零且 worker 正常关闭。
 
 Ker 的桥接测试配置启用真实 `CONFIG_NET_CLS_ACT`、`CONFIG_NET_SCH_INGRESS`、`CONFIG_NET_CLS_FLOWER` 和 `CONFIG_NET_ACT_GACT`，实际 fingerprint 更新为 `6bfdfffd796cdfb3d21525ca18c2cd5c86d79ccdfce80dbaf54f0238e903329e`。Linux 源码、协议、原版 selftest 和 iproute2 均未修改。CI 强制检查实际内核四个选项，运行十个完整 bridge 原版入口加时钟控制共 11 项，并上传本入口的独立 JSON/JUnit。旧的 6ee bridge profile 缺少 TC 支持，不能用于本入口资格。此项新增一个完整入口；最终 hosted CI/review 仍独立核对。
+
+## 桥接端口隔离与未知单播
+
+完整原版 `forwarding/bridge_port_isolation.sh` 保留三个默认函数和三行原版 TEST 结果。三个主机分别位于独立 VRF，原生 bridge 的 veth1/veth2 开启 isolated，veth4 关闭 isolated。IPv4/IPv6 各自验证 h1→h2 失败、h3→h2 成功，全部原版 `-c 10 -i 0.1 -w 5`、断言和等待保持不变；不固定邻居解析失败路径的发送计数，也不让脚本内部 RET 重置掩盖负向结果。
+
+两次原版未知单播探测分别从 h1、h3 向 `de:ad:be:ef:13:37` / `192.0.2.100` 发送一个 98 字节 Ethernet/IPv4 报文、64 字节负载。TC flower 的目标端口 veth3 ingress counter 必须依次为 0、1，后一窗口为 84 IP bytes/1 drop。每次发送前读取真实 FDB，要求目标 MAC 未知；读取真实 isolated 标志、三个 VRF/地址、promisc 增删和实际 AF_PACKET frame/ifindex。投递与桥接计数使用原版 sleep1 后已有的 TC 查询状态，不要求即时观察提前收到报文，亦不限制工具的负载填充字节。
+
+普通与报文专用私有 preload 都复用已有的 native gettimeofday 适配，给 iputils 的原版 SO_TIMESTAMP 使用同一 Linux 时钟；新增独立报文 preload ABI 控制，覆盖宿主透传、NULL timeval/旧 timezone ABI 及缺少 native descriptor 时的 ENOTCONN。四次原版 ping 必须记录真实 native realtime 读取。生产 API、Linux 协议、原版脚本、工具和内核配置均无改动，沿用 TC profile fingerprint `6bfdfffd796cdfb3d21525ca18c2cd5c86d79ccdfce80dbaf54f0238e903329e`。
+
+清理后 bridge、三个 VRF 消失，六个 veth 关闭并解除 master，promisc/全局地址/路由及 bridge FDB 回收，native socket/outstanding packet 为零且 worker 正常关闭。原版 tc JSON 能力探测、两个完整 qdisc/filter 增删窗口和缺失 backend/未知 VRF 对照均强制核验。CI 要求 11 个完整原版入口及两种时钟 ABI 控制共 13 项，独立 JSON/JUnit 无 skip；最终 hosted CI/review 单独确认。本项新增一个完整默认入口。

@@ -22,16 +22,21 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_bridge_pr
     target_include_directories(ker-linux-bridge-packet-preload PRIVATE "${ao_headers}")
     target_compile_options(ker-linux-bridge-packet-preload PRIVATE -Wall -Wextra -Werror)
     target_compile_definitions(ker-linux-bridge-packet-preload PRIVATE
-        KER_MPTCP_DIAG_PRELOAD=1 KER_FORWARDING_SELFTEST=1 KER_BRIDGE_PACKET_SELFTEST=1)
+        KER_MPTCP_DIAG_PRELOAD=1 KER_FORWARDING_SELFTEST=1 KER_BRIDGE_PACKET_SELFTEST=1
+        KER_BRIDGE_SELFTEST=1 __wrap_gettimeofday=gettimeofday)
     target_link_libraries(ker-linux-bridge-packet-preload PRIVATE ${CMAKE_DL_LIBS})
     foreach(wrap IN LISTS diag_wraps)
         target_compile_definitions(ker-linux-bridge-packet-preload PRIVATE "__wrap_${wrap}=${wrap}")
     endforeach()
+    add_dependencies(ker-bridge-realtime-wrapper-test ker-linux-bridge-packet-preload)
+    add_test(NAME bridge-packet-realtime-wrapper-contract COMMAND ker-bridge-realtime-wrapper-test)
+    set_tests_properties(bridge-packet-realtime-wrapper-contract PROPERTIES
+        ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:ker-linux-bridge-packet-preload>")
     target_compile_definitions(ker-linux-network-server PRIVATE KER_BRIDGE_PACKET_SELFTEST=1)
     add_dependencies(ker-linux-network-server ker-linux-bridge-packet-preload)
     foreach(program router_bridge router_bridge_vlan router_bridge_1d router_bridge_vlan_upper
-            router_bridge_pvid_vlan_upper router_bridge_vlan_upper_pvid bridge_mdb_host bridge_sticky_fdb bridge_fdb_learning_limit bridge_mdb_port_down)
-        if(program STREQUAL "bridge_sticky_fdb" OR program STREQUAL "bridge_mdb_port_down")
+            router_bridge_pvid_vlan_upper router_bridge_vlan_upper_pvid bridge_mdb_host bridge_sticky_fdb bridge_fdb_learning_limit bridge_mdb_port_down bridge_port_isolation)
+        if(program STREQUAL "bridge_sticky_fdb" OR program STREQUAL "bridge_mdb_port_down" OR program STREQUAL "bridge_port_isolation")
             set(bridge_selftest_preload ker-linux-bridge-packet-preload)
         else()
             set(bridge_selftest_preload ker-linux-bridge-preload)
