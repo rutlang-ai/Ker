@@ -11,6 +11,39 @@ contract=importlib.util.module_from_spec(spec);spec.loader.exec_module(contract)
 
 
 class TCChainsContractTests(unittest.TestCase):
+    def test_query_counters_follow_native_causal_progress(self):
+        fixture=json.loads(Path(__file__).with_name('tc-chains-transcript.json').read_text())
+        for case in ('delayed-query','before-one-query-zero','query-one-after-zero','non-integer-counter'):
+            with self.subTest(case=case):
+                report=copy.deepcopy(fixture);rows=report['commands']
+                sender=[x for x in rows if x['tool']=='mausezahn'][1]
+                query=rows[rows.index(sender)+1]
+                def zero(table):
+                    for row in table:
+                        if row.get('options',{}).get('handle')in(101,1101):
+                            row['options']['actions'][0]['stats'].update(packets=0,bytes=0,drops=0)
+                if case=='delayed-query':
+                    zero(sender['range_after']['filters_by_device']['veth1'])
+                    zero(query['range_before']['filters_by_device']['veth1'])
+                    delayed=copy.deepcopy(query)
+                    zero(delayed['range_after']['filters_by_device']['veth1'])
+                    output=json.loads(delayed['stdout']);zero(output);delayed['stdout']=json.dumps(output)
+                    delayed['finished_monotonic']=delayed['started_monotonic']
+                    rows.insert(rows.index(query),delayed)
+                    contract.validate_evidence(report)
+                else:
+                    if case=='before-one-query-zero':
+                        output=json.loads(query['stdout']);zero(output);query['stdout']=json.dumps(output)
+                    elif case=='query-one-after-zero':
+                        zero(sender['range_after']['filters_by_device']['veth1'])
+                        zero(query['range_before']['filters_by_device']['veth1'])
+                        zero(query['range_after']['filters_by_device']['veth1'])
+                    else:
+                        output=json.loads(query['stdout'])
+                        next(x['options']['actions'][0]['stats']for x in output if x.get('options',{}).get('handle')==101)['packets']=True
+                        query['stdout']=json.dumps(output)
+                    with self.assertRaises(RuntimeError):contract.validate_evidence(report)
+
     def test_complete_original_software_chain_matrix(self):
         fixture=json.loads(Path(__file__).with_name('tc-chains-transcript.json').read_text())
         cases=['complete','delayed-observation','unspecified-input-defaults','missing-result','original-fails','skip',

@@ -54,6 +54,16 @@ def filters(state,rules,counts,mac):
                 all(s[k]==0 for k in('overlimits','requeues','backlog','qlen')),'native chain exact hit/drop/byte counters changed')
 
 
+def bounded_filters(state,rules,targets,progress,mac):
+    actual={(row['chain'],row['pref'],row['options']['handle']):row['options']['actions'][0]['stats']['packets']
+            for row in state['filters_by_device']['veth1']if'options'in row}
+    require(set(actual)==set(rules),'native TC chain counter generation missing/polluted')
+    require(all(type(count)is int and progress[identity]<=count<=targets[identity]
+                for identity,count in actual.items()),'native TC chain causal counter regression or unexpected hit')
+    filters(state,rules,actual,mac)
+    progress.update(actual)
+
+
 def validate_evidence(report):
     original=report['original'];labels=['unreachable chain (skip_hw)','gact goto chain (skip_hw)','create destroy chain','template filter fits']
     parsed=[re.fullmatch(r'TEST: (.*?)\s+\[ OK \]',x)for x in original['stdout'].splitlines()if x.startswith('TEST:')]
@@ -92,9 +102,10 @@ def validate_evidence(report):
                 h[0]==0x45 and int.from_bytes(h[2:4],'big')==84 and sum(int.from_bytes(h[k:k+2],'big')for k in range(0,20,2))%65535==0 and
                 h[12:]==ipaddress.ip_address('192.0.2.1').packed+ipaddress.ip_address('192.0.2.2').packed,
                 'native original chain input frame/interface/header/checksum changed')
-    declared={};expected={};rules={};counts={};packet_number=0
+    declared={};expected={};rules={};counts={};progress={};packet_number=0
     for row in observed:
         args=row['arguments'];chains(row['chains_before'],expected)
+        bounded_filters(row['range_before'],rules,counts,progress,mac)
         # Counts before reads may lag only while the original busywait is active.
         if row['tool']=='mausezahn':
             filters(row['range_before'],rules,counts,mac)
@@ -119,18 +130,14 @@ def validate_evidence(report):
             if row['returncode']==0:
                 if args[1]=='add':
                     key='src_mac'if'src_mac'in args else'dst_mac';verdict={'type':'goto','chain':1}if'goto'in args else{'type':'drop'}
-                    rules[identity]=(key,verdict,'skip_hw'in args);counts[identity]=0;expected.setdefault(chain,None)
+                    rules[identity]=(key,verdict,'skip_hw'in args);counts[identity]=progress[identity]=0;expected.setdefault(chain,None)
                 else:
-                    require(identity in rules,'original deletion lacks native filter generation');rules.pop(identity);counts.pop(identity)
+                    require(identity in rules,'original deletion lacks native filter generation');rules.pop(identity);counts.pop(identity);progress.pop(identity)
                     if chain not in declared and not any(key[0]==chain for key in rules):expected.pop(chain)
             filters(row['range_after'],rules,counts,mac)
         elif args[:4]==['-j','-s','filter','show']:
-            for snapshot in (json.loads(row['stdout']),row['range_after']['filters_by_device']['veth1']):
-                actual_counts={(r['chain'],r['pref'],r['options']['handle']):r['options']['actions'][0]['stats']['packets']for r in snapshot if'options'in r}
-                require(all(identity in counts and 0<=count<=counts[identity]for identity,count in actual_counts.items()),
-                        'unreachable/wrong-priority native rule was hit or counter regressed')
-                state=dict(row['range_after']);state['filters_by_device']=dict(state['filters_by_device'],veth1=snapshot)
-                filters(state,rules,actual_counts,mac)
+            state=dict(row['range_before']);state['filters_by_device']=dict(state['filters_by_device'],veth1=json.loads(row['stdout']))
+            bounded_filters(state,rules,counts,progress,mac)
             # Every negative unreachable/wrong-priority query must remain zero;
             # the last original read after each probe must show the full matrix.
             next_row=rows[rows.index(row)+1]
@@ -140,6 +147,7 @@ def validate_evidence(report):
         elif args[:2]==['-j','chain']:
             actual=json.loads(row['stdout']);target=int(args[args.index('chain',2)+1])if'chain'in args[2:]else 0
             chains(actual,{target:expected[target]}if args[2]=='get'else expected)
+        bounded_filters(row['range_after'],rules,counts,progress,mac)
         chains(row['chains_after'],expected)
     require(not expected and not rules and packet_number==2,'original chain/template lifecycle incomplete')
     final=cfm.topology(next(x for x in reversed(rows)if x['tool']=='tc'and x['arguments'][:4]==['-j','-s','filter','show'])['range_after'])
