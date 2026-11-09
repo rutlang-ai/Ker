@@ -11,6 +11,29 @@ target_link_libraries(ker-refcount-test PRIVATE ker_port_headers ker_linux_port 
 add_test(NAME refcount COMMAND ker-refcount-test)
 
 if(KER_WITH_DPDK)
+    add_executable(ker-fstack-tx-rollback-test fstack-tx-rollback.c)
+    target_compile_definitions(ker-fstack-tx-rollback-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-fstack-tx-rollback-test PRIVATE ker_skb_headers
+        ker_neighbor_headers ker_tx_export_port ker_linux_port ker_dpdk_port
+        ker_neighbor_port ker_address_port ker_timer_list_port ker_skb_port PkgConfig::DPDK Threads::Threads)
+    string(JOIN ":" ker_tx_rollback_library_path ${DPDK_LIBRARY_DIRS})
+    foreach(mode copy checksum exact)
+        add_test(NAME fstack-tx-rollback-${mode}
+            COMMAND ker-fstack-tx-rollback-test ${mode})
+        set_tests_properties(fstack-tx-rollback-${mode} PROPERTIES TIMEOUT 30
+            ENVIRONMENT "LD_LIBRARY_PATH=${ker_tx_rollback_library_path}:$ENV{LD_LIBRARY_PATH}")
+    endforeach()
+    add_executable(ker-fstack-chain-rollback-test fstack-chain-rollback.c)
+    target_compile_definitions(ker-fstack-chain-rollback-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-fstack-chain-rollback-test PRIVATE ker_skb_headers
+        ker_linux_port ker_dpdk_port ker_skb_port PkgConfig::DPDK Threads::Threads)
+    string(JOIN ":" ker_rollback_library_path ${DPDK_LIBRARY_DIRS})
+    foreach(mode copy checksum exact)
+        add_test(NAME fstack-chain-rollback-${mode}
+            COMMAND ker-fstack-chain-rollback-test ${mode})
+        set_tests_properties(fstack-chain-rollback-${mode} PROPERTIES TIMEOUT 30
+            ENVIRONMENT "LD_LIBRARY_PATH=${ker_rollback_library_path}:$ENV{LD_LIBRARY_PATH}")
+    endforeach()
     add_executable(ker-ipv4-fields-test ipv4-fields.c)
     target_include_directories(ker-ipv4-fields-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
     target_compile_definitions(ker-ipv4-fields-test PRIVATE _GNU_SOURCE)

@@ -1158,6 +1158,54 @@
         "native-fstack-config-lifecycle"
       ],
       "adaptation": "Eight production-loader checks cover minimal typed settings/defaults, empty/network-only INI, CLI precedence with quoted EAL, missing-file subprocess rejection before library setup, strict unknown-section rejection/recovery, the supported Ker section subset, repeated successful/failed load isolation, and strict duplicate-key rejection. No mocks or upstream edits. No worker or kernel is started by this CTest: these are configuration parser/lifecycle observations, not networking passes, allocator leak proofs, F-Stack global-struct ABI, secondary-process support or reload generations. Minimal/all-section/unknown-section source cases remain partial with explicit remaining fields; duplicate-key last-value-wins is not migrated and its source record remains blocked."
+    },
+    "fstack-chain-rollback-copy": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_multiseg",
+        "test_ff_dpdk_if_send_copydata_fail"
+      ],
+      "adaptation": "Ker-specific real-pool allocation-failure sweep for ordinary chain copy. Every incomplete allocation prefix is attempted twice, checking exact pool availability, unchanged output slot, source bytes/metadata and ownership, followed by success with exactly enough mbufs and copy lifetime after source release. Single-segment and 1/2/7-byte segmentation cases combine both headrooms with even/odd lengths. Checksum modes use an independent byte oracle, even/odd checksum starts, fields at the beginning/middle/end, split checksum words and folded-zero seeds. The upstream cases motivate segmentation and failure cleanup only; they do not sweep pool exhaustion. No BSD copydata fault, NIC/hardware offload, nonlinear skb or protocol state coverage is claimed."
+    },
+    "fstack-chain-rollback-checksum": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_multiseg",
+        "test_ff_dpdk_if_send_copydata_fail"
+      ],
+      "adaptation": "Ker-specific real-pool allocation-failure sweep for checksum chain copy. Every incomplete allocation prefix is attempted twice, checking exact pool availability, unchanged output slot, source bytes/metadata and ownership, followed by success with exactly enough mbufs and copy lifetime after source release. Single-segment and 1/2/7-byte segmentation cases combine both headrooms with even/odd lengths. Checksum modes use an independent byte oracle, even/odd checksum starts, fields at the beginning/middle/end, split checksum words and folded-zero seeds. The upstream cases motivate segmentation and failure cleanup only; they do not sweep pool exhaustion. No BSD copydata fault, NIC/hardware offload, nonlinear skb or protocol state coverage is claimed."
+    },
+    "fstack-chain-rollback-exact": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_multiseg",
+        "test_ff_dpdk_if_send_copydata_fail"
+      ],
+      "adaptation": "Ker-specific real-pool allocation-failure sweep for exact chain copy. Every incomplete allocation prefix is attempted twice, checking exact pool availability, unchanged output slot, source bytes/metadata and ownership, followed by success with exactly enough mbufs and copy lifetime after source release. Single-segment and 1/2/7-byte segmentation cases combine both headrooms with even/odd lengths. Checksum modes use an independent byte oracle, even/odd checksum starts, fields at the beginning/middle/end, split checksum words and folded-zero seeds. The upstream cases motivate segmentation and failure cleanup only; they do not sweep pool exhaustion. No BSD copydata fault, NIC/hardware offload, nonlinear skb or protocol state coverage is claimed."
+    },
+    "fstack-tx-rollback-copy": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_multiseg",
+        "test_ff_dpdk_if_send_copydata_fail"
+      ],
+      "adaptation": "Ker-specific bounded TX FIFO failure-recovery extension for copy chain mode with 1/2/7-byte segments. Every incomplete allocation prefix fails twice without sink delivery, preserving pending/FIFO order, byte accounting, original skbs and pool availability. Negative and positive sink rejections reclaim copies; retaining an accepted first copy forces the next allocation to fail in the same poll, which returns the completed prefix and records the error. Pending and queued successors cancel in order, then the exact originals re-enqueue and recover. Independent byte checks distinguish folded-zero policies and verify accepted-copy lifetime after source release. Calls production TX poll directly; no worker scheduling, BSD copydata fault, NIC/offload, native F-Stack TX or protocol state coverage is claimed."
+    },
+    "fstack-tx-rollback-checksum": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_multiseg",
+        "test_ff_dpdk_if_send_copydata_fail"
+      ],
+      "adaptation": "Ker-specific bounded TX FIFO failure-recovery extension for checksum chain mode with 1/2/7-byte segments. Every incomplete allocation prefix fails twice without sink delivery, preserving pending/FIFO order, byte accounting, original skbs and pool availability. Negative and positive sink rejections reclaim copies; retaining an accepted first copy forces the next allocation to fail in the same poll, which returns the completed prefix and records the error. Pending and queued successors cancel in order, then the exact originals re-enqueue and recover. Independent byte checks distinguish folded-zero policies and verify accepted-copy lifetime after source release. Calls production TX poll directly; no worker scheduling, BSD copydata fault, NIC/offload, native F-Stack TX or protocol state coverage is claimed."
+    },
+    "fstack-tx-rollback-exact": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_multiseg",
+        "test_ff_dpdk_if_send_copydata_fail"
+      ],
+      "adaptation": "Ker-specific bounded TX FIFO failure-recovery extension for exact chain mode with 1/2/7-byte segments. Every incomplete allocation prefix fails twice without sink delivery, preserving pending/FIFO order, byte accounting, original skbs and pool availability. Negative and positive sink rejections reclaim copies; retaining an accepted first copy forces the next allocation to fail in the same poll, which returns the completed prefix and records the error. Pending and queued successors cancel in order, then the exact originals re-enqueue and recover. Independent byte checks distinguish folded-zero policies and verify accepted-copy lifetime after source release. Calls production TX poll directly; no worker scheduling, BSD copydata fault, NIC/offload, native F-Stack TX or protocol state coverage is claimed."
     }
   }
 }
