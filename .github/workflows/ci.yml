@@ -860,6 +860,7 @@ jobs:
             build-native-bridge/linux-original-forwarding-bridge-mdb-host.json
             build-native-bridge/linux-original-forwarding-bridge-sticky-fdb.json
             build-native-bridge/linux-original-forwarding-bridge-fdb-learning-limit.json
+            build-native-bridge/linux-original-forwarding-bridge-mdb-port-down.json
             ${{ runner.temp }}/native-xt-string-ctest.xml
             ${{ runner.temp }}/native-linux-xt-string-selftests-build/native-linux.json
             build-native-xt-string/linux-original-netfilter-xt-string.json
