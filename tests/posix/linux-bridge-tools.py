@@ -49,6 +49,18 @@ def sticky_snapshot(env):
     return state
 
 
+def learning_snapshot(env):
+    state = {}
+    for key, query in (
+        ('links', [os.environ['KER_FORWARDING_IP'], '-s', '-d', '-j', 'link', 'show']),
+        ('fdb', [os.environ['KER_FORWARDING_BRIDGE'], '-j', '-d', 'fdb', 'show', 'br', 'br0'])):
+        result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
+        if result.stderr:
+            raise RuntimeError('native FDB learning observation warning: ' + result.stderr)
+        state[key] = json.loads(result.stdout)
+    return state
+
+
 def main():
     tool, words = Path(sys.argv[0]).name, sys.argv[1:]
     record = dict(tool=tool, arguments=words)
@@ -76,7 +88,9 @@ def main():
             env['KER_FORWARDING_VRF'] = vrf
             command = [os.environ['KER_FORWARDING_' + program.upper()], *arguments]
             record['vrf'] = objects[0]
-            if (os.environ.get('KER_FORWARDING_BRIDGE_VLAN_UPPER') == '1' or
+            if os.environ.get('KER_FORWARDING_BRIDGE_LEARNING') == '1':
+                record['learning_before'] = learning_snapshot(env)
+            elif (os.environ.get('KER_FORWARDING_BRIDGE_VLAN_UPPER') == '1' or
                     os.environ.get('KER_FORWARDING_BRIDGE_PVID_UPPER') == '1' or
                     os.environ.get('KER_FORWARDING_BRIDGE_UPPER_PVID') == '1'):
                 record['bridge_state'] = bridge_snapshot(env)
@@ -117,8 +131,17 @@ def main():
             record['mdb_before'] = bridge_snapshot(env)
         if tool in ('bridge', 'mausezahn') and os.environ.get('KER_FORWARDING_BRIDGE_STICKY') == '1':
             record['sticky_before'] = sticky_snapshot(env)
+        if (os.environ.get('KER_FORWARDING_BRIDGE_LEARNING') == '1' and
+                (tool == 'bridge' and words[:2] in
+                 (['fdb', 'add'], ['fdb', 'replace'], ['fdb', 'del'], ['fdb', 'flush']) or
+                 tool == 'ip' and words[:3] == ['link', 'set', 'veth5'] and
+                 words[3:4] in (['master'], ['nomaster']) or
+                 tool == 'ip' and words[:5] == ['link', 'set', 'dev', 'veth5', 'addr'])):
+            record['learning_before'] = learning_snapshot(env)
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        if 'learning_before' in record:
+            record['learning_after'] = learning_snapshot(env)
         if tool in ('bridge', 'mausezahn') and os.environ.get('KER_FORWARDING_BRIDGE_STICKY') == '1':
             record['sticky_after'] = sticky_snapshot(env)
         if tool == 'bridge' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':

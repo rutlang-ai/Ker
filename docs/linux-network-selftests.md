@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh` 完整入口本地通过；其余 95 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh` 完整入口本地通过；其余 94 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 93/310，剩余 217；其中 88 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 222 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 94/310，剩余 216；其中 89 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 221 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -239,3 +239,11 @@ iproute2 6.12.0 的 unchanged `bridge` 工具和 `ip` 使用同一原生 Netlink
 普通 iproute2、iptables-legacy、socat 原版工具经现有 namespace/socket 适配进入同一常驻 Linux；stdin 传输保留原版文件字节，混合宿主 pipe/native UDP readiness 复用已有适配。宿主传输 namespace 的实际 IPv4 地址只满足 libc AI_ADDRCONFIG 查询，数据 socket 必须进入 native backend。
 
 本地完整入口及 CI gate 通过，fingerprint `81cee4f404d84696958a4698995d247b828417cd423294c1fb15eacdd05b1758`。要求十次真实 native UDP 创建、八次 reset/计数读取顺序、四条规则的精确参数及 packet/byte 计数。一个 native namespace 创建/删除，live socket/outstanding packet 为零，worker 正常退出；缺失 backend 的完整原版脚本必须失败。`xt-string-profile` gate 验证实际配置、唯一完整入口、无 skip 的 JUnit 和匹配 fingerprint 的 JSON；hosted CI/review 资格另行核对。
+
+## FDB 学习计数与上限
+
+完整原版 `forwarding/bridge_fdb_learning_limit.sh` 在现有 bridge profile 中运行两个默认测试函数，保留 12 行原版成功结果。第一组验证 16 个动态学习地址的计数，以及 learned、static、user、extern_learn、local 五类条目的插入、删除和替换计数；第二组将实际 bridge 的 `fdb_max_learned` 设置为 8，验证七轮原版填充中的六轮受限学习，以及达到上限后的五类条目准入。上游内部 `PING_COUNT=1`、118 次 ping、间隔、deadline、sleep 和全部 jq/算术断言均保持不变。
+
+每次原版 ping 前后读取实际 native link/FDB，核对源 MAC、两个独立 VRF、桥接端口及回包端口的 `learning off`。允许原版 MAC 变更引起的真实内核控制报文在 ping 前已经学习该地址；ping 后的计数和 VID 0 条目仍必须精确匹配。达到上限后，第 9–16 个源地址不再加入 FDB，原版 ping 仍全部成功；不把发送尝试计成成功学习。逐项保留 18 次原版 `fdb_n_learned` 查询和五次无 VLAN 字段的目标 MAC 查询，并记录全部 FDB 增删、替换以及 local 端口 MAC/挂接/解除前后的真实状态。
+
+原版工具能力探测必须实际支持 `fdb_max_learned`，内核计数不能为 null；零退出的 SKIP 也不能计为通过。结束时 br0、两个 VRF 消失，六个 veth 按原版 cleanup 关闭并解除 master，目标 FDB、全局地址和路由清空，native socket/outstanding packet 为零且 worker 正常退出。Linux、iproute2、原版脚本、内核配置和生产 API 均无修改。沿用 native fingerprint `6ee942b2c8460007ae8131a5f0764b4ff646c6efd9d0340d2b282d025eadedf5`；CI 强制九个完整 bridge 入口加时钟 ABI 控制共 10 项及其独立 JSON/JUnit，无 skip。此项新增一个完整入口，本地结果与最终 hosted CI/review 资格单独记录。
