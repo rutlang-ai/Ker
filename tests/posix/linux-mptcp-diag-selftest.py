@@ -215,6 +215,10 @@ def main():
                f'-d {shlex.quote(str(args.pmd_dir / "librte_net_tap.so"))} --vdev=net_tap0,iface=kerpeer,remote=kerlink')
         environment = {k: v for k, v in os.environ.items() if k != 'LD_PRELOAD' and
             not k.startswith(('KER_', 'PROC_', 'NSTAT_', 'SELFTESTS_MPTCP_', 'MPTCP_LIB_', 'XTABLES_')) and k != 'TCPDIAG_FILE'}
+        # Diagnostic-only tracing is forwarded explicitly; the usual KER_*
+        # fixture controls remain filtered from the unchanged upstream shell.
+        if os.environ.get('KER_MPTCP_IO_TRACE'):
+            environment['KER_MPTCP_IO_TRACE'] = os.environ['KER_MPTCP_IO_TRACE']
         environment.update(SELFTESTS_MPTCP_LIB_EXPECT_ALL_FEATURES='1', SELFTESTS_MPTCP_LIB_OVERRIDE_FLAKY='1', NO_COLOR='1')
         if args.suite == 'simult' or connect_suite:
             environment['KER_LINUX_SELFTEST_MEMORY_MB'] = '1024' if join_suite else '512'

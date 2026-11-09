@@ -385,6 +385,7 @@ jobs:
         shell: bash
         env:
           KER_DPDK_PREFIX: ${{ runner.temp }}/dpdk-install
+          KER_MPTCP_IO_TRACE: ${{ runner.temp }}/native-mptcp-connect-io-trace.jsonl
         run: |
           set -euo pipefail
           python3 tools/build-native-linux.py \
@@ -409,6 +410,37 @@ jobs:
             ip link set lo up
             exec python3 tools/ci/native_tests.py connect-profile "$1" "$2"
           ' _ build-native-connect "$RUNNER_TEMP/native-connect-ctest.xml"
+
+      - name: Capture MPTCP connect diagnostic provenance
+        if: always() && steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/native-mptcp-connect-diagnostic"
+          set +e
+          python3 tools/ci/capture_mptcp_io_provenance.py \
+            --build-dir build-native-connect --output-dir "$output"
+          capture_status=$?
+          git rev-parse HEAD > "$output/source-head.txt"
+          exit "$capture_status"
+
+      - name: Validate MPTCP connect diagnostic artifacts
+        if: always() && steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -u
+          output="$RUNNER_TEMP/native-mptcp-connect-diagnostic"
+          args=(--trace "$RUNNER_TEMP/native-mptcp-connect-io-trace.jsonl"
+                --status "$output/diagnostic-status.json"
+                --provenance-status "$output/provenance-status.json")
+          for report in build-native-connect/linux-original-mptcp-connect-*.json; do
+            [[ -f "$report" ]] && args+=(--report "$report")
+          done
+          for text_file in build-native-connect/linux-original-mptcp-connect-*.stdout \
+                           build-native-connect/linux-original-mptcp-connect-*.stderr; do
+            [[ -f "$text_file" ]] && args+=(--scan-text "$text_file")
+          done
+          python3 tools/ci/mptcp_io_trace_status.py "${args[@]}"
 
       - name: Run the complete original MPTCP join fault matrix
         if: steps.native.outputs.present == 'true'
@@ -883,6 +915,8 @@ jobs:
             ${{ runner.temp }}/native-connect-ctest.xml
             ${{ runner.temp }}/native-linux-connect-build/native-linux.json
             build-native-connect/linux-original-mptcp-connect-*
+            ${{ runner.temp }}/native-mptcp-connect-io-trace.jsonl
+            ${{ runner.temp }}/native-mptcp-connect-diagnostic/
             ${{ runner.temp }}/native-sockopt-ctest.xml
             ${{ runner.temp }}/native-linux-sockopt-build/native-linux.json
             ${{ runner.temp }}/native-linux-mptcp-kunit/linux-original-mptcp-kunit.json
