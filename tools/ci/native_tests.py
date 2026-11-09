@@ -51,7 +51,8 @@ LINUX_BRIDGE_PROFILE_TESTS = {LINUX_BRIDGE_PROFILE_TEST: "router_bridge.sh",
                               "linux-original-forwarding-ip6-forward-instats-vrf": "ip6_forward_instats_vrf.sh",
                               "linux-original-forwarding-bridge-igmp": "bridge_igmp.sh",
                               "linux-original-forwarding-bridge-mld": "bridge_mld.sh",
-                              "linux-original-forwarding-bridge-mdb": "bridge_mdb.sh"}
+                              "linux-original-forwarding-bridge-mdb": "bridge_mdb.sh",
+                              "linux-original-forwarding-bridge-mdb-max": "bridge_mdb_max.sh"}
 LINUX_XT_STRING_PROFILE_TEST = "linux-original-netfilter-xt-string"
 LINUX_RPATH_PROFILE_TEST = "linux-original-netfilter-rpath"
 LINUX_RPATH_REALTIME_TEST = "rpath-realtime-wrapper-contract"
@@ -562,7 +563,7 @@ def run_bridge_profile(build: Path, junit: Path) -> None:
     controls = {LINUX_BRIDGE_REALTIME_TEST, LINUX_BRIDGE_PACKET_REALTIME_TEST}
     inventory = [item['name'] for item in ctest_inventory(build)]
     require(all(inventory.count(name) == 1 for name in names | controls),
-            'bridge profile must register all nineteen complete original entries and both clock controls exactly once')
+            'bridge profile must register all twenty complete original entries and both clock controls exactly once')
     cache = (build / 'CMakeCache.txt').read_text()
     native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
                          if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
@@ -591,7 +592,7 @@ def run_bridge_profile(build: Path, junit: Path) -> None:
                 evidence.get('fingerprint') == manifest.get('fingerprint') and
                 evidence.get('program') == program, 'wrong native bridge/VLAN evidence')
         contract.validate_evidence(evidence)
-    summary('Original routed bridge/PVID, VLAN switching, 802.1D and VLAN uppers: nineteen complete shells including MDB, learning limits, isolation, VLAN switching and locked-port/MAB redirect and VLAN multicast/IPv6 VRF ingress accounting and complete IGMP/MLD source filtering and full MDB API/scale/forwarding, PASS ' + manifest['fingerprint'])
+    summary('Original routed bridge/PVID, VLAN switching, 802.1D and VLAN uppers: twenty complete shells including MDB, learning limits, isolation, VLAN switching and locked-port/MAB redirect and VLAN multicast/IPv6 VRF ingress accounting and complete IGMP/MLD source filtering and full MDB API/scale/forwarding and port/VLAN group limits, PASS ' + manifest['fingerprint'])
 
 
 def run_xt_string_profile(build: Path, junit: Path) -> None:

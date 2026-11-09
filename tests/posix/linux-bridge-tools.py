@@ -121,6 +121,18 @@ def mdb_api_snapshot(env):
     return json.loads(result.stdout)
 
 
+def mdb_max_snapshot(env):
+    state = packet_bridge_snapshot(env)
+    for key, args in (('port_details',['-j','-d','link','show']),
+                      ('vlan_details',['-j','-d','vlan','show']),
+                      ('vlan_global',['-j','vlan','global','show'])):
+        result = subprocess.run([os.environ['KER_FORWARDING_BRIDGE'], *args],env=env,
+            capture_output=True,text=True,timeout=10,check=True)
+        if result.stderr: raise RuntimeError('native MDB limits observation warning: '+result.stderr)
+        state[key] = json.loads(result.stdout)
+    return state
+
+
 def main():
     tool, words = Path(sys.argv[0]).name, sys.argv[1:]
     record = dict(tool=tool, arguments=words)
@@ -235,6 +247,9 @@ def main():
                        tool == 'ip' and words[:4] == ['link','set','dev','br0']))
         observe_mdb_api = (os.environ.get('KER_FORWARDING_BRIDGE_MDB_API') == '1' and tool == 'bridge' and
                            words[:2] in (['mdb', 'add'], ['mdb', 'del'], ['mdb', 'replace'], ['mdb', 'flush']))
+        observe_mdb_max = os.environ.get('KER_FORWARDING_BRIDGE_MDB_MAX') == '1' and tool == 'bridge'
+        if observe_mdb_max:
+            record['mdb_max_before'] = mdb_max_snapshot(env)
         if observe_mdb_api:
             record['mdb_api_before'] = mdb_api_snapshot(env)
         if observe_sg:
@@ -257,6 +272,8 @@ def main():
                 env=env, capture_output=True, text=True, timeout=10, check=True)
             if features.stderr: raise RuntimeError('native ethtool feature query warning: ' + features.stderr)
             record['ethtool_features_after'] = json.loads(features.stdout)
+        if observe_mdb_max:
+            record['mdb_max_after'] = mdb_max_snapshot(env)
         if observe_mdb_api:
             record['mdb_api_after'] = mdb_api_snapshot(env)
         if observe_sg:
