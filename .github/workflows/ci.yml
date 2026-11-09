@@ -97,7 +97,7 @@ jobs:
   pinned-dpdk-build:
     name: Pinned DPDK build; native Linux/LKL when present
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - name: Check out source
         uses: actions/checkout@v4
