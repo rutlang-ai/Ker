@@ -27,6 +27,8 @@ def forwarding_counts(content):
 
 
 def validate_evidence(report):
+    if report.get('program') == 'bridge_sticky_fdb.sh':
+        return common.load('bridge_sticky_contract', 'linux-bridge-sticky-contract.py').validate_evidence(report)
     if report.get('program') == 'bridge_mdb_host.sh':
         return common.load('bridge_mdb_host_contract', 'linux-bridge-mdb-host-contract.py').validate_evidence(report)
     if report.get('program') == 'router_bridge_vlan_upper_pvid.sh':
@@ -112,7 +114,7 @@ def main():
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
     parser.add_argument('--program', choices=('router_bridge.sh', 'router_bridge_vlan.sh', 'router_bridge_1d.sh',
         'router_bridge_vlan_upper.sh', 'router_bridge_pvid_vlan_upper.sh', 'router_bridge_vlan_upper_pvid.sh',
-        'bridge_mdb_host.sh'),
+        'bridge_mdb_host.sh', 'bridge_sticky_fdb.sh'),
         default='router_bridge.sh')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
@@ -197,6 +199,15 @@ def main():
                 environment['KER_FORWARDING_BRIDGE_PVID_UPPER'] = '1'
             if args.program == 'router_bridge_vlan_upper_pvid.sh':
                 environment['KER_FORWARDING_BRIDGE_UPPER_PVID'] = '1'
+            if args.program == 'bridge_sticky_fdb.sh':
+                environment['KER_FORWARDING_BRIDGE_STICKY'] = '1'
+                environment['KER_MPTCP_NATIVE_PACKET_LOG'] = str(root / 'packet.jsonl')
+                program = Path(shutil.which('mausezahn')).resolve()
+                target = bins / 'original-mausezahn'
+                shutil.copyfile(program, target); target.chmod(0o700)
+                environment['KER_FORWARDING_MAUSEZAHN'] = str(target)
+                (bins / 'mausezahn').write_text('#!' + sys.executable + '\n' + Path(__file__).with_name('linux-bridge-tools.py').read_text())
+                (bins / 'mausezahn').chmod(0o700)
             negative = dict(environment, KER_MPTCP_SOCKET_CHANNEL=str(root / 'absent'), WAIT_TIMEOUT='1', INTERFACE_TIMEOUT='1')
             missing = subprocess.run(['bash', './' + args.program], cwd=work / 'forwarding', env=negative,
                                      capture_output=True, text=True, timeout=30)
@@ -238,7 +249,7 @@ def main():
                         raise
                     report['original'] = dict(returncode=child.returncode, stdout=stdout, stderr=stderr)
                     report['commands'] = [json.loads(line) for line in log.read_text().splitlines()]
-                    require(child.returncode == 0 and not stderr,
+                    require(child.returncode == 0 and (args.program == 'bridge_sticky_fdb.sh' or not stderr),
                             'original forwarding shell failed: ' + stdout + stderr)
                     report['mib_after'] = counters()
                     clean = subprocess.run([str(args.tools / 'ip'), '-d', '-j', 'link', 'show'],
@@ -248,7 +259,7 @@ def main():
                     report['cleanup_state'] = dict(links=json.loads(clean.stdout), **{
                         family: diag.rpc(diag.FILE, '', '/proc/sys/net/' + family + '/conf/all/forwarding').decode()
                         for family in ('ipv4','ipv6')})
-                    if args.program == 'bridge_mdb_host.sh':
+                    if args.program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh'):
                         observed = {}
                         for key, query in (('addresses', [str(args.tools / 'ip'), '-j', 'address', 'show']),
                                 ('ipv4_routes', [str(args.tools / 'ip'), '-4', '-j', 'route', 'show', 'table', 'all']),
@@ -259,6 +270,14 @@ def main():
                             require(not clean.stderr, 'native MDB cleanup observation warning')
                             observed[key] = json.loads(clean.stdout)
                         report['cleanup_state'].update(observed)
+                    if args.program == 'bridge_sticky_fdb.sh':
+                        fdb = subprocess.run([str(args.tools / 'bridge'), '-j', 'fdb', 'show'],
+                            env=dict(environment, LD_PRELOAD=str(args.preload)),
+                            capture_output=True, text=True, timeout=10, check=True)
+                        require(not fdb.stderr, 'native sticky FDB cleanup observation warning')
+                        report['cleanup_state']['fdb'] = json.loads(fdb.stdout)
+                        packets = root / 'packet.jsonl'
+                        report['packet_trace'] = [json.loads(line) for line in packets.read_text().splitlines()] if packets.exists() else []
                     common.fixture.stop(channel)
                     require(process.wait(timeout=20) == 0, 'native fixture shutdown failed')
                     native = json.loads(counts.read_text()); report['native_fixture'] = native

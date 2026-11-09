@@ -1,4 +1,4 @@
-"""All seven complete bridge entries and the native realtime ABI control are mandatory."""
+"""All eight complete bridge entries and the native realtime ABI control are mandatory."""
 import json
 from pathlib import Path
 import subprocess
@@ -21,6 +21,7 @@ class BridgeProfileTests(unittest.TestCase):
             'router_bridge_pvid_vlan_upper.sh': 'bridge-pvid-upper-transcript.json',
             'router_bridge_vlan_upper_pvid.sh': 'bridge-upper-pvid-transcript.json',
             'bridge_mdb_host.sh': 'bridge-mdb-host-transcript.json',
+            'bridge_sticky_fdb.sh': 'bridge-sticky-transcript.json',
         }
         control = native_tests.LINUX_BRIDGE_REALTIME_TEST
         cases = [('complete', None), ('wrong-profile', None), ('missing-vlan', None), ('missing-snooping', None),
@@ -75,9 +76,11 @@ class BridgeProfileTests(unittest.TestCase):
                             else:
                                 report['commands'] = [r for r in report['commands'] if r['tool'] != 'bridge']
                         elif mutation == 'leaked-bridge':
-                            report['cleanup_state']['links'].append(dict(ifname='br0' if program == 'bridge_mdb_host.sh' else 'br1'))
+                            report['cleanup_state']['links'].append(dict(ifname='br0' if program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh') else 'br1'))
                         elif mutation == 'missing-proof' and program == 'bridge_mdb_host.sh':
                             next(r for r in report['commands'] if r['tool'] == 'bridge').pop('mdb_after')
+                        elif mutation == 'missing-proof' and program == 'bridge_sticky_fdb.sh':
+                            report['packet_trace'] = []
                         elif mutation == 'missing-proof':
                             next(r for r in report['commands'] if r['arguments'][:2] == ['vrf', 'exec']).pop('native_clock_reads')
                     (root / (name + '.json')).write_text(json.dumps(report))

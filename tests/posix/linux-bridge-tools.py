@@ -37,6 +37,18 @@ def bridge_snapshot(env):
     return result
 
 
+def sticky_snapshot(env):
+    state = {}
+    for key, query in (
+        ('links', [os.environ['KER_FORWARDING_IP'], '-s', '-d', '-j', 'link', 'show']),
+        ('fdb', [os.environ['KER_FORWARDING_BRIDGE'], '-j', '-d', 'fdb', 'show', 'br', 'br0'])):
+        result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
+        if result.stderr:
+            raise RuntimeError('native sticky FDB observation warning: ' + result.stderr)
+        state[key] = json.loads(result.stdout)
+    return state
+
+
 def main():
     tool, words = Path(sys.argv[0]).name, sys.argv[1:]
     record = dict(tool=tool, arguments=words)
@@ -98,13 +110,17 @@ def main():
             env['KER_MPTCP_NATIVE_REALTIME'] = '1'
             env['KER_MPTCP_NATIVE_TIME_LOG'] = native_time_log
         else:
-            if tool not in ('ip', 'bridge'):
+            if tool not in ('ip', 'bridge', 'mausezahn'):
                 raise RuntimeError('unsupported native tool: ' + tool)
             command = [os.environ['KER_FORWARDING_' + tool.upper()], *words]
         if tool == 'bridge' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':
             record['mdb_before'] = bridge_snapshot(env)
+        if tool in ('bridge', 'mausezahn') and os.environ.get('KER_FORWARDING_BRIDGE_STICKY') == '1':
+            record['sticky_before'] = sticky_snapshot(env)
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        if tool in ('bridge', 'mausezahn') and os.environ.get('KER_FORWARDING_BRIDGE_STICKY') == '1':
+            record['sticky_after'] = sticky_snapshot(env)
         if tool == 'bridge' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':
             record['mdb_after'] = bridge_snapshot(env)
         if words[:2] == ['vrf', 'exec']:

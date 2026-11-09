@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh` 完整入口本地通过；其余 96 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh` 完整入口本地通过；其余 95 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 92/310，剩余 218；其中 87 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 223 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 93/310，剩余 217；其中 88 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 222 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -135,7 +135,13 @@ Ker 的目标应用包括网关和 WAF，因此优先迁移转发、路由、VLA
 
 每条原版 bridge 命令前后都读取实际 MDB、link/address/FIB/VLAN 状态，核对 `mcast_snooping=1`、桥与端口 UP/forwarding、host VRF 和双栈地址/路由。六次 mutation 分别证明目标的存在、准确 port/group/state 和删除效果，允许无关动态组播成员保留。清理要求 br0/VRF 消失、原版保留的两个 veth down/unmastered 且无 global 地址/路由、目标 MDB 不残留，native live socket/outstanding packet 归零且 worker 正常退出。保留缺失 backend 的完整入口失败与 VRF 绑定对照。本入口不发送测试流量，不用 forwarding MIB 代替 MDB 证明。
 
-沿用实际已启用 `CONFIG_BRIDGE_IGMP_SNOOPING=y` 的 bridge profile 和 native fingerprint `6ee942b2c8460007ae8131a5f0764b4ff646c6efd9d0340d2b282d025eadedf5`。CI bridge gate 强制七个完整原版入口与 realtime ABI 控制，上传各自 JSON/JUnit；hosted CI/review 资格另行核对。此批仅增加一个默认入口。
+沿用实际已启用 `CONFIG_BRIDGE_IGMP_SNOOPING=y` 的 bridge profile 和 native fingerprint `6ee942b2c8460007ae8131a5f0764b4ff646c6efd9d0340d2b282d025eadedf5`。CI bridge gate 强制八个完整原版入口与 realtime ABI 控制，上传各自 JSON/JUnit；hosted CI/review 资格另行核对。此批仅增加一个默认入口。
+
+`forwarding/bridge_sticky_fdb.sh` 完整执行原版 `sticky` 入口。原版在 veth1 添加 static/sticky MAC `de:ad:be:ef:13:37`，实际 Linux 产生 VID 1 和省略 VID 的 VID 0 两项；原版 VLAN 1 delete 成功移除前者，VID 0 保留。随后 unchanged Mausezahn 从另一主机 veth2 发出一帧原版指定源以太网 MAC 的 ARP request；原版 bridge JSON/jq 最终仍在 veth1 找到该 MAC。保留原版命令、参数、默认等待、未检查的 delete/sender 状态和最终 jq 判定，在额外证据合同中要求实际发送与状态效果。
+
+私有 packet preload 复用已有真实 AF_PACKET 通道，并转发 libnet 所需的原生 ifreq 查询。服务端仅在 Linux send 成功后记录原始帧、返回长度和发送接口，不构造或改写帧。本地实际帧长 42 字节，native veth2 TX、veth3 RX、veth1 TX、veth0 RX 均增加一帧和 42 字节；合同核对指定以太网源 MAC、广播目的、ARP request 及完整长度，保留工具原有的 ARP payload。原版 add/delete/流量/show 前后分别读取实际 FDB 和链路计数，要求端口 UP/forwarding/learning、VID 1 删除、VID 0 static/sticky 不迁移。清理要求 br0/FDB 消失、四个 veth down/unmastered、无地址/路由残留及 live socket/outstanding packet 为零。独立控制验证普通 MPTCP adapter 仍拒绝缺失 backend 和 AF_PACKET。
+
+本地实际 Mausezahn、ping、iproute2 binary hash 单列；沿用 bridge kernel/config 和 fingerprint `6ee942b2c8460007ae8131a5f0764b4ff646c6efd9d0340d2b282d025eadedf5`。CI 强制八个完整 bridge 入口和 realtime ABI 控制，上传独立 JSON/JUnit；hosted 工具与产物资格单独核对。此批仅增加一个默认入口。
 
 `forwarding/router_bridge.sh` 在专用 `config/native-linux-bridge-selftests.config` 中完整运行，启用真实 Linux bridge、VLAN filtering、VRF 和 multipath routing。原版 14 个阶段包含十次双栈 ping：初始连通、桥端口重新挂接后连通、移除 bridge self PVID 后隔离、恢复 PVID 后连通，以及先挂接端口再添加默认 PVID 后连通。保留原版全部 10 次请求、0.1 秒间隔、5 秒 deadline 和阶段间 sleep，预期失败的两个 ping 必须真实失败；不修改 Linux、iproute2 或原版 selftest。
 
@@ -153,13 +159,13 @@ iproute2 6.12.0 的 unchanged `bridge` 工具和 `ip` 使用同一原生 Netlink
 
 134 条原版命令逐项记录。每次 ping 前读取实际 bridge VLAN filtering/default PVID、forwarding 端口、self PVID、tagged 端口 VLAN 和主机子接口；每次 bridge 命令后读取完整原生 VLAN 表，核对 VLAN 333 的真实增删及 PVID 555→777→555 顺序。IPv4/IPv6 forwarding MIB 各增加 60，结束后 bridge、两个 VRF 和两个 VLAN 子接口消失，forwarding sysctl 恢复，live socket/outstanding packet 为零，worker 正常退出。完整脚本缺失后端及未知 VRF 对照必须失败，同后端 loopback 对照成功。
 
-本地完整入口及 hosted Ubuntu ping 复验通过，沿用未变的实际 bridge 内核配置和 fingerprint `6ee942b2c8460007ae8131a5f0764b4ff646c6efd9d0340d2b282d025eadedf5`。`bridge-profile` gate 强制同时运行 `router_bridge.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh` 和 `bridge_mdb_host.sh`，各自验证唯一注册、原版 program 标识、完整 JSON 和无 skip JUnit；七个入口均从默认 profile 排除，不能在缺少真实 bridge/VLAN 支持时抵扣通过。hosted CI/review 资格另行核对。此批仅新增一个默认入口。
+本地完整入口及 hosted Ubuntu ping 复验通过，沿用未变的实际 bridge 内核配置和 fingerprint `6ee942b2c8460007ae8131a5f0764b4ff646c6efd9d0340d2b282d025eadedf5`。`bridge-profile` gate 强制同时运行 `router_bridge.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`bridge_mdb_host.sh` 和 `bridge_sticky_fdb.sh`，各自验证唯一注册、原版 program 标识、完整 JSON 和无 skip JUnit；八个入口均从默认 profile 排除，不能在缺少真实 bridge/VLAN 支持时抵扣通过。hosted CI/review 资格另行核对。此批仅新增一个默认入口。
 
 `forwarding/router_bridge_1d.sh` 使用同一实际 native bridge 配置，完整执行五个原版阶段和八次双栈 ping。两个独立 802.1D bridge（br1/br2，vlan_filtering=0）分别承接 veth1.100/veth1.200，主机保留对应 VLAN 100/200 子接口。原版先验证两组双栈连通性，再解除两个 bridge VLAN 端口、等待原版两秒、按原版顺序重新挂接，最后重复两组双栈连通性检查；包数、间隔、deadline、sleep、上游断言及协议代码保持原样。
 
 每次原版 ping 前读取实际 native link 状态，核对两个 bridge 的模式、MAC、VLAN 端口/master/forwarding 状态及主机 VLAN/VRF；每次原版 master/nomaster 操作后读取实际端口状态，确认解除和重新挂接真正发生。校验按原始记录的位置区分重复的挂接命令，保留完整生命周期顺序。IPv4/IPv6 forwarding MIB 各增加 80；原版 cleanup 后两个 bridge、四个 VLAN 子接口和两个 VRF 均消失，forwarding sysctl 恢复，live socket/outstanding packet 为零且 worker 正常退出。缺失 backend、未知 VRF 和同后端 loopback 对照分别验证失败与成功。
 
-`bridge-profile` gate 同时强制七个完整入口、时钟 ABI 控制及其独立 JSON/JUnit。本地使用 hosted Ubuntu iputils 20240117 验证，native fingerprint 仍为 `6ee942b2c8460007ae8131a5f0764b4ff646c6efd9d0340d2b282d025eadedf5`，复用实际 immutable kernel/library，并核对当前输入/config/library hash。Linux、iproute2、原版 shell 和公共库不改动。hosted CI/review 资格另行核对，此批仅新增一个默认入口。
+`bridge-profile` gate 同时强制八个完整入口、时钟 ABI 控制及其独立 JSON/JUnit。本地使用 hosted Ubuntu iputils 20240117 验证，native fingerprint 仍为 `6ee942b2c8460007ae8131a5f0764b4ff646c6efd9d0340d2b282d025eadedf5`，复用实际 immutable kernel/library，并核对当前输入/config/library hash。Linux、iproute2、原版 shell 和公共库不改动。hosted CI/review 资格另行核对，此批仅新增一个默认入口。
 
 ## Bridge VLAN upper 双栈路由
 
