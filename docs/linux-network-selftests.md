@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh`、`bridge_igmp.sh`、`bridge_mld.sh`、`bridge_mdb.sh`、`bridge_mdb_max.sh`、`pedit_ip.sh` 完整入口本地通过；其余 82 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh`、`bridge_igmp.sh`、`bridge_mld.sh`、`bridge_mdb.sh`、`bridge_mdb_max.sh`、`pedit_ip.sh`、`pedit_l4port.sh` 完整入口本地通过；其余 81 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 106/310，剩余 204；其中 101 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 209 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 107/310，剩余 203；其中 102 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 208 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -374,3 +374,12 @@ Ker 仅增加私有只读 SG 状态观察与完整入口接线，协议行为来
 原版断言要求 PEDIT 和接收端计数至少10包；未收窄成固定计数，因为未限定协议的 PEDIT 还可能处理真实后台报文。输入 trace 是修改前的发送记录，接收证明来自 Linux ingress flower 对修改后地址的实际匹配，不声称拥有修改后的线缆抓包或应用 socket 收包证据。PEDIT 地址修改没有额外 checksum repair 动作，因此不把二层分类成功当作三层校验和或 socket 交付成功。
 
 原版 IPv4/IPv6 基线 ping、未知 VRF/缺失后端拒绝、全部 bridge/VRF/规则/地址/路由清理以及零 live socket/outstanding 和正常 worker 退出分别验证。完整23项 bridge profile 包含21个原版入口与两个 realtime ABI 控制；本地完成与发布后的 hosted CI/review 继续分别核对。
+
+
+## 完整 UDP/TCP PEDIT 端口修改入口
+
+完整未修改的 `forwarding/pedit_l4port.sh` 执行一项基线 ping，以及 UDP/TCP、源/目的端口、桥入口/出口、1/11111/65535三种端口值的24种组合；25行原版结果均保留。每项发送10个实际报文，保留20ms间隔、100字节载荷和原版计数等待。240个 native AF_PACKET 输入帧共35520字节，发送接口、MAC、IPv4地址、UDP/TCP协议和原始54321/12345端口由实际字节独立验证。
+
+原版 Linux PEDIT 以真实 UDP/TCP header type、offset0、16位掩码和值修改对应半字；接收端 `skip_hw` flower 必须匹配修改后的端口和协议。所有原版规则安装、计数查询及删除均保留实际前后状态，覆盖各个指定 ingress/egress位置；双 VRF、桥PVID和四个 veth跳点分别验证。原版 `act_pedit.c` 在无法解析背景报文时会递增 `overlimits` 后返回原动作；计数与原版测试分开核对，受检发送仍必须增加至少10次可编辑处理并在接收端匹配，不能用背景计数替代。
+
+该测试的判断点为校验 UDP/TCP checksum 之前的二层分类，不宣称 socket 收包、TCP状态机或 checksum repair；输入报文记录也不当作修改后的线缆抓包。未由原版参数指定的载荷内容及 IP/TCP默认字段保留真实记录而不固定为单次工具默认值。未知 VRF/缺失后端必须拒绝，规则、桥、VRF、地址、路由和正常退出后的所有资源逐项清理。完整24项 bridge profile 包含22个原版入口与两个 realtime ABI控制；hosted CI/review资格另行核对。
