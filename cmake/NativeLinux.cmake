@@ -64,7 +64,8 @@ elseif(ker_native_config_fragment STREQUAL "config/native-linux-bridge-selftests
     file(STRINGS "${ker_native_kernel}/.config" ker_native_bridge_options REGEX "^CONFIG_[A-Z0-9_]+=y$")
     foreach(option CONFIG_VETH=y CONFIG_NET_VRF=y CONFIG_VLAN_8021Q=y
             CONFIG_IP_ROUTE_MULTIPATH=y CONFIG_IP_MULTIPLE_TABLES=y CONFIG_IPV6_MULTIPLE_TABLES=y
-            CONFIG_BRIDGE=y CONFIG_BRIDGE_VLAN_FILTERING=y)
+            CONFIG_BRIDGE=y CONFIG_BRIDGE_VLAN_FILTERING=y
+            CONFIG_NET_ACT_SKBEDIT=y CONFIG_NET_SCH_PRIO=y)
         if(NOT option IN_LIST ker_native_bridge_options)
             message(FATAL_ERROR "Incomplete original router_bridge profile: missing ${option}")
         endif()

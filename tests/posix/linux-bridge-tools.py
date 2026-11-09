@@ -129,6 +129,11 @@ def packet_bridge_snapshot(env, traffic=False, pedit_counter_sample=False):
         if result.stderr:
             raise RuntimeError('native bridge FDB observation warning: ' + result.stderr)
         state['fdb'] = json.loads(result.stdout)
+    if os.environ.get('KER_FORWARDING_BRIDGE_PRIORITY') == '1':
+        observed = subprocess.run([os.environ['KER_FORWARDING_TC'], '-j', '-s', '-d', 'qdisc', 'show', 'dev', 'veth2', 'invisible'],
+            env=env, capture_output=True, text=True, timeout=10, check=True)
+        if observed.stderr: raise RuntimeError('native priority qdisc observation warning: ' + observed.stderr)
+        state['qdiscs'] = json.loads(observed.stdout)
     return state
 
 
