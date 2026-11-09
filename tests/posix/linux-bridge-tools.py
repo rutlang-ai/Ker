@@ -31,7 +31,8 @@ def bridge_snapshot(env):
         result[key] = json.loads(state.stdout)
     if (os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1' or
             os.environ.get('KER_FORWARDING_BRIDGE_MDB_PORT') == '1' or
-            os.environ.get('KER_FORWARDING_BRIDGE_MCAST') == '1'):
+            os.environ.get('KER_FORWARDING_BRIDGE_MCAST') == '1' or
+            os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1'):
         state = subprocess.run([os.environ['KER_FORWARDING_BRIDGE'], '-j', '-d', 'mdb', 'show'],
                                env=env, capture_output=True, text=True, timeout=10, check=True)
         if state.stderr:
@@ -81,7 +82,7 @@ def packet_bridge_snapshot(env, traffic=False):
     state['links'] = json.loads(result.stdout)
     if traffic:
         devices = (('veth0','veth1','veth3') if os.environ.get('KER_FORWARDING_BRIDGE_LOCKED') == '1' else
-                   ('veth0', 'veth3') if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' else ('veth3',))
+                   ('veth0', 'veth3') if (os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1') else ('veth3',))
         filters = {}
         for device in devices:
             query = [os.environ['KER_FORWARDING_TC'], '-j', '-s', 'filter', 'show', 'dev', device, 'ingress']
@@ -182,7 +183,8 @@ def main():
                     tool == 'ethtool' and os.environ.get('KER_FORWARDING_BRIDGE_AWARE') == '1') and not (
                     tool == 'tc' and (os.environ.get('KER_FORWARDING_BRIDGE_MDB_PORT') == '1' or
                                       os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1' or
-                                      os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1')):
+                                      os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or
+                                      os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1')):
                 raise RuntimeError('unsupported native tool: ' + tool)
             command = [os.environ['KER_FORWARDING_' + tool.upper()], *words]
         if tool == 'bridge' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':
@@ -213,6 +215,11 @@ def main():
                            (tool in ('bridge', 'tc', 'mausezahn', 'ethtool') or
                             os.environ.get('KER_FORWARDING_BRIDGE_MCAST') == '1' and tool == 'ip' and words[:1] in (['link'],['address'],['addr']) or tool == 'ip' and
                             ('promisc' in words or words == ['-d', '-j', 'link', 'show', 'dev', 'br0', 'type', 'bridge'])))
+        observe_sg = (os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' and
+                      (tool == 'mausezahn' or tool == 'tc' and words[:4] == ['-j','-s','filter','show'] or
+                       tool == 'ip' and words[:4] == ['link','set','dev','br0']))
+        if observe_sg:
+            record['sg_before'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         if observe_unaware:
             record['unaware_before'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         if tool == 'ethtool':
@@ -220,10 +227,10 @@ def main():
                 env=env, capture_output=True, text=True, timeout=10, check=True)
             if features.stderr: raise RuntimeError('native ethtool feature query warning: ' + features.stderr)
             record['ethtool_features_before'] = json.loads(features.stdout)
-        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1':
+        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1':
             record['started_monotonic'] = time.monotonic()
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
-        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1':
+        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1':
             record['finished_monotonic'] = time.monotonic()
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
         if tool == 'ethtool':
@@ -231,6 +238,8 @@ def main():
                 env=env, capture_output=True, text=True, timeout=10, check=True)
             if features.stderr: raise RuntimeError('native ethtool feature query warning: ' + features.stderr)
             record['ethtool_features_after'] = json.loads(features.stdout)
+        if observe_sg:
+            record['sg_after'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         if 'unaware_before' in record:
             record['unaware_after'] = packet_bridge_snapshot(env, tool == 'mausezahn' or
                 os.environ.get('KER_FORWARDING_BRIDGE_LOCKED') == '1' and words[:2] == ['vrf','exec'])
