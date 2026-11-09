@@ -1,6 +1,7 @@
 import copy
 import base64
 import hashlib
+import ipaddress
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -19,6 +20,35 @@ def arp_frame():
     return ethernet + arp
 
 
+def ipv4_probe_frame():
+    packet = bytearray(134)
+    packet[:14] = bytes.fromhex('deaf1e67e364cabda26a4d730800')
+    packet[14:34] = bytes.fromhex('4500007800000000ff003782c0000201c0000202')
+    packet[34:] = bytes([0x42]) * (len(packet) - 34)
+    return bytes(packet)
+
+
+def ndp_ns_frame():
+    ethernet = bytes.fromhex('3333ff00000202000000000186dd')
+    source = ipaddress.IPv6Address('fe80::1').packed
+    destination = ipaddress.IPv6Address('ff02::1:ff00:2').packed
+    target = ipaddress.IPv6Address('2001:db8::2').packed
+    ipv6 = bytes.fromhex('6000000000183aff') + source + destination
+    icmp = bytearray(bytes.fromhex('8700000000000000') + target)
+    pseudo = source + destination + len(icmp).to_bytes(4, 'big') + bytes(3) + b'\x3a'
+    checksum_data = pseudo + icmp
+    if len(checksum_data) % 2:
+        checksum_data += b'\x00'
+    words = [int.from_bytes(checksum_data[i:i + 2], 'big')
+             for i in range(0, len(checksum_data), 2)]
+    total = sum(words)
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    checksum = ~total & 0xffff
+    icmp[2:4] = checksum.to_bytes(2, 'big')
+    return ethernet + ipv6 + icmp
+
+
 def frame(timestamp=1_000_150, packet=None):
     packet = arp_frame() if packet is None else packet
     return {
@@ -29,6 +59,19 @@ def frame(timestamp=1_000_150, packet=None):
         'native_clock_pair': {'native_realtime_ns': 1_000_200,
                               'host_monotonic_before_ns': 100,
                               'host_monotonic_after_ns': 110},
+    }
+
+
+def frame_window(low, high, packet):
+    native = 1_000_000_000 + low
+    return {
+        'type': 'frame', 'ifname': 'veth1', 'ifindex': 5, 'native_ifindex': 5,
+        'direction': 'ingress', 'pkttype': 1, 'protocol': int.from_bytes(packet[12:14], 'big'),
+        'frame_hex': packet.hex(), 'frame_length': len(packet), 'native_timestamp_ns': native,
+        'host_recv_before_ns': low, 'host_recv_after_ns': low + 1,
+        'native_clock_pair': {'native_realtime_ns': native,
+                              'host_monotonic_before_ns': low,
+                              'host_monotonic_after_ns': high},
     }
 
 
@@ -43,9 +86,14 @@ class PeditActionWindowTests(unittest.TestCase):
         self.before = stats()
         self.after = stats(1, 28, 1)
         self.packet = frame()
+        self.baseline_sample = {'command': ['-j','-s','filter','show','dev','veth1','ingress'],
+                                'qstart_monotonic_ns': 45, 'qend_monotonic_ns': 48}
+        self.sample = {'command': ['-j','-s','filter','show','dev','veth1','ingress'],
+                       'qstart_monotonic_ns': 65, 'qend_monotonic_ns': 68}
 
     def validate(self, **changes):
-        options = dict(allow_arp_overlimit=True, uncertain_windows=())
+        options = dict(allow_arp_overlimit=True, uncertain_windows=(),
+                       baseline_sample=self.baseline_sample, counter_sample=self.sample)
         options.update(changes)
         return CONTRACT_MODULE.validate_action_window(
             self.before, self.after, self.action, [self.packet], 40, 70, **options)
@@ -63,76 +111,182 @@ class PeditActionWindowTests(unittest.TestCase):
             CONTRACT_MODULE.require_original_probe_delta(stats(), stats(10, 1199), 120)
 
     def test_ten_original_raw_probe_frames_must_be_present_in_generation_window(self):
-        probe = bytearray(134)
-        probe[:14] = bytes.fromhex('deaf1e67e364cabda26a4d730800')
-        probe[14:34] = bytes.fromhex('4500007800000000ff003782c0000201c0000202')
-        probe[34:] = bytes([0x42]) * (len(probe) - 34)
-        expected = [{'frame_hex': bytes(probe).hex()} for _ in range(10)]
-        captured = [frame(packet=bytes(probe)) for _ in range(10)]
+        probe = ipv4_probe_frame()
+        expected = [{'frame_hex': probe.hex()} for _ in range(10)]
+        captured = [frame(packet=probe) for _ in range(10)]
         result = CONTRACT_MODULE.validate_action_window(
             stats(), stats(10, 1200), {'kind': 'pedit', 'keys': [{'offset': 20}]},
-            captured, 40, 70, expected_probe_frames=expected)
+            captured, 40, 70, expected_probe_frames=expected, baseline_sample=self.baseline_sample, counter_sample=self.sample)
         self.assertEqual(result['packets'], 10)
         altered = copy.deepcopy(captured)
         changed = bytearray(probe); changed[-1] ^= 1
         altered[-1] = frame(packet=bytes(changed))
-        with self.assertRaisesRegex(RuntimeError, 'missing or changed original MZ probe frames'):
+        with self.assertRaisesRegex(RuntimeError, 'baseline/final counter samples'):
             CONTRACT_MODULE.validate_action_window(
                 stats(), stats(10, 1200), {'kind': 'pedit', 'keys': [{'offset': 20}]},
-                altered, 40, 70, expected_probe_frames=expected)
+                altered, 40, 70, expected_probe_frames=expected, baseline_sample=self.baseline_sample, counter_sample=self.sample)
+
+    def test_query_bracket_accounts_for_all_frames_with_exact_prefix(self):
+        probe = ipv4_probe_frame()
+        expected = [{'frame_hex': probe.hex()} for _ in range(10)]
+        probes = [frame(packet=probe) for _ in range(10)]
+        background_arp = frame(timestamp=1_000_190, packet=arp_frame())
+        sample = dict(self.sample, qstart_monotonic_ns=65, qend_monotonic_ns=95)
+        result = CONTRACT_MODULE.validate_action_window(
+            stats(), stats(10, 1200), self.action, [*probes, background_arp], 40, 120,
+            allow_arp_overlimit=True, expected_probe_frames=expected, baseline_sample=self.baseline_sample, counter_sample=sample)
+        self.assertEqual((result['packets'], result['bytes'], result['sample_overlap_frames'],
+                          result['sample_suffix_frames'], result['overlimits']), (10, 1200, 1, 1, 0))
+        self.assertEqual(result['original_probe_frames'], 10)
+
+        sample_after_arp = dict(self.sample, qstart_monotonic_ns=105, qend_monotonic_ns=110)
+        after = CONTRACT_MODULE.validate_action_window(
+            stats(), stats(11, 1228, 1), self.action, [*probes, background_arp], 40, 120,
+            allow_arp_overlimit=True, expected_probe_frames=expected, baseline_sample=self.baseline_sample, counter_sample=sample_after_arp)
+        self.assertEqual((after['packets'], after['bytes'], after['sample_suffix_frames'], after['overlimits']),
+                         (11, 1228, 0, 1))
+
+    def test_nonzero_ndp_baseline_requires_an_exact_post_add_prefix(self):
+        probe = ipv4_probe_frame(); expected = [{'frame_hex': probe.hex()} for _ in range(10)]
+        ndp = ndp_ns_frame()
+        self.assertEqual(len(ndp), 78)
+        ndp_packet = frame_window(50, 60, ndp)
+        probes = [frame_window(70 + i, 71 + i, probe) for i in range(10)]
+        baseline = dict(self.baseline_sample, qstart_monotonic_ns=65, qend_monotonic_ns=68)
+        final = dict(self.sample, qstart_monotonic_ns=105, qend_monotonic_ns=110)
+        result = CONTRACT_MODULE.validate_action_window(
+            stats(1, 64), stats(11, 1264), self.action, [ndp_packet, *probes], 40, 120,
+            expected_probe_frames=expected, baseline_sample=baseline, counter_sample=final)
+        self.assertEqual((result['baseline_prefix_frames'], result['baseline_prefix_bytes'],
+                          result['packets'], result['bytes']), (1, 64, 10, 1200))
+
+    def test_nonzero_baseline_rejects_missing_extra_and_mismatched_frames(self):
+        probe = ipv4_probe_frame(); expected = [{'frame_hex': probe.hex()} for _ in range(10)]
+        ndp = ndp_ns_frame()
+        ndp_packet = frame_window(50, 60, ndp)
+        probes = [frame_window(70 + i, 71 + i, probe) for i in range(10)]
+        baseline = dict(self.baseline_sample, qstart_monotonic_ns=65, qend_monotonic_ns=68)
+        final = dict(self.sample, qstart_monotonic_ns=105, qend_monotonic_ns=110)
+        scenarios = (
+            (stats(1, 64), probes, stats(10, 1200)),
+            (stats(1, 64), [ndp_packet, frame_window(55, 62, ndp), *probes], stats(12, 1328)),
+            (stats(1, 65), [ndp_packet, *probes], stats(11, 1265)),
+        )
+        for baseline_stats, frames, final_stats in scenarios:
+            with self.subTest(baseline=baseline_stats, frames=len(frames)):
+                with self.assertRaisesRegex(RuntimeError, 'baseline/final counter samples'):
+                    CONTRACT_MODULE.validate_action_window(
+                        baseline_stats, final_stats, self.action, frames, 40, 120,
+                        expected_probe_frames=expected, baseline_sample=baseline, counter_sample=final)
+
+    def test_definitely_before_or_after_sample_frames_cannot_be_omitted_or_added(self):
+        probe = ipv4_probe_frame(); expected = [{'frame_hex': probe.hex()} for _ in range(10)]
+        probes = [frame(packet=probe) for _ in range(10)]
+        background_arp = frame(packet=arp_frame())
+        sample_after = dict(self.sample, qstart_monotonic_ns=65, qend_monotonic_ns=68)
+        with self.assertRaisesRegex(RuntimeError, 'baseline/final counter samples'):
+            CONTRACT_MODULE.validate_action_window(
+                stats(), stats(10, 1200), self.action, [*probes, background_arp], 40, 120,
+                allow_arp_overlimit=True, expected_probe_frames=expected, baseline_sample=self.baseline_sample, counter_sample=sample_after)
+
+        arp_after = frame(timestamp=1_000_190, packet=arp_frame())
+        sample_before = dict(self.sample, qstart_monotonic_ns=65, qend_monotonic_ns=68)
+        with self.assertRaisesRegex(RuntimeError, 'baseline/final counter samples'):
+            CONTRACT_MODULE.validate_action_window(
+                stats(), stats(11, 1228, 1), self.action, [*probes, arp_after], 40, 120,
+                allow_arp_overlimit=True, expected_probe_frames=expected, baseline_sample=self.baseline_sample, counter_sample=sample_before)
+
+    def test_frame_definitely_after_counter_sample_cannot_pollute_action_generation(self):
+        probe = ipv4_probe_frame(); expected = [{'frame_hex': probe.hex()} for _ in range(10)]
+        probes = [frame(packet=probe) for _ in range(10)]
+        late_arp = frame(timestamp=1_000_210, packet=arp_frame())
+        late_arp['native_clock_pair'] = {'native_realtime_ns': 1_000_210,
+                                         'host_monotonic_before_ns': 200,
+                                         'host_monotonic_after_ns': 210}
+        late_arp['host_recv_before_ns'], late_arp['host_recv_after_ns'] = 190, 200
+        result = CONTRACT_MODULE.validate_action_window(
+            stats(), stats(10, 1200), self.action, [*probes, late_arp], 40, 220,
+            allow_arp_overlimit=True, uncertain_windows=((205, 215),),
+            expected_probe_frames=expected, baseline_sample=self.baseline_sample, counter_sample=self.sample)
+        self.assertEqual((result['packets'], len(result['post_sample_frames'])), (10, 1))
+        self.assertEqual(result['post_sample_frames'][0]['classification'], 'definitely-after-counter-query')
+        self.assertEqual(result['post_sample_frames'][0]['frame_sha256'],
+                         CONTRACT_MODULE.hashlib.sha256(arp_frame()).hexdigest())
+
+    def test_unexplained_sampling_window_and_sample_identity_fail_closed(self):
+        probe = ipv4_probe_frame(); expected = [{'frame_hex': probe.hex()} for _ in range(10)]
+        probes = [frame(packet=probe) for _ in range(10)]
+        arp_during = frame(timestamp=1_000_190, packet=arp_frame())
+        sample = dict(self.sample, qstart_monotonic_ns=65, qend_monotonic_ns=95)
+        with self.assertRaisesRegex(RuntimeError, 'baseline/final counter samples'):
+            CONTRACT_MODULE.validate_action_window(
+                stats(), stats(10, 1201), self.action, [*probes, arp_during], 40, 120,
+                allow_arp_overlimit=True, expected_probe_frames=expected, baseline_sample=self.baseline_sample, counter_sample=sample)
+        bad_sample = dict(sample, command=['-j','-s','filter','show','dev','veth2','ingress'])
+        with self.assertRaisesRegex(RuntimeError, 'lack ordered in-generation sample brackets'):
+            CONTRACT_MODULE.validate_action_window(
+                stats(), stats(10, 1200), self.action, probes, 40, 120,
+                expected_probe_frames=expected, baseline_sample=self.baseline_sample, counter_sample=bad_sample)
+        bad_sample = dict(sample, qstart_monotonic_ns=95, qend_monotonic_ns=65)
+        with self.assertRaisesRegex(RuntimeError, 'lack ordered in-generation sample brackets'):
+            CONTRACT_MODULE.validate_action_window(
+                stats(), stats(10, 1200), self.action, probes, 40, 120,
+                expected_probe_frames=expected, baseline_sample=self.baseline_sample, counter_sample=bad_sample)
 
     def test_overlimit_without_captured_packet_fails(self):
-        with self.assertRaisesRegex(RuntimeError, 'counters do not match'):
+        with self.assertRaisesRegex(RuntimeError, 'baseline/final counter samples'):
             CONTRACT_MODULE.validate_action_window(self.before, self.after, self.action, [], 40, 70,
-                                                   allow_arp_overlimit=True)
+                                                   allow_arp_overlimit=True, baseline_sample=self.baseline_sample, counter_sample=self.sample)
 
     def test_non_arp_short_packet_cannot_explain_overlimit(self):
         packet = bytearray(arp_frame())
         packet[12:14] = bytes.fromhex('0800')
         with self.assertRaisesRegex(RuntimeError, 'unexplained too-short'):
             CONTRACT_MODULE.validate_action_window(self.before, self.after, self.action,
-                [frame(packet=bytes(packet))], 40, 70, allow_arp_overlimit=True)
+                [frame(packet=bytes(packet))], 40, 70, allow_arp_overlimit=True, baseline_sample=self.baseline_sample, counter_sample=self.sample)
 
     def test_arp_cannot_explain_overlimit_on_unapproved_action(self):
         with self.assertRaisesRegex(RuntimeError, 'unexplained too-short'):
             self.validate(allow_arp_overlimit=False)
 
     def test_short_arp_without_matching_overlimit_fails(self):
-        with self.assertRaisesRegex(RuntimeError, 'overlimits or drops'):
+        with self.assertRaisesRegex(RuntimeError, 'baseline/final counter samples'):
             CONTRACT_MODULE.validate_action_window(self.before, stats(1, 28, 0), self.action,
-                [self.packet], 40, 70, allow_arp_overlimit=True)
+                [self.packet], 40, 70, allow_arp_overlimit=True, baseline_sample=self.baseline_sample, counter_sample=self.sample)
 
     def test_excess_overlimit_and_wrong_interface_fail(self):
-        with self.assertRaisesRegex(RuntimeError, 'overlimits or drops'):
+        with self.assertRaisesRegex(RuntimeError, 'baseline/final counter samples'):
             CONTRACT_MODULE.validate_action_window(self.before, stats(1, 28, 2), self.action,
-                [self.packet], 40, 70, allow_arp_overlimit=True)
+                [self.packet], 40, 70, allow_arp_overlimit=True, baseline_sample=self.baseline_sample, counter_sample=self.sample)
         wrong = copy.deepcopy(self.packet)
         wrong['ifname'] = 'veth2'
         with self.assertRaisesRegex(RuntimeError, 'frame identity or packet direction'):
             CONTRACT_MODULE.validate_action_window(self.before, self.after, self.action,
-                [wrong], 40, 70, allow_arp_overlimit=True)
+                [wrong], 40, 70, allow_arp_overlimit=True, baseline_sample=self.baseline_sample, counter_sample=self.sample)
 
     def test_frame_outside_window_fails_counter_binding(self):
         outside = frame(timestamp=1_000_250)
         outside['native_clock_pair']['native_realtime_ns'] = 1_000_250
-        with self.assertRaisesRegex(RuntimeError, 'counters do not match'):
+        with self.assertRaisesRegex(RuntimeError, 'baseline/final counter samples'):
             CONTRACT_MODULE.validate_action_window(self.before, self.after, self.action,
-                [outside], 40, 70, allow_arp_overlimit=True)
+                [outside], 40, 70, allow_arp_overlimit=True, baseline_sample=self.baseline_sample, counter_sample=self.sample)
 
     def test_frame_from_another_action_generation_fails(self):
         other_generation = frame()
-        with self.assertRaisesRegex(RuntimeError, 'counters do not match'):
+        sample = dict(self.sample, qstart_monotonic_ns=220, qend_monotonic_ns=225)
+        baseline = dict(self.baseline_sample, qstart_monotonic_ns=205, qend_monotonic_ns=208)
+        with self.assertRaisesRegex(RuntimeError, 'native PEDIT baseline/final counter samples do not match'):
             CONTRACT_MODULE.validate_action_window(self.before, self.after, self.action,
-                [other_generation], 200, 300, allow_arp_overlimit=True)
+                [other_generation], 200, 300, allow_arp_overlimit=True, baseline_sample=baseline, counter_sample=sample)
 
     def test_frame_on_rule_transition_is_ambiguous(self):
         with self.assertRaisesRegex(RuntimeError, 'transition boundary'):
             self.validate(uncertain_windows=((50, 70),))
 
     def test_action_drop_stays_forbidden(self):
-        with self.assertRaisesRegex(RuntimeError, 'overlimits or drops'):
+        with self.assertRaisesRegex(RuntimeError, 'baseline/final counter samples'):
             CONTRACT_MODULE.validate_action_window(self.before, stats(1, 28, 1, 1), self.action,
-                [self.packet], 40, 70, allow_arp_overlimit=True)
+                [self.packet], 40, 70, allow_arp_overlimit=True, baseline_sample=self.baseline_sample, counter_sample=self.sample)
 
     def test_observer_requires_native_backend_capture_clock_and_complete_frames(self):
         packet = arp_frame()

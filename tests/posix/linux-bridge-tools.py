@@ -73,7 +73,7 @@ def learning_snapshot(env):
     return state
 
 
-def packet_bridge_snapshot(env, traffic=False):
+def packet_bridge_snapshot(env, traffic=False, pedit_counter_sample=False):
     state = bridge_snapshot(env)
     query = [os.environ['KER_FORWARDING_IP'], '-s', '-d', '-j', 'link', 'show']
     result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
@@ -86,9 +86,16 @@ def packet_bridge_snapshot(env, traffic=False):
                    ('veth0','veth1','veth3') if os.environ.get('KER_FORWARDING_BRIDGE_LOCKED') == '1' else
                    ('veth0', 'veth3') if (os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1') else ('veth3',))
         filters = {}
+        counter_sample = None
         for device in devices:
             query = [os.environ['KER_FORWARDING_TC'], '-j', '-s', 'filter', 'show', 'dev', device, 'ingress']
-            result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
+            if pedit_counter_sample and device == 'veth1':
+                qstart = time.monotonic_ns()
+                result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
+                qend = time.monotonic_ns()
+                counter_sample = dict(command=query[1:], qstart_monotonic_ns=qstart, qend_monotonic_ns=qend)
+            else:
+                result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
             if result.stderr:
                 raise RuntimeError('native bridge flower observation warning: ' + result.stderr)
             filters[device] = json.loads(result.stdout)
@@ -96,6 +103,8 @@ def packet_bridge_snapshot(env, traffic=False):
             state['filters'] = filters['veth3']
         else:
             state['filters_by_device'] = filters
+        if counter_sample is not None:
+            state['pedit_veth1_counter_sample'] = counter_sample
     if traffic and (os.environ.get('KER_FORWARDING_BRIDGE_MCAST') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1'):
         state['egress_filters'] = {}
         for device in ('veth1','veth2'):
@@ -257,7 +266,9 @@ def main():
                        tool == 'ip' and words[:4] == ['link','set','dev','br0']))
         observe_pedit = os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' and tool in ('tc','mausezahn')
         if observe_pedit:
-            record['pedit_before'] = packet_bridge_snapshot(env, True)
+            sample_delete = tool == 'tc' and words[:4] == ['filter','del','dev','veth1']
+            sample_add = tool == 'tc' and words[:5] == ['filter','add','dev','veth1','ingress']
+            record['pedit_before'] = packet_bridge_snapshot(env, True, pedit_counter_sample=sample_delete)
         observe_mdb_api = (os.environ.get('KER_FORWARDING_BRIDGE_MDB_API') == '1' and tool == 'bridge' and
                            words[:2] in (['mdb', 'add'], ['mdb', 'del'], ['mdb', 'replace'], ['mdb', 'flush']))
         observe_mdb_max = os.environ.get('KER_FORWARDING_BRIDGE_MDB_MAX') == '1' and tool == 'bridge'
@@ -286,7 +297,7 @@ def main():
             if features.stderr: raise RuntimeError('native ethtool feature query warning: ' + features.stderr)
             record['ethtool_features_after'] = json.loads(features.stdout)
         if observe_pedit:
-            record['pedit_after'] = packet_bridge_snapshot(env, True)
+            record['pedit_after'] = packet_bridge_snapshot(env, True, pedit_counter_sample=sample_add)
         if observe_mdb_max:
             record['mdb_max_after'] = mdb_max_snapshot(env)
         if observe_mdb_api:

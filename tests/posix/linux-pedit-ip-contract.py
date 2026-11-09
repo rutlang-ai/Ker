@@ -156,9 +156,35 @@ def valid_arp(payload):
             int.from_bytes(payload[6:8], 'big') in (1, 2))
 
 
+def feasible_counter_prefixes(frames, stats, qstart, qend, expected=()):
+    expected_packets = collections.Counter(expected)
+    definitely_before = [row for row in frames if row['high'] <= qstart]
+    definitely_after = [row for row in frames if row['low'] >= qend]
+    before_packets = collections.Counter(row['data'] for row in definitely_before)
+    if not all(before_packets[packet] >= count for packet, count in expected_packets.items()):
+        return []
+    matches = []
+    for prefix_length in range(len(frames) + 1):
+        prefix, suffix = frames[:prefix_length], frames[prefix_length:]
+        if any(row['high'] <= qstart for row in suffix) or any(row['low'] >= qend for row in prefix):
+            continue
+        earliest = max(qstart, max((row['low'] for row in prefix), default=qstart))
+        latest = min(qend, min((row['high'] for row in suffix), default=qend))
+        if earliest > latest:
+            continue
+        packets = collections.Counter(row['data'] for row in prefix)
+        byte_count = sum(row['network_bytes'] for row in prefix)
+        overlimits = sum(row['short_arp'] for row in prefix)
+        if (stats['packets'] == prefix_length and stats['bytes'] == byte_count and
+                stats['overlimits'] == overlimits and
+                all(packets[packet] >= count for packet, count in expected_packets.items())):
+            matches.append((prefix_length, byte_count, overlimits, earliest, latest))
+    return matches
+
+
 def validate_action_window(before, after, action, frames, start_ns, end_ns,
                            allow_arp_overlimit=False, uncertain_windows=(), link_down_events=(),
-                           expected_probe_frames=()):
+                           expected_probe_frames=(), baseline_sample=None, counter_sample=None):
     require(isinstance(start_ns, int) and isinstance(end_ns, int) and start_ns < end_ns,
             'native PEDIT action generation window is invalid')
     for event in link_down_events:
@@ -169,9 +195,22 @@ def validate_action_window(before, after, action, frames, start_ns, end_ns,
         require(after[key] >= before[key], 'native PEDIT action counters moved backwards')
     offsets = [int(key['offset']) for key in action.get('keys', [])]
     require(action.get('kind') == 'pedit' and offsets, 'native PEDIT action keys are missing')
+    expected_query = ['-j','-s','filter','show','dev','veth1','ingress']
+    def valid_sample(sample):
+        return (isinstance(sample, dict) and sample.get('command') == expected_query and
+                isinstance(sample.get('qstart_monotonic_ns'), int) and
+                isinstance(sample.get('qend_monotonic_ns'), int) and
+                start_ns <= sample['qstart_monotonic_ns'] < sample['qend_monotonic_ns'] <= end_ns)
+    require(valid_sample(baseline_sample) and valid_sample(counter_sample) and
+            baseline_sample['qend_monotonic_ns'] <= counter_sample['qstart_monotonic_ns'],
+            'native PEDIT baseline/final counter queries lack ordered in-generation sample brackets')
+    baseline_qstart = baseline_sample['qstart_monotonic_ns']
+    baseline_qend = baseline_sample['qend_monotonic_ns']
+    qstart = counter_sample['qstart_monotonic_ns']
+    qend = counter_sample['qend_monotonic_ns']
     required_length = max(offsets) + 4
-    observed, observed_bytes, short_arp = 0, 0, 0
-    observed_probe_frames = []
+    action_frames = []
+    post_sample_frames = []
     for frame in frames:
         require(frame.get('ifname') == 'veth1' and frame.get('native_ifindex') == frame.get('ifindex') and
                 frame.get('direction') == ('outgoing' if frame.get('pkttype') == 4 else 'ingress'),
@@ -179,36 +218,72 @@ def validate_action_window(before, after, action, frames, start_ns, end_ns,
         if frame['direction'] != 'ingress':
             continue
         low, high = packet_time_interval(frame)
+        if low > end_ns:
+            continue
+        if low >= qend:
+            data, protocol, payload = ethernet_payload(frame)
+            post_sample_frames.append(dict(
+                native_timestamp_ns=frame['native_timestamp_ns'], interval_ns=[low, high],
+                frame_sha256=hashlib.sha256(data).hexdigest(), frame_length=len(data),
+                protocol=protocol, network_bytes=len(payload),
+                classification='definitely-after-counter-query'))
+            continue
+        if high < start_ns:
+            continue
         for uncertain_start, uncertain_end in uncertain_windows:
             if high >= uncertain_start and low <= uncertain_end:
                 raise RuntimeError('native PEDIT frame timestamp overlaps a rule transition boundary')
-        if high < start_ns or low > end_ns:
-            continue
         require(low >= start_ns and high <= end_ns,
                 'native PEDIT frame timestamp is ambiguous at an action window boundary')
         data, protocol, payload = ethernet_payload(frame)
-        observed += 1
-        observed_bytes += len(payload)
-        observed_probe_frames.append(data)
+        short_arp = False
         if len(payload) < required_length:
             require(allow_arp_overlimit and protocol == 0x0806 and valid_arp(payload),
                     'native PEDIT action saw an unexplained too-short packet')
-            short_arp += 1
+            short_arp = True
+        action_frames.append(dict(low=low, high=high, native_timestamp_ns=frame['native_timestamp_ns'],
+                                  data=data, network_bytes=len(payload), short_arp=short_arp))
+    action_frames.sort(key=lambda row: row['native_timestamp_ns'])
+    post_sample_frames.sort(key=lambda row: row['native_timestamp_ns'])
+    expected = collections.Counter(bytes.fromhex(packet['frame_hex']) for packet in expected_probe_frames)
+    require(not expected_probe_frames or sum(expected.values()) == 10,
+            'native PEDIT generation lacks the ten original MZ probe frame expectations')
+    definitely_before = [row for row in action_frames if row['high'] <= qstart]
+    definitely_after = [row for row in action_frames if row['low'] >= qend]
+    overlap_sample = [row for row in action_frames if row['high'] > qstart and row['low'] < qend]
+    baseline_candidates = feasible_counter_prefixes(action_frames, before, baseline_qstart, baseline_qend)
+    final_candidates = feasible_counter_prefixes(
+        action_frames, after, qstart, qend, expected=expected)
+    ordered = [(base, final) for base in baseline_candidates for final in final_candidates
+               if final[0] >= base[0] and final[3] >= base[3]]
+    require(after['drops'] == before['drops'] == 0 and
+            all(after[key] == before[key] == 0 for key in ('requeues','backlog','qlen')) and ordered,
+            'native PEDIT baseline/final counter samples do not match ordered captured-frame prefixes')
+    require(len(ordered) == 1,
+            'native PEDIT baseline/final counter samples have ambiguous captured-frame prefixes')
+    baseline_prefix, final_prefix = ordered[0]
+    base_count, base_bytes, base_overlimits, base_earliest, base_latest = baseline_prefix
+    prefix_length, prefix_bytes, prefix_overlimits, earliest_read, latest_read = final_prefix
     packet_delta = after['packets'] - before['packets']
     byte_delta = after['bytes'] - before['bytes']
     overlimit_delta = after['overlimits'] - before['overlimits']
-    require(packet_delta == observed and byte_delta == observed_bytes,
-            'native PEDIT action counters do not match complete ingress capture')
-    if expected_probe_frames:
-        expected = collections.Counter(bytes.fromhex(packet['frame_hex']) for packet in expected_probe_frames)
-        observed_packets = collections.Counter(observed_probe_frames)
-        require(sum(expected.values()) == 10 and
-                all(observed_packets[packet] >= count for packet, count in expected.items()),
-                'native PEDIT ingress capture is missing or changed original MZ probe frames')
-    require(after['drops'] == before['drops'] == 0 and overlimit_delta == short_arp,
-            'native PEDIT overlimits or drops are not explained by captured short ARP inputs')
-    return dict(start_ns=start_ns, end_ns=end_ns, packets=observed, bytes=observed_bytes,
-                overlimits=overlimit_delta, short_arp=short_arp, required_network_bytes=required_length)
+    require(prefix_length - base_count == packet_delta and
+            prefix_bytes - base_bytes == byte_delta and
+            prefix_overlimits - base_overlimits == overlimit_delta,
+            'native PEDIT final counters do not subtract the exact baseline prefix')
+    return dict(start_ns=start_ns, end_ns=end_ns, packets=packet_delta, bytes=byte_delta,
+                overlimits=overlimit_delta, short_arp=overlimit_delta,
+                required_network_bytes=required_length, counter_query_start_ns=qstart,
+                counter_query_end_ns=qend, feasible_read_interval_ns=[earliest_read, latest_read],
+                baseline_query_start_ns=baseline_qstart, baseline_query_end_ns=baseline_qend,
+                baseline_prefix_frames=base_count, baseline_prefix_bytes=base_bytes,
+                baseline_prefix_overlimits=base_overlimits,
+                baseline_feasible_read_interval_ns=[base_earliest, base_latest],
+                capture_frames=len(action_frames), counter_prefix_frames=prefix_length,
+                definitely_before_frames=len(definitely_before), definitely_after_frames=len(definitely_after),
+                sample_overlap_frames=len(overlap_sample), sample_suffix_frames=len(action_frames)-prefix_length,
+                post_sample_frames=post_sample_frames,
+                original_probe_frames=sum(expected.values()))
 
 
 def validate_packet_observer(report):
@@ -349,11 +424,13 @@ def validate_evidence(report):
             delete_window = (round(delete_edit['started_monotonic'] * 1e9), round(delete_edit['finished_monotonic'] * 1e9))
             action_windows.append(validate_action_window(
                 baseline, final_action['stats'], installed_action, observer_frames,
-                add_window[1], delete_window[0],
+                add_window[1], delete_window[1],
                 allow_arp_overlimit=(family == 6 and field == 'dst'),
                 uncertain_windows=(add_window, delete_window),
                 link_down_events=report['packet_observer']['statistics']['link_down_events'],
-                expected_probe_frames=report['packet_trace'][phase*10:(phase+1)*10]))
+                expected_probe_frames=report['packet_trace'][phase*10:(phase+1)*10],
+                baseline_sample=add_edit['pedit_after'].get('pedit_veth1_counter_sample'),
+                counter_sample=delete_edit['pedit_before'].get('pedit_veth1_counter_sample')))
         else:
             require(final_action['stats']['overlimits'] == 0,
                     'native PEDIT egress action overlimits lack an action-locus capture')
