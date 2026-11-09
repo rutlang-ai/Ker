@@ -863,6 +863,7 @@ jobs:
             build-native-bridge/linux-original-forwarding-bridge-mdb-port-down.json
             build-native-bridge/linux-original-forwarding-bridge-port-isolation.json
             build-native-bridge/linux-original-forwarding-bridge-vlan-unaware.json
+            build-native-bridge/linux-original-forwarding-bridge-vlan-aware.json
             ${{ runner.temp }}/native-xt-string-ctest.xml
             ${{ runner.temp }}/native-linux-xt-string-selftests-build/native-linux.json
             build-native-xt-string/linux-original-netfilter-xt-string.json

@@ -1,4 +1,4 @@
-"""All twelve complete bridge entries and both native realtime ABI controls are mandatory."""
+"""All thirteen complete bridge entries and both native realtime ABI controls are mandatory."""
 import json
 from pathlib import Path
 import subprocess
@@ -26,6 +26,7 @@ class BridgeProfileTests(unittest.TestCase):
             'bridge_mdb_port_down.sh': 'bridge-mdb-port-transcript.json',
             'bridge_port_isolation.sh': 'bridge-isolation-transcript.json',
             'bridge_vlan_unaware.sh': 'bridge-unaware-transcript.json',
+            'bridge_vlan_aware.sh': 'bridge-aware-transcript.json',
         }
         control = native_tests.LINUX_BRIDGE_REALTIME_TEST
         packet_control = native_tests.LINUX_BRIDGE_PACKET_REALTIME_TEST
@@ -91,12 +92,12 @@ class BridgeProfileTests(unittest.TestCase):
                             else:
                                 report['commands'] = [r for r in report['commands'] if r['tool'] != 'bridge']
                         elif mutation == 'leaked-bridge':
-                            report['cleanup_state']['links'].append(dict(ifname='br0' if program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh') else 'br1'))
+                            report['cleanup_state']['links'].append(dict(ifname='br0' if program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh') else 'br1'))
                         elif mutation == 'missing-proof' and program == 'bridge_mdb_host.sh':
                             next(r for r in report['commands'] if r['tool'] == 'bridge').pop('mdb_after')
                         elif mutation == 'missing-proof' and program == 'bridge_fdb_learning_limit.sh':
                             next(r for r in report['commands'] if r['arguments'][:2] == ['vrf', 'exec']).pop('learning_after')
-                        elif mutation == 'missing-proof' and program in ('bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh'):
+                        elif mutation == 'missing-proof' and program in ('bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh'):
                             report['packet_trace'] = []
                         elif mutation == 'missing-proof' and program == 'bridge_sticky_fdb.sh':
                             report['packet_trace'] = []
