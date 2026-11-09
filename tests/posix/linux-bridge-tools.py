@@ -137,6 +137,14 @@ def mdb_max_snapshot(env):
 def main():
     tool, words = Path(sys.argv[0]).name, sys.argv[1:]
     record = dict(tool=tool, arguments=words)
+    if (tool == 'tc' and os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' and
+            words[:2] == ['filter', 'add'] and 'pedit' in words):
+        ready_path = os.environ.get('KER_FORWARDING_PEDIT_OBSERVER_READY')
+        if not ready_path or not Path(ready_path).is_file():
+            raise RuntimeError('native PEDIT observer is not ready before original rule installation')
+        ready = json.loads(Path(ready_path).read_text())
+        if ready.get('type') != 'ready' or {(x.get('name'), x.get('direction')) for x in ready.get('interfaces', [])} != {('veth1', 'ingress')}:
+            raise RuntimeError('native PEDIT observer did not bind the original ingress action locus')
     if os.environ.get('KER_FORWARDING_BRIDGE_MDB_API') == '1' and tool == 'bridge' and words[:1] == ['-b']:
         if len(words) != 2:
             raise RuntimeError('unsupported native MDB batch arguments')

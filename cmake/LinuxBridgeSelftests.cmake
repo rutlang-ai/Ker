@@ -33,6 +33,11 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_bridge_pr
     add_test(NAME bridge-packet-realtime-wrapper-contract COMMAND ker-bridge-realtime-wrapper-test)
     set_tests_properties(bridge-packet-realtime-wrapper-contract PROPERTIES
         ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:ker-linux-bridge-packet-preload>")
+    add_test(NAME linux-pedit-ip-contract-unit
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_linux_pedit_ip_contract.py")
+    set_tests_properties(linux-pedit-ip-contract-unit PROPERTIES
+        LABELS "bridge-profile;protocol-selftest"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     target_compile_definitions(ker-linux-network-server PRIVATE KER_BRIDGE_PACKET_SELFTEST=1)
     add_dependencies(ker-linux-network-server ker-linux-bridge-packet-preload)
     # The unchanged traceroute6 multiplexes several native UDP descriptors.
@@ -54,6 +59,8 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_bridge_pr
         if(program STREQUAL "ip6_forward_instats_vrf")
             set(forwarding_selftest_runner "${PROJECT_SOURCE_DIR}/tests/posix/linux-forwarding-selftest.py")
             set(forwarding_selftest_extra --poll-control "$<TARGET_FILE:ker-linux-forwarding-instats-poll-control>")
+        elseif(program STREQUAL "pedit_ip")
+            set(forwarding_selftest_extra --packet-observer "${PROJECT_SOURCE_DIR}/tests/posix/linux-pedit-packet-observer.py")
         endif()
         string(REPLACE "_" "-" test_suffix "${program}")
         add_test(NAME linux-original-forwarding-${test_suffix}

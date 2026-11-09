@@ -3,6 +3,9 @@
 Receiver ingress flower matches the edited header. Source packet traces are
 pre-edit AF_PACKET injections, not a post-edit wire capture or socket oracle.
 """
+import errno
+import base64
+import collections
 import hashlib
 import ipaddress
 import json
@@ -93,8 +96,10 @@ def flower(rows, family, field, edit):
                 action['prob'] == {'random_type':'none','control_action':{'type':'pass'},'val':0},
                 'native receiver did not match the edited PEDIT address')
     stats = action['stats']
-    require(all(isinstance(stats[k],int) and stats[k] >= 0 for k in ('packets','bytes')) and
-            all(stats[k] == 0 for k in ('drops','overlimits','requeues','backlog','qlen')),
+    require(all(isinstance(stats[k],int) and stats[k] >= 0
+                for k in ('packets','bytes','drops','overlimits','requeues','backlog','qlen')) and
+            all(stats[k] == 0 for k in ('drops','requeues','backlog','qlen')) and
+            (edit or stats['overlimits'] == 0),
             'native PEDIT action dropped, queued or fabricated traffic')
     return stats
 
@@ -116,6 +121,155 @@ def filters(state, family, field, locus, active):
     return answer
 
 
+def packet_time_interval(frame):
+    timestamp = frame.get('native_timestamp_ns')
+    pair = frame.get('native_clock_pair', {})
+    native = pair.get('native_realtime_ns')
+    before = pair.get('host_monotonic_before_ns')
+    after = pair.get('host_monotonic_after_ns')
+    require(all(isinstance(value, int) and value > 0 for value in (timestamp, native, before, after)) and
+            before <= after and timestamp <= native and
+            frame.get('host_recv_before_ns', 0) <= frame.get('host_recv_after_ns', -1) <= after,
+            'native PEDIT frame timestamp lacks a valid native/host clock bracket')
+    offset_low, offset_high = native - after, native - before
+    return timestamp - offset_high, timestamp - offset_low
+
+
+def ethernet_payload(frame):
+    data = bytes.fromhex(frame['frame_hex'])
+    require(len(data) >= 14 and len(data) == frame.get('frame_length'),
+            'native PEDIT packet capture frame length changed')
+    protocol = int.from_bytes(data[12:14], 'big')
+    require(frame.get('protocol') == protocol,
+            'native PEDIT frame protocol metadata mismatch')
+    offset = 14
+    while protocol in (0x8100, 0x88a8):
+        require(len(data) >= offset + 4, 'truncated VLAN header in native PEDIT capture')
+        protocol = int.from_bytes(data[offset + 2:offset + 4], 'big')
+        offset += 4
+    return data, protocol, data[offset:]
+
+
+def valid_arp(payload):
+    return (len(payload) == 28 and int.from_bytes(payload[0:2], 'big') == 1 and
+            int.from_bytes(payload[2:4], 'big') == 0x0800 and payload[4] == 6 and payload[5] == 4 and
+            int.from_bytes(payload[6:8], 'big') in (1, 2))
+
+
+def validate_action_window(before, after, action, frames, start_ns, end_ns,
+                           allow_arp_overlimit=False, uncertain_windows=(), link_down_events=(),
+                           expected_probe_frames=()):
+    require(isinstance(start_ns, int) and isinstance(end_ns, int) and start_ns < end_ns,
+            'native PEDIT action generation window is invalid')
+    for event in link_down_events:
+        guarded = (start_ns, end_ns, *(point for interval in uncertain_windows for point in interval))
+        require(not min(guarded) <= event <= max(guarded),
+                'native PEDIT interface went down during an action generation')
+    for key in ('packets','bytes','drops','overlimits','requeues','backlog','qlen'):
+        require(after[key] >= before[key], 'native PEDIT action counters moved backwards')
+    offsets = [int(key['offset']) for key in action.get('keys', [])]
+    require(action.get('kind') == 'pedit' and offsets, 'native PEDIT action keys are missing')
+    required_length = max(offsets) + 4
+    observed, observed_bytes, short_arp = 0, 0, 0
+    observed_probe_frames = []
+    for frame in frames:
+        require(frame.get('ifname') == 'veth1' and frame.get('native_ifindex') == frame.get('ifindex') and
+                frame.get('direction') == ('outgoing' if frame.get('pkttype') == 4 else 'ingress'),
+                'native PEDIT frame identity or packet direction changed')
+        if frame['direction'] != 'ingress':
+            continue
+        low, high = packet_time_interval(frame)
+        for uncertain_start, uncertain_end in uncertain_windows:
+            if high >= uncertain_start and low <= uncertain_end:
+                raise RuntimeError('native PEDIT frame timestamp overlaps a rule transition boundary')
+        if high < start_ns or low > end_ns:
+            continue
+        require(low >= start_ns and high <= end_ns,
+                'native PEDIT frame timestamp is ambiguous at an action window boundary')
+        data, protocol, payload = ethernet_payload(frame)
+        observed += 1
+        observed_bytes += len(payload)
+        observed_probe_frames.append(data)
+        if len(payload) < required_length:
+            require(allow_arp_overlimit and protocol == 0x0806 and valid_arp(payload),
+                    'native PEDIT action saw an unexplained too-short packet')
+            short_arp += 1
+    packet_delta = after['packets'] - before['packets']
+    byte_delta = after['bytes'] - before['bytes']
+    overlimit_delta = after['overlimits'] - before['overlimits']
+    require(packet_delta == observed and byte_delta == observed_bytes,
+            'native PEDIT action counters do not match complete ingress capture')
+    if expected_probe_frames:
+        expected = collections.Counter(bytes.fromhex(packet['frame_hex']) for packet in expected_probe_frames)
+        observed_packets = collections.Counter(observed_probe_frames)
+        require(sum(expected.values()) == 10 and
+                all(observed_packets[packet] >= count for packet, count in expected.items()),
+                'native PEDIT ingress capture is missing or changed original MZ probe frames')
+    require(after['drops'] == before['drops'] == 0 and overlimit_delta == short_arp,
+            'native PEDIT overlimits or drops are not explained by captured short ARP inputs')
+    return dict(start_ns=start_ns, end_ns=end_ns, packets=observed, bytes=observed_bytes,
+                overlimits=overlimit_delta, short_arp=short_arp, required_network_bytes=required_length)
+
+
+def validate_packet_observer(report):
+    observer = report.get('packet_observer', {})
+    ready = observer.get('ready', {})
+    sock = ready.get('socket', {})
+    interface = next((item for item in ready.get('interfaces', []) if item.get('name') == 'veth1'), {})
+    frames = observer.get('frames', [])
+    stats = observer.get('statistics', {})
+    clock_pairs = stats.get('clock_pairs', [])
+    try:
+        clock_reads = base64.b64decode(observer.get('native_clock_archive_base64', ''), validate=True)
+    except (ValueError, TypeError):
+        clock_reads = b''
+    require(report.get('packet_observer_source_sha256') and ready.get('type') == 'ready' and
+            ready.get('backend_control') == {'missing_channel_errno': errno.ENOENT, 'host_fallback': False} and
+            sock.get('family') == 'AF_PACKET' and sock.get('type') == 'SOCK_RAW' and sock.get('protocol') == 3 and
+            sock.get('native_family') == 17 and sock.get('native_protocol') == 768 and
+            sock.get('native_ifindex') == sock.get('ifindex') == interface.get('ifindex') and
+            interface.get('direction') == 'ingress',
+            'native PEDIT observer did not prove its bound imported-Linux ingress socket')
+    require(observer.get('frame_count') == len(frames) == stats.get('packets') and
+            isinstance(stats.get('drops'), int) and stats['drops'] == 0 and
+            isinstance(stats.get('link_down_events'), list) and
+            isinstance(observer.get('native_clock_reads'), int) and
+            observer.get('native_clock_archive_bytes') == len(clock_reads) and len(clock_reads) > 0 and
+            observer['native_clock_reads'] == len(clock_pairs) == len(clock_reads) >= len(frames) + 2 and
+            set(clock_reads) <= {ord('1')} and
+            hashlib.sha256(clock_reads).hexdigest() == observer.get('native_clock_archive_sha256') and
+            re.fullmatch(r'[0-9a-f]{64}', observer.get('native_clock_archive_sha256', '')),
+            'native PEDIT capture was incomplete, dropped frames or lacked native clock reads')
+    for pair in clock_pairs:
+        require(all(isinstance(pair.get(key), int) and pair[key] > 0
+                    for key in ('native_realtime_ns','host_monotonic_before_ns','host_monotonic_after_ns')) and
+                pair['host_monotonic_before_ns'] <= pair['host_monotonic_after_ns'],
+                'native PEDIT observer clock sample is invalid')
+    for frame in frames:
+        data, protocol, _ = ethernet_payload(frame)
+        require(frame.get('type') == 'frame' and frame.get('ifname') == 'veth1' and
+                frame.get('ifindex') == interface.get('ifindex') and
+                frame.get('native_ifindex') == interface.get('ifindex') and
+                frame.get('protocol') == protocol and
+                frame.get('frame_length') == len(data) and frame.get('native_timestamp_ns', 0) > 0,
+                'native PEDIT observer frame metadata does not match imported-Linux packet bytes')
+        packet_time_interval(frame)
+    return frames
+
+
+def action_record(state, locus):
+    rows = all_filters(state)[locus]
+    require(len(rows) == 2 and sum('options' in row for row in rows) == 1,
+            'native PEDIT action generation is missing or duplicated')
+    return next(row for row in rows if 'options' in row)['options']['actions'][0]
+
+
+def require_original_probe_delta(before, after, minimum_bytes):
+    require(after['packets'] - before['packets'] >= 10 and
+            after['bytes'] - before['bytes'] >= 10 * minimum_bytes,
+            'original native PEDIT edited-address reception/action count below ten')
+
+
 def validate_evidence(report):
     original = report['original']
     parsed = [re.fullmatch(r'TEST: (.*?)\s+\[ OK \]', line) for line in original['stdout'].splitlines() if line.startswith('TEST:')]
@@ -126,6 +280,7 @@ def validate_evidence(report):
             [x[1] for x in parsed] == labels and 'SKIP' not in original['stdout'] and '[FAIL]' not in original['stdout'],
             'complete unchanged original PEDIT outcomes missing')
     rows = report['commands']
+    observer_frames = validate_packet_observer(report)
     require(normalized(rows) == COMMAND_SHA, 'original PEDIT command/timing/phase sequence changed')
     require([i for i,x in enumerate(rows) if x['returncode']] == [0,2] and
             all(not x['stderr'] for x in rows if not x['returncode']), 'original PEDIT setup/probe/cleanup verdict changed')
@@ -143,6 +298,7 @@ def validate_evidence(report):
                 row['vrf']['linkinfo']['info_kind'] == 'vrf', 'native PEDIT baseline reachability/clock binding changed')
     traffic = [x for x in rows if x['tool'] == 'mausezahn']
     require(len(traffic) == 8 and len(report['packet_trace']) == 80, 'complete original PEDIT packet matrix missing')
+    action_windows = []
     for phase, row in enumerate(traffic):
         family = 4 if phase < 4 else 6; field = 'src' if phase % 4 < 2 else 'dst'
         locus = ('veth1','ingress') if phase % 2 == 0 else ('veth2','egress'); receiver = ('veth3','ingress')
@@ -173,8 +329,7 @@ def validate_evidence(report):
             stats = flower(json.loads(query['stdout']),family,field,edit)
             size = (134 if family == 4 else 154) - (0 if edit and locus[1] == 'egress' else 14)
             key = locus if edit else receiver
-            require(stats['packets']-initial[key]['packets'] >= 10 and stats['bytes']-initial[key]['bytes'] >= 10*size,
-                    'original native PEDIT edited-address reception/action count below ten')
+            require_original_probe_delta(initial[key], stats, size)
         decisive = queries[-1]['pedit_after']; last = topology(decisive)
         for device,direction in (('veth0','tx'),('veth1','rx'),('veth2','tx'),('veth3','rx')):
             before = devices[device]['stats64'][direction]; after = last[device]['stats64'][direction]
@@ -184,6 +339,24 @@ def validate_evidence(report):
         for command, before, after in ((delete_receiver,(locus,receiver),(locus,)),(delete_edit,(locus,),())):
             filters(command['pedit_before'],family,field,locus,before)
             filters(command['pedit_after'],family,field,locus,after)
+        installed_action = action_record(add_edit['pedit_after'], locus)
+        final_action = action_record(delete_edit['pedit_before'], locus)
+        if locus == ('veth1','ingress'):
+            baseline = installed_action['stats']
+            require(all(baseline[k] == 0 for k in ('packets','bytes','drops','overlimits','requeues','backlog','qlen')),
+                    'native PEDIT ingress action was active before its bounded capture window')
+            add_window = (round(add_edit['started_monotonic'] * 1e9), round(add_edit['finished_monotonic'] * 1e9))
+            delete_window = (round(delete_edit['started_monotonic'] * 1e9), round(delete_edit['finished_monotonic'] * 1e9))
+            action_windows.append(validate_action_window(
+                baseline, final_action['stats'], installed_action, observer_frames,
+                add_window[1], delete_window[0],
+                allow_arp_overlimit=(family == 6 and field == 'dst'),
+                uncertain_windows=(add_window, delete_window),
+                link_down_events=report['packet_observer']['statistics']['link_down_events'],
+                expected_probe_frames=report['packet_trace'][phase*10:(phase+1)*10]))
+        else:
+            require(final_action['stats']['overlimits'] == 0,
+                    'native PEDIT egress action overlimits lack an action-locus capture')
         source = devices['veth0']; dest = devices['veth3']
         args = row['arguments']
         expected_args = (['-6'] if family == 6 else []) + ['-A','192.0.2.1' if family == 4 else '2001:db8:1::1',
@@ -210,6 +383,7 @@ def validate_evidence(report):
                         'original PEDIT IPv6 input/header changed')
             # The original specifies payload length, not Mausezahn's fill bytes,
             # IPv4 ID/TTL or IPv6 traffic class/flow label/hop limit defaults.
+    report['packet_observer']['validated_action_windows'] = action_windows
     validate_boundaries(report,rows)
 
 
