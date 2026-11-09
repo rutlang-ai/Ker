@@ -123,7 +123,12 @@ def validate_evidence(report):
     for device,direction in(('veth0','tx'),('veth1','rx')):
         a=initial[device]['stats64'][direction];b=last[device]['stats64'][direction]
         require(b['packets']-a['packets']>=11 and b['bytes']-a['bytes']>=704,'CFM probes did not traverse native veth path')
-    require(report['source_hashes']==SOURCE_HASHES and report['original_tc_hit_timeout_ms']==1000,'pinned original CFM source/wait changed')
+    validate_boundaries(report,rows)
+
+
+def validate_boundaries(report,rows,*,source_hashes=None,expected_sends=11,expected_bytes=704):
+    source_hashes=SOURCE_HASHES if source_hashes is None else source_hashes
+    require(report['source_hashes']==source_hashes and report['original_tc_hit_timeout_ms']==1000,'pinned original CFM source/wait changed')
     tools=report['iproute2']
     require(tools['version']=='6.12.0'and tools['archive_sha256']=='bbd141ef7b5d0127cc2152843ba61f274dc32814fa3e0f13e7d07a080bef53d9'and
             tools['source_hashes']['tc/tc.c']=='e9b2e36053ee6e20f79d44a0cab3e1661300ecf9e9783c5fcd03357aa696a101'and
@@ -141,7 +146,7 @@ def validate_evidence(report):
             '1 received'in report['vrf_binding_control']['baseline']['stdout']and report['vrf_binding_control']['unknown_vrf']['returncode']!=0,
             'native CFM backend/VRF controls ineffective')
     native=report['native_fixture'];stats=report['stats']
-    require(native['netlinks']>0 and native['raw_sockets']>0 and native['bridge_packet_sends']==11 and native['bridge_packet_bytes']==704 and
+    require(native['netlinks']>0 and native['raw_sockets']>0 and native['bridge_packet_sends']==expected_sends and native['bridge_packet_bytes']==expected_bytes and
             native['bridge_packet_trace_errors']==native['live']==stats['outstanding']==stats['worker_exit_code']==0 and
             stats['control_eof']is True and stats['shutdown_timed_out']is False,'native CFM packets/resources/shutdown incomplete')
 

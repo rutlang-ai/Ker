@@ -152,6 +152,13 @@ def mdb_max_snapshot(env):
     return state
 
 
+def chain_snapshot(env):
+    result = subprocess.run([os.environ['KER_FORWARDING_TC'], '-j', '-s', 'chain', 'show', 'dev', 'veth1', 'ingress'],
+        env=env, capture_output=True, text=True, timeout=10, check=True)
+    if result.stderr: raise RuntimeError('native TC chain observation warning: '+result.stderr)
+    return json.loads(result.stdout)
+
+
 def main():
     tool, words = Path(sys.argv[0]).name, sys.argv[1:]
     record = dict(tool=tool, arguments=words)
@@ -275,9 +282,12 @@ def main():
                       (tool == 'mausezahn' or tool == 'tc' and words[:4] == ['-j','-s','filter','show'] or
                        tool == 'ip' and words[:4] == ['link','set','dev','br0']))
         observe_pedit = os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' and tool in ('tc','mausezahn')
-        observe_range = os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' and tool in ('tc','mausezahn') and not (tool == 'tc' and words == ['-j'])
+        observe_range = os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' and tool in ('tc','mausezahn') and not (tool == 'tc' and words in (['-j'], ['help']))
         if observe_range:
             record['range_before'] = packet_bridge_snapshot(env, True)
+        observe_chains = os.environ.get('KER_FORWARDING_BRIDGE_CHAINS') == '1' and observe_range
+        if observe_chains:
+            record['chains_before'] = chain_snapshot(env)
         observe_l2 = os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1' and tool in ('tc','mausezahn','bridge')
         if observe_l2:
             record['l2_before'] = packet_bridge_snapshot(env, True)
@@ -314,6 +324,8 @@ def main():
             record['ethtool_features_after'] = json.loads(features.stdout)
         if observe_range:
             record['range_after'] = packet_bridge_snapshot(env, True)
+        if observe_chains:
+            record['chains_after'] = chain_snapshot(env)
         if observe_l2:
             record['l2_after'] = packet_bridge_snapshot(env, True)
         if observe_pedit:
