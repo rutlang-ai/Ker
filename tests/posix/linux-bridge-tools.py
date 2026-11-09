@@ -81,7 +81,8 @@ def packet_bridge_snapshot(env, traffic=False):
         raise RuntimeError('native MDB port observation warning: ' + result.stderr)
     state['links'] = json.loads(result.stdout)
     if traffic:
-        devices = (('veth0','veth1','veth3') if os.environ.get('KER_FORWARDING_BRIDGE_LOCKED') == '1' else
+        devices = (('br0','veth3') if os.environ.get('KER_FORWARDING_BRIDGE_MDB_API') == '1' else
+                   ('veth0','veth1','veth3') if os.environ.get('KER_FORWARDING_BRIDGE_LOCKED') == '1' else
                    ('veth0', 'veth3') if (os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1') else ('veth3',))
         filters = {}
         for device in devices:
@@ -112,9 +113,23 @@ def packet_bridge_snapshot(env, traffic=False):
     return state
 
 
+def mdb_api_snapshot(env):
+    result = subprocess.run([os.environ['KER_FORWARDING_BRIDGE'], '-j', '-d', '-s', 'mdb', 'show', 'dev', 'br0'],
+                            env=env, capture_output=True, text=True, timeout=10, check=True)
+    if result.stderr:
+        raise RuntimeError('native MDB API observation warning: ' + result.stderr)
+    return json.loads(result.stdout)
+
+
 def main():
     tool, words = Path(sys.argv[0]).name, sys.argv[1:]
     record = dict(tool=tool, arguments=words)
+    if os.environ.get('KER_FORWARDING_BRIDGE_MDB_API') == '1' and tool == 'bridge' and words[:1] == ['-b']:
+        if len(words) != 2:
+            raise RuntimeError('unsupported native MDB batch arguments')
+        batch = Path(words[1]).read_bytes()
+        record['batch_text'] = batch.decode()
+        record['batch_sha256'] = __import__('hashlib').sha256(batch).hexdigest()
     if tool == 'sysctl':
         if len(words) != 2 or words[0] not in ('-n', '-qw'):
             raise RuntimeError('unsupported native sysctl arguments: ' + repr(words))
@@ -218,6 +233,10 @@ def main():
         observe_sg = (os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' and
                       (tool == 'mausezahn' or tool == 'tc' and words[:4] == ['-j','-s','filter','show'] or
                        tool == 'ip' and words[:4] == ['link','set','dev','br0']))
+        observe_mdb_api = (os.environ.get('KER_FORWARDING_BRIDGE_MDB_API') == '1' and tool == 'bridge' and
+                           words[:2] in (['mdb', 'add'], ['mdb', 'del'], ['mdb', 'replace'], ['mdb', 'flush']))
+        if observe_mdb_api:
+            record['mdb_api_before'] = mdb_api_snapshot(env)
         if observe_sg:
             record['sg_before'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         if observe_unaware:
@@ -238,6 +257,8 @@ def main():
                 env=env, capture_output=True, text=True, timeout=10, check=True)
             if features.stderr: raise RuntimeError('native ethtool feature query warning: ' + features.stderr)
             record['ethtool_features_after'] = json.loads(features.stdout)
+        if observe_mdb_api:
+            record['mdb_api_after'] = mdb_api_snapshot(env)
         if observe_sg:
             record['sg_after'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         if 'unaware_before' in record:

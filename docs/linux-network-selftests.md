@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh`、`bridge_igmp.sh`、`bridge_mld.sh` 完整入口本地通过；其余 85 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh`、`bridge_igmp.sh`、`bridge_mld.sh`、`bridge_mdb.sh` 完整入口本地通过；其余 84 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 103/310，剩余 207；其中 98 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 212 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 104/310，剩余 206；其中 99 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 211 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -339,3 +339,16 @@ Ker 仅增加私有只读 SG 状态观察与完整入口接线，协议行为来
 原版 `mldv2inc_is_exclude_test` 同样没有调用者局部 X/Y 数组，因此只实际探测 source100 转发；不声称补齐了原版未执行的源流量。捕获的原版 Mausezahn IPv6 UDP 帧另有零 UDP checksum：原版入口的判断点是 UDP 校验前的 ingress flower，所证明的是 Linux bridge 的二层源过滤/转发，不是 UDP socket 成功收包。保留实际原版字节与该范围边界，控制报文的有效 ICMPv6 checksum 则另行验证；合同允许工具生成有效 UDP checksum 的等价二层流量。
 
 该批次只增加私有原生观察及完整入口接线，没有修改 pinned Linux、DPDK、iproute2 或协议实现。完整20项 bridge profile 包含18个原版入口与两个 realtime ABI 控制。实际原生报告投影保留全部754条命令、原始查询输出与所有消费的快照，以合格原报告 SHA-256 绑定；单元验证覆盖全部322个查询与状态、报文、计数、等待、标量和资源清理的反例。迁移计数继续与发布后的 hosted CI 和 review 资格分开核对。
+
+
+## 完整 MDB API、大规模表项与转发入口
+
+完整未修改的 `forwarding/bridge_mdb.sh` 执行全部27项原版结果，保留1171个原版命令阶段以及 `tc_common.sh` 的默认1000ms busywait。三轮原版批处理分别创建 IPv4、IPv6 和二层组：每轮为两个桥、每桥32个真实 dummy 端口、每端口256个组，共16,384条记录。独立合同核对实际执行前的完整 batch 文本及 SHA，并分别读取两个桥的原版 dump，要求每桥8192条永久记录的端口、组、VID、唯一性和完整笛卡尔积一致。启用原版 `CONFIG_DUMMY=y` 驱动；不把不支持的设备创建或部分 batch 成功计入覆盖。
+
+321次实际 native MDB add/replace/del/flush 均有操作前后状态。逐项核对主机/端口组、VID10/20、INCLUDE/EXCLUDE、源集合、S,G 子项、blocked 与自动派生标志、协议归属和永久/临时 timer；失败操作不得修改状态，成功操作不得破坏其他受检组。选择性 flush 必须只移除匹配端口、VID、协议与永久状态的记录。保留原版所有预期拒绝与清理命令，不以统一成功返回绕过不支持的边界。
+
+51个原版 native AF_PACKET 帧包含47个数据探测与4个 IGMPv3/MLDv2 控制报告。数据探测覆盖主机 MDB、端口 EXCLUDE/INCLUDE 和二层组；实际 VLAN10/20、双 VRF、veth/bridge 路径、发送字节与接收端 flower/gact 的两个独立句柄计数逐项校验。原版读计数重试可以等待异步交付，最终查询必须精确符合每个原版累计计数。控制报告保持原版字面字节和校验和，并在后续原版查询点验证永久源列表不变、临时源列表接纳新源。
+
+该入口的原版 IPv6 UDP 探测仍可包含零 UDP checksum，判断点是 UDP 校验前的二层 ingress flower，不声称 socket 收包。其 MLD 报告字面的 Hop-by-Hop 头也按实际原版保留，不改写为其他入口的 Router Alert 模板。原版 querier 十秒等待、负向后端/未知 VRF 对照、全部 bridge/dummy/VLAN/VRF 清理和零 live socket/outstanding、worker 正常退出均单独验证。完整21项 bridge profile 包含19个原版入口和两个 realtime ABI 控制；本地完成与后续 hosted CI/review 资格继续分别记录。
+
+新增配置的回归验证还保留 FDB learning 入口的首次设置观察边界：flush 后只允许零 learned 项，或唯一的默认源 MAC 项；紧接着的原版 static/use 命令后 learned 计数必须归零，其余15次 flush 仍须为零。两个独立只读快照不能证明默认项是否曾被删除再学习，因此不把该瞬间当作原子清空证据，也不放宽受检 MAC、限额与后续清理约束。

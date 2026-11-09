@@ -109,6 +109,7 @@ def validate_evidence(report):
     require([r['arguments'] for r in replacements] == [
         ['fdb', 'replace', MAC, 'dev', 'veth1', 'master', *suffix] for suffix in suffixes],
         'original static/user/external replacement sequence changed')
+    first_flush = next(r for r in bridge if r['arguments'][:2] == ['fdb', 'flush'])
     for row in bridge:
         args = row['arguments']
         if args == FDB_QUERY:
@@ -118,7 +119,23 @@ def validate_evidence(report):
         state = row['learning_after']; count = data(state)['fdb_n_learned']
         require(before['fdb_max_learned'] == data(state)['fdb_max_learned'], 'FDB mutation altered native learning limit')
         if args[:2] == ['fdb', 'flush']:
-            require(args == ['fdb', 'flush', 'dev', 'br0'] and count == 0, 'native FDB flush failed')
+            require(args == ['fdb', 'flush', 'dev', 'br0'] and not target(state['fdb']), 'native FDB flush failed')
+            if row is first_flush:
+                # The first setup observation can race native control traffic
+                # from the default source MAC. It cannot prove removal and
+                # relearning between the flush and read-only dump. The next
+                # unchanged static-use command must still restore count zero.
+                dynamic = [r for r in state['fdb'] if r.get('master') == 'br0' and r.get('state') == '']
+                require((count == 0 and not dynamic) or (count == 1 and dynamic == [dict(
+                    mac=DEFAULT_MAC, ifname='veth1', flags=[], master='br0', state='')]),
+                    'initial native FDB flush retained unexpected learned entries')
+                following = rows[rows.index(row)+1]
+                require(following['arguments'] == ['fdb','add',DEFAULT_MAC,'dev','veth1','master','static','use'] and
+                        following['returncode'] == 0 and not following['stderr'] and
+                        data(following['learning_after'])['fdb_n_learned'] == 0,
+                        'original default-source baseline did not restore zero learned accounting')
+            else:
+                require(count == 0, 'native FDB flush failed')
         elif args[:2] == ['fdb', 'add']:
             require(args == ['fdb', 'add', DEFAULT_MAC, 'dev', 'veth1', 'master', 'static', 'use'] and
                     count == 0, 'original default source entry counted as learned')

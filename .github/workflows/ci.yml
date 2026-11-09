@@ -869,6 +869,7 @@ jobs:
             build-native-bridge/linux-original-forwarding-ip6-forward-instats-vrf.json
             build-native-bridge/linux-original-forwarding-bridge-igmp.json
             build-native-bridge/linux-original-forwarding-bridge-mld.json
+            build-native-bridge/linux-original-forwarding-bridge-mdb.json
             ${{ runner.temp }}/native-xt-string-ctest.xml
             ${{ runner.temp }}/native-linux-xt-string-selftests-build/native-linux.json
             build-native-xt-string/linux-original-netfilter-xt-string.json
