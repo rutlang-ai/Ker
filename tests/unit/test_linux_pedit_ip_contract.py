@@ -65,8 +65,10 @@ class PeditIpContractTests(unittest.TestCase):
                         st=receiver(obj)['actions'][0]['stats'];st['packets']+=1;st['bytes']+=56
                     out=json.loads(receiver_query['stdout']);st=next(x for x in out if 'options'in x)['options']['actions'][0]['stats'];st['packets']+=1;st['bytes']+=56;receiver_query['stdout']=json.dumps(out)
                 elif case=='sender-default-variation':
+                    replacements={}
                     for n,packet in enumerate(r['packet_trace']):
-                        b=bytearray.fromhex(packet['frame_hex']);b[-100:]=bytes((i+n)%256 for i in range(100))
+                        original=bytes.fromhex(packet['frame_hex'])
+                        b=bytearray(original);b[-100:]=bytes((i+n)%256 for i in range(100))
                         if n<40:
                             b[15]=0x28;b[18:20]=(n+100).to_bytes(2,'big');b[22]=64;b[24:26]=b'\0\0'
                             value=sum(int.from_bytes(b[i:i+2],'big')for i in range(14,34,2))
@@ -74,6 +76,11 @@ class PeditIpContractTests(unittest.TestCase):
                             b[24:26]=(value^65535).to_bytes(2,'big')
                         else:b[14:18]=bytes.fromhex('62aabcde');b[21]=64
                         packet['frame_hex']=b.hex()
+                        replacements.setdefault(original.hex(),[]).append(b.hex())
+                    for captured in r['packet_observer']['frames']:
+                        candidates=replacements.get(captured['frame_hex'])
+                        if candidates:
+                            captured['frame_hex']=candidates.pop(0)
                 elif case=='missing-result':r['original']['stdout']='\n'.join(r['original']['stdout'].splitlines()[:-1])
                 elif case=='original-fails':r['original']['returncode']=1
                 elif case=='skip':r['original']['stdout']+='SKIP\n'
