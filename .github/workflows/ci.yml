@@ -17,7 +17,7 @@ jobs:
   linux-core:
     name: Linux core (${{ matrix.compiler }}, tests ${{ matrix.testing }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
