@@ -15,6 +15,7 @@ class FlowerPortRangeContractTests(unittest.TestCase):
         fixture=json.loads(Path(__file__).with_name('tc-flower-port-range-transcript.json').read_text())
         cases=['complete','delayed-observation','sender-default-variation','delayed-ingress-poll','delayed-egress-poll',
                'delayed-both-polls','poll-regression','poll-over-target','poll-final-not-reached','poll-nonmatching-hit',
+               'query-before-1-stdout-0-after-1','query-before-0-stdout-1-after-0',
                'missing-result','original-fails','skip','warning',
                'missing-command','reordered-command','query-missing','wrong-source-bound','wrong-destination-bound','scalar-range',
                'wrong-address','wrong-protocol','wrong-verdict','wrong-binding','hardware-rule','counter-not-hit','counter-out-of-range-hit',
@@ -90,6 +91,11 @@ class FlowerPortRangeContractTests(unittest.TestCase):
                         later=rows[rows.index(q)+1];output(later,lambda o:o['actions'][0]['stats'].update(packets=0,bytes=0))
                         set_count(later['range_after'],'ingress',0)
                     else:output(q,lambda o:o['actions'][0]['stats'].update(packets=0,bytes=0,drops=1))
+                elif case=='query-before-1-stdout-0-after-1':
+                    output(q1,lambda o:o['actions'][0]['stats'].update(packets=0,bytes=0))
+                elif case=='query-before-0-stdout-1-after-0':
+                    set_count(first['range_after'],'ingress',0)
+                    set_count(q1['range_before'],'ingress',0);set_count(q1['range_after'],'ingress',0)
                 elif case=='sender-default-variation':
                     for n,packet in enumerate(r['packet_trace']):
                         b=bytearray.fromhex(packet['frame_hex']);b[-100:]=bytes((x+n)%256 for x in range(100))

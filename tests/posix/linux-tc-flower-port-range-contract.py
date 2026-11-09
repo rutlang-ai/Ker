@@ -110,16 +110,23 @@ def validate_evidence(report):
                     if locus==egress:egress_started=True
                     else:require(not egress_started,'original port-range ingress query followed egress polling')
                     drop=locus==egress
+                    before=filters_bounded(query['range_before'],family,protocol,previous,target,active)
+                    for polled,value in before.items():
+                        require(value>=last_native[polled],
+                                'native port-range before-query observation regressed')
+                        last_native[polled]=value
                     count=bounded_flower(json.loads(query['stdout']),family,protocol,drop,previous,target)
+                    require(count>=last_native[locus],
+                            'original port-range query predates its native before-query counter')
                     require(not query_counts[locus]or count>=query_counts[locus][-1],
                             'original port-range counter polling regressed')
                     query_counts[locus].append(count)
-                    for key,state in (('before',query['range_before']),('after',query['range_after'])):
-                        native=filters_bounded(state,family,protocol,previous,target,active)
-                        for polled,value in native.items():
-                            require(value>=last_native[polled],
-                                    'native port-range before/after counter observation regressed')
-                            last_native[polled]=value
+                    last_native[locus]=count
+                    after=filters_bounded(query['range_after'],family,protocol,previous,target,active)
+                    for polled,value in after.items():
+                        require(value>=last_native[polled],
+                                'native port-range after-query observation regressed')
+                        last_native[polled]=value
                 require(all(query_counts[locus]and query_counts[locus][-1]==target for locus in active),
                         'final original successful ingress/egress query missed its exact target')
                 filters(observed[-1]['range_after'],family,protocol,target,active)
