@@ -160,6 +160,18 @@ class PeditActionWindowTests(unittest.TestCase):
         self.assertEqual((result['baseline_prefix_frames'], result['baseline_prefix_bytes'],
                           result['packets'], result['bytes']), (1, 64, 10, 1200))
 
+    def test_original_probe_frames_must_follow_nonzero_baseline(self):
+        probe = ipv4_probe_frame(); expected = [{'frame_hex': probe.hex()} for _ in range(10)]
+        baseline_probe = frame_window(50, 60, probe)
+        post_baseline_probes = [frame_window(70 + i, 71 + i, probe) for i in range(9)]
+        baseline = dict(self.baseline_sample, qstart_monotonic_ns=65, qend_monotonic_ns=68)
+        final = dict(self.sample, qstart_monotonic_ns=105, qend_monotonic_ns=110)
+        with self.assertRaisesRegex(RuntimeError, 'baseline/final counter samples'):
+            CONTRACT_MODULE.validate_action_window(
+                stats(1, 120), stats(10, 1200), self.action,
+                [baseline_probe, *post_baseline_probes], 40, 120,
+                expected_probe_frames=expected, baseline_sample=baseline, counter_sample=final)
+
     def test_nonzero_baseline_rejects_missing_extra_and_mismatched_frames(self):
         probe = ipv4_probe_frame(); expected = [{'frame_hex': probe.hex()} for _ in range(10)]
         ndp = ndp_ns_frame()

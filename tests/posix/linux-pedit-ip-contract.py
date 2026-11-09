@@ -254,8 +254,15 @@ def validate_action_window(before, after, action, frames, start_ns, end_ns,
     baseline_candidates = feasible_counter_prefixes(action_frames, before, baseline_qstart, baseline_qend)
     final_candidates = feasible_counter_prefixes(
         action_frames, after, qstart, qend, expected=expected)
-    ordered = [(base, final) for base in baseline_candidates for final in final_candidates
-               if final[0] >= base[0] and final[3] >= base[3]]
+    ordered = []
+    for base in baseline_candidates:
+        for final in final_candidates:
+            if final[0] < base[0] or final[3] < base[3]:
+                continue
+            packets_after_baseline = collections.Counter(
+                row['data'] for row in action_frames[base[0]:final[0]])
+            if all(packets_after_baseline[packet] >= count for packet, count in expected.items()):
+                ordered.append((base, final))
     require(after['drops'] == before['drops'] == 0 and
             all(after[key] == before[key] == 0 for key in ('requeues','backlog','qlen')) and ordered,
             'native PEDIT baseline/final counter samples do not match ordered captured-frame prefixes')
@@ -418,8 +425,8 @@ def validate_evidence(report):
         final_action = action_record(delete_edit['pedit_before'], locus)
         if locus == ('veth1','ingress'):
             baseline = installed_action['stats']
-            require(all(baseline[k] == 0 for k in ('packets','bytes','drops','overlimits','requeues','backlog','qlen')),
-                    'native PEDIT ingress action was active before its bounded capture window')
+            require(all(baseline[k] == 0 for k in ('drops','requeues','backlog','qlen')),
+                    'native PEDIT ingress action had drops or queued resources before its baseline sample')
             add_window = (round(add_edit['started_monotonic'] * 1e9), round(add_edit['finished_monotonic'] * 1e9))
             delete_window = (round(delete_edit['started_monotonic'] * 1e9), round(delete_edit['finished_monotonic'] * 1e9))
             action_windows.append(validate_action_window(
