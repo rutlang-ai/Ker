@@ -340,6 +340,33 @@ jobs:
           fi
           python3 tools/ci/native_tests.py native-datapath-preflight "$RUNNER_TEMP/dpdk-install"
 
+      - name: Run exact native session migration matrix
+        if: steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          free_pages="$(awk '/^HugePages_Free:/ {print $2}' /proc/meminfo)"
+          if (( free_pages < 64 )); then
+            echo "Session matrix needs at least 64 free 2 MiB hugepages; available: ${free_pages}." >&2
+            exit 1
+          fi
+          worker="$(find build-native-on -type f -name ker-io-session -perm -u+x -print -quit)"
+          library="$(find build-native-on -type f -name 'libker-posix.so*' -print -quit)"
+          app="$(find build-native-on -type f -name ker-exception-services-test -perm -u+x -print -quit)"
+          plugin_dir="$(python3 tools/ci/native_tests.py dpdk-plugin-dir "$RUNNER_TEMP/dpdk-install" \
+            librte_mempool_ring.so librte_net_ring.so)"
+          test -n "$worker" && test -n "$library" && test -n "$app" && test -n "$plugin_dir"
+          test -r "$plugin_dir/librte_mempool_ring.so"
+          test -r "$plugin_dir/librte_net_ring.so"
+          set -o pipefail
+          timeout --signal=TERM --kill-after=20s 900s \
+            python3 tests/posix/session-native-packets.py \
+              --worker "$worker" --tool tools/ker-session.py --library "$library" \
+              --app "$app" --dpdk-plugin-dir "$plugin_dir" --huge-dir /dev/hugepages \
+              --handoff-negative-profiles 2>&1 | tee "$RUNNER_TEMP/session-native-packets.log"
+          python3 tools/ci/native_tests.py verify-session-profiles \
+            "$RUNNER_TEMP/session-native-packets.log" tests/posix/session-native-packets.py
+
       - name: Run the full native CTest graph with JUnit accounting
         if: steps.native.outputs.present == 'true'
         shell: bash
@@ -801,33 +828,6 @@ jobs:
           cmake --build build-native-rpath --parallel 2 --target ker-linux-rpath-server
           python3 tools/ci/native_tests.py rpath-profile \
             build-native-rpath "$RUNNER_TEMP/native-rpath-ctest.xml"
-
-      - name: Run exact native session migration matrix
-        if: steps.native.outputs.present == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          free_pages="$(awk '/^HugePages_Free:/ {print $2}' /proc/meminfo)"
-          if (( free_pages < 64 )); then
-            echo "Full CTest run left fewer than 64 free 2 MiB hugepages for the session matrix: ${free_pages}." >&2
-            exit 1
-          fi
-          worker="$(find build-native-on -type f -name ker-io-session -perm -u+x -print -quit)"
-          library="$(find build-native-on -type f -name 'libker-posix.so*' -print -quit)"
-          app="$(find build-native-on -type f -name ker-exception-services-test -perm -u+x -print -quit)"
-          plugin_dir="$(python3 tools/ci/native_tests.py dpdk-plugin-dir "$RUNNER_TEMP/dpdk-install" \
-            librte_mempool_ring.so librte_net_ring.so)"
-          test -n "$worker" && test -n "$library" && test -n "$app" && test -n "$plugin_dir"
-          test -r "$plugin_dir/librte_mempool_ring.so"
-          test -r "$plugin_dir/librte_net_ring.so"
-          set -o pipefail
-          timeout --signal=TERM --kill-after=20s 900s \
-            python3 tests/posix/session-native-packets.py \
-              --worker "$worker" --tool tools/ker-session.py --library "$library" \
-              --app "$app" --dpdk-plugin-dir "$plugin_dir" --huge-dir /dev/hugepages \
-              --handoff-negative-profiles 2>&1 | tee "$RUNNER_TEMP/session-native-packets.log"
-          python3 tools/ci/native_tests.py verify-session-profiles \
-            "$RUNNER_TEMP/session-native-packets.log" tests/posix/session-native-packets.py
 
       - name: Run native Python migration unit tests
         if: steps.native.outputs.present == 'true'

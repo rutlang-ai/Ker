@@ -3248,6 +3248,11 @@ struct worker_heartbeat {
     struct ker_session_message request, frame_reply;
     uint64_t sent_ms, last_ack_ms;
 };
+#ifdef KER_SESSION_TEST_HOOKS
+/* Diagnostic witness only: set after the control F fill has passed its exact
+ * ring, pool, object, and counter checks. It does not affect packet handling. */
+static bool frame_full_fill_complete;
+#endif
 static int pump_worker_heartbeat(int fd, struct worker_heartbeat *heartbeat, int resident);
 static int heartbeat_tick(int fd, const struct ker_session_message *identity,
     uint64_t *sequence, int resident, struct worker_heartbeat *heartbeat);
@@ -3316,6 +3321,7 @@ static int parked_owner_wait(int control,int packet_fd,int fd,int resident,
                     int fill=parked_frame_fill_tx_capacity(fd,resident,control,identity,sequence,
                         capability,heartbeat,rings,&proof);
                     if(fill)return fill;
+                    frame_full_fill_complete=true;
                     char record[8192];
                     int used=snprintf(record,sizeof(record),
                         "KER_SESSION_FRAME_FULL_FILLED {\"count\":%u,\"capacity\":%u,\"pool_before\":%u,\"pool_after\":%u,\"counters_before\":[%llu,%llu,%llu,%llu,%llu],\"counters_after\":[%llu,%llu,%llu,%llu,%llu],\"objects\":[",
@@ -3931,15 +3937,42 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
     int drained=drain_worker_heartbeat_after_command(fd,heartbeat,resident,control);
     if(drained)return drained;
     uint64_t tag=ker_generation_packet_pool_tag(rings);
-    if(!tag)return -EUCLEAN;
+    if(!tag) {
+#ifdef KER_SESSION_TEST_HOOKS
+        if(getenv("KER_SESSION_TEST_FRAME_FULL"))
+            { printf("KER_SESSION_TEST_FRAME_FULL_FAILURE {\"stage\":\"packet-pool-tag\",\"peek_length\":%zd}\n",peek);fflush(stdout); }
+#endif
+        return -EUCLEAN;
+    }
 #ifdef KER_SESSION_TEST_HOOKS
     uint32_t tx_initial=0,pool_before=0;
     struct ker_generation_test_counters packet_counters_before;
-    if(ker_generation_test_tx_snapshot(rings,0,0,0,&tx_initial,&pool_before))return -EUCLEAN;
+    int snapshot_status=ker_generation_test_tx_snapshot(rings,0,0,0,&tx_initial,&pool_before);
+    if(snapshot_status) {
+        if(getenv("KER_SESSION_TEST_FRAME_FULL"))
+            { printf("KER_SESSION_TEST_FRAME_FULL_FAILURE {\"stage\":\"initial-snapshot\",\"status\":%d,\"peek_length\":%zd}\n",snapshot_status,peek);fflush(stdout); }
+        return -EUCLEAN;
+    }
     bool frame_full_test=getenv("KER_SESSION_TEST_FRAME_FULL")!=NULL;
     if(frame_full_test&&!frame_full_cancel_done) {
-        if(!tx_initial)return -EUCLEAN;
-        if(ker_generation_test_counters_snapshot(rings,0,0,0,&packet_counters_before))return -EUCLEAN;
+        if(!tx_initial) {
+            struct ker_generation_test_counters counters={0};
+            int counters_status=ker_generation_test_counters_snapshot(rings,0,0,0,&counters);
+            printf("KER_SESSION_TEST_FRAME_FULL_FAILURE {\"stage\":\"prefill-empty\",\"phase\":\"%s\",\"tx\":%u,\"pool\":%u,\"counter_status\":%d,\"counters\":[%llu,%llu,%llu,%llu,%llu],\"peek_length\":%zd,\"frame_hex\":\"",
+                frame_full_fill_complete?"after-fill":"before-fill",tx_initial,pool_before,counters_status,
+                (unsigned long long)counters.rx_full,(unsigned long long)counters.tx_full,
+                (unsigned long long)counters.tx_drop,(unsigned long long)counters.packet_drop,
+                (unsigned long long)counters.packet_full,peek);
+            size_t prefix_length=(size_t)peek-sizeof(struct ker_packet_header);
+            for(size_t i=0;i<prefix_length;i++)printf("%02x",peek_bytes[sizeof(struct ker_packet_header)+i]);
+            printf("\"}\n");fflush(stdout);
+            return -EUCLEAN;
+        }
+        int counters_status=ker_generation_test_counters_snapshot(rings,0,0,0,&packet_counters_before);
+        if(counters_status) {
+            printf("KER_SESSION_TEST_FRAME_FULL_FAILURE {\"stage\":\"initial-counters\",\"status\":%d,\"tx\":%u,\"pool\":%u,\"peek_length\":%zd}\n",
+                counters_status,tx_initial,pool_before,peek);fflush(stdout);return -EUCLEAN;
+        }
     } else if(frame_full_test&&!frame_full_normal_phase) {
         if(tx_initial) {
             /* The overflow datagram was consumed by its failed transaction.
