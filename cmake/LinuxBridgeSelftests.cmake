@@ -43,8 +43,8 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_bridge_pr
     target_compile_options(ker-linux-forwarding-instats-poll-control PRIVATE -Wall -Wextra -Werror)
     add_dependencies(ker-linux-network-server ker-linux-forwarding-instats-poll-control)
     foreach(program router_bridge router_bridge_vlan router_bridge_1d router_bridge_vlan_upper
-            router_bridge_pvid_vlan_upper router_bridge_vlan_upper_pvid bridge_mdb_host bridge_sticky_fdb bridge_fdb_learning_limit bridge_mdb_port_down bridge_port_isolation bridge_vlan_unaware bridge_vlan_aware bridge_locked_port bridge_vlan_mcast ip6_forward_instats_vrf)
-        if(program STREQUAL "bridge_sticky_fdb" OR program STREQUAL "bridge_mdb_port_down" OR program STREQUAL "bridge_port_isolation" OR program STREQUAL "bridge_vlan_unaware" OR program STREQUAL "bridge_vlan_aware" OR program STREQUAL "bridge_locked_port" OR program STREQUAL "bridge_vlan_mcast")
+            router_bridge_pvid_vlan_upper router_bridge_vlan_upper_pvid bridge_mdb_host bridge_sticky_fdb bridge_fdb_learning_limit bridge_mdb_port_down bridge_port_isolation bridge_vlan_unaware bridge_vlan_aware bridge_locked_port bridge_vlan_mcast ip6_forward_instats_vrf bridge_igmp)
+        if(program STREQUAL "bridge_sticky_fdb" OR program STREQUAL "bridge_mdb_port_down" OR program STREQUAL "bridge_port_isolation" OR program STREQUAL "bridge_vlan_unaware" OR program STREQUAL "bridge_vlan_aware" OR program STREQUAL "bridge_locked_port" OR program STREQUAL "bridge_vlan_mcast" OR program STREQUAL "bridge_igmp")
             set(bridge_selftest_preload ker-linux-bridge-packet-preload)
         else()
             set(bridge_selftest_preload ker-linux-bridge-preload)
@@ -65,7 +65,11 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_bridge_pr
                 --worker "$<TARGET_FILE:ker-io-worker>" --pmd-dir "${ker_session_pmd_dir}"
                 --manifest "${ker_native_manifest}"
                 --evidence "${PROJECT_BINARY_DIR}/linux-original-forwarding-${test_suffix}.json")
-        set_tests_properties(linux-original-forwarding-${test_suffix} PROPERTIES TIMEOUT 240 RUN_SERIAL TRUE
+        set(original_entry_budget 240)
+        if(program STREQUAL "bridge_igmp")
+            set(original_entry_budget 900)
+        endif()
+        set_tests_properties(linux-original-forwarding-${test_suffix} PROPERTIES TIMEOUT ${original_entry_budget} RUN_SERIAL TRUE
             LABELS "linux-upstream;original-linux;protocol-selftest;dpdk;bridge-profile"
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     endforeach()

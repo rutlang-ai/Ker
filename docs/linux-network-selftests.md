@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh` 完整入口本地通过；其余 87 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh`、`bridge_igmp.sh` 完整入口本地通过；其余 86 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 101/310，剩余 209；其中 96 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 214 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 102/310，剩余 208；其中 97 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 213 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -317,3 +317,14 @@ Ker 的隔离桥接测试配置启用真实 `CONFIG_NET_ACT_MIRRED=y`，native f
 Ker 测试适配层为原版 iproute2 接通现有原生 NETLINK_XFRM 通路，并让显式 UDP protocol17 使用已有 native UDP socket 路径；协议、路由、ICMPv6、MTU 和 XFRM 行为均来自未修改的 Linux。每接口 proc 读取仅接受一个 IFNAMSIZ 范围内的接口名，原生缺失接口和路径越界分别返回真实 ENOENT 与显式 EOPNOTSUPP。新增实际 `CONFIG_XFRM_USER`，不伪造策略或计数。固定 iproute2 的 XFRM dump 为文本，观察器保留其真实原始输出，验证策略从无到 block 再删除。
 
 plain bridge preload 复用已有的 host/native mixed poll/select 实现，支持原版 traceroute6 的多个 UDP socket；同一 native fixture 中的 IPv6 UDP17 控制实测超时、独立/同时就绪、EBADF 与 EINTR，并在缺失后端时拒绝 host socket 回退。原版结束后必须恢复 MTU、双栈 forwarding，清理 VRF、地址、路由和 XFRM policy，所有 native socket/缓冲及 worker 正常退出。完整 profile 包含16个 bridge/VRF 原版入口与两个 realtime ABI 控制，迁移计数继续与发布后 CI/review 资格分开核对。
+
+
+## 完整 IGMP 源过滤入口
+
+完整未修改的 `forwarding/bridge_igmp.sh` 执行全部14个默认函数，保留15行原版结果、775条原版命令、322次 JSON MDB 查询、3次文本 MDB 查询和14次显式组删除。IGMPv2 的实际 autojoin/leave 由 Linux 产生；IGMPv3 的32个原版 Mausezahn 控制报文及51个 UDP 数据探测逐帧绑定真实 native AF_PACKET 发送记录。报文源接口/MAC、IPv4/IGMP checksum、原版报告字节、组地址和 UDP 端口/64字节负载必须符合原版命令，不用原版 OK 标签替代流量证据。
+
+独立合同逐个验证每次报告后原版实际查询处的 wildcard INCLUDE/EXCLUDE 模式、完整 source list、正值/零 timer、每个 S,G 的 blocked 标志，以及最终自动添加条目的 `added_by_star_ex`。中间准备状态同样必须成立，不能仅验证最终状态。保留原版一秒交付等待、三秒 BLOCK 到期、五秒 EXCLUDE 转换与 IGMPv2 加入/离开等待；不对正值剩余 timer 规定固定数值。最后一个场景要求两个真实 native bridge 端口具有各自的组/源状态，按原版顺序分别清理。
+
+原版 `v3inc_is_exclude_test` 的调用者没有局部 X/Y 数组，准备函数中的局部数组不会传出，因此该场景实际只发送 source100 的 UDP 转发探测。保留原版代码，明确不声称其执行了 X/Y 源流量；独立原生 MDB 合同仍检查其 active{1,2}/blocked{20,21} 状态。其余全部实际 UDP 探测要求原版接收端 flower/gact 计数精确为1或0，正向计数的字节数为92，且实际源端、桥端口和接收端路径计数相符。异步交付在原版后续 TC 查询处判断，不要求发送调用刚返回时已交付。
+
+Ker 仅增加私有只读 SG 状态观察与完整入口接线，协议行为来自未修改的 pinned Linux；不增加协议替代实现或伪造状态。完整19项 bridge profile 包含17个原版入口与两个 realtime ABI 控制。实际原生报告投影以原报告 SHA-256 绑定，保留全部775条原版命令及合同消费的真实状态；单元测试拒绝任意一次 MDB 查询缺失 wildcard、错误源集合/标志/timer、假转发、缩短等待、缺失报文与清理/资源泄漏。发布后 hosted CI/review 资格仍须单独核对。
