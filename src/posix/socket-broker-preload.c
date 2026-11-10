@@ -575,7 +575,7 @@ int ker_sb_preload_owner_pump(void)
         --owner_pump_depth;
         char message[128];
         int length = snprintf(message, sizeof(message),
-            "ker admission pump callback status=%d\n", result);
+            "ker owner pump callback status=%d\n", result);
         if (length > 0) (void)syscall(SYS_write, STDERR_FILENO, message,
             (size_t)length);
         owner_pump_failure = result < 0 && result >= -4095 ? result : -EPROTO;
