@@ -42,7 +42,7 @@ if(BUILD_TESTING)
         "${PROJECT_SOURCE_DIR}/tests/posix/c15-admission-test-runtime.c"
         "${PROJECT_SOURCE_DIR}/src/posix/ff-admission-channel.c")
     target_compile_definitions(ker-posix-member-census-test-runtime PRIVATE
-        KER_C15_TEST_ACK_LOSS=1)
+        KER_C15_TEST_ACK_LOSS=1 KER_C15_DIAGNOSTIC_TRACE=1)
     target_include_directories(ker-posix-member-census-test-runtime PRIVATE
         "${PROJECT_SOURCE_DIR}/src/posix")
     file(READ "${CMAKE_CURRENT_BINARY_DIR}/member-census-test-exports.map"
@@ -73,7 +73,7 @@ if(BUILD_TESTING)
     target_compile_features(ker-c15-admission-map-owner PRIVATE c_std_11)
     target_compile_options(ker-c15-admission-map-owner PRIVATE -Wall -Wextra -Werror)
     target_compile_definitions(ker-c15-admission-map-owner PRIVATE
-        KER_C15_TEST_DELAY_PREPARED_REPLY=1)
+        KER_C15_TEST_DELAY_PREPARED_REPLY=1 KER_C15_DIAGNOSTIC_TRACE=1)
     target_link_libraries(ker-c15-admission-map-owner PRIVATE
         ker::ipc PkgConfig::DPDK "${ker_controller_ring_pmd}" Threads::Threads)
 
@@ -88,7 +88,7 @@ if(BUILD_TESTING)
             --owner "$<TARGET_FILE:ker-c15-admission-map-owner>")
     set_tests_properties(native-c15-admission-tap-smoke PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;admission;original-linux;tap;wire"
-        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;KER_C15_STAGE_TRACE=1")
 
     add_test(NAME native-c16-harness-wait-line-observer
         COMMAND "${Python3_EXECUTABLE}"

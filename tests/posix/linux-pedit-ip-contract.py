@@ -471,9 +471,10 @@ def validate_evidence(report):
     validate_boundaries(report,rows)
 
 
-def validate_boundaries(report, rows, *, source_hashes=None, expected_sends=80, expected_bytes=11520, observation_key='pedit_after'):
+def validate_boundaries(report, rows, *, source_hashes=None, expected_sends=80, expected_bytes=11520, observation_key='pedit_after',
+                        timeout_field='original_tc_hit_timeout_ms', hit_timeout_ms=1000):
     source_hashes = SOURCE_HASHES if source_hashes is None else source_hashes
-    require(report['source_hashes'] == source_hashes and report['original_tc_hit_timeout_ms'] == 1000,
+    require(report['source_hashes'] == source_hashes and report[timeout_field] == hit_timeout_ms,
             'pinned original PEDIT/helper source or busywait changed')
     tools = report['iproute2']
     require(tools['version'] == '6.12.0' and tools['archive_sha256'] ==

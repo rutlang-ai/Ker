@@ -55,6 +55,7 @@ def main():
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
     parser.add_argument('--family', choices=(4, 6), type=int, required=True)
     parser.add_argument('--inside', action='store_true')
+    parser.add_argument('--finalize-trace', action='store_true')
     args = parser.parse_args()
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
@@ -80,6 +81,7 @@ def main():
     report = dict(status='FAIL', source=relative, revision=revision, family=args.family,
                   source_hashes=hashes, source_symlinks=symlinks, kernel_fingerprint=manifest['fingerprint'],
                   binary_sha256=hashlib.sha256(args.binary.read_bytes()).hexdigest(),
+                  finalize_trace_enabled=args.finalize_trace,
                   adapter_sha256=hashlib.sha256(args.library.read_bytes()).hexdigest())
     try:
         for command in (['ip', 'link', 'set', 'lo', 'up'],
@@ -91,6 +93,8 @@ def main():
         eal = (f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m 64 '
                f'-d {shlex.quote(str(args.pmd_dir / "librte_net_tap.so"))} --vdev=net_tap0,iface=kerpeer,remote=kerlink')
         environment = {k: v for k, v in os.environ.items() if k != 'LD_PRELOAD' and not k.startswith('KER_')}
+        if args.finalize_trace:
+            environment['KER_TCP_AO_FINALIZE_TRACE'] = '1'
         with tempfile.TemporaryDirectory(prefix='linux-tcp-ao-', dir='/dev/shm') as temporary:
             stats = Path(temporary) / 'stats.json'
             result = _runner.run_program([sys.executable, str(args.launcher), '--library', str(args.library),

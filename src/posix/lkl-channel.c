@@ -48,6 +48,27 @@ _Static_assert(LKL_VIRTIO_NET_F_CSUM == 0 && LKL_VIRTIO_NET_F_HOST_TSO4 == 11 &&
 static atomic_bool ready;
 static struct lkl_netdev *device;
 static int startup_fd = -1;
+
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+static void ker_tcp_ao_finalize_trace(const char *stage, const char *edge)
+{
+    int saved_errno = errno;
+    const char *enabled = getenv("KER_TCP_AO_FINALIZE_TRACE");
+    if (enabled && strcmp(enabled, "1") == 0) {
+        struct timespec now = {0};
+        (void)clock_gettime(CLOCK_MONOTONIC, &now);
+        char line[256];
+        int length = snprintf(line, sizeof(line),
+            "KER_TCP_AO_FINALIZE_TRACE pid=%ld tid=%ld mono_ns=%lld stage=%s edge=%s errno=%d\n",
+            (long)getpid(), (long)syscall(SYS_gettid),
+            (long long)now.tv_sec * 1000000000LL + now.tv_nsec,
+            stage, edge, saved_errno);
+        if (length > 0 && (size_t)length < sizeof(line))
+            (void)syscall(SYS_write, STDERR_FILENO, line, (size_t)length);
+    }
+    errno = saved_errno;
+}
+#endif
 static unsigned int drain_timeout = 5000;
 static char release[65];
 enum native_finalize_state {
@@ -601,11 +622,27 @@ int ker_native_finalize_finish(int *finalize_result_out)
         device = NULL;
     }
     ker_mtu_control_close_all();
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("lkl_sys_halt", "before");
+#endif
     long halted = lkl_sys_halt();
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("lkl_sys_halt", "after");
+    ker_tcp_ao_finalize_trace("lkl_cleanup", "before");
+#endif
     lkl_cleanup();
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("lkl_cleanup", "after");
+#endif
     if (!drained && halted) drained = halted < 0 ? (int)halted : -EIO;
     const char *status = drained ? "KER_NATIVE_INCOMPLETE\n" : "KER_NATIVE_DONE\n";
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("startup_status_write", "before");
+#endif
     (void)syscall(SYS_write, startup_fd, status, strlen(status));
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("startup_status_write", "after");
+#endif
     syscall(SYS_close, startup_fd);
     startup_fd = -1;
     pthread_mutex_lock(&finalize_lock);
@@ -618,17 +655,46 @@ int ker_native_finalize_finish(int *finalize_result_out)
 
 int ker_native_finalize(void)
 {
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("rx_consumer_check", "before");
+#endif
     /* The legacy destructor cannot safely invoke an application callback.
      * An opted-in consumer must be settled by ker_posix_run first. */
-    if (ker_rx_decision_consumer_registered()) return -EBUSY;
+    bool consumer_registered = ker_rx_decision_consumer_registered();
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("rx_consumer_check", "after");
+#endif
+    if (consumer_registered) return -EBUSY;
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("ingress_prepare", "before");
+#endif
     int ingress = ker_posix_ff_ingress_controller_prepare_runtime_shutdown();
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("ingress_prepare", "after");
+#endif
     if (ingress) return ingress;
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("admission_shutdown", "before");
+#endif
     ker_ff_admission_task_runtime_shutdown();
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("admission_shutdown", "after");
+    ker_tcp_ao_finalize_trace("prepare", "before");
+#endif
     int prepare_error = 0;
     int prepared = ker_native_finalize_prepare(NULL, NULL, &prepare_error);
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("prepare", "after");
+#endif
     if (prepared) return prepared;
     int finish_error = 0;
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("finish", "before");
+#endif
     int finished = ker_native_finalize_finish(&finish_error);
+#ifdef KER_TCP_AO_FINALIZE_DIAGNOSTIC
+    ker_tcp_ao_finalize_trace("finish", "after");
+#endif
     if (finished) return finished;
     return prepare_error ? prepare_error : finish_error;
 }

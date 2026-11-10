@@ -43,6 +43,39 @@ struct ker_ff_admission_wire {
 _Static_assert(sizeof(struct ker_ff_admission_wire) == 100,
 	"C15 admission channel wire ABI");
 
+/* C15-only opt-in diagnosis trace; this translation unit is also built into
+ * ordinary Ker targets, where tracing compiles away. */
+#ifdef KER_C15_DIAGNOSTIC_TRACE
+static void c15_stage_trace(const char *event,
+			    const struct ker_ff_admission_wire *wire, int result)
+{
+	int saved_errno = errno;
+	const char *path = getenv("KER_C15_STAGE_TRACE");
+	if (!path || !*path) goto out;
+	struct timespec now;
+	if (clock_gettime(CLOCK_MONOTONIC, &now)) goto out;
+	uint64_t now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;
+	char line[256];
+	int length = snprintf(line, sizeof(line),
+		"time_ns=%llu pid=%ld event=%s command=%u command_id=%llu packet_id=%u deadline_ns=%llu result=%d\n",
+		(unsigned long long)now_ns, (long)syscall(SYS_getpid), event,
+		wire ? (unsigned)wire->command : 0U,
+		(unsigned long long)(wire ? wire->command_id : 0),
+		wire ? wire->packet_id : 0U,
+		(unsigned long long)(wire ? wire->deadline_ns : 0), result);
+	if (length <= 0 || (size_t)length >= sizeof(line)) goto out;
+	long fd = syscall(SYS_openat, AT_FDCWD, path,
+		O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+	if (fd < 0) goto out;
+	(void)syscall(SYS_write, (int)fd, line, (size_t)length);
+	(void)syscall(SYS_close, (int)fd);
+out:
+	errno = saved_errno;
+}
+#else
+#define c15_stage_trace(event, wire, result) ((void)0)
+#endif
+
 struct ker_ff_admission_channel {
 	int fd;
 	int peer_pidfd;
@@ -688,6 +721,8 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 		}
 		return received;
 	}
+	if (command.command == KER_FF_ADMISSION_ADMIT)
+		c15_stage_trace("owner-admit-received", &command, 0);
 	if (command.command == KER_FF_ADMISSION_RETIRE ||
 	    command.command == KER_FF_ADMISSION_REARM) {
 		int is_retire = command.command == KER_FF_ADMISSION_RETIRE;
@@ -727,6 +762,7 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 		int created = 0, allowed = 0, status = 0;
 		struct ker_ff_admission_key key;
 		memcpy(&key, &command.key, sizeof(key));
+		c15_stage_trace("owner-admit-dispatch", &command, 0);
 		if (channel->owner_window_state != 1) {
 			response_for_command(channel, &command, KER_FF_ADMISSION_RESULT, -ENOTCONN);
 			return send_pending_response(channel);
@@ -747,12 +783,16 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 			now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;
 			if (now_ns >= command.deadline_ns) status = -ETIMEDOUT;
 			else {
+				c15_stage_trace("owner-admit-before-live", &command, 0);
 				int live = ops->context_live ?
 					ops->context_live(ops->context) : ops->active(ops->context);
+				c15_stage_trace("owner-admit-after-live", &command, live);
 				if (live <= 0) status = live < 0 ? live : -ENOTCONN;
 			}
 			if (!status) {
+				c15_stage_trace("owner-admit-before-map", &command, 0);
 				allowed = ops->admit(&key, &created, ops->context);
+				c15_stage_trace("owner-admit-after-map", &command, allowed);
 				if ((allowed != 0 && allowed != 1) ||
 				    (created != 0 && created != 1) || (!allowed && created))
 					status = -EPROTO;
@@ -767,6 +807,7 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 				}
 			}
 		}
+		c15_stage_trace("owner-admit-decision", &command, status);
 		channel->current = command;
 		channel->owner_last_command_id = command.command_id;
 		channel->current.allowed = created ? 1U : status ? 0U : (uint32_t)allowed;
@@ -776,7 +817,10 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 		response_from_current(channel, KER_FF_ADMISSION_RESULT, status);
 		channel->response.allowed = channel->current.allowed;
 		channel->response.created = channel->current.created;
-		return owner_send_initial_result(channel, ops);
+		c15_stage_trace("owner-admit-before-result-send", &command, status);
+		int send_result = owner_send_initial_result(channel, ops);
+		c15_stage_trace("owner-admit-after-result-send", &command, send_result);
+		return send_result;
 	}
 	if (command.command != KER_FF_ADMISSION_CANCEL &&
 	    command.command != KER_FF_ADMISSION_CANCEL_UNSENT &&

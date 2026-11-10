@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh`、`bridge_igmp.sh`、`bridge_mld.sh`、`bridge_mdb.sh`、`bridge_mdb_max.sh`、`pedit_ip.sh`、`pedit_l4port.sh`、`pedit_dsfield.sh`、`tc_flower_port_range.sh`、`tc_flower_l2_miss.sh`、`tc_flower_cfm.sh`、`tc_chains.sh` 完整入口本地通过；其余 76 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh`、`bridge_igmp.sh`、`bridge_mld.sh`、`bridge_mdb.sh`、`bridge_mdb_max.sh`、`pedit_ip.sh`、`pedit_l4port.sh`、`pedit_dsfield.sh`、`tc_flower_port_range.sh`、`tc_flower_l2_miss.sh`、`tc_flower_cfm.sh`、`tc_chains.sh`、`skbedit_priority.sh` 完整入口本地通过；其余 75 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 112/310，剩余 198；其中 107 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 203 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 113/310，剩余 197；其中 108 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 202 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -424,3 +424,14 @@ Ker 仅增加私有只读 SG 状态观察与完整入口接线，协议行为来
 Ker 只增加实际 `tc -j -s chain show` 前后观测，核验原生 chain ID、template key、显式引用与规则代次，保留原版真实 `tc -j` / `tc help` 能力探测和 1000ms busywait。原始脚本的硬件分支在 native veth 上不可用：必须记录真实 native `ethtool -k veth0`、前后 JSON feature 与原版 `INFO: Could not test offloaded functionality`；不声称硬件 offload 已迁移或伪造 feature。所有执行的规则和动作均来自 Linux flower/GACT，无 Ker 协议替代，本批不修改上游源码、内核配置或 C runtime。共享两口清理合同参数保留 CFM 原有默认值。
 
 独立负向测试拒绝错误 goto、错误命中/字节/drop、模板键/errno、丢失 chain/规则/输入帧、虚构硬件能力、native 路径与资源清理；未指定的 IP ID/TOS/TTL/protocol 和填充仍可变化。native ingress 分类与链路窗口不等同 socket 接收或出口抓包。最初完整原版四项 OK 但合同待接入的两份 capture 均保留为 FAIL；只有新合同实际运行的 PASS 报告作为 fixture 来源。hosted CI/review 与最终提交单独核验。
+
+
+## 完整 SKBEDIT 优先级与 PRIO 分类入口
+
+完整未修改的 `forwarding/skbedit_priority.sh` 保留 IPv4 基线 ping，以及 ingress/egress 两处、优先级0–7的全部16个场景。原版每场景10个 UDP 包、20ms间隔、100字节载荷和2000ms计数等待均保持。独立 profile 启用原版 `CONFIG_NET_ACT_SKBEDIT=y` 与 `CONFIG_NET_SCH_PRIO=y`，实际规则、priority metadata、八个 FIFO band 和分类均由导入 Linux 处理。
+
+独立合同核对16次真实 flower/SKBEDIT 安装和删除、原版优先级值与 pipe 动作、PRIO 的八 band 反序映射及所有 invisible child qdisc。每个原版发送前后的查询必须与 native 只读快照按因果顺序单调一致，目标 `10:(8-prio)` band 和 action 均须新增至少10包及对应字节。真实背景流量允许原版的额外计数；不固定为某次运行的计数，也不添加等待或缩短原版计数窗口。
+
+160个实际 native AF_PACKET 输入帧（共22720字节）逐一绑定源接口/MAC、目的MAC、IPv4地址、UDP54321/12345端口、长度和IPv4 checksum，双VRF/veth/PVID1桥的实际路径分别核对。输入注入记录与真实PRIO计数证明原版分类判断点，不宣称修改后的线缆抓包、应用socket收包或优先级调度公平性。未知VRF/缺失后端必须拒绝，规则、qdisc、桥、VRF、地址和路由清理及正常退出后的零资源均单独核对。完整30项bridge profile包括28个原版入口和两个realtime ABI控制；本地结果与后续hosted CI/review资格分开记录。
+
+该配置的完整30项native profile均通过，无失败或跳过；Python全量246项通过，最终优先级合同文件的3项测试另行通过（包括515个反例、未指定载荷和合法延迟分类对照），CI辅助23项通过。内核fingerprint为 `d6518d9be5950317be70e8283ec51ada767484ad21f6a2bdbb57a368fe1236ba`。
