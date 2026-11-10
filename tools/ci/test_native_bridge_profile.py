@@ -1,4 +1,4 @@
-"""All twenty-three complete bridge entries and both native realtime ABI controls are mandatory."""
+"""All twenty-four complete bridge entries and both native realtime ABI controls are mandatory."""
 import json
 from pathlib import Path
 import subprocess
@@ -37,6 +37,7 @@ class BridgeProfileTests(unittest.TestCase):
             'pedit_ip.sh': 'pedit-ip-transcript.json',
             'pedit_l4port.sh': 'pedit-l4port-transcript.json',
             'pedit_dsfield.sh': 'pedit-dsfield-transcript.json',
+            'tc_flower_port_range.sh': 'tc-flower-port-range-transcript.json',
         }
         control = native_tests.LINUX_BRIDGE_REALTIME_TEST
         packet_control = native_tests.LINUX_BRIDGE_PACKET_REALTIME_TEST
@@ -93,7 +94,7 @@ class BridgeProfileTests(unittest.TestCase):
                         elif mutation == 'missing-phase':
                             if program == 'ip6_forward_instats_vrf.sh':
                                 report['commands'] = [r for r in report['commands'] if r['arguments'][:1] != ['xfrm']]
-                            elif program in ('pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh'):
+                            elif program in ('pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh'):
                                 report['commands'] = [r for r in report['commands'] if r['tool'] != 'tc']
                             elif program == 'router_bridge_vlan_upper_pvid.sh':
                                 report['commands'] = [r for r in report['commands'] if 'pvid_after' not in r]
@@ -109,7 +110,7 @@ class BridgeProfileTests(unittest.TestCase):
                             report['cleanup_state']['links'].append(dict(ifname='router' if program == 'ip6_forward_instats_vrf.sh' else 'br0' if program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh', 'bridge_igmp.sh', 'bridge_mld.sh', 'bridge_mdb.sh', 'bridge_mdb_max.sh') else 'br1'))
                         elif mutation == 'missing-proof' and program == 'ip6_forward_instats_vrf.sh':
                             report['mixed_poll_control']['returncode'] = 1
-                        elif mutation == 'missing-proof' and program in ('pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh'):
+                        elif mutation == 'missing-proof' and program in ('pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh'):
                             report['packet_trace'] = []
                         elif mutation == 'missing-proof' and program == 'bridge_mdb_host.sh':
                             next(r for r in report['commands'] if r['tool'] == 'bridge').pop('mdb_after')
