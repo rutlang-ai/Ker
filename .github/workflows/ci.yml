@@ -340,6 +340,33 @@ jobs:
           fi
           python3 tools/ci/native_tests.py native-datapath-preflight "$RUNNER_TEMP/dpdk-install"
 
+      - name: Run exact native session migration matrix
+        if: steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          free_pages="$(awk '/^HugePages_Free:/ {print $2}' /proc/meminfo)"
+          if (( free_pages < 64 )); then
+            echo "Session matrix needs at least 64 free 2 MiB hugepages; available: ${free_pages}." >&2
+            exit 1
+          fi
+          worker="$(find build-native-on -type f -name ker-io-session -perm -u+x -print -quit)"
+          library="$(find build-native-on -type f -name 'libker-posix.so*' -print -quit)"
+          app="$(find build-native-on -type f -name ker-exception-services-test -perm -u+x -print -quit)"
+          plugin_dir="$(python3 tools/ci/native_tests.py dpdk-plugin-dir "$RUNNER_TEMP/dpdk-install" \
+            librte_mempool_ring.so librte_net_ring.so)"
+          test -n "$worker" && test -n "$library" && test -n "$app" && test -n "$plugin_dir"
+          test -r "$plugin_dir/librte_mempool_ring.so"
+          test -r "$plugin_dir/librte_net_ring.so"
+          set -o pipefail
+          timeout --signal=TERM --kill-after=20s 900s \
+            python3 tests/posix/session-native-packets.py \
+              --worker "$worker" --tool tools/ker-session.py --library "$library" \
+              --app "$app" --dpdk-plugin-dir "$plugin_dir" --huge-dir /dev/hugepages \
+              --handoff-negative-profiles 2>&1 | tee "$RUNNER_TEMP/session-native-packets.log"
+          python3 tools/ci/native_tests.py verify-session-profiles \
+            "$RUNNER_TEMP/session-native-packets.log" tests/posix/session-native-packets.py
+
       - name: Run the full native CTest graph with JUnit accounting
         if: steps.native.outputs.present == 'true'
         shell: bash
@@ -385,6 +412,7 @@ jobs:
         shell: bash
         env:
           KER_DPDK_PREFIX: ${{ runner.temp }}/dpdk-install
+          KER_MPTCP_IO_TRACE: ${{ runner.temp }}/native-mptcp-connect-io-trace.jsonl
         run: |
           set -euo pipefail
           python3 tools/build-native-linux.py \
@@ -409,6 +437,37 @@ jobs:
             ip link set lo up
             exec python3 tools/ci/native_tests.py connect-profile "$1" "$2"
           ' _ build-native-connect "$RUNNER_TEMP/native-connect-ctest.xml"
+
+      - name: Capture MPTCP connect diagnostic provenance
+        if: always() && steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/native-mptcp-connect-diagnostic"
+          set +e
+          python3 tools/ci/capture_mptcp_io_provenance.py \
+            --build-dir build-native-connect --output-dir "$output"
+          capture_status=$?
+          git rev-parse HEAD > "$output/source-head.txt"
+          exit "$capture_status"
+
+      - name: Validate MPTCP connect diagnostic artifacts
+        if: always() && steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -u
+          output="$RUNNER_TEMP/native-mptcp-connect-diagnostic"
+          args=(--trace "$RUNNER_TEMP/native-mptcp-connect-io-trace.jsonl"
+                --status "$output/diagnostic-status.json"
+                --provenance-status "$output/provenance-status.json")
+          for report in build-native-connect/linux-original-mptcp-connect-*.json; do
+            [[ -f "$report" ]] && args+=(--report "$report")
+          done
+          for text_file in build-native-connect/linux-original-mptcp-connect-*.stdout \
+                           build-native-connect/linux-original-mptcp-connect-*.stderr; do
+            [[ -f "$text_file" ]] && args+=(--scan-text "$text_file")
+          done
+          python3 tools/ci/mptcp_io_trace_status.py "${args[@]}"
 
       - name: Run the complete original MPTCP join fault matrix
         if: steps.native.outputs.present == 'true'
@@ -770,33 +829,6 @@ jobs:
           python3 tools/ci/native_tests.py rpath-profile \
             build-native-rpath "$RUNNER_TEMP/native-rpath-ctest.xml"
 
-      - name: Run exact native session migration matrix
-        if: steps.native.outputs.present == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          free_pages="$(awk '/^HugePages_Free:/ {print $2}' /proc/meminfo)"
-          if (( free_pages < 64 )); then
-            echo "Full CTest run left fewer than 64 free 2 MiB hugepages for the session matrix: ${free_pages}." >&2
-            exit 1
-          fi
-          worker="$(find build-native-on -type f -name ker-io-session -perm -u+x -print -quit)"
-          library="$(find build-native-on -type f -name 'libker-posix.so*' -print -quit)"
-          app="$(find build-native-on -type f -name ker-exception-services-test -perm -u+x -print -quit)"
-          plugin_dir="$(python3 tools/ci/native_tests.py dpdk-plugin-dir "$RUNNER_TEMP/dpdk-install" \
-            librte_mempool_ring.so librte_net_ring.so)"
-          test -n "$worker" && test -n "$library" && test -n "$app" && test -n "$plugin_dir"
-          test -r "$plugin_dir/librte_mempool_ring.so"
-          test -r "$plugin_dir/librte_net_ring.so"
-          set -o pipefail
-          timeout --signal=TERM --kill-after=20s 900s \
-            python3 tests/posix/session-native-packets.py \
-              --worker "$worker" --tool tools/ker-session.py --library "$library" \
-              --app "$app" --dpdk-plugin-dir "$plugin_dir" --huge-dir /dev/hugepages \
-              --handoff-negative-profiles 2>&1 | tee "$RUNNER_TEMP/session-native-packets.log"
-          python3 tools/ci/native_tests.py verify-session-profiles \
-            "$RUNNER_TEMP/session-native-packets.log" tests/posix/session-native-packets.py
-
       - name: Run native Python migration unit tests
         if: steps.native.outputs.present == 'true'
         run: |
@@ -864,6 +896,7 @@ jobs:
             build-native-bridge/linux-original-forwarding-bridge-port-isolation.json
             build-native-bridge/linux-original-forwarding-bridge-vlan-unaware.json
             build-native-bridge/linux-original-forwarding-bridge-vlan-aware.json
+            build-native-bridge/linux-original-forwarding-bridge-locked-port.json
             ${{ runner.temp }}/native-xt-string-ctest.xml
             ${{ runner.temp }}/native-linux-xt-string-selftests-build/native-linux.json
             build-native-xt-string/linux-original-netfilter-xt-string.json
@@ -882,6 +915,8 @@ jobs:
             ${{ runner.temp }}/native-connect-ctest.xml
             ${{ runner.temp }}/native-linux-connect-build/native-linux.json
             build-native-connect/linux-original-mptcp-connect-*
+            ${{ runner.temp }}/native-mptcp-connect-io-trace.jsonl
+            ${{ runner.temp }}/native-mptcp-connect-diagnostic/
             ${{ runner.temp }}/native-sockopt-ctest.xml
             ${{ runner.temp }}/native-linux-sockopt-build/native-linux.json
             ${{ runner.temp }}/native-linux-mptcp-kunit/linux-original-mptcp-kunit.json

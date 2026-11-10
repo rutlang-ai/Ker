@@ -2,6 +2,7 @@
 #include <netinet/in.h>
 #include <net/if.h>
 #include "linux-mptcp-socket-wire.h"
+#include "linux-mptcp-io-trace.h"
 #include "linux-selftest-runtime.h"
 #include <dlfcn.h>
 #include <errno.h>
@@ -44,6 +45,7 @@
  * kernel. Only the harness transport runs in the host; all IP socket syscalls
  * below go through the real POSIX facade. No fork occurs in the kernel owner. */
 struct client { int host, native, ns, input, upload, retire;
+    int io_trace_peek; unsigned io_trace_port;
 #ifdef KER_BRIDGE_PACKET_SELFTEST
     int packet;
 #endif
@@ -438,7 +440,13 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
             int64_t position; memcpy(&position, data, sizeof(position));
             if (position < 0) { errno = EINVAL; return -1; }
             off_t offset = (off_t)position;
+            if (client->io_trace_peek) ker_mptcp_io_trace("native", "sendfile", "begin",
+                client->pid, client->io_trace_port, fd, 0, m->a, -1, 0);
             ssize_t result = sendfile(fd, client->input, &offset, m->a);
+            int saved_errno = errno;
+            if (client->io_trace_peek) ker_mptcp_io_trace("native", "sendfile", "end",
+                client->pid, client->io_trace_port, fd, 0, m->a, result, result < 0 ? saved_errno : 0);
+            errno = saved_errno;
             atomic_fetch_add(&sendfile_calls, 1);
             if (result < 0) return -1;
             atomic_fetch_add(&sent_bytes, (unsigned long)result);
@@ -562,7 +570,13 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     }
     case MS_READ: {
         if (m->a > MS_MAX) { errno = EMSGSIZE; return -1; }
+        if (client->io_trace_peek) ker_mptcp_io_trace("native", "read", "begin",
+            client->pid, client->io_trace_port, fd, 0, m->a, -1, 0);
         ssize_t result = read(fd, data, m->a);
+        int saved_errno = errno;
+        if (client->io_trace_peek) ker_mptcp_io_trace("native", "read", "end",
+            client->pid, client->io_trace_port, fd, 0, m->a, result, result < 0 ? saved_errno : 0);
+        errno = saved_errno;
         if (result >= 0) { m->length = (uint32_t)result; atomic_fetch_add(&received_bytes, (unsigned long)result); }
         atomic_fetch_add(&reads_count, 1); return result;
     }
@@ -652,7 +666,13 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
     case MS_POLL: {
         if (m->a > 50) { errno = EINVAL; return -1; }
         struct pollfd p = {.fd = fd, .events = (short)m->b};
-        long result = poll(&p, 1, (int)m->a); m->b = (uint32_t)p.revents; return result;
+        if (client->io_trace_peek) ker_mptcp_io_trace("native", "poll", "begin",
+            client->pid, client->io_trace_port, fd, (int)m->b, m->a, -1, 0);
+        long result = poll(&p, 1, (int)m->a);
+        int saved_errno = errno;
+        if (client->io_trace_peek) ker_mptcp_io_trace("native", "poll", "end",
+            client->pid, client->io_trace_port, fd, (int)p.revents, m->a, result, result < 0 ? saved_errno : 0);
+        errno = saved_errno; m->b = (uint32_t)p.revents; return result;
     }
     case MS_SENDMSG:
     case MS_RECVMSG: {
@@ -666,7 +686,14 @@ static long dispatch(struct client *client, struct ms_message *m, unsigned char 
         struct msghdr msg = {.msg_iov = &iov, .msg_iovlen = 1,
             .msg_control = io.control ? data + sizeof(io) + io.data : NULL, .msg_controllen = io.control,
             .msg_name = io.name ? data + sizeof(io) + io.data + io.control : NULL, .msg_namelen = io.name};
+        int trace_peek = !sending && client->io_trace_peek && (io.flags & MSG_PEEK);
+        if (trace_peek) ker_mptcp_io_trace("native", "recvmsg", "begin",
+            client->pid, client->io_trace_port, fd, (int)io.flags, io.data, -1, 0);
         ssize_t result = sending ? sendmsg(fd, &msg, (int)io.flags) : recvmsg(fd, &msg, (int)io.flags);
+        int saved_errno = errno;
+        if (trace_peek) ker_mptcp_io_trace("native", "recvmsg", "end",
+            client->pid, client->io_trace_port, fd, (int)io.flags, io.data, result, result < 0 ? saved_errno : 0);
+        errno = saved_errno;
 #ifdef KER_BRIDGE_PACKET_SELFTEST
         if (sending) trace_bridge_packet(client, iov.iov_base, iov.iov_len, result, msg.msg_name, msg.msg_namelen);
 #endif
@@ -785,6 +812,8 @@ static int start_client(int host, int native, int ns, pid_t pid)
         client->proc_path[0] = '\0';
 #endif
         client->uploaded = 0; client->input_size = 0; client->pid = pid;
+        client->io_trace_port = 0;
+        client->io_trace_peek = ker_mptcp_trace_peek_scope(pid, &client->io_trace_port);
         atomic_store_explicit(&client->finished, 0, memory_order_release);
         if (native >= 0) mark_active(client);
         error = created ? pthread_cond_init(&client->work, NULL) : 0;
@@ -801,6 +830,8 @@ static int start_client(int host, int native, int ns, pid_t pid)
 }
 int main(int argc, char **argv)
 {
+    ker_mptcp_io_trace("server", "lifecycle", "start", (pid_t)syscall(SYS_getpid), 0,
+        -1, 0, 0, 0, 0);
     setvbuf(stdout, NULL, _IONBF, 0);
     if (argc != 3 || strlen(argv[1]) >= sizeof(((struct sockaddr_un *)0)->sun_path)) return 2;
     long (*call)(unsigned, const unsigned long[6]) = dlsym(RTLD_DEFAULT, "ker_linux_selftest_call");
@@ -944,5 +975,8 @@ int main(int argc, char **argv)
         atomic_load(&diag_sends), atomic_load(&diag_receives), atomic_load(&max_live),
         atomic_load(&raw_count), atomic_load(&filter_sets), atomic_load(&filter_gets),
         atomic_load(&join_syn_rx), atomic_load(&join_ack_rx), atomic_load(&sendfile_calls), atomic_load(&imported_files), extra);
-    return fclose(stats) ? 9 : 0;
+    int stats_result = fclose(stats);
+    ker_mptcp_io_trace("server", "lifecycle", "stop", (pid_t)syscall(SYS_getpid), 0,
+        -1, 0, 0, stats_result ? 9 : 0, errno);
+    return stats_result ? 9 : 0;
 }

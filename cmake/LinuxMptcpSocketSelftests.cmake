@@ -10,8 +10,25 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
     add_dependencies(ker-linux-mptcp-socket-server ker-posix ker-io-worker ker-app)
     add_executable(ker-linux-mptcp-socket-control tests/posix/linux-mptcp-socket-control.c
         $<TARGET_OBJECTS:ker-linux-mptcp-socket-proxy>)
-    target_link_options(ker-linux-mptcp-socket-control PRIVATE -Wl,--wrap=socket -Wl,--wrap=close)
+    target_link_options(ker-linux-mptcp-socket-control PRIVATE
+        -Wl,--wrap=socket -Wl,--wrap=close -Wl,--wrap=__read_chk)
     target_link_libraries(ker-linux-mptcp-socket-control PRIVATE ${CMAKE_DL_LIBS})
+    foreach(read_chk_mode static preload fallback)
+        add_executable(ker-linux-mptcp-read-chk-${read_chk_mode}-contract tests/posix/linux-mptcp-read-chk-contract.c)
+        target_include_directories(ker-linux-mptcp-read-chk-${read_chk_mode}-contract PRIVATE "${ao_headers}")
+        target_compile_options(ker-linux-mptcp-read-chk-${read_chk_mode}-contract PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+        target_link_libraries(ker-linux-mptcp-read-chk-${read_chk_mode}-contract PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+        if(read_chk_mode STREQUAL preload)
+            target_compile_definitions(ker-linux-mptcp-read-chk-${read_chk_mode}-contract PRIVATE
+                KER_MPTCP_DIAG_PRELOAD=1 __wrap___read_chk=__read_chk)
+        elseif(read_chk_mode STREQUAL static)
+            target_link_options(ker-linux-mptcp-read-chk-${read_chk_mode}-contract PRIVATE -Wl,--wrap=__read_chk)
+        endif()
+        add_test(NAME linux-mptcp-read-chk-${read_chk_mode}-contract
+            COMMAND "$<TARGET_FILE:ker-linux-mptcp-read-chk-${read_chk_mode}-contract>")
+        set_tests_properties(linux-mptcp-read-chk-${read_chk_mode}-contract PROPERTIES TIMEOUT 10
+            LABELS "linux-upstream-control;mptcp")
+    endforeach()
     add_test(NAME linux-mptcp-fixture-shutdown
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-mptcp-fixture-shutdown.py"
             --server "$<TARGET_FILE:ker-linux-mptcp-socket-server>"
@@ -27,7 +44,7 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
         target_include_directories(ker-linux-mptcp-${program} PRIVATE "${ao_headers}" "${ker_native_source}/tools/include")
         target_compile_options(ker-linux-mptcp-${program} PRIVATE -Wno-error -UNDEBUG)
         target_link_libraries(ker-linux-mptcp-${program} PRIVATE ${CMAKE_DL_LIBS})
-        foreach(wrap socket bind connect listen accept getsockname getpeername setsockopt getsockopt read write ioctl recvmsg close)
+        foreach(wrap socket bind connect listen accept getsockname getpeername setsockopt getsockopt read __read_chk write ioctl recvmsg close)
             target_link_options(ker-linux-mptcp-${program} PRIVATE "-Wl,--wrap=${wrap}")
         endforeach()
         foreach(family 4 6)
@@ -45,11 +62,11 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
         endforeach()
     endforeach()
     set(diag_wraps socket bind connect listen accept getsockname getpeername setsockopt getsockopt
-        read write ioctl recvmsg sendmsg recvfrom sendto recv send fcntl shutdown poll close open fopen if_nametoindex if_indextoname)
+        read __read_chk write ioctl recvmsg sendmsg recvfrom sendto recv send fcntl shutdown poll close open fopen if_nametoindex if_indextoname)
     add_executable(ker-linux-mptcp-diag-connect "${mptcp_root}/mptcp_connect.c"
         $<TARGET_OBJECTS:ker-linux-mptcp-socket-proxy>)
     target_include_directories(ker-linux-mptcp-diag-connect PRIVATE "${ao_headers}")
-    target_compile_options(ker-linux-mptcp-diag-connect PRIVATE -Wno-error -UNDEBUG)
+    target_compile_options(ker-linux-mptcp-diag-connect PRIVATE -O2 -Wno-error -UNDEBUG)
     target_link_libraries(ker-linux-mptcp-diag-connect PRIVATE ${CMAKE_DL_LIBS})
     target_link_options(ker-linux-mptcp-diag-connect PRIVATE -Wl,--wrap=sendfile)
     add_library(ker-linux-mptcp-diag-preload SHARED tests/posix/linux-mptcp-socket-proxy.c)

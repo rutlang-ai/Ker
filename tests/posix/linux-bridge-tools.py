@@ -71,7 +71,8 @@ def packet_bridge_snapshot(env, traffic=False):
         raise RuntimeError('native MDB port observation warning: ' + result.stderr)
     state['links'] = json.loads(result.stdout)
     if traffic:
-        devices = ('veth0', 'veth3') if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' else ('veth3',)
+        devices = (('veth0','veth1','veth3') if os.environ.get('KER_FORWARDING_BRIDGE_LOCKED') == '1' else
+                   ('veth0', 'veth3') if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' else ('veth3',))
         filters = {}
         for device in devices:
             query = [os.environ['KER_FORWARDING_TC'], '-j', '-s', 'filter', 'show', 'dev', device, 'ingress']
@@ -121,7 +122,7 @@ def main():
             command = [os.environ['KER_FORWARDING_' + program.upper()], *arguments]
             record['vrf'] = objects[0]
             if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1':
-                record['unaware_before'] = packet_bridge_snapshot(env)
+                record['unaware_before'] = packet_bridge_snapshot(env, os.environ.get('KER_FORWARDING_BRIDGE_LOCKED') == '1')
             elif os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1':
                 record['isolation_before'] = packet_bridge_snapshot(env)
             elif os.environ.get('KER_FORWARDING_BRIDGE_LEARNING') == '1':
@@ -213,7 +214,8 @@ def main():
             if features.stderr: raise RuntimeError('native ethtool feature query warning: ' + features.stderr)
             record['ethtool_features_after'] = json.loads(features.stdout)
         if 'unaware_before' in record:
-            record['unaware_after'] = packet_bridge_snapshot(env, tool == 'mausezahn')
+            record['unaware_after'] = packet_bridge_snapshot(env, tool == 'mausezahn' or
+                os.environ.get('KER_FORWARDING_BRIDGE_LOCKED') == '1' and words[:2] == ['vrf','exec'])
         if 'isolation_before' in record:
             record['isolation_after'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         if observe_mdb_port:

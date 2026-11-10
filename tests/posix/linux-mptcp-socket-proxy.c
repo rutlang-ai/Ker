@@ -2,6 +2,7 @@
 #include <netinet/in.h>
 #include <net/if.h>
 #include "linux-mptcp-socket-wire.h"
+#include "linux-mptcp-io-trace.h"
 #include <errno.h>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -390,15 +391,49 @@ int __wrap_getsockopt(int fd, int level, int option, void *value, socklen_t *len
 ssize_t __wrap_read(int fd, void *buffer, size_t length)
 {
     if (!is_network(fd)) return syscall(SYS_read, fd, buffer, length);
+    unsigned port = 0;
+    int tracing = ker_mptcp_trace_peek_scope(0, &port);
+    if (tracing) ker_mptcp_io_trace("helper", "read", "begin", (pid_t)syscall(SYS_getpid), port,
+        fd, 0, length, -1, 0);
     if (length > MS_MAX) { errno = EOPNOTSUPP; return -1; }
     unsigned char data[MS_MAX];
     struct ms_message m = {.operation = MS_READ, .a = (uint32_t)length};
     long result = exchange(fd, &m, data, NULL);
+    int saved_errno = errno;
     if (result >= 0) {
         if ((size_t)result > length || m.length != (size_t)result) { errno = EPROTO; return -1; }
         memcpy(buffer, data, (size_t)result);
     }
+    if (tracing) ker_mptcp_io_trace("helper", "read", "end", (pid_t)syscall(SYS_getpid), port,
+        fd, 0, length, result, result < 0 ? saved_errno : 0);
+    errno = saved_errno;
     return result;
+}
+#ifndef KER_MPTCP_DIAG_PRELOAD
+extern ssize_t __real___read_chk(int fd, void *buffer, size_t length, size_t buffer_size)
+    __attribute__((weak));
+#endif
+static ssize_t real_checked_read(int fd, void *buffer, size_t length, size_t buffer_size)
+{
+#ifdef KER_MPTCP_DIAG_PRELOAD
+    ssize_t (*function)(int, void *, size_t, size_t) = dlsym(RTLD_NEXT, "__read_chk");
+#else
+    if (__real___read_chk)
+        return __real___read_chk(fd, buffer, length, buffer_size);
+    ssize_t (*function)(int, void *, size_t, size_t) = dlsym(RTLD_NEXT, "__read_chk");
+#endif
+    if (!function) {
+        if (length > buffer_size) abort();
+        errno = ENOSYS; return -1;
+    }
+    return function(fd, buffer, length, buffer_size);
+}
+ssize_t __wrap___read_chk(int fd, void *buffer, size_t length, size_t buffer_size)
+{
+    /* Preserve glibc's checked-read overflow behavior before any adapter RPC. */
+    if (length > buffer_size || !is_network(fd))
+        return real_checked_read(fd, buffer, length, buffer_size);
+    return __wrap_read(fd, buffer, length);
 }
 ssize_t __wrap_write(int fd, const void *buffer, size_t length)
 {
@@ -474,6 +509,8 @@ int __wrap_ioctl(int fd, unsigned long request, ...)
 static ssize_t message_call(int fd, struct msghdr *message, int flags, int sending)
 {
     if (!is_network(fd)) return syscall(sending ? SYS_sendmsg : SYS_recvmsg, fd, message, flags);
+    unsigned trace_port = 0;
+    int tracing = !sending && ker_mptcp_trace_peek_scope(0, &trace_port);
 #ifdef KER_PACKETDRILL_SELFTEST
     if (sending) {
         if (!message || message->msg_iovlen > 64 || message->msg_namelen > sizeof(struct sockaddr_storage)) { errno = EOPNOTSUPP; return -1; }
@@ -523,7 +560,13 @@ static ssize_t message_call(int fd, struct msghdr *message, int flags, int sendi
     }
     struct ms_message m = {.operation = sending ? MS_SENDMSG : MS_RECVMSG,
         .length = (uint32_t)(sizeof(io) + (sending ? capacity + control + name : 0))};
+    if (tracing) ker_mptcp_io_trace("helper", "recvmsg", "begin",
+        (pid_t)syscall(SYS_getpid), trace_port, fd, flags, capacity, -1, 0);
     long result = exchange(fd, &m, data, NULL);
+    int saved_errno = errno;
+    if (tracing) ker_mptcp_io_trace("helper", "recvmsg", "end",
+        (pid_t)syscall(SYS_getpid), trace_port, fd, flags, capacity, result, result < 0 ? saved_errno : 0);
+    errno = saved_errno;
     if (sending) return write_result(result, flags);
     if (result < 0) return result;
     if (m.length < sizeof(io)) { errno = EPROTO; return -1; }
@@ -692,7 +735,7 @@ static int mixed_poll(struct pollfd *fds, nfds_t count, int timeout)
     }
 }
 #endif
-int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout)
+static int mptcp_poll_call(struct pollfd *fds, nfds_t count, int timeout)
 {
     int native = 0;
     for (nfds_t i = 0; i < count; i++) native += is_network(fds[i].fd);
@@ -715,6 +758,25 @@ int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout)
         fds[0].revents = (short)m.b;
         if (result || (timeout >= 0 && milliseconds() >= deadline)) return (int)result;
     }
+}
+int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout)
+{
+    int native_fd = -1; short events = 0;
+    for (nfds_t i = 0; i < count; i++) if (is_network(fds[i].fd)) {
+        native_fd = fds[i].fd; events = fds[i].events; break;
+    }
+    unsigned port = 0;
+    int tracing = native_fd >= 0 && ker_mptcp_trace_peek_scope(0, &port);
+    if (tracing) ker_mptcp_io_trace("helper", "poll", "begin",
+        (pid_t)syscall(SYS_getpid), port, native_fd, events,
+        (size_t)(timeout < 0 ? 0 : timeout), -1, 0);
+    int result = mptcp_poll_call(fds, count, timeout);
+    int saved_errno = errno;
+    if (tracing) ker_mptcp_io_trace("helper", "poll", "end",
+        (pid_t)syscall(SYS_getpid), port, native_fd, events,
+        (size_t)(timeout < 0 ? 0 : timeout), result, result < 0 ? saved_errno : 0);
+    errno = saved_errno;
+    return result;
 }
 /* pm_nl_ctl's single-reader event wait. Readiness belongs to the native
  * netlink socket, never the host RPC channel. Finite poll slices also let
@@ -796,9 +858,8 @@ static int same_input(const struct stat *a, const struct stat *b)
         a->st_mtim.tv_sec == b->st_mtim.tv_sec && a->st_mtim.tv_nsec == b->st_mtim.tv_nsec &&
         a->st_ctim.tv_sec == b->st_ctim.tv_sec && a->st_ctim.tv_nsec == b->st_ctim.tv_nsec;
 }
-ssize_t __wrap_sendfile(int out, int in, off_t *offset, size_t count)
+static ssize_t mptcp_sendfile_call(int out, int in, off_t *offset, size_t count)
 {
-    if (!is_network(out)) return syscall(SYS_sendfile, out, in, offset, count);
     if (is_network(in)) { errno = EOPNOTSUPP; return -1; }
     struct stat st;
     if (syscall(SYS_fstat, in, &st)) return -1;
@@ -837,6 +898,20 @@ ssize_t __wrap_sendfile(int out, int in, off_t *offset, size_t count)
     memcpy(&wire_offset, data, sizeof(wire_offset));
     if (offset) *offset = (off_t)wire_offset;
     else if (syscall(SYS_lseek, in, (off_t)wire_offset, SEEK_SET) < 0) return -1;
+    return result;
+}
+ssize_t __wrap_sendfile(int out, int in, off_t *offset, size_t count)
+{
+    if (!is_network(out)) return syscall(SYS_sendfile, out, in, offset, count);
+    unsigned port = 0;
+    int tracing = ker_mptcp_trace_peek_scope(0, &port);
+    if (tracing) ker_mptcp_io_trace("helper", "sendfile", "begin",
+        (pid_t)syscall(SYS_getpid), port, out, 0, count, -1, 0);
+    ssize_t result = mptcp_sendfile_call(out, in, offset, count);
+    int saved_errno = errno;
+    if (tracing) ker_mptcp_io_trace("helper", "sendfile", "end",
+        (pid_t)syscall(SYS_getpid), port, out, 0, count, result, result < 0 ? saved_errno : 0);
+    errno = saved_errno;
     return result;
 }
 
