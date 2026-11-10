@@ -183,6 +183,7 @@ static int child_worker(struct fixture *fixture)
         .message_bytes = sizeof(ready), .worker_epoch = fixture->epoch,
         .control_id = KER_RX_DECISION_HELLO_CONTROL_ID,
     };
+    if (!strcmp(fixture->mode, "old-version-ready")) ready.version = 1;
     memcpy(ready.run_nonce, fixture->nonce, sizeof(ready.run_nonce));
     if (!strcmp(fixture->mode, "wrong-worker-credential")) {
         pid_t impostor = fork();
@@ -197,6 +198,7 @@ static int child_worker(struct fixture *fixture)
         return 0;
     }
     if (send(fixture->worker_fd, &ready, sizeof(ready), MSG_NOSIGNAL) != sizeof(ready)) return 26;
+    if (!strcmp(fixture->mode, "old-version-ready")) return 0;
     if (!strcmp(fixture->mode, "bad-ready")) return 27;
 
     struct ker_rx_decision_header data_header = {
@@ -206,8 +208,8 @@ static int child_worker(struct fixture *fixture)
         .deadline_ns = monotonic_ns() + KER_RX_DECISION_DEADLINE_NS,
     };
     struct ker_rx_decision_data data = {
-        .packet_bytes = 64, .first_segment_bytes = 64, .data_offset = 128,
-        .segment_count = 1, .queue_id = 0, .queue_count = 1,
+        .packet_bytes = 64, .first_segment_bytes = 23, .data_offset = 128,
+        .segment_count = 2, .queue_id = 0, .queue_count = 1,
         .data_room_bytes = 2048,
     };
     if (!strcmp(fixture->mode, "bad-sequence")) data_header.packet_id = 2;
@@ -215,14 +217,23 @@ static int child_worker(struct fixture *fixture)
     if (!strcmp(fixture->mode, "bad-bounds")) data.data_room_bytes = 150;
     if (!strcmp(fixture->mode, "bad-flags")) data.rx_offload_flags = UINT64_C(1) << 4;
     if (!strcmp(fixture->mode, "replay")) data_header.packet_id = 1;
+    if (!strcmp(fixture->mode, "old-version-data")) data_header.version = 1;
+    if (!strcmp(fixture->mode, "over-cap")) data.packet_bytes = KER_RX_DECISION_MAX_FRAME + 1;
     memcpy(data_header.run_nonce, fixture->nonce, sizeof(data_header.run_nonce));
-    data_header.message_bytes = sizeof(data_header) + sizeof(data) + data.first_segment_bytes;
-    unsigned char snapshot[64];
-    for (size_t i = 0; i < sizeof(snapshot); ++i) snapshot[i] = (unsigned char)(i ^ 0x5a);
+    data_header.message_bytes = sizeof(data_header) + sizeof(data) + data.packet_bytes;
+    unsigned char snapshot[KER_RX_DECISION_MAX_FRAME + 1];
+    for (size_t i = 0; i < data.packet_bytes; ++i) snapshot[i] = (unsigned char)(i ^ 0x5a);
+    size_t payload_bytes = data.packet_bytes;
+    if (!strcmp(fixture->mode, "truncated-frame")) payload_bytes--;
+    if (!strcmp(fixture->mode, "trailing-frame")) {
+        data.packet_bytes--;
+        payload_bytes = data.packet_bytes + 1;
+    }
     struct iovec vectors[] = {{&data_header, sizeof(data_header)}, {&data, sizeof(data)},
-        {snapshot, sizeof(snapshot)}};
+        {snapshot, payload_bytes}};
     struct msghdr send_message = {.msg_iov = vectors, .msg_iovlen = 3};
-    if (sendmsg(fixture->worker_fd, &send_message, MSG_NOSIGNAL) != data_header.message_bytes)
+    if (sendmsg(fixture->worker_fd, &send_message, MSG_NOSIGNAL) !=
+            (ssize_t)(sizeof(data_header) + sizeof(data) + payload_bytes))
         return 28;
     bool should_resolve = !strcmp(fixture->mode, "positive") ||
         !strcmp(fixture->mode, "defer") || !strcmp(fixture->mode, "shutdown-pending") ||
@@ -322,15 +333,16 @@ static int decide(const struct ker_rx_decision_packet *packet, void *context)
     struct callback_state *state = context;
     state->calls++;
     if (!pthread_equal(state->owner, pthread_self()) || packet->packet_id != 1 ||
-        packet->packet_bytes != 64 || packet->first_segment_bytes != 64 ||
+        packet->packet_bytes != 64 || packet->full_frame_bytes != 64 ||
+        packet->first_segment_bytes != 23 || packet->first_segment != packet->full_frame ||
         packet->data_room_bytes != 2048 || packet->data_offset != 128 ||
         packet->queue_id || packet->queue_count != 1) return 99;
-    const unsigned char *snapshot = packet->first_segment;
-    for (size_t i = 0; i < 64; ++i)
-        if (snapshot[i] != (unsigned char)(i ^ 0x5a)) return 99;
+    const unsigned char *frame = packet->full_frame;
+    for (size_t i = 0; i < packet->full_frame_bytes; ++i)
+        if (frame[i] != (unsigned char)(i ^ 0x5a)) return 99;
     if (state->defer) {
         state->packet_id = packet->packet_id;
-        memcpy(state->snapshot, snapshot, sizeof(state->snapshot));
+        memcpy(state->snapshot, frame, sizeof(state->snapshot));
         return KER_RX_DECISION_DEFER;
     }
     return state->action;
@@ -444,7 +456,19 @@ static int run_case(const char *mode)
         CHECK(pthread_join(wrong_thread, &thread_result) == 0);
         CHECK((intptr_t)thread_result == -EPERM);
     }
-    CHECK(ker_rx_decision_consumer_start() == 0);
+    int consumer_start = ker_rx_decision_consumer_start();
+    if (!strcmp(mode, "old-version-ready")) {
+        CHECK(consumer_start == -EPROTO);
+        int child_status = 0;
+        CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+        CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+        fixture.worker_pid = -1;
+        close(fixture.worker_pidfd);
+        close(fixture.supervisor_pidfd);
+        close(fixture.settle_pipe[1]);
+        return 0;
+    }
+    CHECK(consumer_start == 0);
     CHECK(ker_posix_rx_decision_is_ready() == 1);
     if (strcmp(mode, "positive") && strcmp(mode, "defer") &&
         strcmp(mode, "shutdown-pending") && strcmp(mode, "late-complete") &&
@@ -469,7 +493,9 @@ static int run_case(const char *mode)
             return 0;
         }
         int expected = !strcmp(mode, "bad-sequence") || !strcmp(mode, "replay") ||
-            !strcmp(mode, "bad-action") ? -EPROTO :
+            !strcmp(mode, "bad-action") || !strcmp(mode, "old-version-data") ||
+            !strcmp(mode, "truncated-frame") || !strcmp(mode, "trailing-frame") ? -EPROTO :
+            !strcmp(mode, "over-cap") ? -EOPNOTSUPP :
             !strcmp(mode, "expired") ? -ETIMEDOUT : -EOPNOTSUPP;
         CHECK(ker_rx_decision_consumer_pump() == expected);
         CHECK(callback.calls == (!strcmp(mode, "bad-action") ? 1 : 0));

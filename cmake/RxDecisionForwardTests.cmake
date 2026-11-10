@@ -86,6 +86,12 @@ add_test(NAME native-rx-decision-forward-tap
 set_tests_properties(native-rx-decision-forward-tap PROPERTIES
     TIMEOUT 90 LABELS "native-tcp;rx-decision;dpdk-tap;original-linux")
 
+add_test(NAME native-rx-decision-full-frame
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/rx-decision-full-frame.py"
+        --worker "$<TARGET_FILE:ker-io-worker-rx-decision-test>")
+set_tests_properties(native-rx-decision-full-frame PROPERTIES
+    TIMEOUT 30 LABELS "rx-decision;producer;mbuf;dpdk")
+
 add_test(NAME native-rx-decision-producer-faults
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/rx-decision-producer-faults.py"
         --worker "$<TARGET_FILE:ker-io-worker>"
