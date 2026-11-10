@@ -885,6 +885,9 @@ jobs:
             build-native-bridge/linux-original-forwarding-pedit-ip.packets.jsonl.stats.json
             build-native-bridge/linux-original-forwarding-pedit-ip.native-clock-reads.log
             build-native-bridge/linux-original-forwarding-skbedit-priority.json
+            build-native-bridge/linux-original-forwarding-tc-vlan-modify.json
+            build-native-bridge/linux-original-forwarding-tc-vlan-modify.packets.jsonl
+            build-native-bridge/linux-original-forwarding-tc-vlan-modify.packets.jsonl.stats.json
             ${{ runner.temp }}/native-xt-string-ctest.xml
             ${{ runner.temp }}/native-linux-xt-string-selftests-build/native-linux.json
             build-native-xt-string/linux-original-netfilter-xt-string.json
