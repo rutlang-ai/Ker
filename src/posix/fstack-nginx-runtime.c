@@ -27,6 +27,8 @@ struct ff_config ff_global_cfg;
 struct runtime_config {
     char broker_path[KER_SOCKET_BROKER_PATH_MAX + 1];
     unsigned version;
+    int graceful_reload;
+    int saw_lcore_mask;
     int saw_version;
     int saw_path;
     int saw_graceful_reload;
@@ -39,6 +41,8 @@ struct runtime_init_plan {
     const char *proc_type;
     intptr_t *nginx_max_sockets;
     int (*nginx_is_fstack_fd)(int);
+    int worker_generation;
+    uint32_t source_round_epoch;
 };
 
 static int runtime_initialized;
@@ -50,6 +54,7 @@ static intptr_t *nginx_max_sockets;
 static int (*nginx_is_fstack_fd)(int);
 static _Atomic uint64_t ff_leaf_epoll_ctl_calls;
 static void runtime_trace(const char *format, ...);
+static int runtime_fail(int error, const char *message);
 
 typedef int (*nginx_worker_authorization_fn)(unsigned int proc_id);
 
@@ -116,11 +121,104 @@ runtime_ini(void *opaque, const char *section, const char *name, const char *val
 
     if (strcmp(section, "dpdk") == 0 &&
         strcmp(name, "graceful_reload") == 0 && !config->saw_graceful_reload) {
-        if (strcmp(value, "0") != 0)
+        if (strcmp(value, "0") != 0 && strcmp(value, "1") != 0)
             return 0;
+        config->graceful_reload = value[0] == '1';
         config->saw_graceful_reload = 1;
         return 1;
     }
+
+    /* The unchanged Nginx master reads this field before creating its
+     * inherited reload block. The broker runtime does not consume a DPDK
+     * lcore mask, but accepts the key so source startup can reach ff_init()
+     * and validate that block at the actual runtime boundary. */
+    if (strcmp(section, "dpdk") == 0 && strcmp(name, "lcore_mask") == 0 &&
+        !config->saw_lcore_mask) {
+        size_t length = strlen(value);
+        if (length < 3 || length > 34 || value[0] != '0' ||
+            (value[1] != 'x' && value[1] != 'X'))
+            return 0;
+        unsigned bits = 0;
+        for (size_t i = 2; i < length; ++i) {
+            char ch = value[i];
+            if (!((ch >= '0' && ch <= '9') ||
+                  (ch >= 'a' && ch <= 'f') ||
+                  (ch >= 'A' && ch <= 'F')))
+                return 0;
+            unsigned nibble = ch >= '0' && ch <= '9' ? (unsigned)(ch - '0') :
+                (unsigned)((ch | 0x20) - 'a' + 10);
+            bits += (unsigned)__builtin_popcount(nibble);
+        }
+        if (bits != 2)
+            return 0;
+        config->saw_lcore_mask = 1;
+        return 1;
+    }
+    return 0;
+}
+
+static int
+validate_source_reload_binding(unsigned proc_id, const char *proc_type,
+    struct runtime_init_plan *plan)
+{
+    struct ff_reload_state **source_symbol;
+    struct ff_reload_state *source_state;
+    uint32_t active, target, reload_active, round_epoch;
+    int expected, selected;
+
+    source_symbol = (struct ff_reload_state **)dlsym(RTLD_DEFAULT,
+        "ngx_ff_reload_shm");
+    if (source_symbol == NULL || *source_symbol == NULL ||
+        !ff_reload_state_attached() ||
+        !ff_reload_state_valid(*source_symbol, sizeof(**source_symbol))) {
+        runtime_trace("ff_init_stage stage=graceful_source_state_invalid pid=%ld proc_id=%u proc_type=%s attached=%d source_block=%d\n",
+            (long)getpid(), proc_id, proc_type, ff_reload_state_attached(),
+            source_symbol != NULL && *source_symbol != NULL);
+        return runtime_fail(EPROTO,
+            "ker fstack runtime: graceful reload requires the source-inherited Nginx state block\n");
+    }
+
+    source_state = *source_symbol;
+    active = __atomic_load_n(&source_state->active_gen, __ATOMIC_SEQ_CST);
+    target = __atomic_load_n(&source_state->target_gen, __ATOMIC_SEQ_CST);
+    reload_active = __atomic_load_n(&source_state->reload_active, __ATOMIC_SEQ_CST);
+    round_epoch = __atomic_load_n(&source_state->epoch, __ATOMIC_SEQ_CST);
+    selected = ff_reload_gen();
+    expected = reload_active ? (int)target : (int)active;
+
+    if (active >= FF_RELOAD_GEN_MAX || target >= FF_RELOAD_GEN_MAX ||
+        reload_active > 1 || expected != ff_reload_worker_gen() ||
+        ff_reload_active_gen() != (int)active ||
+        ff_reload_target_gen() != (int)target) {
+        runtime_trace("ff_init_stage stage=graceful_source_state_mismatch pid=%ld proc_id=%u proc_type=%s round_epoch=%u active=%u target=%u reload_active=%u selected=%d expected=%d helper_expected=%d\n",
+            (long)getpid(), proc_id, proc_type, round_epoch, active, target,
+            reload_active, selected, expected, ff_reload_worker_gen());
+        return runtime_fail(EPROTO,
+            "ker fstack runtime: inherited Nginx generation state is inconsistent\n");
+    }
+
+    if (strcmp(proc_type, "primary") == 0) {
+        if (proc_id != 0 || selected != 0) {
+            runtime_trace("ff_init_stage stage=graceful_source_role_mismatch pid=%ld proc_id=%u proc_type=%s round_epoch=%u active=%u target=%u selected=%d\n",
+                (long)getpid(), proc_id, proc_type, round_epoch, active,
+                target, selected);
+            return runtime_fail(EPROTO,
+                "ker fstack runtime: graceful slim primary requires source generation zero\n");
+        }
+    } else if (strcmp(proc_type, "secondary") != 0 || proc_id == 0 ||
+        selected != expected) {
+        runtime_trace("ff_init_stage stage=graceful_source_role_mismatch pid=%ld proc_id=%u proc_type=%s round_epoch=%u active=%u target=%u selected=%d expected=%d\n",
+            (long)getpid(), proc_id, proc_type, round_epoch, active,
+            target, selected, expected);
+        return runtime_fail(EPROTO,
+            "ker fstack runtime: graceful worker generation does not match the source state\n");
+    }
+
+    plan->worker_generation = selected;
+    plan->source_round_epoch = round_epoch;
+    runtime_trace("ff_init_stage stage=graceful_source_state_valid pid=%ld proc_id=%u proc_type=%s round_epoch=%u directory_epoch=%u active=%u target=%u reload_active=%u selected=%d\n",
+        (long)getpid(), proc_id, proc_type, round_epoch, ff_reload_epoch(),
+        active, target, reload_active, selected);
     return 0;
 }
 
@@ -260,7 +358,29 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
     if (parse_result != 0 || close_result != 0 || !plan.config.saw_version ||
         !plan.config.saw_path || !plan.config.saw_graceful_reload)
         return runtime_fail(EINVAL,
-            "ker fstack runtime: config requires broker version/path and graceful_reload=0 only\n");
+            "ker fstack runtime: config requires broker version/path and a valid graceful_reload value\n");
+
+    if (plan.config.graceful_reload) {
+        if (!plan.config.saw_lcore_mask)
+            return runtime_fail(EINVAL,
+                "ker fstack runtime: graceful source bootstrap requires the original dpdk.lcore_mask\n");
+        if (validate_source_reload_binding(proc_id, proc_type, &plan) != 0)
+            return -1;
+
+        /* The broker runtime currently has no native generation packet
+         * dispatcher or EAL owner binding. Reject after validating the real
+         * source block, but before opening a broker owner capability. A
+         * graceful flag alone must never authorize the upstream FSM. */
+        runtime_trace("ff_init_stage stage=graceful_backend_unbound pid=%ld proc_id=%u proc_type=%s round_epoch=%u selected=%d dispatcher=0 packet_owner=0\n",
+            (long)getpid(), proc_id, proc_type,
+            plan.source_round_epoch,
+            plan.worker_generation);
+        return runtime_fail(ENOTSUP,
+            "ker fstack runtime: graceful reload requires an authenticated generation packet-owner and dispatcher binding\n");
+    }
+    if (plan.config.saw_lcore_mask)
+        return runtime_fail(EINVAL,
+            "ker fstack runtime: dpdk.lcore_mask is accepted only for source graceful-startup validation\n");
 
     broker_environment = getenv("KER_SOCKET_BROKER_PATH");
     if (broker_environment == NULL || strcmp(broker_environment, plan.config.broker_path) != 0)
@@ -296,6 +416,8 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
         errno = saved_errno;
         return -1;
     }
+    runtime_trace("ff_init_stage stage=broker_owner_begin_ready pid=%ld proc_id=%u proc_type=%s\n",
+        (long)getpid(), proc_id, proc_type);
 
     plan.proc_id = proc_id;
     plan.proc_type = proc_type;
@@ -321,8 +443,9 @@ ker_fstack_nginx_runtime_commit(void)
     ff_global_cfg.dpdk.proc_type = (char *)pending_init_plan.proc_type;
     ff_global_cfg.dpdk.graceful_reload = 0;
 
-    /* Preserve the real upstream detached/inactive state. No synthetic shared
-     * reload block or generation directory is created in this profile. */
+    /* This runtime commits only the bounded graceful-off profile. Source
+     * graceful=1 is checked in preflight and remains fail-closed until the
+     * native generation dispatcher and EAL ownership path are bound. */
     ff_reload_attach_state(NULL);
     ff_reload_set_epoch(0);
     ff_reload_set_gen(0);
@@ -330,10 +453,11 @@ ker_fstack_nginx_runtime_commit(void)
     ff_reload_dir_sync_enable(0);
     runtime_initialized = 1;
     pending_init_plan_ready = 0;
-    runtime_trace("ff_init pid=%ld proc_id=%u proc_type=%s graceful_reload=%d attached=%d active=%d target=%d\n",
+    runtime_trace("ff_init pid=%ld proc_id=%u proc_type=%s graceful_reload=%d attached=%d active=%d target=%d selected=%d\n",
         (long)getpid(), pending_init_plan.proc_id, pending_init_plan.proc_type,
         ff_global_cfg.dpdk.graceful_reload,
-        ff_reload_state_attached(), ff_reload_active_gen(), ff_reload_target_gen());
+        ff_reload_state_attached(), ff_reload_active_gen(), ff_reload_target_gen(),
+        ff_reload_gen());
     return 0;
 }
 
