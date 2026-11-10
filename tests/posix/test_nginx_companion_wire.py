@@ -1,8 +1,12 @@
 """Validation for the private ker-run companion helper wire codec."""
 import unittest
 import importlib.util
+import os
 from pathlib import Path
+import select
+import signal
 import socket
+import struct
 import tempfile
 
 from nginx_companion_wire import *
@@ -25,7 +29,132 @@ class CompanionWireTest(unittest.TestCase):
     def test_record_sizes_are_exact(self):
         self.assertEqual((HELLO_BYTES, START_BYTES, STARTED_BYTES,
             RELOAD_BYTES, RELOAD_RESULT_BYTES, STOP_BYTES, SETTLED_BYTES,
-            ERROR_BYTES), (48, 168, 136, 48, 96, 48, 104, 104))
+            ERROR_BYTES, OWNER_READY_BYTES), (48, 168, 136, 48, 96, 48, 104, 104, 104))
+
+    def test_owner_ready_wrapper_requires_identity_and_slot(self):
+        valid = (123, 1000, 1000, 0, 456, 0, 789, 11, 12, 13)
+        validate_owner_ready(valid, expected_uid=1000, expected_gid=1000,
+            expected_role=0)
+        for index, value in ((0, 0), (1, 1001), (3, 1), (4, 0),
+                (5, 1), (6, 0), (7, 0), (8, 0), (9, 0)):
+            invalid = list(valid)
+            invalid[index] = value
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                validate_owner_ready(tuple(invalid), expected_uid=1000,
+                    expected_gid=1000, expected_role=0)
+        with self.assertRaises(ValueError):
+            validate_owner_ready(valid, expected_uid=1000, expected_gid=1000,
+                expected_role=0, expected_cookie=14)
+
+    def test_owner_ready_mode_refuses_reload_without_poisoning_session(self):
+        companion = object.__new__(NginxCompanion)
+        companion.owner_ready_required = True
+        companion.unresolved = False
+        with self.assertRaises(NotImplementedError):
+            companion.reload()
+        self.assertFalse(companion.unresolved)
+
+    def _helper_owner_ready_rejects(self, *, change=None, with_rights=False,
+                                    truncate=False, exit_before_receive=False):
+        receiver, sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        receiver.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        gate_read, gate_write = os.pipe()
+        release_read, release_write = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                receiver.close()
+                os.close(gate_write)
+                os.close(release_write)
+                os.read(gate_read, 1)
+                worker_pid = os.getpid()
+                fields = [_COMPANION.OWNER_READY_MAGIC,
+                    _COMPANION.OWNER_READY_VERSION,
+                    _COMPANION.OWNER_READY_RECORD.size, 0, 0,
+                    11, 12, _COMPANION.start_ticks(worker_pid),
+                    worker_pid, worker_pid, 13, 0]
+                if change is not None:
+                    index, value = change
+                    fields[index] = value
+                data = _COMPANION.OWNER_READY_RECORD.pack(*fields)
+                if truncate:
+                    data = data[:-1]
+                ancillary = []
+                if with_rights:
+                    fd = os.open('/dev/null', os.O_RDONLY)
+                    ancillary = [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                        struct.pack('i', fd))]
+                sender.sendmsg([data], ancillary)
+                if exit_before_receive:
+                    os._exit(0)
+                os.read(release_read, 1)
+                os._exit(0)
+            except BaseException:
+                os._exit(99)
+        os.close(gate_read)
+        os.close(release_read)
+        child_pidfd = os.pidfd_open(pid, 0)
+        master_pidfd = os.pidfd_open(os.getpid(), 0)
+        supervisor_pidfd = os.pidfd_open(os.getpid(), 0)
+        reaped = False
+        try:
+            binary_hash = _COMPANION.sha256_file(f'/proc/{pid}/exe')
+            os.write(gate_write, b'g')
+            poller = select.poll()
+            poller.register(receiver.fileno(), select.POLLIN)
+            self.assertTrue(poller.poll(2000), 'child did not send READY test record')
+            if exit_before_receive:
+                os.waitpid(pid, 0)
+                reaped = True
+            class Master:
+                def poll(self):
+                    return None
+            master = Master()
+            master.pid = os.getpid()
+            kwargs = dict(expected_cookie=13, binary_hash=binary_hash,
+                master=master, master_pidfd=master_pidfd,
+                master_start=_COMPANION.start_ticks(os.getpid()),
+                supervisor_pidfd=supervisor_pidfd,
+                supervisor_pid=os.getpid(),
+                supervisor_start=_COMPANION.start_ticks(os.getpid()),
+                timeout=1.0)
+            before_fds = len(os.listdir('/proc/self/fd'))
+            with self.assertRaises((ValueError, PermissionError,
+                                    ProcessLookupError, FileNotFoundError,
+                                    ConnectionError)):
+                _COMPANION.receive_owner_ready(receiver, **kwargs)
+            if with_rights:
+                self.assertEqual(len(os.listdir('/proc/self/fd')), before_fds,
+                    'rejected READY leaked an SCM_RIGHTS descriptor')
+        finally:
+            if not reaped:
+                try:
+                    os.write(release_write, b'x')
+                except OSError:
+                    pass
+                try:
+                    signal.pidfd_send_signal(child_pidfd, signal.SIGKILL)
+                except OSError:
+                    pass
+                os.waitpid(pid, 0)
+            for fd in (gate_write, release_write, child_pidfd,
+                       master_pidfd, supervisor_pidfd):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            receiver.close()
+            sender.close()
+
+    def test_helper_ready_rejects_wrong_cookie_claimed_pid_and_stale_worker(self):
+        self._helper_owner_ready_rejects(change=(10, 14))
+        self._helper_owner_ready_rejects(change=(8, os.getpid() + 100000))
+        self._helper_owner_ready_rejects(change=(7, 1))
+
+    def test_helper_ready_rejects_dead_worker_truncated_record_and_rights(self):
+        self._helper_owner_ready_rejects(exit_before_receive=True)
+        self._helper_owner_ready_rejects(truncate=True)
+        self._helper_owner_ready_rejects(with_rights=True)
 
     def test_valid_header_round_trip(self):
         packet = pack_record(HELLO, b'', self.nonce, self.epoch, self.sequence)
