@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh` 完整入口本地通过；其余 89 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh` 完整入口本地通过；其余 88 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 99/310，剩余 211；其中 94 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 216 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 100/310，剩余 210；其中 95 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 215 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -295,3 +295,14 @@ Ker 的桥接测试配置启用真实 `CONFIG_NET_CLS_ACT`、`CONFIG_NET_SCH_ING
 最后一次成功 ping 的 ingress flower 必须包含真实 Linux MIRRED egress redirect 到 veth2，内核动作计数在该次原版 ping 期间至少增加十个包和 840 字节；允许此前已有无关控制报文。此阶段不学习源 MAC 的 locked FDB。删除 filter 后原版 ping 必须失败，真实 locked 条目随后出现。没有新增投递 sleep，也不把 Mausezahn 返回时的即时状态当作原版 FDB 查询期限。原版 feature probe 返回 SKIP 或漏掉任一结果均不得计为通过。
 
 Ker 的隔离桥接测试配置启用真实 `CONFIG_NET_ACT_MIRRED=y`，native fingerprint 更新为 `89ba0eab4a997830cfa3d8c0520a33696d0ab3868a53ec24a6fbc0d5c49e15fe`；源码与配置来源均绑定，Linux、原版脚本、iproute2、C 代码和生产 API 未修改。清理要求 bridge、两个 VRF、两个 VLAN100 设备、目标 FDB/MDB、全局地址和路由回收，veth 关闭解除 master，socket/outstanding packet 为零且 worker 正常退出。CI 强制十四个完整原版入口与两个时钟 ABI 控制共十六项，核对 MIRRED 实际配置、唯一完整 inventory、独立 JSON/JUnit 无 skip。本项新增一个完整默认入口，hosted CI/review 资格仍单独确认。
+
+
+## 完整 bridge VLAN multicast 入口
+
+完整未修改的 `forwarding/bridge_vlan_mcast.sh` 执行全部 11 个默认函数、36 行原版结果与 216 个实际工具命令。Ker 不改 Linux、iproute2 或原版 shell；通过已有原生 NETLINK_ROUTE、AF_PACKET 与时间适配运行。逐项核对 VLAN10 的默认值、snooping/querier 开关、IGMPv2/v3、MLDv1/v2、last-member/startup/membership/querier/query/response 参数和恢复值。八个原版查询时间窗同时要求实际 TC flower/GACT 包字节计数和 Linux bridge-slave multicast xstats 差分符合原版值，保留全部等待时间。
+
+固定上游 `vlmc_v2join_test` 的 join 判断误读了 `if [ $expect -eq 0 ]` 的退出状态，单独的原版 OK 行不能证明目标 MDB 行为。因此额外使用只读原生 MDB 通知和入口包观察器，绑定实际 bridge/端口 ifindex、VID10、组地址 `239.10.10.10`、主机 MAC 与真实时间戳，要求目标成员在原版五秒窗口内按两秒 membership timer 实际过期。若 Linux 随后的有效 unsolicited IGMPv2 report 重新建立条目，则必须同时观察真实过期、后续报告、MDB NEW 和一致的剩余 timer；若原版查询时条目已消失，则必须证明最后事件为删除。不会把仍存在但没有真实过期证据的条目算作通过。原版 snooping 开/关、三个 join/leave 周期、无条目状态和最终 leave 都另行验证。
+
+外部 querier 的 br1 拓扑和原版两秒等待保持不变；不要求原版未执行的 VRF 重新绑定。router-port 阶段发送实际十个 VID10 IPv4/UDP 原版帧（每个174字节，包含128字节负载），在原版后续 TC 查询处要求路由端口计数10、另一个端口计数0，并验证实际路径计数。关闭 VLAN filtering 必须同时关闭 native multicast VLAN snooping；原版清理后 bridge、VRF、VLAN child、地址、路由、MDB/FDB、packet sockets 与 fixture 资源均不能残留。只读观察器不发包、不设置网络状态，不增加或缩短原版等待。
+
+完整 bridge profile 现在包含15个原版完整入口和两个真实 realtime ABI 控制。实际原生报告投影保留全部216条命令及所消费的原始通知、报文和快照，以原报告 SHA-256 绑定；单元测试另行拒绝通知丢失/截断/overrun、伪过期、缺失刷新、错误 timer、TC/xstats 不一致、缩短等待、错误 VLAN/端口和资源泄漏。迁移计数仍与发布后 hosted CI 和 review 资格分开核对。

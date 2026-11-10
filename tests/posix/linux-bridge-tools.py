@@ -30,12 +30,21 @@ def bridge_snapshot(env):
             raise RuntimeError('native bridge VLAN upper observation warning: ' + state.stderr)
         result[key] = json.loads(state.stdout)
     if (os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1' or
-            os.environ.get('KER_FORWARDING_BRIDGE_MDB_PORT') == '1'):
+            os.environ.get('KER_FORWARDING_BRIDGE_MDB_PORT') == '1' or
+            os.environ.get('KER_FORWARDING_BRIDGE_MCAST') == '1'):
         state = subprocess.run([os.environ['KER_FORWARDING_BRIDGE'], '-j', '-d', 'mdb', 'show'],
                                env=env, capture_output=True, text=True, timeout=10, check=True)
         if state.stderr:
             raise RuntimeError('native bridge MDB observation warning: ' + state.stderr)
         result['mdb'] = json.loads(state.stdout)
+    if os.environ.get('KER_FORWARDING_BRIDGE_MCAST') == '1':
+        for key,query in (('vlan_global',[os.environ['KER_FORWARDING_BRIDGE'],'-j','vlan','global','show']),
+                          ('vlan_details',[os.environ['KER_FORWARDING_BRIDGE'],'-j','-d','vlan','show']),
+                          ('mdb_timers',[os.environ['KER_FORWARDING_BRIDGE'],'-j','-d','-s','mdb','show'])):
+            observed = subprocess.run(query,env=env,capture_output=True,text=True,timeout=10,check=True)
+            if observed.stderr: raise RuntimeError('native multicast VLAN observation warning: '+observed.stderr)
+            result[key] = json.loads(observed.stdout)
+        result['observed_monotonic'] = time.monotonic()
     return result
 
 
@@ -84,9 +93,17 @@ def packet_bridge_snapshot(env, traffic=False):
             state['filters'] = filters['veth3']
         else:
             state['filters_by_device'] = filters
+    if traffic and os.environ.get('KER_FORWARDING_BRIDGE_MCAST') == '1':
+        state['egress_filters'] = {}
+        for device in ('veth1','veth2'):
+            observed = subprocess.run([os.environ['KER_FORWARDING_TC'],'-j','-s','filter','show','dev',device,'egress'],
+                env=env,capture_output=True,text=True,timeout=10,check=True)
+            if observed.stderr: raise RuntimeError('native multicast egress counter warning: '+observed.stderr)
+            state['egress_filters'][device] = json.loads(observed.stdout)
     if (os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or
             traffic and os.environ.get('KER_FORWARDING_BRIDGE_ISOLATION') == '1'):
-        query = [os.environ['KER_FORWARDING_BRIDGE'], '-j', 'fdb', 'show', 'br', 'br0']
+        query = [os.environ['KER_FORWARDING_BRIDGE'], '-j', 'fdb', 'show']
+        if os.environ.get('KER_FORWARDING_BRIDGE_MCAST') != '1': query += ['br','br0']
         result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
         if result.stderr:
             raise RuntimeError('native bridge FDB observation warning: ' + result.stderr)
@@ -193,7 +210,8 @@ def main():
             record['isolation_before'] = packet_bridge_snapshot(env, tool == 'mausezahn')
         observe_unaware = (os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' and
                            not (tool == 'tc' and words == ['-j']) and
-                           (tool in ('bridge', 'tc', 'mausezahn', 'ethtool') or tool == 'ip' and
+                           (tool in ('bridge', 'tc', 'mausezahn', 'ethtool') or
+                            os.environ.get('KER_FORWARDING_BRIDGE_MCAST') == '1' and tool == 'ip' and words[:1] in (['link'],['address'],['addr']) or tool == 'ip' and
                             ('promisc' in words or words == ['-d', '-j', 'link', 'show', 'dev', 'br0', 'type', 'bridge'])))
         if observe_unaware:
             record['unaware_before'] = packet_bridge_snapshot(env, tool == 'mausezahn')
