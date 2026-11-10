@@ -172,12 +172,12 @@ def run_case(args, root, mode, decision):
     try:
         ready = wait_line(process, f"RX_DECISION_APP_READY mode={mode}", 30)
         require(f"mode={mode} " in ready, f"unexpected app readiness: {ready!r}")
-        if mode in ("local", "eagain", "immediate", "queued-drop", "legacy"):
+        if mode in ("local", "defer", "eagain", "immediate", "queued-drop", "legacy"):
             mac = ready.rsplit("mac=", 1)[-1]
             require(len(mac) == 17 and mac.count(":") == 5, f"invalid worker MAC in ready marker: {ready!r}")
             subprocess.run(["ip", "neigh", "replace", "198.18.0.2", "lladdr", mac,
                 "dev", "kerhost", "nud", "permanent"], check=True)
-        if mode in ("local", "eagain", "immediate", "legacy"):
+        if mode in ("local", "defer", "eagain", "immediate", "legacy"):
             peer = socket.create_connection(("198.18.0.2", 8080), timeout=5)
             peers.append(peer)
             peer.settimeout(5)
@@ -223,7 +223,8 @@ def run_case(args, root, mode, decision):
             require(syns, "DROP test produced no real host TCP SYN (neighbor resolution may have hidden the flow)")
             require(not responses, f"DROP decision injected a TCP response: {responses!r}")
         done = wait_line(process, f"RX_DECISION_APP_DONE mode={mode}", 20)
-        if "completed=1" not in done or "error=0" not in done:
+        done_fields = dict(item.split("=", 1) for item in done.split() if "=" in item)
+        if done_fields.get("completed") != "1" or done_fields.get("error") != "0":
             try:
                 output, errors = process.communicate(timeout=15)
             except subprocess.TimeoutExpired:
@@ -253,6 +254,13 @@ def run_case(args, root, mode, decision):
                     stats.get("rx_decision_local_cancelled", 0) == 0 and
                     stats.get("rx_decision_drops", 0) == 0,
                     f"LOCAL leases were lost, canceled, or duplicated: {stats!r}")
+            elif mode == "defer":
+                require(int(done_fields.get("deferred", "0")) > 0 and
+                    done_fields.get("deferred") == done_fields.get("deferred_completed") and
+                    stats.get("rx_decision_local") == stats.get("rx_decision_forwarded") and
+                    stats.get("rx_decision_drops", 0) == 0 and
+                    stats.get("rx_decision_local_cancelled", 0) == 0,
+                    f"deferred verdicts did not complete exact real-frame leases: done={done!r} stats={stats!r}")
             elif mode == "eagain":
                 require(stats.get("rx_decision_test_eagain_injected") == 1 and
                     stats.get("rx_decision_test_eagain_same_id") == 1,
@@ -317,6 +325,7 @@ def inside(args):
     with tempfile.TemporaryDirectory(prefix="ker-rx-decision-", dir=os.environ.get("TMPDIR", "/dev/shm")) as temp:
         root = Path(temp)
         local = run_case(args, root, "local", True)
+        run_case(args, root, "defer", True)
         eagain = run_case(args, root, "eagain", True)
         run_case(args, root, "immediate", True)
         run_case(args, root, "queued-drop", True)
@@ -324,7 +333,7 @@ def inside(args):
         subprocess.run(["ip", "neigh", "replace", "198.18.0.2", "lladdr",
             dropped["io"]["mac"], "dev", "kerhost", "nud", "permanent"], check=True)
         run_case(args, root, "legacy", False)
-    print("RX_DECISION_TAP_OK local=echo eagain=same-lease immediate=drain-ack queued=drop drop=no-response legacy=echo")
+    print("RX_DECISION_TAP_OK local=echo defer=exact-lease-completion eagain=same-lease immediate=drain-ack queued=drop drop=no-response legacy=echo")
     return 0
 
 

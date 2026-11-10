@@ -3,6 +3,7 @@
         ker_posix_capabilities; ker_posix_descriptor_kind; ker_posix_kernel_release; ker_posix_get_current_time;
         ker_posix_run; ker_posix_stop_run;
         ker_posix_rx_decision_register; ker_posix_rx_decision_is_ready;
+        ker_posix_rx_decision_complete;
         ker_member_census_diag_require_net_admin; ker_member_census_mark_allocate;
         ker_member_census_server_claim; ker_member_census_server_release;
         ker_member_census_query_submit; ker_member_census_query_poll;

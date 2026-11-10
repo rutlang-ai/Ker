@@ -26,6 +26,13 @@ struct app_context {
     uint64_t callbacks_at_stop;
     uint64_t local;
     uint64_t drop;
+    uint64_t deferred;
+    uint64_t deferred_completed;
+    uint64_t deferred_packet_id;
+    uint64_t deferred_deadline_ns;
+    uint64_t deferred_complete_at_ns;
+    uint32_t deferred_bytes;
+    unsigned char deferred_snapshot[KER_RX_DECISION_MAX_FRAME];
     uint64_t stop_at_ns;
     size_t reply_length;
     size_t reply_offset;
@@ -35,6 +42,7 @@ struct app_context {
     bool completed;
     bool peer_closed;
     bool shutdown_requested;
+    bool draining;
     int error;
 };
 
@@ -54,6 +62,18 @@ static int decision_handler(const struct ker_rx_decision_packet *packet, void *o
     if (!strcmp(context->mode, "drop")) {
         context->drop++;
         return KER_RX_DECISION_DROP;
+    }
+    if (!strcmp(context->mode, "defer") && !context->draining) {
+        if (context->deferred_packet_id ||
+            packet->first_segment_bytes > sizeof(context->deferred_snapshot)) return -1;
+        memcpy(context->deferred_snapshot, packet->first_segment,
+            packet->first_segment_bytes);
+        context->deferred_bytes = packet->first_segment_bytes;
+        context->deferred_packet_id = packet->packet_id;
+        context->deferred_deadline_ns = packet->deadline_ns;
+        context->deferred_complete_at_ns = monotonic_ns() + UINT64_C(5000000);
+        context->deferred++;
+        return KER_RX_DECISION_DEFER;
     }
     context->local++;
     return KER_RX_DECISION_LOCAL;
@@ -100,13 +120,36 @@ static int app_loop(void *opaque)
     }
     if (!context->ready_reported) return 0;
 
+    if (!strcmp(context->mode, "defer") && context->deferred_packet_id) {
+        uint64_t now = monotonic_ns();
+        if (!now || now >= context->deferred_deadline_ns) {
+            stop_with_error(context, ETIMEDOUT);
+            return 0;
+        }
+        if (now >= context->deferred_complete_at_ns) {
+            if (!context->deferred_bytes || ker_posix_rx_decision_complete(
+                    context->deferred_packet_id, KER_RX_DECISION_LOCAL)) {
+                stop_with_error(context, errno ? errno : EPROTO);
+                return 0;
+            }
+            context->local++;
+            context->deferred_completed++;
+            context->deferred_packet_id = 0;
+            context->deferred_deadline_ns = 0;
+            context->deferred_bytes = 0;
+        }
+    }
+
     if (((!strcmp(context->mode, "drop") || !strcmp(context->mode, "legacy")) &&
             monotonic_ns() >= context->stop_at_ns) ||
         (!strcmp(context->mode, "queued-drop") && !context->shutdown_requested) ||
         (context->peer_closed && (!context->decision_enabled ||
-            context->callbacks > context->callbacks_at_peer_closed))) {
+            (context->callbacks > context->callbacks_at_peer_closed &&
+             (strcmp(context->mode, "defer") || !context->deferred_packet_id))))) {
         context->completed = true;
         context->shutdown_requested = true;
+        context->callbacks_at_stop = context->callbacks;
+        context->draining = true;
         if (!strcmp(context->mode, "queued-drop")) {
             puts("RX_DECISION_APP_STOPPING mode=queued-drop");
             fflush(stdout);
@@ -114,7 +157,8 @@ static int app_loop(void *opaque)
         ker_posix_stop_run();
         return 0;
     }
-    if (!strcmp(context->mode, "local") || !strcmp(context->mode, "eagain") ||
+    if (!strcmp(context->mode, "local") || !strcmp(context->mode, "defer") ||
+            !strcmp(context->mode, "eagain") ||
             !strcmp(context->mode, "immediate") ||
             !strcmp(context->mode, "legacy")) {
         if (context->accepted < 0) {
@@ -173,7 +217,8 @@ static int app_loop(void *opaque)
 
 int main(int argc, char **argv)
 {
-    if (argc != 2 || (strcmp(argv[1], "local") && strcmp(argv[1], "eagain") &&
+    if (argc != 2 || (strcmp(argv[1], "local") && strcmp(argv[1], "defer") &&
+            strcmp(argv[1], "eagain") &&
             strcmp(argv[1], "immediate") &&
             strcmp(argv[1], "queued-drop") && strcmp(argv[1], "drop") &&
             strcmp(argv[1], "legacy"))) {
@@ -246,10 +291,12 @@ int main(int argc, char **argv)
     if (result) { perror("ker_posix_run"); context.error = context.error ? context.error : errno; }
     if (context.accepted >= 0) close(context.accepted);
     close(listener);
-    printf("RX_DECISION_APP_DONE mode=%s callbacks=%llu callbacks_at_stop=%llu local=%llu drop=%llu completed=%u error=%d\n",
+    printf("RX_DECISION_APP_DONE mode=%s callbacks=%llu callbacks_at_stop=%llu local=%llu drop=%llu deferred=%llu deferred_completed=%llu completed=%u error=%d\n",
         context.mode, (unsigned long long)context.callbacks,
         (unsigned long long)context.callbacks_at_stop, (unsigned long long)context.local,
-        (unsigned long long)context.drop, context.completed ? 1U : 0U, context.error);
+        (unsigned long long)context.drop, (unsigned long long)context.deferred,
+        (unsigned long long)context.deferred_completed,
+        context.completed ? 1U : 0U, context.error);
     fflush(stdout);
     return result || context.error || !context.completed ? 1 : 0;
 }

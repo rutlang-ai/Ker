@@ -215,6 +215,20 @@ until every decision lease is resolved. The implementation does not enable
 F-Stack dispatcher registration, PEER/RESPONSE actions, or a graceful-reload
 profile.
 
+The private callback may defer one lease only after copying any bytes it needs;
+the snapshot is valid only during the callback. The exact packet ID can then be
+completed once on the registered owner thread, before the original worker
+deadline, after fresh worker and supervisor pidfd/start-time checks. Pumping
+while a lease is pending does not read another packet or invoke the callback.
+Expiration or send failure leaves the packet unresolved, so a later `SETTLED`
+cannot claim that packet was handled. Callers must finish a pending lease and
+switch to their own bounded synchronous `LOCAL`/`DROP` policy before stopping
+their app loop; otherwise native shutdown cannot service another deferred
+callback. The physical TAP case exercises this caller-owned drain transition.
+This remains a private prerequisite: full-frame lifetime transfer, source
+callback integration, authenticated cross-generation `PEER` routing, and the
+original same-master graceful-reload matrix are still unsupported.
+
 The TAP qualification uses real original-Linux TCP: normal echo, an injected
 packet-channel EAGAIN followed by same-ID retry and one actual send, immediate
 application stop with RX decision progress during native send-queue drain,
