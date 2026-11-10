@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh`、`bridge_igmp.sh`、`bridge_mld.sh`、`bridge_mdb.sh`、`bridge_mdb_max.sh`、`pedit_ip.sh`、`pedit_l4port.sh`、`pedit_dsfield.sh`、`tc_flower_port_range.sh`、`tc_flower_l2_miss.sh`、`tc_flower_cfm.sh` 完整入口本地通过；其余 77 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh`、`bridge_igmp.sh`、`bridge_mld.sh`、`bridge_mdb.sh`、`bridge_mdb_max.sh`、`pedit_ip.sh`、`pedit_l4port.sh`、`pedit_dsfield.sh`、`tc_flower_port_range.sh`、`tc_flower_l2_miss.sh`、`tc_flower_cfm.sh`、`tc_chains.sh` 完整入口本地通过；其余 76 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 111/310，剩余 199；其中 106 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 204 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 112/310，剩余 198；其中 107 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 203 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -417,3 +417,10 @@ Ker 仅增加私有只读 SG 状态观察与完整入口接线，协议行为来
 该原版入口先加载 `tc_common.sh` 再加载 `lib.sh`，因此保留真实 pinned `tc -j` 能力探测及它原本的 usage 输出/零退出码。Ker observer 对这次能力探测不查询尚未创建的网口；随后只观察实际两个 veth 端点，不伪造 JSON 支持或成功分类。首轮探测被 observer 阻断、四口观察不适用于两口拓扑的失败，以及三个原版 OK 但合同待接入的报告分别保留，均不计合格结果。所有规则与输入头来自 unchanged pinned Linux shell，分类和 drop 由原始 Linux flower/GACT 实现，本批不改 Linux/iproute2 源码、内核配置或 C runtime。
 
 独立负向测试覆盖 CFM 键、联合匹配、硬件/软件归属、action、counter、输入帧、能力探测、规则代次、双 VRF 路径、backend 拒绝及清理。原版连续发包可先于异步统计完成，以原版最终查询窗口为命中判定；未指定的填充保持自由。源端 AF_PACKET 记录与实际 native 链路统计证明输入路径，不声称 socket 接收、CFM 业务状态机或出口抓包。hosted CI/review 仍须与最终提交单独绑定。
+
+
+`tc_chains.sh` 保留四个原始软件子测试：不可达 chain 不应命中、GACT goto chain 1 必须命中目标并绕过 chain 0 的后续 drop、显式 chain 创建/查询/删除，以及 flower template 的符合/拒绝行为。两个原始 IPv4 输入帧各 98 bytes，共 196 bytes，独立绑定 native MAC/ifindex、IP 地址/头长/输入校验和；实际双 VRF/veth 路径计数前进。不可达规则与错误优先级规则在原版查询窗口必须保持零，goto 与目标 drop 各命中一次，native action byte 计数各为去除 Ethernet 头后的 84 bytes。两个不符合模板的添加必须由原生内核以 `Mask does not fit the template` 拒绝，后续删除不存在 handle 的错误也保留；不把任意失败或不支持当成模板拒绝成功。
+
+Ker 只增加实际 `tc -j -s chain show` 前后观测，核验原生 chain ID、template key、显式引用与规则代次，保留原版真实 `tc -j` / `tc help` 能力探测和 1000ms busywait。原始脚本的硬件分支在 native veth 上不可用：必须记录真实 native `ethtool -k veth0`、前后 JSON feature 与原版 `INFO: Could not test offloaded functionality`；不声称硬件 offload 已迁移或伪造 feature。所有执行的规则和动作均来自 Linux flower/GACT，无 Ker 协议替代，本批不修改上游源码、内核配置或 C runtime。共享两口清理合同参数保留 CFM 原有默认值。
+
+独立负向测试拒绝错误 goto、错误命中/字节/drop、模板键/errno、丢失 chain/规则/输入帧、虚构硬件能力、native 路径与资源清理；未指定的 IP ID/TOS/TTL/protocol 和填充仍可变化。native ingress 分类与链路窗口不等同 socket 接收或出口抓包。最初完整原版四项 OK 但合同待接入的两份 capture 均保留为 FAIL；只有新合同实际运行的 PASS 报告作为 fixture 来源。hosted CI/review 与最终提交单独核验。

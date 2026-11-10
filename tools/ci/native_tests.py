@@ -58,7 +58,8 @@ LINUX_BRIDGE_PROFILE_TESTS = {LINUX_BRIDGE_PROFILE_TEST: "router_bridge.sh",
                               "linux-original-forwarding-pedit-dsfield": "pedit_dsfield.sh",
                               "linux-original-forwarding-tc-flower-port-range": "tc_flower_port_range.sh",
                               "linux-original-forwarding-tc-flower-l2-miss": "tc_flower_l2_miss.sh",
-                              "linux-original-forwarding-tc-flower-cfm": "tc_flower_cfm.sh"}
+                              "linux-original-forwarding-tc-flower-cfm": "tc_flower_cfm.sh",
+                              "linux-original-forwarding-tc-chains": "tc_chains.sh"}
 LINUX_XT_STRING_PROFILE_TEST = "linux-original-netfilter-xt-string"
 LINUX_RPATH_PROFILE_TEST = "linux-original-netfilter-rpath"
 LINUX_RPATH_REALTIME_TEST = "rpath-realtime-wrapper-contract"
@@ -569,7 +570,7 @@ def run_bridge_profile(build: Path, junit: Path) -> None:
     controls = {LINUX_BRIDGE_REALTIME_TEST, LINUX_BRIDGE_PACKET_REALTIME_TEST}
     inventory = [item['name'] for item in ctest_inventory(build)]
     require(all(inventory.count(name) == 1 for name in names | controls),
-            'bridge profile must register all twenty-six complete original entries and both clock controls exactly once')
+            'bridge profile must register all twenty-seven complete original entries and both clock controls exactly once')
     cache = (build / 'CMakeCache.txt').read_text()
     native_build = next((line.split('=', 1)[1] for line in cache.splitlines()
                          if line.startswith('KER_NATIVE_LINUX_BUILD:PATH=')), None)
@@ -598,7 +599,7 @@ def run_bridge_profile(build: Path, junit: Path) -> None:
                 evidence.get('fingerprint') == manifest.get('fingerprint') and
                 evidence.get('program') == program, 'wrong native bridge/VLAN evidence')
         contract.validate_evidence(evidence)
-    summary('Original routed bridge/PVID, VLAN switching, 802.1D and VLAN uppers: twenty-six complete shells including native CFM opcode/level classification and bridge L2 miss metadata, TC port ranges, PEDIT address, UDP/TCP port and DS field edits, MDB, learning limits, isolation, VLAN switching and locked-port/MAB redirect and VLAN multicast/IPv6 VRF ingress accounting and complete IGMP/MLD source filtering and full MDB API/scale/forwarding and port/VLAN group limits, PASS ' + manifest['fingerprint'])
+    summary('Original routed bridge/PVID, VLAN switching, 802.1D and VLAN uppers: twenty-seven complete shells including TC chain reachability/goto/templates, native CFM opcode/level classification and bridge L2 miss metadata, TC port ranges, PEDIT address, UDP/TCP port and DS field edits, MDB, learning limits, isolation, VLAN switching and locked-port/MAB redirect and VLAN multicast/IPv6 VRF ingress accounting and complete IGMP/MLD source filtering and full MDB API/scale/forwarding and port/VLAN group limits, PASS ' + manifest['fingerprint'])
 
 
 def run_xt_string_profile(build: Path, junit: Path) -> None:
