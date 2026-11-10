@@ -2688,7 +2688,8 @@ def run_nginx_preloaded(args, rpc_path, capabilities, root, broker):
     fstack_profile = args.fstack_runtime is not None
     owner_activation = args.nginx_owner_activation_module is not None
     source_reload = args.source_reload_probes is not None
-    source_graceful_failclosed = args.nginx_test_source_graceful_failclosed
+    source_graceful_failclosed = bool(getattr(args,
+        'nginx_test_source_graceful_failclosed', False))
     missing_owner_shim_control = args.nginx_owner_activation_missing_helper
     worker_count = args.nginx_workers or (2 if not fstack_profile else 1)
     negative_profile = args.nginx_test_negative_profile
@@ -3394,7 +3395,9 @@ graceful_reload=0
 
 
 def inside(args):
-    if args.nginx_test_source_graceful_failclosed:
+    source_graceful_failclosed = bool(getattr(args,
+        'nginx_test_source_graceful_failclosed', False))
+    if source_graceful_failclosed:
         libc = ctypes.CDLL(None, use_errno=True)
         libc.mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p,
             ctypes.c_char_p, ctypes.c_ulong, ctypes.c_void_p]
@@ -3584,7 +3587,7 @@ def inside(args):
                     except BaseException as error:
                         raise
                     native = stats.get('native', {})
-                    if args.nginx_test_source_graceful_failclosed:
+                    if source_graceful_failclosed:
                         require(stats.get('outstanding') == 0 and
                             native.get('active_opens', 0) == 0 and
                             native.get('passive_opens', 0) == 0,
@@ -3835,6 +3838,7 @@ def main():
     parser.add_argument('--generation-worker', type=Path)
     parser.add_argument('--generation-controller', type=Path)
     args = parser.parse_args()
+    source_graceful_failclosed = args.nginx_test_source_graceful_failclosed
     if args.reuseport_group_client and (not args.inherited_group_probe or not args.preload_library):
         parser.error('reuseport group test requires inherited group probe and preload library')
     if args.observer_client and not args.preload_library:
@@ -3877,11 +3881,11 @@ def main():
         parser.error('C22 negative profile test requires the owner module and worker shim')
     if args.nginx_workers and not args.nginx_binary:
         parser.error('--nginx-workers requires --nginx-binary')
-    if args.nginx_test_source_graceful_failclosed and not (
+    if source_graceful_failclosed and not (
             args.nginx_binary and args.fstack_runtime and args.nginx_workers == 1):
         parser.error('source graceful fail-closed test requires the pinned single-worker FF Nginx runtime')
     if not args.inside:
-        if args.nginx_test_source_graceful_failclosed:
+        if source_graceful_failclosed:
             command = ['unshare', '--user', '--map-auto', '--map-root-user', '--mount', '--pid',
                 '--net', '--fork', '--kill-child', '--mount-proc',
                 sys.executable, str(Path(__file__).resolve()), '--inside']
@@ -3923,7 +3927,7 @@ def main():
             command += ['--nginx-workers', str(args.nginx_workers)]
         if args.nginx_test_unsupported_option:
             command.append('--nginx-test-unsupported-option')
-        if args.nginx_test_source_graceful_failclosed:
+        if source_graceful_failclosed:
             command.append('--nginx-test-source-graceful-failclosed')
         if args.nginx_test_negative_profile:
             command += ['--nginx-test-negative-profile', args.nginx_test_negative_profile]
