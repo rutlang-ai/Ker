@@ -232,6 +232,9 @@ static int child_worker(struct fixture *fixture)
         !strcmp(fixture->mode, "bad-action");
     if (!strcmp(fixture->mode, "late-complete")) {
         usleep(150000);
+        if (wait_fd(fixture->settle_pipe[0])) return 48;
+        char release;
+        if (read(fixture->settle_pipe[0], &release, 1) != 1 || release != 'C') return 49;
         return 0;
     }
     if (!strcmp(fixture->mode, "worker-death-defer")) {
@@ -264,8 +267,14 @@ static int child_worker(struct fixture *fixture)
         struct iovec settled_vectors[] = {{&settled_header, sizeof(settled_header)},
             {&false_settled, sizeof(false_settled)}};
         struct msghdr settled_message = {.msg_iov = settled_vectors, .msg_iovlen = 2};
-        return sendmsg(fixture->worker_fd, &settled_message, MSG_NOSIGNAL) ==
-            settled_header.message_bytes ? 0 : 46;
+        if (sendmsg(fixture->worker_fd, &settled_message, MSG_NOSIGNAL) !=
+                settled_header.message_bytes) return 46;
+        /* The negative shutdown assertion must observe this peer alive.
+         * Only the parent releases us after it has established EBUSY. */
+        if (wait_fd(fixture->settle_pipe[0])) return 50;
+        char release;
+        if (read(fixture->settle_pipe[0], &release, 1) != 1 || release != 'S') return 51;
+        return 0;
     }
     if (!should_resolve) for (;;) pause();
     if (!strcmp(fixture->mode, "replay")) {
@@ -521,10 +530,13 @@ static int run_case(const char *mode)
         usleep(120000);
         CHECK(ker_posix_rx_decision_complete(callback.packet_id,
             KER_RX_DECISION_LOCAL) == -1 && errno == ETIMEDOUT);
+        CHECK(write(fixture.settle_pipe[1], "C", 1) == 1);
         int child_status = 0;
-        CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+        pid_t worker = fixture.worker_pid;
+        pid_t waited = waitpid(worker, &child_status, 0);
+        if (waited == worker) fixture.worker_pid = -1;
+        CHECK(waited == worker);
         CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
-        fixture.worker_pid = -1;
         CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == 1);
         close(fixture.worker_pidfd);
         close(fixture.supervisor_pidfd);
@@ -535,10 +547,13 @@ static int run_case(const char *mode)
         usleep(120000);
         CHECK(ker_rx_decision_consumer_pump() == -ETIMEDOUT);
         CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == -EBUSY);
+        CHECK(write(fixture.settle_pipe[1], "S", 1) == 1);
         int child_status = 0;
-        CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+        pid_t worker = fixture.worker_pid;
+        pid_t waited = waitpid(worker, &child_status, 0);
+        if (waited == worker) fixture.worker_pid = -1;
+        CHECK(waited == worker);
         CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
-        fixture.worker_pid = -1;
         CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == 1);
         close(fixture.worker_pidfd);
         close(fixture.supervisor_pidfd);
