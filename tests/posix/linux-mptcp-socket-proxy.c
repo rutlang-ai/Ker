@@ -42,7 +42,7 @@
 #ifdef KER_PACKETDRILL_SELFTEST
 #include <sys/wait.h>
 #endif
-#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_SOCKET_FILTER_SELFTEST)
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_SOCKET_FILTER_SELFTEST) || defined(KER_BRIDGE_SELFTEST)
 #include <linux/filter.h>
 #endif
 
@@ -314,7 +314,7 @@ int __wrap_setsockopt(int fd, int level, int option, const void *value, socklen_
     if (!is_network(fd)) { errno = EBADF; return -1; }
     if (length > MS_MAX) { errno = EOPNOTSUPP; return -1; }
     unsigned char data[MS_MAX]; memcpy(data, value, length);
-#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_SOCKET_FILTER_SELFTEST)
+#if defined(KER_PACKETDRILL_SELFTEST) || defined(KER_SOCKET_FILTER_SELFTEST) || defined(KER_BRIDGE_SELFTEST)
     if (level == SOL_SOCKET && option == SO_ATTACH_FILTER) {
         if (length != sizeof(struct sock_fprog)) { errno = EINVAL; return -1; }
         struct sock_fprog program; memcpy(&program, value, sizeof(program));

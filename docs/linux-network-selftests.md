@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh`、`bridge_igmp.sh`、`bridge_mld.sh`、`bridge_mdb.sh`、`bridge_mdb_max.sh`、`pedit_ip.sh`、`pedit_l4port.sh`、`pedit_dsfield.sh`、`tc_flower_port_range.sh`、`tc_flower_l2_miss.sh` 完整入口本地通过；其余 78 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh`、`bridge_igmp.sh`、`bridge_mld.sh`、`bridge_mdb.sh`、`bridge_mdb_max.sh`、`pedit_ip.sh`、`pedit_l4port.sh`、`pedit_dsfield.sh`、`tc_flower_port_range.sh`、`tc_flower_l2_miss.sh`、`tc_flower_cfm.sh` 完整入口本地通过；其余 77 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 110/310，剩余 200；其中 105 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 205 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 111/310，剩余 199；其中 106 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 204 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -410,3 +410,10 @@ Ker 仅增加私有只读 SG 状态观察与完整入口接线，协议行为来
 独立合同将 unicast 的未知/静态 FDB/删除后未知，以及 IPv4/IPv6 multicast 的未注册/永久 MDB/删除后未注册分别绑定至真实 egress flower `l2_miss=1/0` 规则及累计 `(1,0) → (1,1) → (2,1)` 包和字节计数。Link-local multicast 命中原版 `l2_miss=1`，broadcast 命中 `l2_miss=0`；保留真实 querier、router-port、双 VRF、untagged bridge 与 veth 路径。每个原始输入帧的 native ifindex、MAC、IP 地址与长度均核验，并要求实际源 TX、桥入口 RX、桥出口 TX、peer RX 观测窗口前进。读数可异步完成，最终原版 counter query 窗口必须精确命中；不伪造同步成功。
 
 原始 Mausezahn 未指定的填充、IP ID、TTL/TOS、IPv6 flow/hop/next-header 与 broadcast EtherType 不作为固定内容断言；IPv4 输入校验和仍独立验证。12 个输入帧共 1654 bytes，全部资源正常释放。AF_PACKET 是发出前的输入记录，egress 分类计数和 peer RX 是桥接路径证据；不声称逐帧出口抓包或 socket 接收。独立测试拒绝丢失发包、miss 分类、计数、FDB/MDB 状态、规则代次、路径、清理和 backend 对照，CI 必须上传该入口原始报告并与同一 native fingerprint 绑定。
+
+
+`tc_flower_cfm.sh` 保留原版三个完整子测试：CFM opcode、maintenance domain level，以及二者联合匹配。11 个原始 Mausezahn 输入帧全部为 64 bytes，共 704 bytes；原版 EtherType、level、opcode、flags 和 TLV offset 六字节输入头与实际 native MAC/ifindex 绑定。Linux 原生 ingress flower 在真实 `veth0 ↔ veth1` 双 VRF 路径执行完整 drop 规则，独立核验每个原版查询窗口的精确 packet/drop 与 去除 14-byte Ethernet 头后的 50-byte 计数、零命中反例及逐代安装/删除；不把单独 level 或 opcode 命中当成联合匹配成功。
+
+该原版入口先加载 `tc_common.sh` 再加载 `lib.sh`，因此保留真实 pinned `tc -j` 能力探测及它原本的 usage 输出/零退出码。Ker observer 对这次能力探测不查询尚未创建的网口；随后只观察实际两个 veth 端点，不伪造 JSON 支持或成功分类。首轮探测被 observer 阻断、四口观察不适用于两口拓扑的失败，以及三个原版 OK 但合同待接入的报告分别保留，均不计合格结果。所有规则与输入头来自 unchanged pinned Linux shell，分类和 drop 由原始 Linux flower/GACT 实现，本批不改 Linux/iproute2 源码、内核配置或 C runtime。
+
+独立负向测试覆盖 CFM 键、联合匹配、硬件/软件归属、action、counter、输入帧、能力探测、规则代次、双 VRF 路径、backend 拒绝及清理。原版连续发包可先于异步统计完成，以原版最终查询窗口为命中判定；未指定的填充保持自由。源端 AF_PACKET 记录与实际 native 链路统计证明输入路径，不声称 socket 接收、CFM 业务状态机或出口抓包。hosted CI/review 仍须与最终提交单独绑定。
