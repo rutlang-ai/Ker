@@ -961,6 +961,14 @@ static int rx_frame_test_oracle(int fd, int report_fd, pid_t producer,
         ssize_t sent;
         do { sent = sendmsg(fd, &outgoing, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR);
         if (sent != result.message_bytes) return 14;
+        /* Keep the oracle alive until the producer has completed its
+         * post-RESULT authority check. Otherwise a fast oracle can exit
+         * between sending RESULT and that check, making the lease fail
+         * depending on scheduling. */
+        uint64_t acknowledged_packet = 0;
+        if (rx_authority_test_io(fd, &acknowledged_packet,
+                sizeof(acknowledged_packet), false) ||
+            acknowledged_packet != header.packet_id) return 15;
         /* Evidence is drained only after RESULT so a small pipe cannot stall
          * the producer while it waits for the lease decision. */
         records[packet] = record;
@@ -1051,6 +1059,16 @@ static int rx_decision_full_frame_test(int argc, char **argv)
             packet->pkt_len != sizeof(source) || packet->nb_segs != original_segments ||
             packet->data_len != original_first_segment || rte_mbuf_refcnt_read(packet) != 1 ||
             rte_mempool_avail_count(pool) != initial_available - original_segments) {
+            rte_pktmbuf_free(packet); active_packet = NULL; goto cleanup;
+        }
+        /* A successful lease return proves the producer's post-RESULT
+         * consumer-authority check completed while the oracle was alive. */
+        uint64_t acknowledged_packet = packet_index + 1;
+        ssize_t acknowledged;
+        do { acknowledged = send(pair[0], &acknowledged_packet,
+                sizeof(acknowledged_packet), MSG_NOSIGNAL); }
+        while (acknowledged < 0 && errno == EINTR);
+        if (acknowledged != (ssize_t)sizeof(acknowledged_packet)) {
             rte_pktmbuf_free(packet); active_packet = NULL; goto cleanup;
         }
         const void *retained_frame = NULL;
