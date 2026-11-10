@@ -655,6 +655,8 @@ static int validate_data_message(const struct received_message *message,
         message->descriptor_count || message->length > KER_RX_DECISION_MAX_MESSAGE)
         return -EPROTO;
     memcpy(data, message->bytes + sizeof(*header), sizeof(*data));
+    if (message->length != sizeof(*header) + sizeof(*data) + data->packet_bytes)
+        return -EPROTO;
     if (data->packet_bytes < 14 || data->packet_bytes > KER_RX_DECISION_MAX_FRAME ||
         !data->first_segment_bytes || data->first_segment_bytes > data->packet_bytes ||
         data->segment_count == 0 || data->queue_count == 0 ||
@@ -667,8 +669,7 @@ static int validate_data_message(const struct received_message *message,
          (data->rx_offload_flags & KER_RX_DECISION_RX_L4_CKSUM_MASK) !=
              KER_RX_DECISION_RX_L4_CKSUM_GOOD) || !data->data_room_bytes ||
         data->data_offset > data->data_room_bytes ||
-        data->first_segment_bytes > data->data_room_bytes - data->data_offset ||
-        message->length != sizeof(*header) + sizeof(*data) + data->first_segment_bytes)
+        data->first_segment_bytes > data->data_room_bytes - data->data_offset)
         return -EOPNOTSUPP;
     uint64_t now = monotonic_ns();
     if (!header->deadline_ns || !now || now >= header->deadline_ns) return -ETIMEDOUT;
@@ -752,6 +753,8 @@ int ker_rx_decision_consumer_pump(void)
         .vlan_tci = data.vlan_tci,
         .flags = data.flags,
         .rx_offload_flags = data.rx_offload_flags,
+        .full_frame_bytes = data.packet_bytes,
+        .full_frame = message.bytes + sizeof(header) + sizeof(data),
         .first_segment = message.bytes + sizeof(header) + sizeof(data),
     };
     int action = consumer.handler(&packet, consumer.context);

@@ -56,7 +56,9 @@ static uint64_t monotonic_ns(void)
 static int decision_handler(const struct ker_rx_decision_packet *packet, void *opaque)
 {
     struct app_context *context = opaque;
-    if (!packet || !packet->first_segment || !packet->packet_bytes ||
+    if (!packet || !packet->full_frame || !packet->first_segment ||
+        packet->full_frame != packet->first_segment ||
+        packet->full_frame_bytes != packet->packet_bytes || !packet->packet_bytes ||
         packet->deadline_ns <= monotonic_ns()) return -1;
     context->callbacks++;
     if (!strcmp(context->mode, "drop")) {
@@ -65,10 +67,10 @@ static int decision_handler(const struct ker_rx_decision_packet *packet, void *o
     }
     if (!strcmp(context->mode, "defer") && !context->draining) {
         if (context->deferred_packet_id ||
-            packet->first_segment_bytes > sizeof(context->deferred_snapshot)) return -1;
-        memcpy(context->deferred_snapshot, packet->first_segment,
-            packet->first_segment_bytes);
-        context->deferred_bytes = packet->first_segment_bytes;
+            packet->full_frame_bytes > sizeof(context->deferred_snapshot)) return -1;
+        memcpy(context->deferred_snapshot, packet->full_frame,
+            packet->full_frame_bytes);
+        context->deferred_bytes = packet->full_frame_bytes;
         context->deferred_packet_id = packet->packet_id;
         context->deferred_deadline_ns = packet->deadline_ns;
         context->deferred_complete_at_ns = monotonic_ns() + UINT64_C(5000000);
