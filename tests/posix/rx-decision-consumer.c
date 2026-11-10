@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -224,10 +225,40 @@ static int child_worker(struct fixture *fixture)
     if (sendmsg(fixture->worker_fd, &send_message, MSG_NOSIGNAL) != data_header.message_bytes)
         return 28;
     bool should_resolve = !strcmp(fixture->mode, "positive") ||
+        !strcmp(fixture->mode, "defer") || !strcmp(fixture->mode, "shutdown-pending") ||
         !strcmp(fixture->mode, "drop") || !strcmp(fixture->mode, "wrong-thread") ||
         !strcmp(fixture->mode, "no-handler") || !strcmp(fixture->mode, "alive-uncertain") ||
         !strcmp(fixture->mode, "dead-peer") || !strcmp(fixture->mode, "replay") ||
         !strcmp(fixture->mode, "bad-action");
+    if (!strcmp(fixture->mode, "late-complete")) {
+        usleep(150000);
+        return 0;
+    }
+    if (!strcmp(fixture->mode, "worker-death-defer")) return 0;
+    if (!strcmp(fixture->mode, "late-settle")) {
+        usleep(120000);
+        unsigned char stop_bytes[KER_RX_DECISION_MAX_MESSAGE];
+        size_t stop_length = 0;
+        if (receive_packet(fixture->worker_fd, stop_bytes, sizeof(stop_bytes),
+                &stop_length, getppid(), false) || stop_length != sizeof(header)) return 44;
+        memcpy(&header, stop_bytes, sizeof(header));
+        if (header.type != KER_RX_DECISION_STOP ||
+            header.control_id != KER_RX_DECISION_STOP_CONTROL_ID) return 45;
+        struct ker_rx_decision_header settled_header = {
+            .magic = KER_RX_DECISION_MAGIC, .version = KER_RX_DECISION_VERSION,
+            .type = KER_RX_DECISION_SETTLED, .header_bytes = sizeof(settled_header),
+            .message_bytes = sizeof(settled_header) + sizeof(struct ker_rx_decision_settled),
+            .worker_epoch = fixture->epoch,
+            .control_id = KER_RX_DECISION_STOP_CONTROL_ID,
+        };
+        memcpy(settled_header.run_nonce, fixture->nonce, sizeof(settled_header.run_nonce));
+        struct ker_rx_decision_settled false_settled = {.last_packet_id = 0};
+        struct iovec settled_vectors[] = {{&settled_header, sizeof(settled_header)},
+            {&false_settled, sizeof(false_settled)}};
+        struct msghdr settled_message = {.msg_iov = settled_vectors, .msg_iovlen = 2};
+        return sendmsg(fixture->worker_fd, &settled_message, MSG_NOSIGNAL) ==
+            settled_header.message_bytes ? 0 : 46;
+    }
     if (!should_resolve) for (;;) pause();
     if (!strcmp(fixture->mode, "replay")) {
         if (receive_packet(fixture->worker_fd, bytes, sizeof(bytes), &length, getppid(), false)) return 29;
@@ -237,6 +268,7 @@ static int child_worker(struct fixture *fixture)
         if (read(fixture->settle_pipe[0], &release, 1) != 1) return 42;
     }
     if (strcmp(fixture->mode, "positive") && strcmp(fixture->mode, "drop") &&
+        strcmp(fixture->mode, "defer") && strcmp(fixture->mode, "shutdown-pending") &&
         strcmp(fixture->mode, "bad-action") && strcmp(fixture->mode, "wrong-thread") &&
         strcmp(fixture->mode, "no-handler") && strcmp(fixture->mode, "alive-uncertain") &&
         strcmp(fixture->mode, "dead-peer")) return 0;
@@ -245,7 +277,8 @@ static int child_worker(struct fixture *fixture)
     struct ker_rx_decision_result decision;
     memcpy(&header, bytes, sizeof(header));
     memcpy(&decision, bytes + sizeof(header), sizeof(decision));
-    uint32_t expected_action = !strcmp(fixture->mode, "drop") ? KER_RX_DECISION_DROP :
+    uint32_t expected_action = (!strcmp(fixture->mode, "drop") ||
+        !strcmp(fixture->mode, "shutdown-pending")) ? KER_RX_DECISION_DROP :
         KER_RX_DECISION_LOCAL;
     if (header.type != KER_RX_DECISION_RESULT || header.packet_id != 1 ||
         decision.action != expected_action) return 34;
@@ -276,7 +309,14 @@ static int child_worker(struct fixture *fixture)
     return 0;
 }
 
-struct callback_state { int calls; pthread_t owner; int action; };
+struct callback_state {
+    int calls;
+    pthread_t owner;
+    int action;
+    bool defer;
+    uint64_t packet_id;
+    unsigned char snapshot[64];
+};
 static int decide(const struct ker_rx_decision_packet *packet, void *context)
 {
     struct callback_state *state = context;
@@ -288,7 +328,22 @@ static int decide(const struct ker_rx_decision_packet *packet, void *context)
     const unsigned char *snapshot = packet->first_segment;
     for (size_t i = 0; i < 64; ++i)
         if (snapshot[i] != (unsigned char)(i ^ 0x5a)) return 99;
+    if (state->defer) {
+        state->packet_id = packet->packet_id;
+        memcpy(state->snapshot, snapshot, sizeof(state->snapshot));
+        return KER_RX_DECISION_DEFER;
+    }
     return state->action;
+}
+
+struct complete_thread_args { uint64_t packet_id; int result; int error; };
+static void *wrong_thread_complete(void *opaque)
+{
+    struct complete_thread_args *args = opaque;
+    args->result = ker_posix_rx_decision_complete(args->packet_id,
+        KER_RX_DECISION_LOCAL);
+    args->error = errno;
+    return NULL;
 }
 
 static int run_case(const char *mode)
@@ -337,7 +392,10 @@ static int run_case(const char *mode)
     int callback_action = !strcmp(mode, "drop") ? KER_RX_DECISION_DROP :
         !strcmp(mode, "bad-action") ? 99 : KER_RX_DECISION_LOCAL;
     struct callback_state callback = {.calls = 0, .owner = pthread_self(),
-        .action = callback_action};
+        .action = callback_action,
+        .defer = !strcmp(mode, "defer") || !strcmp(mode, "shutdown-pending") ||
+            !strcmp(mode, "late-complete") || !strcmp(mode, "late-settle") ||
+            !strcmp(mode, "worker-death-defer")};
     if (!strcmp(mode, "wrong-role") || !strcmp(mode, "wrong-target")) {
         CHECK(ker_posix_rx_decision_register(fixture.app_fd, decide, &callback) < 0);
         CHECK(errno == (!strcmp(mode, "wrong-role") ? EACCES : ESTALE));
@@ -388,7 +446,10 @@ static int run_case(const char *mode)
     }
     CHECK(ker_rx_decision_consumer_start() == 0);
     CHECK(ker_posix_rx_decision_is_ready() == 1);
-    if (strcmp(mode, "positive") && strcmp(mode, "drop") &&
+    if (strcmp(mode, "positive") && strcmp(mode, "defer") &&
+        strcmp(mode, "shutdown-pending") && strcmp(mode, "late-complete") &&
+        strcmp(mode, "worker-death-defer") && strcmp(mode, "late-settle") &&
+        strcmp(mode, "drop") &&
         strcmp(mode, "wrong-thread") &&
         strcmp(mode, "no-handler") && strcmp(mode, "alive-uncertain") &&
         strcmp(mode, "dead-peer")) {
@@ -428,6 +489,77 @@ static int run_case(const char *mode)
         if (!callback.calls) usleep(1000);
     }
     CHECK(callback.calls == 1);
+    if (!strcmp(mode, "defer")) {
+        CHECK(callback.packet_id == 1);
+        for (size_t i = 0; i < sizeof(callback.snapshot); ++i)
+            CHECK(callback.snapshot[i] == (unsigned char)(i ^ 0x5a));
+        CHECK(ker_rx_decision_consumer_pump() == 0);
+        CHECK(callback.calls == 1);
+        CHECK(ker_posix_rx_decision_complete(callback.packet_id + 1,
+            KER_RX_DECISION_LOCAL) == -1 && errno == ESTALE);
+        CHECK(ker_posix_rx_decision_complete(callback.packet_id,
+            KER_RX_DECISION_DEFER) == -1 && errno == EINVAL);
+        struct complete_thread_args wrong_thread = {.packet_id = callback.packet_id};
+        pthread_t thread;
+        CHECK(pthread_create(&thread, NULL, wrong_thread_complete, &wrong_thread) == 0);
+        CHECK(pthread_join(thread, NULL) == 0);
+        CHECK(wrong_thread.result == -1 && wrong_thread.error == EPERM);
+        CHECK(ker_posix_rx_decision_complete(callback.packet_id,
+            KER_RX_DECISION_LOCAL) == 0);
+        CHECK(ker_posix_rx_decision_complete(callback.packet_id,
+            KER_RX_DECISION_LOCAL) == -1 && errno == EALREADY);
+    }
+    if (!strcmp(mode, "late-complete")) {
+        usleep(120000);
+        CHECK(ker_posix_rx_decision_complete(callback.packet_id,
+            KER_RX_DECISION_LOCAL) == -1 && errno == ETIMEDOUT);
+        int child_status = 0;
+        CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+        CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+        fixture.worker_pid = -1;
+        CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == 1);
+        close(fixture.worker_pidfd);
+        close(fixture.supervisor_pidfd);
+        close(fixture.settle_pipe[1]);
+        return 0;
+    }
+    if (!strcmp(mode, "late-settle")) {
+        usleep(120000);
+        CHECK(ker_rx_decision_consumer_pump() == -ETIMEDOUT);
+        CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == -EBUSY);
+        int child_status = 0;
+        CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+        CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+        fixture.worker_pid = -1;
+        CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == 1);
+        close(fixture.worker_pidfd);
+        close(fixture.supervisor_pidfd);
+        close(fixture.settle_pipe[1]);
+        return 0;
+    }
+    if (!strcmp(mode, "worker-death-defer")) {
+        int child_status = 0;
+        CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+        CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+        fixture.worker_pid = -1;
+        CHECK(ker_posix_rx_decision_complete(callback.packet_id,
+            KER_RX_DECISION_LOCAL) == -1 && errno == ESRCH);
+        CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == 1);
+        close(fixture.worker_pidfd);
+        close(fixture.supervisor_pidfd);
+        close(fixture.settle_pipe[1]);
+        return 0;
+    }
+    if (!strcmp(mode, "shutdown-pending")) {
+        CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == 0);
+        int child_status = 0;
+        CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+        CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+        close(fixture.worker_pidfd);
+        close(fixture.supervisor_pidfd);
+        close(fixture.settle_pipe[1]);
+        return 0;
+    }
     if (!strcmp(mode, "alive-uncertain")) {
         CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == -EBUSY);
         CHECK(ker_rx_decision_consumer_registered() == 1);
@@ -472,6 +604,241 @@ fail:
     return 1;
 }
 
+struct supervisor_case_notice { pid_t consumer_pid; pid_t worker_pid; };
+struct supervisor_case_result { int complete_errno; int shutdown_result; };
+struct supervisor_case_callback { uint64_t packet_id; };
+
+static int defer_supervisor_case(const struct ker_rx_decision_packet *packet,
+    void *opaque)
+{
+    struct supervisor_case_callback *state = opaque;
+    if (!packet || !packet->first_segment || packet->packet_id != 1 ||
+        packet->deadline_ns <= monotonic_ns()) return -1;
+    state->packet_id = packet->packet_id;
+    return KER_RX_DECISION_DEFER;
+}
+
+static int write_all(int fd, const void *buffer, size_t length)
+{
+    const unsigned char *cursor = buffer;
+    while (length) {
+        ssize_t count = write(fd, cursor, length);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) return -1;
+        cursor += (size_t)count;
+        length -= (size_t)count;
+    }
+    return 0;
+}
+
+static int read_all(int fd, void *buffer, size_t length)
+{
+    unsigned char *cursor = buffer;
+    while (length) {
+        ssize_t count = read(fd, cursor, length);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) return -1;
+        cursor += (size_t)count;
+        length -= (size_t)count;
+    }
+    return 0;
+}
+
+static int supervisor_case_worker(int fd, int release_fd, pid_t consumer_pid,
+    pid_t supervisor_pid, const uint8_t nonce[KER_RX_DECISION_NONCE_BYTES],
+    uint64_t epoch)
+{
+    unsigned char bytes[KER_RX_DECISION_MAX_MESSAGE];
+    size_t length = 0;
+    if (receive_packet(fd, bytes, sizeof(bytes), &length, supervisor_pid, true) ||
+        length != sizeof(struct ker_rx_decision_header) +
+            sizeof(struct ker_rx_decision_bootstrap)) return 1;
+    struct ker_rx_decision_header header;
+    struct ker_rx_decision_bootstrap bootstrap;
+    memcpy(&header, bytes, sizeof(header));
+    memcpy(&bootstrap, bytes + sizeof(header), sizeof(bootstrap));
+    if (header.type != KER_RX_DECISION_BOOTSTRAP ||
+        bootstrap.target_role != KER_RX_DECISION_TARGET_CONSUMER ||
+        bootstrap.target_pid != (uint32_t)consumer_pid ||
+        bootstrap.supervisor_pid != (uint32_t)supervisor_pid ||
+        memcmp(header.run_nonce, nonce, sizeof(header.run_nonce))) return 2;
+    char release;
+    if (read(release_fd, &release, 1) != 1) return 3;
+    if (receive_packet(fd, bytes, sizeof(bytes), &length, consumer_pid, false) ||
+        length != sizeof(header)) return 4;
+    memcpy(&header, bytes, sizeof(header));
+    if (header.type != KER_RX_DECISION_HELLO ||
+        header.control_id != KER_RX_DECISION_HELLO_CONTROL_ID) return 5;
+    struct ker_rx_decision_header ready = {
+        .magic = KER_RX_DECISION_MAGIC, .version = KER_RX_DECISION_VERSION,
+        .type = KER_RX_DECISION_READY, .header_bytes = sizeof(ready),
+        .message_bytes = sizeof(ready), .worker_epoch = epoch,
+        .control_id = KER_RX_DECISION_HELLO_CONTROL_ID,
+    };
+    memcpy(ready.run_nonce, nonce, sizeof(ready.run_nonce));
+    if (send(fd, &ready, sizeof(ready), MSG_NOSIGNAL) != sizeof(ready)) return 6;
+    struct ker_rx_decision_header data_header = {
+        .magic = KER_RX_DECISION_MAGIC, .version = KER_RX_DECISION_VERSION,
+        .type = KER_RX_DECISION_DATA, .header_bytes = sizeof(data_header),
+        .worker_epoch = epoch, .packet_id = 1,
+        .deadline_ns = monotonic_ns() + KER_RX_DECISION_DEADLINE_NS,
+    };
+    memcpy(data_header.run_nonce, nonce, sizeof(data_header.run_nonce));
+    struct ker_rx_decision_data data = {
+        .packet_bytes = 64, .first_segment_bytes = 64, .data_offset = 128,
+        .segment_count = 1, .queue_id = 0, .queue_count = 1,
+        .data_room_bytes = 2048,
+    };
+    data_header.message_bytes = sizeof(data_header) + sizeof(data) + 64;
+    unsigned char snapshot[64];
+    memset(snapshot, 0x5a, sizeof(snapshot));
+    struct iovec vectors[] = {{&data_header, sizeof(data_header)},
+        {&data, sizeof(data)}, {snapshot, sizeof(snapshot)}};
+    struct msghdr message = {.msg_iov = vectors, .msg_iovlen = 3};
+    if (sendmsg(fd, &message, MSG_NOSIGNAL) != data_header.message_bytes) return 7;
+    /* Only STOP is permitted after the supervisor dies; a result would mean
+     * the revoked lease was incorrectly authorized. */
+    if (receive_packet(fd, bytes, sizeof(bytes), &length, consumer_pid, false) ||
+        length != sizeof(header)) return 8;
+    memcpy(&header, bytes, sizeof(header));
+    if (header.type != KER_RX_DECISION_STOP) return 9;
+    return 0;
+}
+
+static int supervisor_death_defer_case(void)
+{
+    int notice_pipe[2] = {-1, -1}, release_pipe[2] = {-1, -1};
+    pid_t supervisor = -1, consumer = -1, worker = -1;
+    int supervisor_pidfd = -1;
+    bool supervisor_reaped = false;
+    CHECK(prctl(PR_SET_CHILD_SUBREAPER, 1) == 0);
+    CHECK(pipe2(notice_pipe, O_CLOEXEC) == 0);
+    CHECK(pipe2(release_pipe, O_CLOEXEC) == 0);
+    supervisor = fork();
+    CHECK(supervisor >= 0);
+    if (supervisor == 0) {
+        close(notice_pipe[0]);
+        close(release_pipe[1]);
+        int app_pair[2], worker_release[2];
+        if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, app_pair) ||
+            pipe2(worker_release, O_CLOEXEC)) _exit(10);
+        int pass = 1;
+        if (setsockopt(app_pair[0], SOL_SOCKET, SO_PASSCRED, &pass, sizeof(pass)) ||
+            setsockopt(app_pair[1], SOL_SOCKET, SO_PASSCRED, &pass, sizeof(pass))) _exit(11);
+        uint8_t nonce[KER_RX_DECISION_NONCE_BYTES];
+        for (size_t i = 0; i < sizeof(nonce); ++i) nonce[i] = (uint8_t)(0xa0 + i);
+        const uint64_t epoch = 37;
+        pid_t consumer_pid = fork();
+        if (consumer_pid < 0) _exit(13);
+        if (!consumer_pid) {
+            close(app_pair[1]); close(worker_release[0]); close(worker_release[1]);
+            struct supervisor_case_callback callback = {0};
+            if (ker_posix_rx_decision_register(app_pair[0], defer_supervisor_case,
+                    &callback) || ker_rx_decision_consumer_start()) _exit(14);
+            for (unsigned i = 0; i < 100 && !callback.packet_id; ++i) {
+                int pumped = ker_rx_decision_consumer_pump();
+                if (pumped) _exit(15);
+                if (!callback.packet_id) usleep(1000);
+            }
+            if (!callback.packet_id || write_all(notice_pipe[1], "D", 1) ||
+                read_all(release_pipe[0], (char[1]){0}, 1)) _exit(16);
+            errno = 0;
+            int complete = ker_posix_rx_decision_complete(callback.packet_id,
+                KER_RX_DECISION_LOCAL);
+            int complete_errno = complete == -1 ? errno : 0;
+            struct supervisor_case_result outcome = {
+                .complete_errno = complete_errno,
+                .shutdown_result = -999,
+            };
+            outcome.shutdown_result = ker_rx_decision_consumer_prepare_runtime_shutdown();
+            int success = outcome.complete_errno == ESRCH && outcome.shutdown_result == 1;
+            if (write_all(notice_pipe[1], &outcome, sizeof(outcome))) _exit(17);
+            _exit(success ? 0 : 18);
+        }
+        pid_t worker = fork();
+        if (worker < 0) _exit(12);
+        if (!worker) {
+            close(app_pair[0]); close(worker_release[1]);
+            _exit(supervisor_case_worker(app_pair[1], worker_release[0],
+                consumer_pid, getppid(), nonce, epoch));
+        }
+        int worker_pidfd = pidfd_open_for(worker);
+        int consumer_pidfd = pidfd_open_for(consumer_pid);
+        int supervisor_pidfd = pidfd_open_for(getpid());
+        if (worker_pidfd < 0 || consumer_pidfd < 0 || supervisor_pidfd < 0) _exit(19);
+        if (send_bootstrap(app_pair[0], KER_RX_DECISION_TARGET_CONSUMER,
+                consumer_pid, consumer_pidfd, getpid(), supervisor_pidfd,
+                nonce, epoch) ||
+            send_bootstrap(app_pair[1], KER_RX_DECISION_TARGET_WORKER,
+                worker, worker_pidfd, getpid(), supervisor_pidfd, nonce, epoch)) _exit(20);
+        close(consumer_pidfd); close(worker_pidfd); close(supervisor_pidfd);
+        close(app_pair[0]); close(app_pair[1]);
+        close(worker_release[0]);
+        if (write_all(worker_release[1], "R", 1)) _exit(21);
+        close(worker_release[1]);
+        struct supervisor_case_notice notice = {consumer_pid, worker};
+        if (write_all(notice_pipe[1], &notice, sizeof(notice))) _exit(22);
+        for (;;) pause();
+    }
+    close(notice_pipe[1]); close(release_pipe[0]);
+    struct supervisor_case_notice notice;
+    struct supervisor_case_result outcome;
+    supervisor_pidfd = pidfd_open_for(supervisor);
+    CHECK(supervisor_pidfd >= 0);
+    CHECK(read_all(notice_pipe[0], &notice, sizeof(notice)) == 0);
+    consumer = notice.consumer_pid;
+    worker = notice.worker_pid;
+    char ready;
+    CHECK(read_all(notice_pipe[0], &ready, 1) == 0 && ready == 'D');
+    CHECK(kill(supervisor, SIGKILL) == 0);
+    struct pollfd exited = {.fd = supervisor_pidfd, .events = POLLIN};
+    CHECK(poll(&exited, 1, 1000) == 1 && (exited.revents & POLLIN));
+    /* Keep the dead supervisor unreaped until the consumer has checked its
+     * pidfd, so the test exercises a dead PID rather than parentage changes. */
+    CHECK(write_all(release_pipe[1], "X", 1) == 0);
+    CHECK(read_all(notice_pipe[0], &outcome, sizeof(outcome)) == 0);
+    int supervisor_status = 0;
+    CHECK(waitpid(supervisor, &supervisor_status, 0) == supervisor);
+    supervisor_reaped = true;
+    supervisor = -1;
+    CHECK(WIFSIGNALED(supervisor_status) && WTERMSIG(supervisor_status) == SIGKILL);
+    int consumer_status = 0, worker_status = 0;
+    CHECK(waitpid(consumer, &consumer_status, 0) == consumer);
+    consumer = -1;
+    CHECK(waitpid(worker, &worker_status, 0) == worker);
+    worker = -1;
+    bool consumer_ok = WIFEXITED(consumer_status) && WEXITSTATUS(consumer_status) == 0;
+    bool worker_ok = WIFEXITED(worker_status) && WEXITSTATUS(worker_status) == 0;
+    if (!(consumer_ok && worker_ok && outcome.complete_errno == ESRCH &&
+            outcome.shutdown_result == 1))
+        fprintf(stderr, "supervisor case consumer=%d worker=%d errno=%d shutdown=%d\n",
+            consumer_ok, worker_ok, outcome.complete_errno, outcome.shutdown_result);
+    CHECK(consumer_ok && worker_ok && outcome.complete_errno == ESRCH &&
+        outcome.shutdown_result == 1);
+    close(supervisor_pidfd); supervisor_pidfd = -1;
+    close(notice_pipe[0]); notice_pipe[0] = -1;
+    close(release_pipe[1]); release_pipe[1] = -1;
+    return 0;
+fail:
+    /* Only signal children for which this fixture still owns an unreaped
+     * identity.  In particular, never reuse a numeric PID after waitpid. */
+    if (supervisor > 0 && !supervisor_reaped) (void)kill(supervisor, SIGKILL);
+    if (consumer > 0) (void)kill(consumer, SIGKILL);
+    if (worker > 0) (void)kill(worker, SIGKILL);
+    if (supervisor > 0 && !supervisor_reaped) {
+        (void)waitpid(supervisor, NULL, 0);
+        supervisor = -1;
+    }
+    if (consumer > 0) { (void)waitpid(consumer, NULL, 0); consumer = -1; }
+    if (worker > 0) { (void)waitpid(worker, NULL, 0); worker = -1; }
+    if (supervisor_pidfd >= 0) close(supervisor_pidfd);
+    if (notice_pipe[0] >= 0) close(notice_pipe[0]);
+    if (notice_pipe[1] >= 0) close(notice_pipe[1]);
+    if (release_pipe[0] >= 0) close(release_pipe[0]);
+    if (release_pipe[1] >= 0) close(release_pipe[1]);
+    return 1;
+}
+
 void *wrong_thread_start(void *unused)
 {
     (void)unused;
@@ -481,5 +848,7 @@ void *wrong_thread_start(void *unused)
 int main(int argc, char **argv)
 {
     if (argc != 2) return 2;
+    if (!strcmp(argv[1], "supervisor-death-defer"))
+        return supervisor_death_defer_case();
     return run_case(argv[1]);
 }

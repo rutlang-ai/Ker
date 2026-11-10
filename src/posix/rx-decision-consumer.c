@@ -61,6 +61,11 @@ struct consumer {
     uint64_t worker_epoch;
     uint64_t last_packet_id;
     uint64_t last_result_id;
+    uint64_t last_consumed_id;
+    uint64_t pending_packet_id;
+    uint64_t pending_deadline_ns;
+    bool pending_packet;
+    bool unresolved_packet;
     ker_rx_decision_handler handler;
     void *context;
     pthread_t owner_thread;
@@ -186,6 +191,9 @@ static int pidfd_alive(int fd)
 
 static int validate_pidfd(int fd, pid_t expected_pid, uint64_t expected_start)
 {
+    int alive = pidfd_alive(fd);
+    if (alive == 0) return -ESRCH;
+    if (alive < 0) return alive;
     pid_t actual_pid = -1;
     int result = pidfd_pid(fd, &actual_pid);
     if (result) return result;
@@ -196,6 +204,17 @@ static int validate_pidfd(int fd, pid_t expected_pid, uint64_t expected_start)
     if (actual_start != expected_start) return -ESTALE;
     result = pidfd_alive(fd);
     return result == 1 ? 0 : (result == 0 ? -ESRCH : result);
+}
+
+/* A READY handshake authenticates the initial lease. Deferred decisions can
+ * outlive that handshake, so revalidate both principals at every later use. */
+static int validate_live_lease(void)
+{
+    int result = validate_pidfd(consumer.worker_pidfd, consumer.worker_pid,
+        consumer.worker_start_ticks);
+    if (!result) result = validate_pidfd(consumer.supervisor_pidfd,
+        consumer.supervisor_pid, consumer.supervisor_start_ticks);
+    return result;
 }
 
 static void close_message_fds(struct received_message *message)
@@ -347,6 +366,16 @@ static struct ker_rx_decision_header make_header(uint16_t type,
     return header;
 }
 
+static int send_decision_result(uint64_t packet_id, uint64_t deadline_ns,
+    int action)
+{
+    struct ker_rx_decision_result decision = {.action = (uint32_t)action};
+    struct ker_rx_decision_header response = make_header(KER_RX_DECISION_RESULT,
+        packet_id, 0, 0, sizeof(response) + sizeof(decision));
+    return send_message(consumer.fd, &response, &decision, sizeof(decision),
+        deadline_ns);
+}
+
 static void close_registered_fds(void)
 {
     if (consumer.fd >= 0) (void)syscall(SYS_close, consumer.fd);
@@ -476,6 +505,85 @@ int ker_posix_rx_decision_is_ready(void)
     return ready;
 }
 
+static int check_owner_thread(void);
+
+int ker_posix_rx_decision_complete(uint64_t packet_id, int action)
+{
+    pthread_mutex_lock(&consumer_lock);
+    if (check_owner_thread()) {
+        pthread_mutex_unlock(&consumer_lock);
+        errno = EPERM;
+        return -1;
+    }
+    if (consumer.state != CONSUMER_READY) {
+        pthread_mutex_unlock(&consumer_lock);
+        errno = EPIPE;
+        return -1;
+    }
+    if (action != KER_RX_DECISION_LOCAL && action != KER_RX_DECISION_DROP) {
+        pthread_mutex_unlock(&consumer_lock);
+        errno = EINVAL;
+        return -1;
+    }
+    if (!consumer.pending_packet) {
+        int error = packet_id && packet_id == consumer.last_consumed_id ? EALREADY : ENOENT;
+        pthread_mutex_unlock(&consumer_lock);
+        errno = error;
+        return -1;
+    }
+    if (packet_id != consumer.pending_packet_id) {
+        pthread_mutex_unlock(&consumer_lock);
+        errno = ESTALE;
+        return -1;
+    }
+    int lease_result = validate_live_lease();
+    if (lease_result) {
+        consumer.state = CONSUMER_FAILED;
+        consumer.transport_error = lease_result;
+        consumer.unresolved_packet = true;
+        pthread_mutex_unlock(&consumer_lock);
+        errno = -lease_result;
+        return -1;
+    }
+    uint64_t deadline_ns = consumer.pending_deadline_ns;
+    uint64_t now = monotonic_ns();
+    if (!now || now >= deadline_ns) {
+        consumer.pending_packet = false;
+        consumer.pending_packet_id = 0;
+        consumer.pending_deadline_ns = 0;
+        consumer.state = CONSUMER_FAILED;
+        consumer.transport_error = -ETIMEDOUT;
+        consumer.unresolved_packet = true;
+        consumer.last_consumed_id = packet_id;
+        pthread_mutex_unlock(&consumer_lock);
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    /* Consume before sending so a reentrant or duplicate completion cannot
+     * authorize a second response for this packet ID. */
+    consumer.pending_packet = false;
+    consumer.pending_packet_id = 0;
+    consumer.pending_deadline_ns = 0;
+    consumer.last_consumed_id = packet_id;
+    pthread_mutex_unlock(&consumer_lock);
+
+    int result = send_decision_result(packet_id, deadline_ns, action);
+    if (result) {
+        pthread_mutex_lock(&consumer_lock);
+        consumer.state = CONSUMER_FAILED;
+        consumer.transport_error = result;
+        consumer.unresolved_packet = true;
+        pthread_mutex_unlock(&consumer_lock);
+        errno = -result;
+        return -1;
+    }
+    pthread_mutex_lock(&consumer_lock);
+    consumer.last_result_id = packet_id;
+    consumer.unresolved_packet = false;
+    pthread_mutex_unlock(&consumer_lock);
+    return 0;
+}
+
 static int check_owner_thread(void)
 {
     return consumer.owner_valid && pthread_equal(consumer.owner_thread, pthread_self()) ?
@@ -586,6 +694,32 @@ int ker_rx_decision_consumer_pump(void)
         pthread_mutex_unlock(&consumer_lock);
         return result;
     }
+    if (consumer.pending_packet) {
+        int lease_result = validate_live_lease();
+        if (lease_result) {
+            consumer.state = CONSUMER_FAILED;
+            consumer.transport_error = lease_result;
+            consumer.unresolved_packet = true;
+            pthread_mutex_unlock(&consumer_lock);
+            return lease_result;
+        }
+        uint64_t now = monotonic_ns();
+        if (!now || now >= consumer.pending_deadline_ns) {
+            consumer.pending_packet = false;
+            consumer.pending_packet_id = 0;
+            consumer.pending_deadline_ns = 0;
+            consumer.state = CONSUMER_FAILED;
+            consumer.transport_error = -ETIMEDOUT;
+            consumer.unresolved_packet = true;
+            consumer.last_consumed_id = consumer.last_packet_id;
+            pthread_mutex_unlock(&consumer_lock);
+            return -ETIMEDOUT;
+        }
+        /* The worker retains this exact mbuf until completion. Do not read a
+         * second DATA message or invoke the callback again while it is live. */
+        pthread_mutex_unlock(&consumer_lock);
+        return 0;
+    }
     int fd = consumer.fd;
     pthread_mutex_unlock(&consumer_lock);
 
@@ -593,11 +727,17 @@ int ker_rx_decision_consumer_pump(void)
     int result = receive_message(fd, true, &message);
     if (result == -EAGAIN || result == -EWOULDBLOCK) return 0;
     if (result) goto failed;
+    pthread_mutex_lock(&consumer_lock);
+    consumer.unresolved_packet = true;
+    pthread_mutex_unlock(&consumer_lock);
     result = validate_worker_credentials(&message.credentials);
     struct ker_rx_decision_header header;
     struct ker_rx_decision_data data;
     if (!result) result = validate_data_message(&message, &header, &data);
     if (result) { close_message_fds(&message); goto failed; }
+    pthread_mutex_lock(&consumer_lock);
+    consumer.last_packet_id = header.packet_id;
+    pthread_mutex_unlock(&consumer_lock);
 
     struct ker_rx_decision_packet packet = {
         .packet_id = header.packet_id,
@@ -617,19 +757,30 @@ int ker_rx_decision_consumer_pump(void)
     int action = consumer.handler(&packet, consumer.context);
     uint64_t after_callback = monotonic_ns();
     if (!after_callback || after_callback >= header.deadline_ns) result = -ETIMEDOUT;
-    else if (action != KER_RX_DECISION_LOCAL && action != KER_RX_DECISION_DROP)
+    else if (action == KER_RX_DECISION_DEFER) {
+        pthread_mutex_lock(&consumer_lock);
+        if (consumer.state != CONSUMER_READY || consumer.pending_packet) {
+            result = -EPROTO;
+        } else {
+            consumer.pending_packet = true;
+            consumer.pending_packet_id = header.packet_id;
+            consumer.pending_deadline_ns = header.deadline_ns;
+            consumer.last_packet_id = header.packet_id;
+        }
+        pthread_mutex_unlock(&consumer_lock);
+        close_message_fds(&message);
+        if (result) goto failed;
+        return 0;
+    } else if (action != KER_RX_DECISION_LOCAL && action != KER_RX_DECISION_DROP)
         result = -EPROTO;
     if (!result) {
-        struct ker_rx_decision_result decision = {.action = (uint32_t)action};
-        struct ker_rx_decision_header response = make_header(KER_RX_DECISION_RESULT,
-            header.packet_id, 0, 0, sizeof(response) + sizeof(decision));
-        result = send_message(fd, &response, &decision, sizeof(decision), header.deadline_ns);
+        result = send_decision_result(header.packet_id, header.deadline_ns, action);
     }
     close_message_fds(&message);
     if (result) goto failed;
     pthread_mutex_lock(&consumer_lock);
-    consumer.last_packet_id = header.packet_id;
     consumer.last_result_id = header.packet_id;
+    consumer.unresolved_packet = false;
     pthread_mutex_unlock(&consumer_lock);
     return 0;
 
@@ -637,6 +788,7 @@ failed:
     pthread_mutex_lock(&consumer_lock);
     consumer.state = CONSUMER_FAILED;
     consumer.transport_error = result;
+    consumer.unresolved_packet = true;
     pthread_mutex_unlock(&consumer_lock);
     return result;
 }
@@ -669,13 +821,42 @@ static int shutdown_receive(uint64_t deadline, struct received_message *message)
     int result = wait_event(consumer.fd, POLLIN, deadline);
     if (result) return result;
     result = receive_message(consumer.fd, true, message);
-    if (result == -EPIPE && worker_definitively_dead()) return -ESRCH;
+    if (result == -EPIPE) {
+        for (;;) {
+            if (worker_definitively_dead()) return -ESRCH;
+            uint64_t now = monotonic_ns();
+            if (!now) return -errno;
+            if (now >= deadline) return -ETIMEDOUT;
+            uint64_t remaining = deadline - now;
+            int timeout = remaining / UINT64_C(1000000) > INT32_MAX ? INT32_MAX :
+                (int)((remaining + UINT64_C(999999)) / UINT64_C(1000000));
+            struct pollfd event = {.fd = consumer.worker_pidfd, .events = POLLIN};
+            int polled = (int)syscall(SYS_poll, &event, 1, timeout);
+            if (polled < 0 && errno == EINTR) continue;
+            if (polled < 0) return -errno;
+            if (!polled) return -ETIMEDOUT;
+        }
+    }
     return result;
 }
 
 int ker_rx_decision_consumer_prepare_runtime_shutdown(void)
 {
     int result = -EPROTO;
+    pthread_mutex_lock(&consumer_lock);
+    if (consumer.state != CONSUMER_EMPTY && consumer.state != CONSUMER_SETTLED &&
+        consumer.state != CONSUMER_DEAD && check_owner_thread()) {
+        pthread_mutex_unlock(&consumer_lock);
+        return -EPERM;
+    }
+    bool pending_packet = consumer.state == CONSUMER_READY && consumer.pending_packet;
+    uint64_t pending_packet_id = consumer.pending_packet_id;
+    pthread_mutex_unlock(&consumer_lock);
+    int pending_result = 0;
+    if (pending_packet)
+        pending_result = ker_posix_rx_decision_complete(pending_packet_id,
+            KER_RX_DECISION_DROP);
+
     pthread_mutex_lock(&consumer_lock);
     if (consumer.state == CONSUMER_EMPTY || consumer.state == CONSUMER_SETTLED ||
         consumer.state == CONSUMER_DEAD) {
@@ -688,6 +869,10 @@ int ker_rx_decision_consumer_prepare_runtime_shutdown(void)
     }
     if (consumer.state == CONSUMER_REGISTERED) {
         /* The run loop did not complete HELLO; never claim a settled worker. */
+        pthread_mutex_unlock(&consumer_lock);
+        return -EBUSY;
+    }
+    if (pending_result && consumer.state != CONSUMER_FAILED) {
         pthread_mutex_unlock(&consumer_lock);
         return -EBUSY;
     }
@@ -756,6 +941,10 @@ wait_for_settlement:
             struct ker_rx_decision_data data;
             result = validate_data_message(&message, &header, &data);
             if (!result) {
+                pthread_mutex_lock(&consumer_lock);
+                consumer.last_packet_id = header.packet_id;
+                consumer.unresolved_packet = true;
+                pthread_mutex_unlock(&consumer_lock);
                 struct ker_rx_decision_result decision = {.action = KER_RX_DECISION_DROP};
                 struct ker_rx_decision_header response = make_header(KER_RX_DECISION_RESULT,
                     header.packet_id, 0, 0, sizeof(response) + sizeof(decision));
@@ -763,8 +952,8 @@ wait_for_settlement:
                     header.deadline_ns);
                 if (!result) {
                     pthread_mutex_lock(&consumer_lock);
-                    consumer.last_packet_id = header.packet_id;
                     consumer.last_result_id = header.packet_id;
+                    consumer.unresolved_packet = false;
                     pthread_mutex_unlock(&consumer_lock);
                 }
             }
@@ -777,7 +966,9 @@ wait_for_settlement:
             if (!result) {
                 memcpy(&settled, message.bytes + sizeof(header), sizeof(settled));
                 if (settled.reserved || settled.outstanding_count ||
-                    settled.last_packet_id != consumer.last_result_id) result = -EPROTO;
+                    consumer.unresolved_packet ||
+                    settled.last_packet_id != consumer.last_result_id ||
+                    settled.last_packet_id != consumer.last_packet_id) result = -EPROTO;
             }
             close_message_fds(&message);
             if (result) break;
