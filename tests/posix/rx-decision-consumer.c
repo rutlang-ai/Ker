@@ -250,7 +250,15 @@ static int child_worker(struct fixture *fixture)
         usleep(150000);
         return 0;
     }
-    if (!strcmp(fixture->mode, "worker-death-defer")) return 0;
+    if (!strcmp(fixture->mode, "worker-death-defer")) {
+        /* Keep the authenticated worker alive until the consumer has actually
+         * deferred this DATA lease. The parent releases us only after the
+         * callback returns DEFER and the pending lease is observable. */
+        if (wait_fd(fixture->settle_pipe[0])) return 46;
+        char release;
+        if (read(fixture->settle_pipe[0], &release, 1) != 1 || release != 'D') return 47;
+        return 0;
+    }
     if (!strcmp(fixture->mode, "late-settle")) {
         usleep(120000);
         unsigned char stop_bytes[KER_RX_DECISION_MAX_MESSAGE];
@@ -572,10 +580,14 @@ static int run_case(const char *mode)
         return 0;
     }
     if (!strcmp(mode, "worker-death-defer")) {
+        CHECK(callback.packet_id == 1);
+        CHECK(write(fixture.settle_pipe[1], "D", 1) == 1);
         int child_status = 0;
-        CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+        pid_t worker = fixture.worker_pid;
+        pid_t waited = waitpid(worker, &child_status, 0);
+        if (waited == worker) fixture.worker_pid = -1;
+        CHECK(waited == worker);
         CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
-        fixture.worker_pid = -1;
         CHECK(ker_posix_rx_decision_complete(callback.packet_id,
             KER_RX_DECISION_LOCAL) == -1 && errno == ESRCH);
         CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == 1);
