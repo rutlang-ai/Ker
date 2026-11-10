@@ -164,9 +164,34 @@ def chain_snapshot(env):
     return json.loads(result.stdout)
 
 
+def vlan_modify_snapshot(env):
+    started = time.monotonic_ns()
+    filters = {}
+    for device in ('veth1', 'veth2'):
+        for locus in ('ingress', 'egress'):
+            result = subprocess.run([os.environ['KER_FORWARDING_TC'], '-j', '-s', 'filter', 'show',
+                                    'dev', device, locus], env=env, capture_output=True,
+                                   text=True, timeout=10, check=True)
+            if result.stderr:
+                raise RuntimeError('native VLAN action observation warning: ' + result.stderr)
+            filters[f'{device}:{locus}'] = json.loads(result.stdout)
+    finished = time.monotonic_ns()
+    return {'started_monotonic_ns': started, 'finished_monotonic_ns': finished,
+            'monotonic_ns': finished, 'filters': filters}
+
+
 def main():
     tool, words = Path(sys.argv[0]).name, sys.argv[1:]
     record = dict(tool=tool, arguments=words)
+    if (tool == 'tc' and os.environ.get('KER_FORWARDING_BRIDGE_VLAN_MODIFY') == '1' and
+            words[:2] == ['filter', 'add']):
+        ready_path = os.environ.get('KER_FORWARDING_VLAN_OBSERVER_READY')
+        if not ready_path or not Path(ready_path).is_file():
+            raise RuntimeError('native VLAN packet observer must be ready before TC action installation')
+        ready = json.loads(Path(ready_path).read_text())
+        if ready.get('type') != 'ready' or {x.get('name') for x in ready.get('interfaces', [])} != {
+                'veth0', 'veth1', 'veth2', 'veth3'}:
+            raise RuntimeError('native VLAN packet observer did not bind all original bridge ports')
     if (tool == 'tc' and os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' and
             words[:2] == ['filter', 'add'] and 'pedit' in words):
         ready_path = os.environ.get('KER_FORWARDING_PEDIT_OBSERVER_READY')
@@ -221,6 +246,32 @@ def main():
                 if state.stderr:
                     raise RuntimeError('native 802.1D observation warning: ' + state.stderr)
                 record['bridge_state'] = dict(links=json.loads(state.stdout))
+            elif os.environ.get('KER_FORWARDING_BRIDGE_VLAN_MODIFY') == '1':
+                record['bridge_state'] = {}
+                for key, query in (
+                    ('link', [os.environ['KER_FORWARDING_IP'], '-d', '-j', 'link', 'show', 'dev', 'br0']),
+                    ('port', [os.environ['KER_FORWARDING_IP'], '-d', '-j', 'link', 'show', 'dev', 'veth1']),
+                    ('vlans', [os.environ['KER_FORWARDING_BRIDGE'], '-j', 'vlan', 'show', 'dev', 'br0']),
+                    ('native_links', [os.environ['KER_FORWARDING_IP'], '-d', '-j', 'link', 'show', 'type', 'veth'])):
+                    state = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
+                    if state.stderr:
+                        raise RuntimeError('native VLAN modify bridge observation warning: ' + state.stderr)
+                    record['bridge_state'][key] = json.loads(state.stdout)
+                for key, query in (
+                    ('port_vlans_veth1', [os.environ['KER_FORWARDING_BRIDGE'], '-j', 'vlan', 'show', 'dev', 'veth1']),
+                    ('port_vlans_veth2', [os.environ['KER_FORWARDING_BRIDGE'], '-j', 'vlan', 'show', 'dev', 'veth2']),
+                    ('host_vlans', [os.environ['KER_FORWARDING_IP'], '-d', '-j', 'link', 'show', 'type', 'vlan'])):
+                    state = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
+                    if state.stderr:
+                        raise RuntimeError('native VLAN modify port observation warning: ' + state.stderr)
+                    record['bridge_state'][key] = json.loads(state.stdout)
+                for key, device in (('host_addresses_veth0_85', 'veth0.85'),
+                                    ('host_addresses_veth3_65', 'veth3.65')):
+                    state = subprocess.run([os.environ['KER_FORWARDING_IP'], '-j', 'address', 'show', 'dev', device],
+                        env=env, capture_output=True, text=True, timeout=10, check=True)
+                    if state.stderr:
+                        raise RuntimeError('native VLAN modify address observation warning: ' + state.stderr)
+                    record['bridge_state'][key] = json.loads(state.stdout)
             else:
                 # Observe the resident kernel's actual bridge state before each
                 # original ping, including the PVID-removal negative phases.
@@ -252,7 +303,7 @@ def main():
                                       os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or
                                       os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' or
                                       os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or
-                                      (os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1'))):
+                                      (os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_VLAN_MODIFY') == '1'))):
                 raise RuntimeError('unsupported native tool: ' + tool)
             command = [os.environ['KER_FORWARDING_' + tool.upper()], *words]
         if tool == 'bridge' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':
@@ -287,6 +338,17 @@ def main():
                       (tool == 'mausezahn' or tool == 'tc' and words[:4] == ['-j','-s','filter','show'] or
                        tool == 'ip' and words[:4] == ['link','set','dev','br0']))
         observe_pedit = os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' and tool in ('tc','mausezahn')
+        observe_vlan_modify = os.environ.get('KER_FORWARDING_BRIDGE_VLAN_MODIFY') == '1' and (
+            tool == 'tc' and words[:2] in (['filter', 'add'], ['filter', 'del']) or
+            tool == 'ip' and words[:2] == ['vrf', 'exec'])
+        if observe_vlan_modify:
+            try:
+                record['vlan_modify_before'] = vlan_modify_snapshot(env)
+            except Exception as error:
+                record.update(returncode=1, stdout='', stderr=str(error), observer_error='before')
+                with open(os.environ['KER_FORWARDING_LOG'], 'a') as stream:
+                    stream.write(json.dumps(record) + '\n')
+                raise
         observe_range = os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' and tool in ('tc','mausezahn') and not (tool == 'tc' and words in (['-j'], ['help']))
         if observe_range:
             record['range_before'] = packet_bridge_snapshot(env, True)
@@ -316,10 +378,12 @@ def main():
                 env=env, capture_output=True, text=True, timeout=10, check=True)
             if features.stderr: raise RuntimeError('native ethtool feature query warning: ' + features.stderr)
             record['ethtool_features_before'] = json.loads(features.stdout)
-        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or (os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1'):
+        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_VLAN_MODIFY') == '1' or (os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1'):
+            record['started_monotonic_ns'] = time.monotonic_ns()
             record['started_monotonic'] = time.monotonic()
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
-        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or (os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1'):
+        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_VLAN_MODIFY') == '1' or (os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1'):
+            record['finished_monotonic_ns'] = time.monotonic_ns()
             record['finished_monotonic'] = time.monotonic()
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
         if tool == 'ethtool':
@@ -335,6 +399,15 @@ def main():
             record['l2_after'] = packet_bridge_snapshot(env, True)
         if observe_pedit:
             record['pedit_after'] = packet_bridge_snapshot(env, True, pedit_counter_sample=sample_add)
+        if observe_vlan_modify:
+            try:
+                record['vlan_modify_after'] = vlan_modify_snapshot(env)
+            except Exception as error:
+                record['observer_error'] = 'after'
+                record['observer_error_detail'] = str(error)
+                with open(os.environ['KER_FORWARDING_LOG'], 'a') as stream:
+                    stream.write(json.dumps(record) + '\n')
+                raise
         if observe_mdb_max:
             record['mdb_max_after'] = mdb_max_snapshot(env)
         if observe_mdb_api:

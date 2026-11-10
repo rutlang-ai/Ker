@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 spec = importlib.util.spec_from_file_location('network_runner', Path(__file__).with_name('linux-network-selftest.py'))
 common = importlib.util.module_from_spec(spec); spec.loader.exec_module(common)
@@ -60,6 +61,8 @@ def missing_framework_tools_message(program, missing):
 
 
 def validate_evidence(report):
+    if report.get('program') == 'tc_vlan_modify.sh':
+        return common.load('tc_vlan_modify_contract', 'linux-tc-vlan-modify-contract.py').validate_evidence(report)
     if report.get('program') == 'skbedit_priority.sh':
         return common.load('skbedit_priority_contract', 'linux-skbedit-priority-contract.py').validate_evidence(report)
     if report.get('program') == 'tc_chains.sh':
@@ -181,6 +184,56 @@ def validate_evidence(report):
     require(native.get('netlinks',0) > 0 and native.get('raw_sockets',0) > 0 and native.get('live') == 0 and stats.get('outstanding') == 0 and stats.get('worker_exit_code') == 0 and stats.get('control_eof') is True and stats.get('shutdown_timed_out') is False, 'native bridge resources did not stop normally')
 
 
+def archive_vlan_observer_capture(evidence, observer_output, observer_stats_path, observer_ready):
+    """Persist raw VLAN observer files before any stream validation can fail."""
+    archived = evidence.with_suffix('.packets.jsonl')
+    archived_stats = archived.with_suffix(archived.suffix + '.stats.json')
+    capture = {'archive': str(archived), 'stats_archive': str(archived_stats)}
+    if observer_output.exists():
+        shutil.copyfile(observer_output, archived)
+        payload = observer_output.read_bytes()
+        capture['sha256'] = hashlib.sha256(payload).hexdigest()
+        capture['bytes'] = len(payload)
+    if observer_stats_path.exists():
+        shutil.copyfile(observer_stats_path, archived_stats)
+        payload = observer_stats_path.read_bytes()
+        capture['stats_sha256'] = hashlib.sha256(payload).hexdigest()
+        capture['stats_bytes'] = len(payload)
+    ready_record = None
+    if observer_ready.exists():
+        try:
+            ready_record = json.loads(observer_ready.read_text())
+        except (OSError, json.JSONDecodeError):
+            ready_record = {'type': 'invalid-json',
+                            'raw': observer_ready.read_text(errors='replace')}
+    return capture, ready_record
+
+
+def archive_vlan_observer_evidence(report, evidence, observer_output, observer_stats_path,
+                                   observer_ready, observer_returncode):
+    """Capture best-effort failure artifacts without masking observer failure."""
+    archive_error = None
+    capture = {'archive': str(evidence.with_suffix('.packets.jsonl')),
+               'stats_archive': str(evidence.with_suffix('.packets.jsonl').with_suffix('.jsonl.stats.json'))}
+    ready_record = None
+    try:
+        capture, ready_record = archive_vlan_observer_capture(
+            evidence, observer_output, observer_stats_path, observer_ready)
+    except Exception as error:
+        archive_error = str(error)
+        report['vlan_packet_observer_archive_error'] = archive_error
+    report['vlan_packet_observer_capture'] = capture
+    if ready_record is not None:
+        report['vlan_packet_observer_ready'] = ready_record
+    require(observer_returncode == 0 and observer_ready.exists() and observer_output.exists(),
+            'native VLAN packet observer did not stop normally')
+    require(archive_error is None and type(capture.get('bytes')) is int and
+            type(capture.get('stats_bytes')) is int and capture.get('sha256') and
+            capture.get('stats_sha256'),
+            'native VLAN packet/statistics capture could not be retained')
+    return capture, ready_record
+
+
 def main():
     parser = argparse.ArgumentParser()
     for name in ('server', 'preload', 'tools', 'launcher', 'library', 'worker', 'pmd_dir', 'manifest', 'evidence'):
@@ -188,13 +241,16 @@ def main():
     parser.add_argument('--filter-control', type=Path)
     parser.add_argument('--program', choices=('router_bridge.sh', 'router_bridge_vlan.sh', 'router_bridge_1d.sh',
         'router_bridge_vlan_upper.sh', 'router_bridge_pvid_vlan_upper.sh', 'router_bridge_vlan_upper_pvid.sh',
-        'bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh', 'bridge_igmp.sh', 'bridge_mld.sh', 'bridge_mdb.sh', 'bridge_mdb_max.sh', 'pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh', 'tc_flower_l2_miss.sh', 'tc_flower_cfm.sh', 'tc_chains.sh', 'skbedit_priority.sh'),
+        'bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh', 'bridge_igmp.sh', 'bridge_mld.sh', 'bridge_mdb.sh', 'bridge_mdb_max.sh', 'pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh', 'tc_flower_l2_miss.sh', 'tc_flower_cfm.sh', 'tc_chains.sh', 'skbedit_priority.sh', 'tc_vlan_modify.sh'),
         default='router_bridge.sh')
     parser.add_argument('--packet-observer', type=Path)
+    parser.add_argument('--vlan-observer', type=Path)
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     require(args.program not in ('pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh') or args.packet_observer is not None,
             'original PEDIT test requires the passive native packet observer')
+    require(args.program != 'tc_vlan_modify.sh' or args.vlan_observer is not None,
+            'original TC VLAN modify test requires the native packet observer')
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
                                *sys.argv[1:], '--inside']).returncode
@@ -218,6 +274,9 @@ def main():
     if args.program == 'skbedit_priority.sh':
         require({'CONFIG_NET_ACT_SKBEDIT=y', 'CONFIG_NET_SCH_PRIO=y'}.issubset(config),
                 'original priority classification requires real Linux SKBEDIT and PRIO')
+    if args.program == 'tc_vlan_modify.sh':
+        require({'CONFIG_NET_ACT_VLAN=y', 'CONFIG_NET_CLS_ACT=y', 'CONFIG_NET_SCH_INGRESS=y',
+                 'CONFIG_NET_CLS_FLOWER=y'}.issubset(config), 'original VLAN modify requires native Linux VLAN action and ingress flower')
     source = Path(manifest['source']) / 'tools/testing/selftests/net'
     originals = {}
     if args.program in ('pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh'):
@@ -253,6 +312,9 @@ def main():
         report['error'] = missing_tools_message
         args.evidence.write_text(json.dumps(report, indent=2) + '\n')
         raise RuntimeError(missing_tools_message)
+    observer_process = None
+    observer_out = observer_err = None
+    observer_output = observer_ready = observer_stop = None
     try:
         for command in (['ip', 'link', 'set', 'lo', 'up'],
                         ['ip', 'link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink'],
@@ -291,11 +353,18 @@ def main():
                 observer_stderr = root / 'pedit-observer.stderr'
                 environment['KER_FORWARDING_PEDIT_OBSERVER_READY'] = str(observer_ready)
                 report['packet_observer_source_sha256'] = hashlib.sha256(args.packet_observer.read_bytes()).hexdigest()
+            if args.program == 'tc_vlan_modify.sh':
+                observer_ready, observer_stop = root / 'vlan-observer.ready', root / 'vlan-observer.stop'
+                observer_output = root / 'vlan-observer.jsonl'
+                observer_stdout = root / 'vlan-observer.stdout'
+                observer_stderr = root / 'vlan-observer.stderr'
+                report['vlan_packet_observer_source_sha256'] = hashlib.sha256(args.vlan_observer.read_bytes()).hexdigest()
+                environment['KER_FORWARDING_VLAN_OBSERVER_READY'] = str(observer_ready)
             if args.program == 'bridge_fdb_learning_limit.sh':
                 environment['KER_FORWARDING_BRIDGE_LEARNING'] = '1'
-            if args.program in ('bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh', 'bridge_igmp.sh', 'bridge_mld.sh', 'bridge_mdb.sh', 'bridge_mdb_max.sh', 'pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh', 'tc_flower_l2_miss.sh', 'tc_flower_cfm.sh', 'tc_chains.sh', 'skbedit_priority.sh'):
+            if args.program in ('bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh', 'bridge_igmp.sh', 'bridge_mld.sh', 'bridge_mdb.sh', 'bridge_mdb_max.sh', 'pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh', 'tc_flower_l2_miss.sh', 'tc_flower_cfm.sh', 'tc_chains.sh', 'skbedit_priority.sh', 'tc_vlan_modify.sh'):
                 mode = {'bridge_mdb_port_down.sh': 'MDB_PORT', 'bridge_port_isolation.sh': 'ISOLATION',
-                        'bridge_vlan_unaware.sh': 'UNAWARE', 'bridge_vlan_aware.sh': 'UNAWARE', 'bridge_locked_port.sh': 'UNAWARE', 'bridge_vlan_mcast.sh': 'UNAWARE', 'bridge_igmp.sh': 'SG', 'bridge_mld.sh': 'SG', 'bridge_mdb.sh': 'SG', 'bridge_mdb_max.sh': 'SG', 'pedit_ip.sh': 'PEDIT', 'pedit_l4port.sh': 'PEDIT', 'pedit_dsfield.sh': 'PEDIT', 'tc_flower_port_range.sh': 'FLOWER_RANGE', 'tc_flower_l2_miss.sh': 'L2MISS', 'tc_flower_cfm.sh': 'FLOWER_RANGE', 'tc_chains.sh': 'FLOWER_RANGE', 'skbedit_priority.sh': 'PEDIT'}[args.program]
+                        'bridge_vlan_unaware.sh': 'UNAWARE', 'bridge_vlan_aware.sh': 'UNAWARE', 'bridge_locked_port.sh': 'UNAWARE', 'bridge_vlan_mcast.sh': 'UNAWARE', 'bridge_igmp.sh': 'SG', 'bridge_mld.sh': 'SG', 'bridge_mdb.sh': 'SG', 'bridge_mdb_max.sh': 'SG', 'pedit_ip.sh': 'PEDIT', 'pedit_l4port.sh': 'PEDIT', 'pedit_dsfield.sh': 'PEDIT', 'tc_flower_port_range.sh': 'FLOWER_RANGE', 'tc_flower_l2_miss.sh': 'L2MISS', 'tc_flower_cfm.sh': 'FLOWER_RANGE', 'tc_chains.sh': 'FLOWER_RANGE', 'skbedit_priority.sh': 'PEDIT', 'tc_vlan_modify.sh': 'VLAN_MODIFY'}[args.program]
                 environment['KER_FORWARDING_BRIDGE_' + mode] = '1'
                 if args.program in ('tc_flower_cfm.sh', 'tc_chains.sh'):
                     environment['KER_FORWARDING_BRIDGE_CFM'] = '1'
@@ -361,6 +430,10 @@ def main():
                                      capture_output=True, text=True, timeout=30)
             report['missing_backend_control'] = dict(returncode=missing.returncode, stdout=missing.stdout, stderr=missing.stderr)
             require(missing.returncode != 0, 'original forwarding shell passed without native Linux')
+            if args.program == 'tc_vlan_modify.sh':
+                require('SKIP:' not in missing.stdout and 'No such file or directory' in missing.stderr and
+                        'Failed to create netif' in missing.stdout,
+                        'original VLAN test did not fail on the missing native netlink backend')
             log.unlink(missing_ok=True)
             with (root / 'server.stdout').open('w+') as out, (root / 'server.stderr').open('w+') as err:
                 process = subprocess.Popen([sys.executable, str(args.launcher), '--library', str(args.library),
@@ -382,6 +455,16 @@ def main():
                                                     KER_MPTCP_NATIVE_TIME_LOG=str(root / 'native-clock-reads.log'))
                         observer_process = subprocess.Popen(
                             [sys.executable, str(args.packet_observer), '--output', str(observer_output),
+                             '--ready', str(observer_ready), '--stop', str(observer_stop)],
+                            env=observer_environment, stdout=observer_out, stderr=observer_err,
+                            start_new_session=True)
+                    if args.program == 'tc_vlan_modify.sh':
+                        observer_out = observer_stdout.open('w+')
+                        observer_err = observer_stderr.open('w+')
+                        observer_environment = dict(environment, LD_PRELOAD=str(args.preload),
+                            KER_MPTCP_SOCKET_NAMESPACE='', KER_MPTCP_NATIVE_REALTIME='1')
+                        observer_process = subprocess.Popen(
+                            [sys.executable, str(args.vlan_observer), '--output', str(observer_output),
                              '--ready', str(observer_ready), '--stop', str(observer_stop)],
                             env=observer_environment, stdout=observer_out, stderr=observer_err,
                             start_new_session=True)
@@ -433,6 +516,60 @@ def main():
                             report['mcast_monitor'] = json.loads((root/'mcast-monitor.json').read_text())
                             require(monitor.returncode==0 and report['mcast_monitor']['error'] is None,
                                     'native multicast monitor failed: '+str(report['mcast_monitor'].get('error')))
+                    # Keep the unchanged upstream shell result in the evidence
+                    # before validating auxiliary observers. Observer teardown
+                    # is secondary evidence and must not hide the first failure.
+                    report['original'] = dict(returncode=child.returncode, stdout=stdout, stderr=stderr)
+                    report['commands'] = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+                    if observer_process is not None and args.program == 'tc_vlan_modify.sh':
+                        observer_stop.touch()
+                        try:
+                            observer_process.wait(timeout=20)
+                        except subprocess.TimeoutExpired:
+                            common.cleanup.kill_tree(observer_process.pid)
+                            observer_process.wait(timeout=5)
+                        observer_out.seek(0); observer_err.seek(0)
+                        report['vlan_packet_observer_process'] = dict(returncode=observer_process.returncode,
+                            stdout=observer_out.read(), stderr=observer_err.read())
+                        observer_stats_path = observer_output.with_suffix(observer_output.suffix + '.stats.json')
+                        capture, ready_record = archive_vlan_observer_evidence(
+                            report, args.evidence, observer_output, observer_stats_path,
+                            observer_ready, observer_process.returncode)
+                        observer_records = [json.loads(line) for line in observer_output.read_text().splitlines()]
+                        require(observer_stats_path.exists(), 'native VLAN observer lacks packet statistics')
+                        observer_stats = json.loads(observer_stats_path.read_text())
+                        ready = observer_records[0] if observer_records else {}
+                        require(ready.get('type') == 'ready' and
+                                ready.get('backend_control') == {'missing_channel_errno': 2, 'host_fallback': False} and
+                                {x.get('name') for x in ready.get('interfaces', [])} == {'veth0', 'veth1', 'veth2', 'veth3'} and
+                                all(type(x.get('ifindex')) is int and x['ifindex'] > 0 for x in ready.get('interfaces', [])),
+                                'VLAN observer did not bind the four native bridge ports')
+                        frames = observer_records[1:]
+                        interfaces = {x['name']: x for x in ready['interfaces']}
+                        require(all(row.get('type') == 'frame' and row.get('ifname') in {'veth0','veth1','veth2','veth3'} and
+                                    type(row.get('native_timestamp_ns')) is int and row['native_timestamp_ns'] > 0 and
+                                    type(row.get('host_recv_before_ns')) is int and row['host_recv_before_ns'] <= row.get('host_recv_after_ns', -1) and
+                                    type(row.get('host_recv_after_ns')) is int and row['host_recv_after_ns'] <= row.get('native_clock_pair', {}).get('host_monotonic_after_ns', 0) and
+                                    row['native_timestamp_ns'] <= row.get('native_clock_pair', {}).get('native_realtime_ns', -1) and
+                                    0 <= row.get('pkttype', -1) <= 4 and row.get('halen') == 6 and
+                                    row.get('native_hatype') == 1 and
+                                    row.get('native_ifindex') == interfaces[row.get('ifname')]['ifindex'] and
+                                    row.get('direction') == ('outgoing' if row.get('pkttype') == 4 else 'ingress') and
+                                    row.get('native_ifindex') == row.get('ifindex') and
+                                    row.get('vlan_auxdata', {}).get('status') is not None
+                                    for row in frames), 'invalid native VLAN packet observer record')
+                        frame_counts = {name: sum(row['ifname'] == name for row in frames)
+                                        for name in interfaces}
+                        require(set(observer_stats.get('by_interface', {})) == set(interfaces) and
+                                all(observer_stats['by_interface'][name].get('drops') == 0 and
+                                    observer_stats['by_interface'][name].get('packets') == frame_counts[name]
+                                    for name in interfaces) and observer_stats.get('drops') == 0,
+                                'native VLAN packet observer dropped or missed frames')
+                        report['vlan_packet_observer'] = dict(ready=ready, frames=frames, frame_count=len(frames),
+                            sha256=hashlib.sha256(observer_output.read_bytes()).hexdigest(), statistics=observer_stats,
+                            archive=capture['archive'], stats_archive=capture['stats_archive'],
+                            capture=capture)
+                        observer_process = None
                     if observer_process is not None:
                         observer_stop.touch()
                         try:
@@ -481,8 +618,6 @@ def main():
                         report['packet_observer']['native_clock_archive_base64'] = base64.b64encode(clock_payload).decode('ascii')
                         report['packet_observer']['native_clock_archive_sha256'] = hashlib.sha256(clock_payload).hexdigest()
                         observer_out.close(); observer_err.close()
-                    report['original'] = dict(returncode=child.returncode, stdout=stdout, stderr=stderr)
-                    report['commands'] = [json.loads(line) for line in log.read_text().splitlines()]
                     require(child.returncode == 0 and (args.program == 'bridge_sticky_fdb.sh' or not stderr),
                             'original forwarding shell failed: ' + stdout + stderr)
                     report['mib_after'] = counters()
@@ -493,7 +628,7 @@ def main():
                     report['cleanup_state'] = dict(links=json.loads(clean.stdout), **{
                         family: diag.rpc(diag.FILE, '', '/proc/sys/net/' + family + '/conf/all/forwarding').decode()
                         for family in ('ipv4','ipv6')})
-                    if args.program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh', 'bridge_igmp.sh', 'bridge_mld.sh', 'bridge_mdb.sh', 'bridge_mdb_max.sh', 'pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh', 'tc_flower_l2_miss.sh', 'tc_flower_cfm.sh', 'tc_chains.sh', 'skbedit_priority.sh'):
+                    if args.program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh', 'bridge_igmp.sh', 'bridge_mld.sh', 'bridge_mdb.sh', 'bridge_mdb_max.sh', 'pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh', 'tc_flower_l2_miss.sh', 'tc_flower_cfm.sh', 'tc_chains.sh', 'skbedit_priority.sh', 'tc_vlan_modify.sh'):
                         observed = {}
                         for key, query in (('addresses', [str(args.tools / 'ip'), '-j', 'address', 'show']),
                                 ('ipv4_routes', [str(args.tools / 'ip'), '-4', '-j', 'route', 'show', 'table', 'all']),
@@ -504,7 +639,7 @@ def main():
                             require(not clean.stderr, 'native MDB cleanup observation warning')
                             observed[key] = json.loads(clean.stdout)
                         report['cleanup_state'].update(observed)
-                    if args.program in ('bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh', 'bridge_igmp.sh', 'bridge_mld.sh', 'bridge_mdb.sh', 'bridge_mdb_max.sh', 'pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh', 'tc_flower_l2_miss.sh', 'tc_flower_cfm.sh', 'tc_chains.sh', 'skbedit_priority.sh'):
+                    if args.program in ('bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh', 'bridge_igmp.sh', 'bridge_mld.sh', 'bridge_mdb.sh', 'bridge_mdb_max.sh', 'pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh', 'tc_flower_l2_miss.sh', 'tc_flower_cfm.sh', 'tc_chains.sh', 'skbedit_priority.sh', 'tc_vlan_modify.sh'):
                         fdb = subprocess.run([str(args.tools / 'bridge'), '-j', 'fdb', 'show'],
                             env=dict(environment, LD_PRELOAD=str(args.preload)),
                             capture_output=True, text=True, timeout=10, check=True)
@@ -537,6 +672,25 @@ def main():
                         except subprocess.TimeoutExpired:
                             common.cleanup.kill_tree(observer_process.pid)
                             observer_process.wait(timeout=5)
+                    if (args.program == 'tc_vlan_modify.sh' and observer_out is not None and
+                            observer_err is not None and not observer_out.closed and not observer_err.closed):
+                        observer_out.seek(0); observer_err.seek(0)
+                        report['vlan_packet_observer_process'] = dict(
+                            returncode=observer_process.returncode if observer_process is not None else
+                                report.get('vlan_packet_observer_process', {}).get('returncode'),
+                            stdout=observer_out.read(), stderr=observer_err.read())
+                    if args.program == 'tc_vlan_modify.sh' and observer_output is not None:
+                        try:
+                            observer_stats_path = observer_output.with_suffix(observer_output.suffix + '.stats.json')
+                            capture, ready_record = archive_vlan_observer_capture(
+                                args.evidence, observer_output, observer_stats_path, observer_ready)
+                            report['vlan_packet_observer_capture'] = capture
+                            if ready_record is not None:
+                                report['vlan_packet_observer_ready'] = ready_record
+                        except Exception as archive_error:
+                            # Preserve the primary test/observer exception; a
+                            # secondary archive error is still visible in JSON.
+                            report['vlan_packet_observer_archive_error'] = str(archive_error)
                     if observer_out is not None and not observer_out.closed:
                         observer_out.close()
                     if observer_err is not None and not observer_err.closed:
@@ -548,6 +702,7 @@ def main():
                     report['server_stdout'], report['server_stderr'] = out.read(), err.read()
     except BaseException as error:
         report['error'] = str(error)
+        report['error_traceback'] = traceback.format_exc()
         raise
     finally:
         args.evidence.write_text(json.dumps(report, indent=2) + '\n')
