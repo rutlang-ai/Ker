@@ -9,7 +9,7 @@
 | `net/mptcp` | 10 | [全部完整 shell 入口](linux-mptcp-join.md)本地通过，共 508 项 TAP 场景；最终 CI/review 单独核对 |
 | `net/tcp_ao` | 24 | [全部双栈入口](linux-tcp-ao-tests.md)，已知上游 XFAIL 单列 |
 | `net/packetdrill` | 24 | [完整原版 24 个脚本](linux-packetdrill-selftests.md)，48 个 imported Linux 双栈配置本地通过；CI/review 单独核对 |
-| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh` 完整入口本地通过；其余 88 个尚未逐个接入 |
+| `net/forwarding` | 107 | `router_vid_1.sh`、`min_max_mtu.sh`、`router_bridge.sh`、`router_nh.sh`、`router_bridge_vlan.sh`、`router_bridge_1d.sh`、`router_bridge_vlan_upper.sh`、`router_bridge_pvid_vlan_upper.sh`、`router_bridge_vlan_upper_pvid.sh`、`router_broadcast.sh`、`bridge_mdb_host.sh`、`bridge_sticky_fdb.sh`、`bridge_fdb_learning_limit.sh`、`bridge_mdb_port_down.sh`、`bridge_port_isolation.sh`、`bridge_vlan_unaware.sh`、`bridge_vlan_aware.sh`、`bridge_locked_port.sh`、`bridge_vlan_mcast.sh`、`ip6_forward_instats_vrf.sh` 完整入口本地通过；其余 87 个尚未逐个接入 |
 | `net/hsr` | 2 | 尚未接入 |
 | `net/netfilter` | 29 | `conntrack_dump_flush`、`conntrack_icmp_related.sh`、`conntrack_ipip_mtu.sh`、`rpath.sh`、`xt_string.sh` 完整入口本地通过；其余 24 个尚未逐个接入 |
 | `net/openvswitch` | 1 | 尚未接入 |
@@ -18,7 +18,7 @@
 
 原版 `tcp_inq`、MPTCP C helper 和 KUnit 已有的运行配置另行记录，不增加这个默认注册入口分母。Ker 集成测试中的 netfilter、veth、VRF 等功能覆盖，也不代表对应完整上游 shell 已迁移。
 
-按本地完整入口合同统计，当前接入 100/310，剩余 210；其中 95 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 215 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
+按本地完整入口合同统计，当前接入 101/310，剩余 209；其中 96 个通过 imported Linux，另 5 个是 host-backed AF_UNIX。严格只统计 imported Linux 时尚有 214 个。`net/` 本目录剩余 93/106。提交后的 hosted CI/review 资格仍须单独核对。
 
 ## 完整 socket 程序
 
@@ -305,4 +305,15 @@ Ker 的隔离桥接测试配置启用真实 `CONFIG_NET_ACT_MIRRED=y`，native f
 
 外部 querier 的 br1 拓扑和原版两秒等待保持不变；不要求原版未执行的 VRF 重新绑定。router-port 阶段发送实际十个 VID10 IPv4/UDP 原版帧（每个174字节，包含128字节负载），在原版后续 TC 查询处要求路由端口计数10、另一个端口计数0，并验证实际路径计数。关闭 VLAN filtering 必须同时关闭 native multicast VLAN snooping；原版清理后 bridge、VRF、VLAN child、地址、路由、MDB/FDB、packet sockets 与 fixture 资源均不能残留。只读观察器不发包、不设置网络状态，不增加或缩短原版等待。
 
-完整 bridge profile 现在包含15个原版完整入口和两个真实 realtime ABI 控制。实际原生报告投影保留全部216条命令及所消费的原始通知、报文和快照，以原报告 SHA-256 绑定；单元测试另行拒绝通知丢失/截断/overrun、伪过期、缺失刷新、错误 timer、TC/xstats 不一致、缩短等待、错误 VLAN/端口和资源泄漏。迁移计数仍与发布后 hosted CI 和 review 资格分开核对。
+该批次的完整 bridge profile 包含15个原版完整入口和两个真实 realtime ABI 控制。实际原生报告投影保留全部216条命令及所消费的原始通知、报文和快照，以原报告 SHA-256 绑定；单元测试另行拒绝通知丢失/截断/overrun、伪过期、缺失刷新、错误 timer、TC/xstats 不一致、缩短等待、错误 VLAN/端口和资源泄漏。迁移计数仍与发布后 hosted CI 和 review 资格分开核对。
+
+
+## 完整 IPv6 VRF 入站统计入口
+
+完整未修改的 `forwarding/ip6_forward_instats_vrf.sh` 执行全部五个默认函数与102个原版命令。两端主机和路由器使用三个真实 native VRF、四个 veth 和原版 IPv6 地址/路由，出站设备及接收端 MTU 为1280。保留原版 `router` VRF master 未置 UP 的状态，通过其真实 slave 设备完成转发；不为消除 traceroute 的缺失跳回复修改上游拓扑。
+
+保留十次 ping6、1300字节超大 ping、默认 traceroute6、临时关闭 forwarding 和真实 forward XFRM block policy 五种流量。要求原版 traceroute6 正常退出并到达第二跳目标，不能只因发出部分报文后错误退出、原版仍输出 OK 就计为完成。直接读取原生调用任务命名空间的 `/proc/net/dev_snmp6/veth1`，把原版前后计数与实际流量前后快照、native ifindex 逐项绑定：`Ip6InTooBigErrors`、`Ip6InHdrErrors`、`Ip6InAddrErrors`、`Ip6InDiscards` 必须分别增长，不能由其他错误类别替代。错误阶段 ping 的实际发送次数与 native 计数对应，不改变原版 `-c 1 -w 5` 参数或假设工具只会尝试发送一次。
+
+Ker 测试适配层为原版 iproute2 接通现有原生 NETLINK_XFRM 通路，并让显式 UDP protocol17 使用已有 native UDP socket 路径；协议、路由、ICMPv6、MTU 和 XFRM 行为均来自未修改的 Linux。每接口 proc 读取仅接受一个 IFNAMSIZ 范围内的接口名，原生缺失接口和路径越界分别返回真实 ENOENT 与显式 EOPNOTSUPP。新增实际 `CONFIG_XFRM_USER`，不伪造策略或计数。固定 iproute2 的 XFRM dump 为文本，观察器保留其真实原始输出，验证策略从无到 block 再删除。
+
+plain bridge preload 复用已有的 host/native mixed poll/select 实现，支持原版 traceroute6 的多个 UDP socket；同一 native fixture 中的 IPv6 UDP17 控制实测超时、独立/同时就绪、EBADF 与 EINTR，并在缺失后端时拒绝 host socket 回退。原版结束后必须恢复 MTU、双栈 forwarding，清理 VRF、地址、路由和 XFRM policy，所有 native socket/缓冲及 worker 正常退出。完整 profile 包含16个 bridge/VRF 原版入口与两个 realtime ABI 控制，迁移计数继续与发布后 CI/review 资格分开核对。

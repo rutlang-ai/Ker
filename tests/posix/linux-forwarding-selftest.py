@@ -49,6 +49,8 @@ def forwarding_counts(content):
 
 
 def validate_evidence(report):
+    if report.get('program') == 'ip6_forward_instats_vrf.sh':
+        return common.load('instats_contract', 'linux-forwarding-instats-contract.py').validate_evidence(report)
     if report.get('program') == 'router_broadcast.sh':
         return common.load('broadcast_contract', 'linux-broadcast-contract.py').validate_evidence(report)
     if report.get('program') == 'min_max_mtu.sh':
@@ -79,7 +81,8 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('server', 'preload', 'tools', 'launcher', 'library', 'worker', 'pmd_dir', 'manifest', 'evidence'):
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
-    parser.add_argument('--program', choices=('router_vid_1.sh', 'min_max_mtu.sh', 'router_broadcast.sh'), default='router_vid_1.sh')
+    parser.add_argument('--program', choices=('router_vid_1.sh', 'min_max_mtu.sh', 'router_broadcast.sh', 'ip6_forward_instats_vrf.sh'), default='router_vid_1.sh')
+    parser.add_argument('--poll-control', type=Path)
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if not args.inside:
@@ -88,10 +91,13 @@ def main():
     validator = validate_evidence
     manifest = json.loads(args.manifest.read_text())
     config = set((Path(manifest['kernel']) / '.config').read_text().splitlines())
-    require(manifest.get('config_fragment') == 'config/native-linux-forwarding.config' and
+    require(manifest.get('config_fragment') == ('config/native-linux-bridge-selftests.config' if args.program == 'ip6_forward_instats_vrf.sh' else 'config/native-linux-forwarding.config') and
             {'CONFIG_VETH=y', 'CONFIG_NET_VRF=y', 'CONFIG_VLAN_8021Q=y', 'CONFIG_IP_ROUTE_MULTIPATH=y',
              'CONFIG_IP_MULTIPLE_TABLES=y', 'CONFIG_IPV6_MULTIPLE_TABLES=y'}.issubset(config),
             'original forwarding test requires real native VLAN/VRF routing')
+    if args.program == 'ip6_forward_instats_vrf.sh':
+        require(args.poll_control is not None and args.poll_control.is_file(), 'native mixed poll control is required')
+        require('CONFIG_XFRM_USER=y' in config, 'original IPv6 ingress discard requires real native XFRM policy')
     source = Path(manifest['source']) / 'tools/testing/selftests/net'
     originals = {}
     for name in ('forwarding/' + args.program, 'forwarding/lib.sh', 'lib.sh', 'forwarding/Makefile'):
@@ -110,7 +116,7 @@ def main():
         library_sha256=hashlib.sha256(args.library.read_bytes()).hexdigest(),
         server_sha256=hashlib.sha256(args.server.read_bytes()).hexdigest(),
         transport_sha256=hashlib.sha256(Path(__file__).with_name('linux-forwarding-tools.py').read_bytes()).hexdigest())
-    controls = {'LD_PRELOAD', 'TESTS', 'PING', 'PING6', 'MZ', 'PING_COUNT', 'PING_TIMEOUT', 'WAIT_TIME',
+    controls = {'TROUTE6', 'LD_PRELOAD', 'TESTS', 'PING', 'PING6', 'MZ', 'PING_COUNT', 'PING_TIMEOUT', 'WAIT_TIME',
                 'WAIT_TIMEOUT', 'INTERFACE_TIMEOUT', 'NETIF_CREATE', 'NETIF_TYPE', 'NETIF_FIND_DRIVER',
                 'REQUIRE_JQ', 'REQUIRE_MZ', 'REQUIRE_MTOOLS', 'PAUSE_ON_CLEANUP', 'PAUSE_ON_FAIL',
                 'STABLE_MAC_ADDRS', 'KSFT_MACHINE_SLOW'}
@@ -136,7 +142,7 @@ def main():
                 (work / name).parent.mkdir(parents=True, exist_ok=True)
                 (work / name).write_bytes(data)
             bins = work / 'bin'; bins.mkdir()
-            for name in ('ip', 'sysctl'):
+            for name in (('ip', 'sysctl', 'cat') if args.program == 'ip6_forward_instats_vrf.sh' else ('ip', 'sysctl')):
                 (bins / name).write_text('#!' + sys.executable + '\n' + Path(__file__).with_name('linux-forwarding-tools.py').read_text())
                 (bins / name).chmod(0o700)
             report['ping_tools'] = {}
@@ -146,6 +152,16 @@ def main():
                 shutil.copyfile(program, target); target.chmod(0o700)
                 environment['KER_FORWARDING_' + name.upper()] = str(target)
                 report['ping_tools'][name] = dict(path=str(program), sha256=hashlib.sha256(target.read_bytes()).hexdigest())
+            if args.program == 'ip6_forward_instats_vrf.sh':
+                report['poll_control_sha256'] = hashlib.sha256(args.poll_control.read_bytes()).hexdigest()
+                environment['KER_FORWARDING_INSTATS'] = '1'
+                traceroute = Path(shutil.which('traceroute6')).resolve()
+                target = bins / 'original-tools' / 'traceroute6'; target.parent.mkdir()
+                shutil.copyfile(traceroute, target); target.chmod(0o700)
+                environment['KER_FORWARDING_TRACEROUTE6'] = str(target)
+                # Original command spelling remains traceroute6; only its VRF
+                # process launch/socket ownership is translated by the ip shim.
+                report['traceroute_tool'] = dict(path=str(traceroute), sha256=hashlib.sha256(target.read_bytes()).hexdigest())
             channel, counts, stats, log = root / 'socket', root / 'counts.json', root / 'stats.json', root / 'commands.jsonl'
             environment.update(KER_MPTCP_SOCKET_CHANNEL=str(channel),
                 KER_MPTCP_FIXTURE_SOURCE=str(Path(__file__).resolve().parent),
@@ -165,6 +181,11 @@ def main():
                                      capture_output=True, text=True, timeout=30)
             report['missing_backend_control'] = dict(returncode=missing.returncode, stdout=missing.stdout, stderr=missing.stderr)
             require(missing.returncode != 0, 'original forwarding shell passed without native Linux')
+            if args.program == 'ip6_forward_instats_vrf.sh':
+                negative_control = subprocess.run([str(args.poll_control)], env=dict(negative, LD_PRELOAD=str(args.preload)),
+                    capture_output=True, text=True, timeout=10)
+                report['mixed_poll_missing_backend'] = dict(returncode=negative_control.returncode, stdout=negative_control.stdout, stderr=negative_control.stderr)
+                require(negative_control.returncode != 0, 'IPv6 UDP17 control used host fallback')
             log.unlink(missing_ok=True)
             with (root / 'server.stdout').open('w+') as out, (root / 'server.stderr').open('w+') as err:
                 process = subprocess.Popen([sys.executable, str(args.launcher), '--library', str(args.library),
@@ -190,6 +211,17 @@ def main():
                                                 env=env, capture_output=True, text=True, timeout=5)
                         report['vrf_binding_control'][control] = dict(returncode=result.returncode,
                             stdout=result.stdout, stderr=result.stderr)
+                    if args.program == 'ip6_forward_instats_vrf.sh':
+                        report['native_proc_control'] = dict(loopback=diag.rpc(diag.FILE, '', '/proc/net/dev_snmp6/lo').decode())
+                        for name, path in (('missing_device', '/proc/net/dev_snmp6/ker-missing'), ('path_escape', '/proc/net/dev_snmp6/../snmp6')):
+                            try: diag.rpc(diag.FILE, '', path)
+                            except OSError as error: report['native_proc_control'][name] = dict(errno=error.errno, error=str(error))
+                            else: raise RuntimeError('native per-interface proc boundary unexpectedly succeeded: ' + path)
+                    if args.program == 'ip6_forward_instats_vrf.sh':
+                        control = subprocess.run([str(args.poll_control)], env=dict(environment, LD_PRELOAD=str(args.preload)),
+                            capture_output=True, text=True, timeout=10)
+                        report['mixed_poll_control'] = dict(returncode=control.returncode, stdout=control.stdout, stderr=control.stderr)
+                        require(control.returncode == 0, 'native IPv6 mixed poll/select control failed: ' + control.stderr)
                     report['mib_before'] = counters()
                     child = subprocess.Popen(['bash', './' + args.program], cwd=work / 'forwarding', env=environment,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
@@ -219,6 +251,16 @@ def main():
                             for name in ('net.ipv4.conf.all.forwarding', 'net.ipv6.conf.all.forwarding',
                                 'net.ipv4.conf.all.bc_forwarding', 'net.ipv4.conf.veth1.bc_forwarding',
                                 'net.ipv4.conf.veth2.bc_forwarding', 'net.ipv4.icmp_echo_ignore_broadcasts')})
+                    if args.program == 'ip6_forward_instats_vrf.sh':
+                        # Match the child's real native endpoint without changing
+                        # the observer's ordinary iproute2 binary or namespace.
+                        old_env = os.environ.copy()
+                        try:
+                            os.environ.update(environment)
+                            shim = common.load('instats_observer', 'linux-forwarding-tools.py')
+                            report['cleanup_state'] = shim.instats_snapshot(dict(environment, LD_PRELOAD=str(args.preload)))
+                        finally:
+                            os.environ.clear(); os.environ.update(old_env)
                     common.fixture.stop(channel)
                     require(process.wait(timeout=20) == 0, 'native fixture shutdown failed')
                     native = json.loads(counts.read_text()); report['native_fixture'] = native

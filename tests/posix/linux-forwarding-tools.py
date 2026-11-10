@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 root = Path(os.environ['KER_MPTCP_FIXTURE_SOURCE'])
 spec = importlib.util.spec_from_file_location('forwarding_diag', root / 'linux-mptcp-diag-shim.py')
@@ -35,10 +36,36 @@ def broadcast_snapshot(env):
     return state
 
 
+def instats_snapshot(env):
+    state = {}
+    for key, words in (('links', ['-s', '-d', '-j', 'link', 'show']),
+                       ('addresses', ['-j', 'address', 'show']),
+                       ('ipv4_routes', ['-4', '-j', 'route', 'show', 'table', 'all']),
+                       ('ipv6_routes', ['-6', '-j', 'route', 'show', 'table', 'all']),
+                       ('xfrm', ['-s', 'xfrm', 'policy', 'list'])):
+        result = subprocess.run([os.environ['KER_FORWARDING_IP'], *words], env=env,
+                                capture_output=True, text=True, timeout=10)
+        if result.returncode or result.stderr:
+            raise RuntimeError('native IPv6 ingress observation failed: ' + repr(words) + ': ' + result.stdout + result.stderr)
+        # Pinned iproute2's XFRM policy dump is text, including an empty
+        # successful dump for no policies. Preserve that actual native output.
+        state[key] = result.stdout if key == 'xfrm' else json.loads(result.stdout)
+    state['forwarding'] = diag.rpc(diag.FILE, '', '/proc/sys/net/ipv6/conf/all/forwarding').decode().strip()
+    state['ipv6_mib'] = {device: diag.rpc(diag.FILE, '', '/proc/net/dev_snmp6/' + device).decode()
+                         for device in ('veth0', 'veth1', 'veth2', 'veth3')}
+    return state
+
+
 def main():
     tool, words = Path(sys.argv[0]).name, sys.argv[1:]
-    record = dict(tool=tool, arguments=words)
-    if tool == 'sysctl':
+    record = dict(tool=tool, arguments=words, started_monotonic=time.monotonic())
+    instats = os.environ.get('KER_FORWARDING_INSTATS') == '1'
+    if tool == 'cat':
+        if not instats or len(words) != 1 or not words[0].startswith('/proc/net/dev_snmp6/'):
+            raise RuntimeError('unsupported native proc read: ' + repr(words))
+        value = diag.rpc(diag.FILE, '', words[0]).decode()
+        record.update(returncode=0, stdout=value, stderr='')
+    elif tool == 'sysctl':
         if len(words) != 2 or words[0] not in ('-n', '-qw'):
             raise RuntimeError('unsupported native sysctl arguments: ' + repr(words))
         if words[0] == '-n':
@@ -50,7 +77,7 @@ def main():
     else:
         env = dict(os.environ, LD_PRELOAD=os.environ['KER_FORWARDING_PRELOAD'], KER_MPTCP_SOCKET_NAMESPACE='')
         if words[:2] == ['vrf', 'exec']:
-            if tool != 'ip' or len(words) < 5 or words[3] not in ('ping', 'ping6'):
+            if tool != 'ip' or len(words) < 5 or words[3] not in (('ping', 'ping6', 'traceroute6') if instats else ('ping', 'ping6')):
                 raise RuntimeError('unsupported VRF process: ' + repr(words))
             vrf, program, arguments = words[2], words[3], words[4:]
             # Validate that the requested device really is a native Linux VRF.
@@ -70,11 +97,21 @@ def main():
         else:
             command = [os.environ['KER_FORWARDING_IP'], *words]
         broadcast = words[:2] == ['vrf', 'exec'] and os.environ.get('KER_FORWARDING_BROADCAST') == '1'
+        observe_inststats = instats and tool == 'ip' and (words[:2] == ['vrf', 'exec'] or words[:1] == ['xfrm'])
+        if observe_inststats:
+            record['instats_before'] = instats_snapshot(env)
+            native_time_log = os.environ['KER_FORWARDING_LOG'] + '.native-time-' + str(os.getpid())
+            env['KER_MPTCP_NATIVE_REALTIME'] = '1'
+            env['KER_MPTCP_NATIVE_TIME_LOG'] = native_time_log
         # Preserve the upstream shell's 2>&1 stream before its literal grep.
         result = subprocess.run(command, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT if broadcast else subprocess.PIPE,
                                 text=True, timeout=30)
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr or '')
+        if observe_inststats:
+            record['instats_after'] = instats_snapshot(env)
+            record['native_clock_reads'] = Path(native_time_log).stat().st_size if Path(native_time_log).exists() else 0
+            Path(native_time_log).unlink(missing_ok=True)
         if words[:2] == ['vrf', 'exec'] and os.environ.get('KER_FORWARDING_BROADCAST') == '1':
             record['broadcast_after'] = broadcast_snapshot(env)
             try:
@@ -82,6 +119,7 @@ def main():
             except FileNotFoundError:
                 record['native_clock_reads'] = 0
             Path(native_time_log).unlink(missing_ok=True)
+    record['finished_monotonic'] = time.monotonic()
     with open(os.environ['KER_FORWARDING_LOG'], 'a') as stream:
         stream.write(json.dumps(record) + '\n')
     sys.stdout.write(record['stdout']); sys.stderr.write(record['stderr'])

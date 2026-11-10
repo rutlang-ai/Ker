@@ -3,9 +3,10 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_bridge_pr
     target_include_directories(ker-linux-bridge-preload PRIVATE "${ao_headers}")
     target_compile_options(ker-linux-bridge-preload PRIVATE -Wall -Wextra -Werror)
     target_compile_definitions(ker-linux-bridge-preload PRIVATE
-        KER_MPTCP_DIAG_PRELOAD=1 KER_FORWARDING_SELFTEST=1 KER_BRIDGE_SELFTEST=1)
+        KER_MPTCP_DIAG_PRELOAD=1 KER_FORWARDING_SELFTEST=1 KER_BRIDGE_SELFTEST=1
+        KER_MIXED_POLL_SELFTEST=1)
     target_link_libraries(ker-linux-bridge-preload PRIVATE ${CMAKE_DL_LIBS})
-    foreach(wrap IN LISTS diag_wraps)
+    foreach(wrap IN LISTS diag_wraps ITEMS select)
         target_compile_definitions(ker-linux-bridge-preload PRIVATE "__wrap_${wrap}=${wrap}")
     endforeach()
     target_compile_definitions(ker-linux-bridge-preload PRIVATE __wrap_gettimeofday=gettimeofday)
@@ -34,17 +35,30 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS AND ker_native_bridge_pr
         ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:ker-linux-bridge-packet-preload>")
     target_compile_definitions(ker-linux-network-server PRIVATE KER_BRIDGE_PACKET_SELFTEST=1)
     add_dependencies(ker-linux-network-server ker-linux-bridge-packet-preload)
+    # The unchanged traceroute6 multiplexes several native UDP descriptors.
+    # Reuse the existing host/native poll/select adapter and exercise it in
+    # the same resident fixture before running the original IPv6 entry.
+    add_executable(ker-linux-forwarding-instats-poll-control tests/posix/linux-mixed-poll-control.c)
+    target_compile_definitions(ker-linux-forwarding-instats-poll-control PRIVATE KER_MIXED_CONTROL_IPV6=1)
+    target_compile_options(ker-linux-forwarding-instats-poll-control PRIVATE -Wall -Wextra -Werror)
+    add_dependencies(ker-linux-network-server ker-linux-forwarding-instats-poll-control)
     foreach(program router_bridge router_bridge_vlan router_bridge_1d router_bridge_vlan_upper
-            router_bridge_pvid_vlan_upper router_bridge_vlan_upper_pvid bridge_mdb_host bridge_sticky_fdb bridge_fdb_learning_limit bridge_mdb_port_down bridge_port_isolation bridge_vlan_unaware bridge_vlan_aware bridge_locked_port bridge_vlan_mcast)
+            router_bridge_pvid_vlan_upper router_bridge_vlan_upper_pvid bridge_mdb_host bridge_sticky_fdb bridge_fdb_learning_limit bridge_mdb_port_down bridge_port_isolation bridge_vlan_unaware bridge_vlan_aware bridge_locked_port bridge_vlan_mcast ip6_forward_instats_vrf)
         if(program STREQUAL "bridge_sticky_fdb" OR program STREQUAL "bridge_mdb_port_down" OR program STREQUAL "bridge_port_isolation" OR program STREQUAL "bridge_vlan_unaware" OR program STREQUAL "bridge_vlan_aware" OR program STREQUAL "bridge_locked_port" OR program STREQUAL "bridge_vlan_mcast")
             set(bridge_selftest_preload ker-linux-bridge-packet-preload)
         else()
             set(bridge_selftest_preload ker-linux-bridge-preload)
         endif()
+        set(forwarding_selftest_extra)
+        set(forwarding_selftest_runner "${PROJECT_SOURCE_DIR}/tests/posix/linux-bridge-selftest.py")
+        if(program STREQUAL "ip6_forward_instats_vrf")
+            set(forwarding_selftest_runner "${PROJECT_SOURCE_DIR}/tests/posix/linux-forwarding-selftest.py")
+            set(forwarding_selftest_extra --poll-control "$<TARGET_FILE:ker-linux-forwarding-instats-poll-control>")
+        endif()
         string(REPLACE "_" "-" test_suffix "${program}")
         add_test(NAME linux-original-forwarding-${test_suffix}
-            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/linux-bridge-selftest.py"
-                --program "${program}.sh"
+            COMMAND "${Python3_EXECUTABLE}" "${forwarding_selftest_runner}"
+                --program "${program}.sh" ${forwarding_selftest_extra}
                 --server "$<TARGET_FILE:ker-linux-network-server>"
                 --preload "$<TARGET_FILE:${bridge_selftest_preload}>" --tools "${KER_MPTCP_DIAG_TOOLS_DIR}"
                 --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
