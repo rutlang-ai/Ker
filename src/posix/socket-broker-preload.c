@@ -90,6 +90,10 @@ static bool ff_owner_context_started;
 static bool unowned_network_activity;
 static _Thread_local ker_sb_preload_owner_pump_fn owner_pump_callback;
 static _Thread_local void *owner_pump_context;
+/* RX relay servicing is deliberately independent of C22 admission.  Both
+ * callbacks run on the same authenticated F-Stack owner loop. */
+static _Thread_local ker_sb_preload_owner_pump_fn rx_relay_pump_callback;
+static _Thread_local void *rx_relay_pump_context;
 static _Thread_local unsigned owner_pump_depth;
 static _Thread_local int owner_pump_failure;
 static _Thread_local unsigned owner_loop_depth;
@@ -514,6 +518,15 @@ int ker_sb_preload_ff_owner_capability_locked(void)
 bool ker_sb_preload_ff_owner_managed(void)
 { return ff_owner_context_started; }
 
+bool ker_sb_preload_ff_owner_is_current(void)
+{
+    ker_sb_preload_lock();
+    bool current = ker_sb_preload_ff_owner_active_locked() &&
+        ff_owner_pid == getpid();
+    ker_sb_preload_unlock();
+    return current;
+}
+
 int ker_sb_preload_owner_pump_register(ker_sb_preload_owner_pump_fn pump,
     void *context)
 {
@@ -527,6 +540,22 @@ int ker_sb_preload_owner_pump_register(ker_sb_preload_owner_pump_fn pump,
     return 0;
 }
 
+int ker_sb_preload_rx_relay_pump_register(ker_sb_preload_owner_pump_fn pump,
+    void *context)
+{
+    if (!pump || rx_relay_pump_callback) { errno = EINVAL; return -1; }
+    ker_sb_preload_lock();
+    bool active = ker_sb_preload_ff_owner_active_locked();
+    ker_sb_preload_unlock();
+    if (!active || !ker_sb_preload_owner_loop_active()) {
+        errno = active ? EPERM : ENOTCONN;
+        return -1;
+    }
+    rx_relay_pump_context = context;
+    rx_relay_pump_callback = pump;
+    return 0;
+}
+
 void ker_sb_preload_owner_pump_unregister(void)
 {
     owner_pump_callback = NULL;
@@ -537,15 +566,30 @@ int ker_sb_preload_owner_pump(void)
 {
     if (owner_pump_failure) return owner_pump_failure;
     if (owner_pump_depth) return -EDEADLK;
-    if (!owner_pump_callback) return 0;
+    if (!owner_pump_callback && !rx_relay_pump_callback) return 0;
     if (ff_owner_pid != getpid()) return -ESTALE;
     ++owner_pump_depth;
-    int result = owner_pump_callback(owner_pump_context);
-    --owner_pump_depth;
+    int result = owner_pump_callback ?
+        owner_pump_callback(owner_pump_context) : 0;
     if (result) {
+        --owner_pump_depth;
         char message[128];
         int length = snprintf(message, sizeof(message),
-            "ker owner pump callback status=%d\n", result);
+            "ker admission pump callback status=%d\n", result);
+        if (length > 0) (void)syscall(SYS_write, STDERR_FILENO, message,
+            (size_t)length);
+        owner_pump_failure = result < 0 && result >= -4095 ? result : -EPROTO;
+        return owner_pump_failure;
+    }
+    if (rx_relay_pump_callback) {
+        result = rx_relay_pump_callback(rx_relay_pump_context);
+        if (result == -EAGAIN || result == -EWOULDBLOCK) result = 0;
+    }
+    --owner_pump_depth;
+    if (result) {
+        char message[144];
+        int length = snprintf(message, sizeof(message),
+            "ker RX relay pump callback status=%d\n", result);
         if (length > 0) (void)syscall(SYS_write, STDERR_FILENO, message,
             (size_t)length);
         owner_pump_failure = result < 0 && result >= -4095 ? result : -EPROTO;
@@ -573,6 +617,10 @@ int ker_sb_preload_owner_loop_enter(void)
 void ker_sb_preload_owner_loop_leave(void)
 {
     if (owner_loop_depth) --owner_loop_depth;
+    if (!owner_loop_depth) {
+        rx_relay_pump_callback = NULL;
+        rx_relay_pump_context = NULL;
+    }
 }
 
 bool ker_sb_preload_owner_loop_active(void)

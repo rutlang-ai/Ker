@@ -32,7 +32,10 @@ ENV_KEYS = frozenset(('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
     'KER_NGINX_CYCLE_FD', 'KER_NGINX_CYCLE_NONCE',
     'KER_NGINX_CYCLE_RUNTIME_NONCE', 'KER_NGINX_CYCLE_RUNTIME_EPOCH',
     'KER_NGINX_CYCLE_WORKER_PROFILE_SHA256',
-    'KER_NGINX_CYCLE_OUTER_EXE_SHA256'))
+    'KER_NGINX_CYCLE_OUTER_EXE_SHA256',
+    'KER_NGINX_RX_OWNER_RELAY_FD',
+    'KER_NGINX_RX_OWNER_RELAY_SUPERVISOR_PID',
+    'KER_NGINX_RX_OWNER_RELAY_NONCE', 'KER_NGINX_RX_OWNER_RELAY_EPOCH'))
 START_PHASE = 1
 RELOAD_PHASE = 2
 STOP_PHASE = 3
@@ -761,7 +764,8 @@ def run(args):
         '-c', str(config)], env=nginx_env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
     if test.returncode:
-        raise RuntimeError('pinned Nginx config test failed')
+        raise RuntimeError('pinned Nginx config test failed: ' +
+            test.stderr.decode(errors='replace')[-2000:])
 
     owner_ready_receiver = owner_ready_sender = None
     owner_ready_cookie = 0
@@ -824,6 +828,8 @@ def run(args):
             [args.cycle_control_fd])
         if owner_ready_sender is not None:
             master_pass_fds.append(owner_ready_sender.fileno())
+        if args.rx_owner_relay_fd is not None:
+            master_pass_fds.append(args.rx_owner_relay_fd)
         master = subprocess.Popen([str(binary), '-p', str(prefix) + '/',
             '-c', str(config)], env=nginx_env, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -831,6 +837,9 @@ def run(args):
         if owner_ready_sender is not None:
             owner_ready_sender.close()
             owner_ready_sender = None
+        if args.rx_owner_relay_fd is not None:
+            os.close(args.rx_owner_relay_fd)
+            args.rx_owner_relay_fd = None
         if args.cycle_control_fd is not None:
             os.close(args.cycle_control_fd)
             args.cycle_control_fd = None
@@ -1047,6 +1056,7 @@ def main(argv=None):
     parser.add_argument('--prefix', required=True)
     parser.add_argument('--helper-sha256', type=lambda value: bytes.fromhex(value), required=True)
     parser.add_argument('--owner-ready-required', action='store_true')
+    parser.add_argument('--rx-owner-relay-fd', type=int)
     parser.add_argument('--nginx-env', action='append', default=[])
     args = parser.parse_args(argv)
     if (len(args.nonce) != 16 or args.nonce == bytes(16) or args.epoch <= 0 or
@@ -1058,6 +1068,22 @@ def main(argv=None):
         if not separator or key not in ENV_KEYS or key in values or not item:
             parser.error('invalid/duplicate Nginx environment entry')
         values[key] = item
+    if args.rx_owner_relay_fd is not None:
+        if args.rx_owner_relay_fd < 3 or not args.owner_ready_required:
+            parser.error('RX owner relay requires owner READY and a valid inherited descriptor')
+        relay_channel = socket.socket(fileno=os.dup(args.rx_owner_relay_fd))
+        try:
+            if relay_channel.type & 0xF != socket.SOCK_SEQPACKET:
+                parser.error('RX owner relay descriptor must be SOCK_SEQPACKET')
+            peer_pid, peer_uid, peer_gid = struct.unpack('=3i',
+                relay_channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                    struct.calcsize('=3i')))
+            if (peer_pid != os.getppid() or peer_uid != os.getuid() or
+                    peer_gid != os.getgid()):
+                parser.error('RX owner relay peer is not the authenticated ker-run parent')
+        finally:
+            relay_channel.close()
+        values['KER_NGINX_RX_OWNER_RELAY_FD'] = str(args.rx_owner_relay_fd)
     if 'LD_PRELOAD' not in values or 'KER_SOCKET_BROKER_PATH' not in values:
         parser.error('C34 companion requires FStack preload and socket broker path')
     args.nginx_env = values
