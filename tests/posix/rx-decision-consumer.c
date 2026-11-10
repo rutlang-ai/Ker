@@ -774,10 +774,12 @@ static int supervisor_death_defer_case(void)
         close(consumer_pidfd); close(worker_pidfd); close(supervisor_pidfd);
         close(app_pair[0]); close(app_pair[1]);
         close(worker_release[0]);
-        if (write_all(worker_release[1], "R", 1)) _exit(21);
-        close(worker_release[1]);
         struct supervisor_case_notice notice = {consumer_pid, worker};
         if (write_all(notice_pipe[1], &notice, sizeof(notice))) _exit(22);
+        /* DATA can reach the consumer as soon as the worker is released; its
+         * D marker shares this pipe, so publish the identity record first. */
+        if (write_all(worker_release[1], "R", 1)) _exit(21);
+        close(worker_release[1]);
         for (;;) pause();
     }
     close(notice_pipe[1]); close(release_pipe[0]);
