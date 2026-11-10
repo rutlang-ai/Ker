@@ -3,6 +3,7 @@
 import argparse
 import array
 import ctypes
+import errno
 import hashlib
 import importlib.util
 import os
@@ -27,6 +28,7 @@ SO_PEERPIDFD = getattr(socket, 'SO_PEERPIDFD', 77)
 UCRED = struct.Struct('=3i')
 ENV_KEYS = frozenset(('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
     'KER_FSTACK_NGINX_INI', 'KER_FSTACK_RUNTIME_TRACE',
+    'KER_NGINX_OWNER_MODULE_PATH', 'KER_NGINX_OWNER_MODULE_SHA256',
     'KER_NGINX_CYCLE_FD', 'KER_NGINX_CYCLE_NONCE',
     'KER_NGINX_CYCLE_RUNTIME_NONCE', 'KER_NGINX_CYCLE_RUNTIME_EPOCH',
     'KER_NGINX_CYCLE_WORKER_PROFILE_SHA256',
@@ -40,6 +42,10 @@ MAX_CONFIG_DIRECTIVES = 65536
 SIGNAL_HANDLER_READY_TIMEOUT = 5.0
 REQUIRED_MASTER_SIGNALS = ((1 << (signal.SIGHUP - 1)) |
     (1 << (signal.SIGQUIT - 1)))
+OWNER_READY_MAGIC = 0x4B4E5244
+OWNER_READY_VERSION = 2
+OWNER_READY_RECORD = struct.Struct('=IHHIIQQQIIQQ')
+SO_COOKIE = getattr(socket, 'SO_COOKIE', 57)
 
 
 def start_ticks(pid):
@@ -61,6 +67,94 @@ def pidfd_pid(fd):
             if value > 0:
                 return value
     raise OSError(9, 'invalid pidfd')
+
+
+def process_parent(pid):
+    text = Path(f'/proc/{pid}/stat').read_text(encoding='ascii')
+    close = text.rfind(')')
+    fields = text[close + 2:].split() if close >= 0 else []
+    if len(fields) <= 1:
+        raise RuntimeError('malformed worker process stat')
+    return int(fields[1], 10)
+
+
+def receive_owner_ready(endpoint, *, expected_cookie, binary_hash, master,
+                         master_pidfd, master_start, supervisor_pidfd,
+                         supervisor_pid, supervisor_start, timeout=15.0):
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Nginx owner READY timed out')
+        poller = select.poll()
+        poller.register(endpoint.fileno(), select.POLLIN | select.POLLHUP |
+            select.POLLERR | select.POLLNVAL)
+        poller.register(master_pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        poller.register(supervisor_pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        events = poller.poll(max(1, int(remaining * 1000)))
+        if not events:
+            continue
+        ready_events = dict(events)
+        if master_pidfd in ready_events or supervisor_pidfd in ready_events:
+            raise PermissionError('pinned Nginx master or companion supervisor exited before worker READY')
+        event = ready_events.get(endpoint.fileno(), 0)
+        if event & (select.POLLHUP | select.POLLERR | select.POLLNVAL):
+            raise ConnectionError('Nginx owner READY channel closed')
+        if not event & select.POLLIN:
+            continue
+        packet, ancillary, flags, _ = endpoint.recvmsg(OWNER_READY_RECORD.size + 1,
+            socket.CMSG_SPACE(UCRED.size) + socket.CMSG_SPACE(16 * 4),
+            getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
+        credentials = []
+        received_fds = []
+        invalid = bool(flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC))
+        try:
+            for level, kind, body in ancillary:
+                if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS and len(body) == UCRED.size:
+                    credentials.append(UCRED.unpack(body))
+                elif level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                    values = array.array('i')
+                    values.frombytes(body[:len(body) - len(body) % values.itemsize])
+                    received_fds.extend(values)
+                    invalid = True
+                else:
+                    invalid = True
+            if invalid or len(packet) != OWNER_READY_RECORD.size or len(credentials) != 1:
+                raise ValueError('malformed Nginx owner READY record or ancillary data')
+            (magic, version, length, role, reserved, slot_device, slot_inode,
+             worker_start, worker_pid, owner_tid, cookie_value, reserved3) = \
+                OWNER_READY_RECORD.unpack(packet)
+            credential_pid, credential_uid, credential_gid = credentials[0]
+            if (magic != OWNER_READY_MAGIC or version != OWNER_READY_VERSION or
+                    length != OWNER_READY_RECORD.size or role != 0 or reserved or reserved3 or
+                    not slot_device or not slot_inode or cookie_value != expected_cookie or
+                    worker_pid != credential_pid or credential_uid != os.getuid() or
+                    credential_gid != os.getgid() or owner_tid <= 0 or
+                    worker_start <= 0 or worker_pid <= 0):
+                raise PermissionError('Nginx worker READY identity/slot/profile mismatch')
+            if (master.poll() is not None or not process_alive(master_pidfd) or
+                    start_ticks(master.pid) != master_start or
+                    process_parent(worker_pid) != master.pid or
+                    start_ticks(worker_pid) != worker_start or
+                    sha256_file(f'/proc/{worker_pid}/exe') != binary_hash or
+                    not Path(f'/proc/{worker_pid}/task/{owner_tid}').exists() or
+                    not process_alive(supervisor_pidfd) or
+                    start_ticks(supervisor_pid) != supervisor_start):
+                raise PermissionError('Nginx READY worker is stale or not a child of the pinned master')
+            worker_pidfd = os.pidfd_open(worker_pid, 0)
+            try:
+                if (pidfd_pid(worker_pidfd) != worker_pid or
+                        not process_alive(worker_pidfd) or
+                        start_ticks(worker_pid) != worker_start or
+                        process_parent(worker_pid) != master.pid):
+                    raise PermissionError('Nginx READY worker PIDFD identity changed')
+                return ((worker_pid, credential_uid, credential_gid, role, owner_tid,
+                    0, worker_start, slot_device, slot_inode, cookie_value), worker_pidfd)
+            except BaseException:
+                os.close(worker_pidfd)
+                raise
+        finally:
+            _close_fds(received_fds)
 
 
 def process_alive(pidfd):
@@ -603,6 +697,19 @@ def run(args):
     if not config.is_file() or not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError('invalid pinned Nginx profile files')
     directives = validate_control_nginx_config(config_bytes)
+    if args.owner_ready_required:
+        module_path_text = args.nginx_env.get('KER_NGINX_OWNER_MODULE_PATH')
+        module_sha_text = args.nginx_env.get('KER_NGINX_OWNER_MODULE_SHA256')
+        if not module_path_text or not module_sha_text:
+            raise ValueError('owner READY requires a pinned C22 module identity')
+        module_path = Path(module_path_text).resolve(strict=True)
+        module_hash = bytes.fromhex(module_sha_text)
+        if len(module_hash) != 32 or sha256_file(module_path) != module_hash:
+            raise PermissionError('C22 owner-activation module hash mismatch')
+        configured_modules = [Path(os.fsdecode(item[1])).resolve(strict=True)
+            for item in directives if len(item) == 2 and item[0] == b'load_module']
+        if configured_modules.count(module_path) != 1:
+            raise PermissionError('pinned C22 owner module is not loaded exactly once')
     effective_ini_path, effective_ini_identity = effective_fstack_ini(
         config, directives, ini_path)
     actual_ini_hash = sha256_file(effective_ini_path)
@@ -636,6 +743,19 @@ def run(args):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
     if test.returncode:
         raise RuntimeError('pinned Nginx config test failed')
+
+    owner_ready_receiver = owner_ready_sender = None
+    owner_ready_cookie = 0
+    owner_ready_pidfd = -1
+    if args.owner_ready_required:
+        owner_ready_receiver, owner_ready_sender = socket.socketpair(
+            socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+        owner_ready_receiver.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        owner_ready_cookie = struct.unpack('=Q', owner_ready_sender.getsockopt(
+            socket.SOL_SOCKET, SO_COOKIE, 8))[0]
+        if not owner_ready_cookie:
+            raise RuntimeError('Nginx owner READY endpoint has no socket cookie')
+        nginx_env['KER_NGINX_OWNER_READY_FD'] = str(owner_ready_sender.fileno())
 
     def revalidate_reload_profile():
         if master is None or master.poll() is not None:
@@ -681,12 +801,17 @@ def run(args):
     master_ticks = 0
     started_sent = False
     try:
-        master_pass_fds = (() if args.cycle_control_fd is None else
-            (args.cycle_control_fd,))
+        master_pass_fds = ([] if args.cycle_control_fd is None else
+            [args.cycle_control_fd])
+        if owner_ready_sender is not None:
+            master_pass_fds.append(owner_ready_sender.fileno())
         master = subprocess.Popen([str(binary), '-p', str(prefix) + '/',
             '-c', str(config)], env=nginx_env, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            close_fds=True, pass_fds=master_pass_fds, start_new_session=False)
+            close_fds=True, pass_fds=tuple(master_pass_fds), start_new_session=False)
+        if owner_ready_sender is not None:
+            owner_ready_sender.close()
+            owner_ready_sender = None
         if args.cycle_control_fd is not None:
             os.close(args.cycle_control_fd)
             args.cycle_control_fd = None
@@ -713,6 +838,20 @@ def run(args):
         send_record(channel, wire.pack_record(wire.STARTED, started_body,
             args.nonce, args.epoch, 1), (master_pidfd,), time.monotonic() + 5.0)
         started_sent = True
+        if args.owner_ready_required:
+            identity, owner_ready_pidfd = receive_owner_ready(
+                owner_ready_receiver, expected_cookie=owner_ready_cookie,
+                binary_hash=actual_binary_hash, master=master,
+                master_pidfd=master_pidfd, master_start=master_ticks,
+                supervisor_pidfd=supervisor_pidfd,
+                supervisor_pid=expected_parent_pid,
+                supervisor_start=expected_parent_start)
+            owner_ready_receiver.close()
+            owner_ready_receiver = None
+            owner_ready_record = wire.pack_record(wire.OWNER_READY,
+                wire.OWNER_READY_BODY.pack(*identity), args.nonce, args.epoch, 1)
+            send_record(channel, owner_ready_record, (owner_ready_pidfd,),
+                time.monotonic() + 5.0)
     except BaseException:
         if master is not None:
             if master.poll() is None:
@@ -727,12 +866,13 @@ def run(args):
                 time.monotonic() + 10.0)
         else:
             unresolved = 0
+        error_sequence = 1 if (not started_sent or args.owner_ready_required) else 2
         error_body = wire.ERROR_BODY.pack(5, 1 if not started_sent else 2,
             0 if master is None else master.pid, unresolved,
             master_ticks, profile)
         try:
             send_record(channel, wire.pack_record(wire.ERROR, error_body,
-                args.nonce, args.epoch, 1 if not started_sent else 2),
+                args.nonce, args.epoch, error_sequence),
                 deadline=time.monotonic() + 1.0)
         except (OSError, ValueError):
             pass
@@ -740,6 +880,12 @@ def run(args):
             retain_unresolved_subtree()
         if master_pidfd >= 0:
             os.close(master_pidfd)
+        if owner_ready_pidfd >= 0:
+            os.close(owner_ready_pidfd)
+        if owner_ready_receiver is not None:
+            owner_ready_receiver.close()
+        if owner_ready_sender is not None:
+            owner_ready_sender.close()
         os.close(supervisor_pidfd)
         return 1
     request_sequence = 2
@@ -760,9 +906,27 @@ def run(args):
             if unresolved:
                 retain_unresolved_subtree()
             return 1
+        if owner_ready_pidfd >= 0 and not process_alive(owner_ready_pidfd):
+            signal.pidfd_send_signal(master_pidfd, signal.SIGQUIT)
+            unresolved = settle_descendants(master, master_pidfd,
+                time.monotonic() + 10.0)
+            body = wire.ERROR_BODY.pack(10, 2, master.pid, unresolved,
+                master_ticks, profile)
+            try:
+                send_record(channel, wire.pack_record(wire.ERROR, body,
+                    args.nonce, args.epoch, request_sequence),
+                    deadline=time.monotonic() + 1.0)
+            except (OSError, ValueError):
+                pass
+            if unresolved:
+                retain_unresolved_subtree()
+            return 1
         try:
+            watched_pidfds = (supervisor_pidfd, master_pidfd)
+            if owner_ready_pidfd >= 0:
+                watched_pidfds += (owner_ready_pidfd,)
             data, fds = recv_record(channel, parent_cred, None, 0,
-                (supervisor_pidfd, master_pidfd))
+                watched_pidfds)
         except BaseException as error:
             # A dead supervisor or lost control channel cannot leave its
             # control-only Nginx subtree running without an owner. Malformed
@@ -794,6 +958,14 @@ def run(args):
             if record_type == wire.RELOAD:
                 if len(data) != wire.RELOAD_BYTES:
                     raise ValueError('invalid RELOAD size')
+                if args.owner_ready_required:
+                    body = wire.RELOAD_RESULT_BODY.pack(errno.ENOTSUP, 0,
+                        master_ticks, profile)
+                    send_record(channel, wire.pack_record(wire.RELOAD_RESULT,
+                        body, args.nonce, args.epoch, request_sequence),
+                        deadline=time.monotonic() + 5.0)
+                    request_sequence += 1
+                    continue
                 revalidate_reload_profile()
                 signal.pidfd_send_signal(master_pidfd, signal.SIGHUP)
                 body = wire.RELOAD_RESULT_BODY.pack(0, 0, master_ticks, profile)
@@ -856,6 +1028,7 @@ def main(argv=None):
     parser.add_argument('--config', required=True)
     parser.add_argument('--prefix', required=True)
     parser.add_argument('--helper-sha256', type=lambda value: bytes.fromhex(value), required=True)
+    parser.add_argument('--owner-ready-required', action='store_true')
     parser.add_argument('--nginx-env', action='append', default=[])
     args = parser.parse_args(argv)
     if (len(args.nonce) != 16 or args.nonce == bytes(16) or args.epoch <= 0 or

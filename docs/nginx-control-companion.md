@@ -40,6 +40,28 @@ SIGHUP; they do not prevent a privileged writer from racing
 the check and Nginx's later config read. Such concurrent mutation is outside
 the supported profile.
 
+The separate `--control-nginx-owner-ready --control-nginx-owner-module` opt-in
+also permits the C22 worker shim in `LD_PRELOAD`. The config must load the
+specified C22 owner-activation module. `ker-run` hashes that caller-selected
+module into the launch profile; the helper rechecks its hash and verifies that
+the config loads that exact path. This binds the bytes to this launch profile,
+not to an independent build-origin attestation. The module's existing
+authenticated initial-owner setup sends a version-2 READY record from the
+worker's FF event-loop thread. The helper checks kernel-supplied sender
+credentials, the endpoint cookie, pinned master/supervisor identities, worker
+parentage, executable hash, start time, live owner TID, and slot identity,
+then forwards the worker pidfd over the existing authenticated helper channel.
+The READY TID is an observation at startup; it is not a lifetime proof that the
+thread remains in `ff_run`.
+
+In this opt-in mode, the helper watches the delegated worker pidfd even while
+idle, contains the master subtree if that worker exits, and refuses reload
+before delivering HUP because successor-worker READY is not implemented. This
+establishes initial worker identity delegation and owner-death containment
+only. It does not connect the source flow classifier to a generation-aware
+packet relay or enable the upstream same-master graceful-reload path. The real
+Nginx owner-ready and idle-owner-death CTests exercise this bounded boundary.
+
 The broker READY/STOP exchange is separate from Nginx startup and cleanup.
 `ker-run` advances its existing worker/application loop while waiting for
 broker READY. On shutdown it settles the Nginx subtree first, then asks the
@@ -52,6 +74,6 @@ STOP is treated as an orderly lifecycle.
 This component is limited to a control-only, `graceful_reload=0` Nginx
 companion profile. It does not enable `graceful_reload=1`, register the original
 packet dispatcher, grant Nginx a primary runtime-service lease, or qualify the
-full upstream graceful-reload entrypoint. The helper process test uses a small
-non-networking executable to exercise pidfd and subreaper ownership; it does
-not qualify real Nginx traffic, reload, or the upstream integration entrypoint.
+full upstream graceful-reload entrypoint. The real Nginx tests exercise
+ordinary C35 traffic/reload/STOP and, separately, C22 initial-owner READY and
+idle owner-death containment; neither qualifies upstream graceful reload.

@@ -73,8 +73,8 @@ def close_manager(manager):
     if manager.channel is not None:
         manager.channel.close()
         manager.channel = None
-    for attribute in ('master_pidfd', 'supervisor_pidfd'):
-        fd = getattr(manager, attribute)
+    for attribute in ('owner_pidfd', 'master_pidfd', 'supervisor_pidfd'):
+        fd = getattr(manager, attribute, -1)
         if fd >= 0:
             os.close(fd)
             setattr(manager, attribute, -1)
