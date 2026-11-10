@@ -1,4 +1,7 @@
 if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
+    # The shutdown trace exists only in this diagnostic selftest build; the
+    # runtime still requires an explicit opt-in from the selected CTest.
+    target_compile_definitions(ker-posix PRIVATE KER_TCP_AO_FINALIZE_DIAGNOSTIC=1)
     set(ao_root "${ker_native_source}/tools/testing/selftests/net/tcp_ao")
     # These are userspace headers for the host x86-64 ABI, generated from the
     # same pinned tree. LKL's prefixed internal headers are not a UAPI SDK.
@@ -27,6 +30,10 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
     foreach(program IN LISTS ao_programs)
         foreach(family 4 6)
             set(target ker-linux-tcp-ao-${program}-ipv${family})
+            set(ao_trace_args)
+            if(program STREQUAL "rst" AND family EQUAL 6)
+                list(APPEND ao_trace_args --finalize-trace)
+            endif()
             add_executable(${target} "${ao_root}/${program}.c" $<TARGET_OBJECTS:ker-linux-tcp-ao-adapter>)
             target_include_directories(${target} PRIVATE "${ao_root}/lib" "${ao_headers}" "${ker_native_source}/tools/include")
             target_compile_definitions(${target} PRIVATE _GNU_SOURCE)
@@ -48,6 +55,7 @@ if(BUILD_TESTING AND KER_BUILD_LINUX_PROTOCOL_SELFTESTS)
                     --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
                     --worker "$<TARGET_FILE:ker-io-worker>" --pmd-dir "${ker_session_pmd_dir}"
                     --manifest "${ker_native_manifest}" --family ${family}
+                    ${ao_trace_args}
                     --evidence "${PROJECT_BINARY_DIR}/linux-original-tcp-ao-${program}-ipv${family}.json")
             set_tests_properties(linux-original-tcp-ao-${program}-ipv${family} PROPERTIES TIMEOUT 900
                 LABELS "linux-upstream;original-linux;tcp-ao;protocol-selftest;dpdk"
