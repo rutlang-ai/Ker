@@ -53,7 +53,8 @@ LINUX_BRIDGE_PROFILE_TESTS = {LINUX_BRIDGE_PROFILE_TEST: "router_bridge.sh",
                               "linux-original-forwarding-bridge-mld": "bridge_mld.sh",
                               "linux-original-forwarding-bridge-mdb": "bridge_mdb.sh",
                               "linux-original-forwarding-bridge-mdb-max": "bridge_mdb_max.sh",
-                              "linux-original-forwarding-pedit-ip": "pedit_ip.sh"}
+                              "linux-original-forwarding-pedit-ip": "pedit_ip.sh",
+                              "linux-original-forwarding-pedit-l4port": "pedit_l4port.sh"}
 LINUX_XT_STRING_PROFILE_TEST = "linux-original-netfilter-xt-string"
 LINUX_RPATH_PROFILE_TEST = "linux-original-netfilter-rpath"
 LINUX_RPATH_REALTIME_TEST = "rpath-realtime-wrapper-contract"
@@ -593,7 +594,7 @@ def run_bridge_profile(build: Path, junit: Path) -> None:
                 evidence.get('fingerprint') == manifest.get('fingerprint') and
                 evidence.get('program') == program, 'wrong native bridge/VLAN evidence')
         contract.validate_evidence(evidence)
-    summary('Original routed bridge/PVID, VLAN switching, 802.1D and VLAN uppers: twenty-one complete shells including PEDIT address edits, MDB, learning limits, isolation, VLAN switching and locked-port/MAB redirect and VLAN multicast/IPv6 VRF ingress accounting and complete IGMP/MLD source filtering and full MDB API/scale/forwarding and port/VLAN group limits, PASS ' + manifest['fingerprint'])
+    summary('Original routed bridge/PVID, VLAN switching, 802.1D and VLAN uppers: twenty-two complete shells including PEDIT address and UDP/TCP port edits, MDB, learning limits, isolation, VLAN switching and locked-port/MAB redirect and VLAN multicast/IPv6 VRF ingress accounting and complete IGMP/MLD source filtering and full MDB API/scale/forwarding and port/VLAN group limits, PASS ' + manifest['fingerprint'])
 
 
 def run_xt_string_profile(build: Path, junit: Path) -> None:

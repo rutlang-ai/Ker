@@ -471,8 +471,9 @@ def validate_evidence(report):
     validate_boundaries(report,rows)
 
 
-def validate_boundaries(report, rows):
-    require(report['source_hashes'] == SOURCE_HASHES and report['original_tc_hit_timeout_ms'] == 1000,
+def validate_boundaries(report, rows, *, source_hashes=None, expected_sends=80, expected_bytes=11520):
+    source_hashes = SOURCE_HASHES if source_hashes is None else source_hashes
+    require(report['source_hashes'] == source_hashes and report['original_tc_hit_timeout_ms'] == 1000,
             'pinned original PEDIT/helper source or busywait changed')
     tools = report['iproute2']
     require(tools['version'] == '6.12.0' and tools['archive_sha256'] ==
@@ -495,8 +496,8 @@ def validate_boundaries(report, rows):
             '1 received' in report['vrf_binding_control']['baseline']['stdout'] and
             report['vrf_binding_control']['unknown_vrf']['returncode'] != 0, 'native PEDIT backend/VRF controls ineffective')
     native = report['native_fixture']; stats = report['stats']
-    require(native['netlinks'] > 0 and native['raw_sockets'] > 0 and native['bridge_packet_sends'] == 80 and
-            native['bridge_packet_bytes'] == 11520 and native['bridge_packet_trace_errors'] == 0 and native['live'] == 0 and
+    require(native['netlinks'] > 0 and native['raw_sockets'] > 0 and native['bridge_packet_sends'] == expected_sends and
+            native['bridge_packet_bytes'] == expected_bytes and native['bridge_packet_trace_errors'] == 0 and native['live'] == 0 and
             stats['outstanding'] == stats['worker_exit_code'] == 0 and stats['control_eof'] is True and
             stats['shutdown_timed_out'] is False, 'native PEDIT packets/resources/shutdown incomplete')
 
