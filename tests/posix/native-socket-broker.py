@@ -27,6 +27,31 @@ def require(value, message):
         raise RuntimeError(message)
 
 
+def wait_for_graceful_source_rejection_evidence(trace_path, primary_log,
+        timeout=15, poll_interval=0.02):
+    """Wait for the source failure and both independent terminal records."""
+    deadline = time.monotonic() + timeout
+    trace_text = ''
+    primary_stderr = b''
+    while True:
+        trace_text = Path(trace_path).read_text(errors='replace') if Path(trace_path).is_file() else ''
+        primary_stderr = Path(primary_log).read_bytes() if Path(primary_log).is_file() else b''
+        source_valid = 'stage=graceful_source_state_valid' in trace_text
+        source_terminal_error = any(marker in trace_text for marker in (
+            'stage=graceful_source_state_invalid',
+            'stage=graceful_source_state_mismatch'))
+        backend_unbound = ('stage=graceful_backend_unbound' in trace_text and
+            'dispatcher=0 packet_owner=0' in trace_text)
+        rejection_written = (b'graceful reload requires an authenticated generation packet-owner'
+            in primary_stderr)
+        if source_terminal_error or (source_valid and backend_unbound and rejection_written):
+            return trace_text, primary_stderr
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return trace_text, primary_stderr
+        time.sleep(min(poll_interval, remaining))
+
+
 def finalize_c23_evidence(evidence_path, evidence, phase, success, error=None,
         artifacts=None, broker=None, stats=None):
     """Persist the overall C23 result only after runtime cleanup is observed."""
@@ -2792,15 +2817,9 @@ graceful_reload=0
         require(started.returncode == 0,
             f'unchanged source Nginx master failed before spawning its slim primary: '
             f'{started.stderr.decode(errors="replace")}')
-        trace_deadline = time.monotonic() + 15
-        trace_text = ''
-        while time.monotonic() < trace_deadline:
-            trace_text = runtime_trace.read_text(errors='replace') if runtime_trace.exists() else ''
-            if ('stage=graceful_source_state_valid' in trace_text or
-                    'stage=graceful_source_state_invalid' in trace_text or
-                    'stage=graceful_source_state_mismatch' in trace_text):
-                break
-            time.sleep(0.02)
+        primary_log = Path('/run/ff_slim_primary.log')
+        trace_text, primary_stderr = wait_for_graceful_source_rejection_evidence(
+            runtime_trace, primary_log)
         require('stage=graceful_source_state_valid' in trace_text,
             f'actual Nginx slim-primary ff_init did not validate its inherited reload block: '
             f'trace={trace_text!r}; error_log={(logs / "error.log").read_text(errors="replace") if (logs / "error.log").exists() else "<missing>"}')
@@ -2811,13 +2830,11 @@ graceful_reload=0
             'stage=broker_probe_begin' not in trace_text and
             not any(line.startswith('ff_init pid=') for line in trace_text.splitlines()),
             f'graceful source startup mutated/committed broker owner state before rejection: {trace_text!r}')
-        primary_log = Path('/run/ff_slim_primary.log')
         copied_primary_log = root / 'graceful-slim-primary.log'
-        if primary_log.is_file():
-            copied_primary_log.write_bytes(primary_log.read_bytes())
-        require(copied_primary_log.is_file() and
-            b'graceful reload requires an authenticated generation packet-owner' in
-            copied_primary_log.read_bytes(),
+        if primary_stderr:
+            copied_primary_log.write_bytes(primary_stderr)
+        require(b'graceful reload requires an authenticated generation packet-owner'
+            in primary_stderr,
             'slim-primary stderr did not retain the precise fail-closed runtime rejection')
         pidfile = logs / 'nginx.pid'
         master = int(pidfile.read_text().strip()) if pidfile.is_file() else None
