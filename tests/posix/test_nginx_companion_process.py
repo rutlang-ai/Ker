@@ -217,6 +217,97 @@ def exercise_bad_receive(supervisor, wire, server, helper_path, config, prefix,
         cleanup_manager(manager)
 
 
+def exercise_owner_death_signal_race(helper_module):
+    """A failed pidfd SIGQUIT must still reap descendants owned by the helper."""
+    child_code = '''import os, sys, time
+child = os.fork()
+if child == 0:
+    time.sleep(0.2)
+    os._exit(0)
+with open(sys.argv[1], "w", encoding="ascii") as stream:
+    stream.write(str(child))
+os._exit(0)
+'''
+    with tempfile.TemporaryDirectory(prefix='ker-nginx-exit-race-') as directory:
+        child_pid_path = Path(directory) / 'descendant.pid'
+        master = subprocess.Popen([sys.executable, '-c', child_code,
+            str(child_pid_path)], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True)
+        master_pidfd = os.pidfd_open(master.pid, 0)
+        descendant_pidfd = -1
+        try:
+            require(master.wait(timeout=3) == 0,
+                'race fixture master did not exit before the SIGQUIT attempt')
+            descendant = int(child_pid_path.read_text(encoding='ascii'))
+            descendant_pidfd = os.pidfd_open(descendant, 0)
+            require(descendant in helper_module.direct_children(),
+                'test subreaper did not adopt the master descendant')
+            sent = []
+            original_send = helper_module.signal.pidfd_send_signal
+
+            def master_already_exited(pidfd, signal_number):
+                if pidfd == master_pidfd and signal_number == signal.SIGQUIT:
+                    sent.append((pidfd, signal_number))
+                    raise ProcessLookupError(3, 'master exited before SIGQUIT')
+                return original_send(pidfd, signal_number)
+
+            helper_module.signal.pidfd_send_signal = master_already_exited
+            try:
+                unresolved = helper_module.signal_master_and_settle(master,
+                    master_pidfd, time.monotonic() + 3.0)
+            finally:
+                helper_module.signal.pidfd_send_signal = original_send
+            require(sent == [(master_pidfd, signal.SIGQUIT)],
+                'race fixture did not force ProcessLookupError on SIGQUIT')
+            require(unresolved == 0 and
+                descendant not in helper_module.direct_children(),
+                'failed SIGQUIT bypassed descendant settlement')
+        finally:
+            if master.poll() is None:
+                master.kill()
+                master.wait(timeout=3)
+            if descendant_pidfd >= 0:
+                if not wait_dead(descendant_pidfd, 0):
+                    try:
+                        signal.pidfd_send_signal(descendant_pidfd, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    os.waitpid(descendant, 0)
+                except ChildProcessError:
+                    pass
+                os.close(descendant_pidfd)
+            os.close(master_pidfd)
+
+
+def exercise_relative_load_module_resolution(helper_module, prefix, launch_cwd):
+    """Relative load_module follows Nginx -p even when launcher cwd differs."""
+    modules = prefix / 'modules'
+    modules.mkdir()
+    module = modules / 'libker-fstack-nginx-owner-activation.so'
+    module.write_bytes(b'test module path marker')
+    launch_cwd.mkdir()
+    config = (b'daemon off; master_process on; worker_processes 1;\n'
+        b'fstack_conf /tmp/fstack.ini;\n'
+        b'load_module modules/libker-fstack-nginx-owner-activation.so;\n')
+    directives = helper_module.validate_control_nginx_config(config)
+    configured = next(item[1] for item in directives
+        if item[0] == b'load_module')
+    previous_cwd = Path.cwd()
+    try:
+        os.chdir(launch_cwd)
+        resolved_relative = helper_module.resolve_nginx_prefix_path(prefix,
+            configured)
+        resolved_absolute = helper_module.resolve_nginx_prefix_path(prefix,
+            os.fsencode(module.resolve()))
+        require(resolved_relative == module.resolve() and
+            resolved_absolute == module.resolve(),
+            'relative load_module did not resolve under -p independently of cwd')
+    finally:
+        os.chdir(previous_cwd)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--server', type=Path, required=True)
@@ -233,6 +324,7 @@ def main():
         '_test_nginx_companion_wire')
     helper_module = load_module(args.helper,
         '_test_ker_nginx_companion')
+    exercise_owner_death_signal_race(helper_module)
     valid_profiles = (
         b'daemon off; master_process on; worker_processes 1; fstack_conf /tmp/fstack.ini; # include ignored\n',
         b'daemon off; master_process on; worker_processes 1; fstack_conf /tmp/fstack.ini; events { worker_connections 4; }\n',
@@ -275,6 +367,8 @@ def main():
         root = Path(directory)
         prefix = root / 'prefix'
         prefix.mkdir()
+        exercise_relative_load_module_resolution(helper_module, prefix,
+            root / 'launcher-cwd')
         config = root / 'nginx.conf'
         config.write_text('daemon off;\nmaster_process on;\nworker_processes 1;\n'
             'fstack_conf "fstack.ini";\n',

@@ -379,6 +379,14 @@ def validate_control_nginx_config(config_bytes):
     return tuple(directives)
 
 
+def resolve_nginx_prefix_path(prefix, configured_path):
+    """Resolve an Nginx config path using `-p` as its relative base."""
+    path = Path(os.fsdecode(configured_path))
+    if not path.is_absolute():
+        path = Path(prefix) / path
+    return path.resolve(strict=True)
+
+
 def effective_fstack_ini(config_path, directives, environment_path):
     """Resolve the sole literal fstack_conf as pinned Nginx does for `-c`.
 
@@ -632,6 +640,17 @@ def settle_descendants(master, master_pidfd, deadline):
     return len(direct_children())
 
 
+def signal_master_and_settle(master, master_pidfd, deadline):
+    """Request graceful exit, then always settle this subreaper's subtree."""
+    try:
+        signal.pidfd_send_signal(master_pidfd, signal.SIGQUIT)
+    except OSError:
+        # The master can exit between the liveness check and pidfd signal.
+        # Settlement is still required to reap or contain adopted descendants.
+        pass
+    return settle_descendants(master, master_pidfd, deadline)
+
+
 def retain_unresolved_subtree():
     """Keep subreaper ownership until every adopted child is actually gone."""
     while True:
@@ -706,7 +725,7 @@ def run(args):
         module_hash = bytes.fromhex(module_sha_text)
         if len(module_hash) != 32 or sha256_file(module_path) != module_hash:
             raise PermissionError('C22 owner-activation module hash mismatch')
-        configured_modules = [Path(os.fsdecode(item[1])).resolve(strict=True)
+        configured_modules = [resolve_nginx_prefix_path(prefix, item[1])
             for item in directives if len(item) == 2 and item[0] == b'load_module']
         if configured_modules.count(module_path) != 1:
             raise PermissionError('pinned C22 owner module is not loaded exactly once')
@@ -907,8 +926,7 @@ def run(args):
                 retain_unresolved_subtree()
             return 1
         if owner_ready_pidfd >= 0 and not process_alive(owner_ready_pidfd):
-            signal.pidfd_send_signal(master_pidfd, signal.SIGQUIT)
-            unresolved = settle_descendants(master, master_pidfd,
+            unresolved = signal_master_and_settle(master, master_pidfd,
                 time.monotonic() + 10.0)
             body = wire.ERROR_BODY.pack(10, 2, master.pid, unresolved,
                 master_ticks, profile)
