@@ -198,7 +198,12 @@ static int child_worker(struct fixture *fixture)
         return 0;
     }
     if (send(fixture->worker_fd, &ready, sizeof(ready), MSG_NOSIGNAL) != sizeof(ready)) return 26;
-    if (!strcmp(fixture->mode, "old-version-ready")) return 0;
+    if (!strcmp(fixture->mode, "old-version-ready")) {
+        /* Keep SCM_CREDENTIALS and pidfd identity valid until startup has
+         * consumed and rejected this deliberately old READY message. */
+        if (read(fixture->settle_pipe[0], &release, 1) != 1 || release != 'x') return 42;
+        return 0;
+    }
     if (!strcmp(fixture->mode, "bad-ready")) return 27;
 
     struct ker_rx_decision_header data_header = {
@@ -459,10 +464,13 @@ static int run_case(const char *mode)
     int consumer_start = ker_rx_decision_consumer_start();
     if (!strcmp(mode, "old-version-ready")) {
         CHECK(consumer_start == -EPROTO);
+        CHECK(write(fixture.settle_pipe[1], "x", 1) == 1);
         int child_status = 0;
-        CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+        pid_t expected_worker = fixture.worker_pid;
+        pid_t reaped_worker = waitpid(expected_worker, &child_status, 0);
+        if (reaped_worker == expected_worker) fixture.worker_pid = -1;
+        CHECK(reaped_worker == expected_worker);
         CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
-        fixture.worker_pid = -1;
         close(fixture.worker_pidfd);
         close(fixture.supervisor_pidfd);
         close(fixture.settle_pipe[1]);
