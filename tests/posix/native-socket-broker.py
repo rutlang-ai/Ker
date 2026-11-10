@@ -2663,6 +2663,7 @@ def run_nginx_preloaded(args, rpc_path, capabilities, root, broker):
     fstack_profile = args.fstack_runtime is not None
     owner_activation = args.nginx_owner_activation_module is not None
     source_reload = args.source_reload_probes is not None
+    source_graceful_failclosed = args.nginx_test_source_graceful_failclosed
     missing_owner_shim_control = args.nginx_owner_activation_missing_helper
     worker_count = args.nginx_workers or (2 if not fstack_profile else 1)
     negative_profile = args.nginx_test_negative_profile
@@ -2694,15 +2695,17 @@ def run_nginx_preloaded(args, rpc_path, capabilities, root, broker):
     config = prefix / 'nginx.conf'
     runtime_trace = prefix / 'fstack-runtime.trace'
     fstack_config = prefix / 'fstack.ini'
-    graceful_reload = 1 if negative_profile == 'graceful-one' else 0
+    graceful_reload = 1 if (negative_profile == 'graceful-one' or
+        source_graceful_failclosed) else 0
     if fstack_profile:
+        source_lcore = 'lcore_mask=0x3\n' if source_graceful_failclosed else ''
         fstack_config.write_text(f'''[ker_socket_broker]
 version=1
 path={rpc_path}
 
 [dpdk]
 graceful_reload={graceful_reload}
-''')
+{source_lcore}''')
     runtime_config = (f'fstack_conf {fstack_config};\ntimer_resolution 1ms;\nenv KER_FSTACK_RUNTIME_TRACE;\n'
         if fstack_profile else '')
     if owner_activation:
@@ -2778,6 +2781,56 @@ graceful_reload=0
         else:
             env['KER_FSTACK_NGINX_INI'] = str(fstack_config)
     command = [str(binary), '-p', str(prefix) + '/', '-c', str(config)]
+    if source_graceful_failclosed:
+        checked = subprocess.run(command + ['-t'], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        require(checked.returncode == 0,
+            f'unchanged source Nginx rejected the graceful startup fixture before ff_init: '
+            f'{checked.stderr.decode(errors="replace")}')
+        started = subprocess.run(command, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        require(started.returncode == 0,
+            f'unchanged source Nginx master failed before spawning its slim primary: '
+            f'{started.stderr.decode(errors="replace")}')
+        trace_deadline = time.monotonic() + 15
+        trace_text = ''
+        while time.monotonic() < trace_deadline:
+            trace_text = runtime_trace.read_text(errors='replace') if runtime_trace.exists() else ''
+            if ('stage=graceful_source_state_valid' in trace_text or
+                    'stage=graceful_source_state_invalid' in trace_text or
+                    'stage=graceful_source_state_mismatch' in trace_text):
+                break
+            time.sleep(0.02)
+        require('stage=graceful_source_state_valid' in trace_text,
+            f'actual Nginx slim-primary ff_init did not validate its inherited reload block: '
+            f'trace={trace_text!r}; error_log={(logs / "error.log").read_text(errors="replace") if (logs / "error.log").exists() else "<missing>"}')
+        require('stage=graceful_backend_unbound' in trace_text and
+            'dispatcher=0 packet_owner=0' in trace_text,
+            f'graceful source startup did not fail closed at the missing native owner boundary: {trace_text!r}')
+        require('stage=broker_owner_begin_ready' not in trace_text and
+            'stage=broker_probe_begin' not in trace_text and
+            not any(line.startswith('ff_init pid=') for line in trace_text.splitlines()),
+            f'graceful source startup mutated/committed broker owner state before rejection: {trace_text!r}')
+        primary_log = Path('/run/ff_slim_primary.log')
+        copied_primary_log = root / 'graceful-slim-primary.log'
+        if primary_log.is_file():
+            copied_primary_log.write_bytes(primary_log.read_bytes())
+        require(copied_primary_log.is_file() and
+            b'graceful reload requires an authenticated generation packet-owner' in
+            copied_primary_log.read_bytes(),
+            'slim-primary stderr did not retain the precise fail-closed runtime rejection')
+        pidfile = logs / 'nginx.pid'
+        master = int(pidfile.read_text().strip()) if pidfile.is_file() else None
+        stop_frontend_children((master,))
+        master = None
+        for fd in capabilities:
+            try: os.close(fd)
+            except OSError: pass
+        capabilities.clear()
+        print(f'NGINX_SOURCE_GRACEFUL_FAIL_CLOSED trace={runtime_trace} '
+            f'primary_log={copied_primary_log} before_owner_mutation=true')
+        return {'master': None, 'source_trace': trace_text,
+            'source_primary_log': copied_primary_log.read_text(errors='replace')}
     if owner_activation:
         signal_check = subprocess.run(command + ['-s', 'reload'], env=env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
@@ -3324,6 +3377,17 @@ graceful_reload=0
 
 
 def inside(args):
+    if args.nginx_test_source_graceful_failclosed:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p,
+            ctypes.c_char_p, ctypes.c_ulong, ctypes.c_void_p]
+        libc.mount.restype = ctypes.c_int
+        require(libc.mount(None, b'/', None, 16384 | (1 << 18), None) == 0,
+            f'could not make source-test mount namespace private: errno={ctypes.get_errno()}')
+        for target, options in ((b'/run', b'mode=0755,size=8m'),
+                (b'/dev/shm', b'mode=1777,size=64m')):
+            require(libc.mount(b'tmpfs', target, b'tmpfs', 2 | 4, options) == 0,
+                f'could not isolate source-test runtime path {target!r}: errno={ctypes.get_errno()}')
     for command in (
         ['ip', 'link', 'set', 'lo', 'up'],
         ['ip', 'link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink'],
@@ -3503,6 +3567,22 @@ def inside(args):
                     except BaseException as error:
                         raise
                     native = stats.get('native', {})
+                    if args.nginx_test_source_graceful_failclosed:
+                        require(stats.get('outstanding') == 0 and
+                            native.get('active_opens', 0) == 0 and
+                            native.get('passive_opens', 0) == 0,
+                            f'graceful source rejection created a socket or outstanding buffer: {stats!r}')
+                        print('NGINX_SOURCE_GRACEFUL_FAIL_CLOSED_EVIDENCE ' + json.dumps({
+                            'runtime_trace': nginx_result['source_trace'],
+                            'slim_primary_log': nginx_result['source_primary_log'],
+                            'broker_stats': {key: stats.get(key) for key in (
+                                'outstanding', 'worker_exit_code', 'run_shutdown', 'control_eof')},
+                            'native_socket_stats': {key: native.get(key) for key in (
+                                'active_opens', 'passive_opens')},
+                            'owner_committed': False,
+                        }, sort_keys=True, separators=(',', ':')))
+                        print('NGINX_SOURCE_GRACEFUL_FAIL_CLOSED_NO_OWNER_MUTATION')
+                        return 0
                     if args.nginx_owner_activation_missing_helper:
                         require(stats.get('outstanding') == 0 and
                             native.get('active_opens', 0) == 0 and
@@ -3723,6 +3803,7 @@ def main():
     parser.add_argument('--nginx-owner-activation-missing-helper', action='store_true')
     parser.add_argument('--nginx-workers', type=int, choices=(1, 2))
     parser.add_argument('--nginx-test-unsupported-option', action='store_true')
+    parser.add_argument('--nginx-test-source-graceful-failclosed', action='store_true')
     parser.add_argument('--nginx-test-negative-profile', choices=(
         'two-workers', 'extra-listener', 'missing-listener', 'ipv6',
         'graceful-one', 'rcvbuf', 'keepalive', 'ini-env-mismatch'))
@@ -3779,8 +3860,15 @@ def main():
         parser.error('C22 negative profile test requires the owner module and worker shim')
     if args.nginx_workers and not args.nginx_binary:
         parser.error('--nginx-workers requires --nginx-binary')
+    if args.nginx_test_source_graceful_failclosed and not (
+            args.nginx_binary and args.fstack_runtime and args.nginx_workers == 1):
+        parser.error('source graceful fail-closed test requires the pinned single-worker FF Nginx runtime')
     if not args.inside:
-        if args.nginx_binary:
+        if args.nginx_test_source_graceful_failclosed:
+            command = ['unshare', '--user', '--map-auto', '--map-root-user', '--mount', '--pid',
+                '--net', '--fork', '--kill-child', '--mount-proc',
+                sys.executable, str(Path(__file__).resolve()), '--inside']
+        elif args.nginx_binary:
             command = ['unshare', '-Un', '--keep-caps', f'--map-user={os.getuid()}',
                 f'--map-group={os.getgid()}', sys.executable, str(Path(__file__).resolve()), '--inside']
         else:
@@ -3818,6 +3906,8 @@ def main():
             command += ['--nginx-workers', str(args.nginx_workers)]
         if args.nginx_test_unsupported_option:
             command.append('--nginx-test-unsupported-option')
+        if args.nginx_test_source_graceful_failclosed:
+            command.append('--nginx-test-source-graceful-failclosed')
         if args.nginx_test_negative_profile:
             command += ['--nginx-test-negative-profile', args.nginx_test_negative_profile]
         if args.group_broker:
