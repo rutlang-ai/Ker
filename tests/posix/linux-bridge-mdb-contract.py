@@ -98,7 +98,7 @@ def batch_evidence(row, dumps, family):
                 'native MDB dump is incomplete, duplicated or has wrong port/group')
 
 
-def api_evidence(row, groups, bridge_index):
+def api_evidence(row, groups, bridge_index, implicit_vids=(10,20)):
     args = row['arguments']; before, after = row.get('mdb_api_before'), row.get('mdb_api_after')
     require(isinstance(before,list) and isinstance(after,list), 'native MDB API before/after proof missing')
     if row['returncode']:
@@ -122,7 +122,7 @@ def api_evidence(row, groups, bridge_index):
     group = address(scalar(args,'grp')); port = scalar(args,'port'); source = scalar(args,'src')
     require(state_keys(before,groups-{group}) == state_keys(after,groups-{group}),
             'successful MDB mutation altered an unrelated tracked group')
-    vids = {int(scalar(args,'vid'))} if 'vid' in args and scalar(args,'vid') != '0' else {10,20}
+    vids = {int(scalar(args,'vid'))} if 'vid' in args and scalar(args,'vid') != '0' else set(implicit_vids)
     def outside_target(objects):
         return [dict(mdb=[r for r in entries(objects) if not (
             address(r['grp']) == group and r['port'] == port and r.get('vid',0) in vids and
@@ -377,7 +377,7 @@ def validate_traffic(report,rows,phases,traffic):
     require(total==sum(x['length'] for x in packets), 'native packet lengths inconsistent')
 
 
-def validate_boundaries(report, rows):
+def validate_boundaries(report, rows, expected_sends=51):
     require(report.get('original_tc_hit_timeout_ms') == 1000,
             'original tc_common default busywait changed')
     require(report['source_hashes'].get('forwarding/tc_common.sh') ==
@@ -409,7 +409,7 @@ def validate_boundaries(report, rows):
             report['vrf_binding_control']['unknown_vrf']['returncode'] not in (None,0),
             'native MDB missing-backend/VRF boundary failed')
     native, stats = report['native_fixture'], report['stats']
-    require(native['bridge_packet_sends'] == 51 and native['bridge_packet_bytes'] ==
+    require(native['bridge_packet_sends'] == expected_sends and native['bridge_packet_bytes'] ==
             sum(x['length'] for x in report['packet_trace']) and native['bridge_packet_trace_errors'] == 0 and
             native['raw_sockets'] > 0 and native['netlinks'] > 0 and native['live'] == 0 and
             stats['outstanding'] == 0 and stats['worker_exit_code'] == 0 and
