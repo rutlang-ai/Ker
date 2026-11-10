@@ -32,7 +32,7 @@ def bridge_snapshot(env):
     if (os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1' or
             os.environ.get('KER_FORWARDING_BRIDGE_MDB_PORT') == '1' or
             os.environ.get('KER_FORWARDING_BRIDGE_MCAST') == '1' or
-            os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1'):
+            os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1'):
         state = subprocess.run([os.environ['KER_FORWARDING_BRIDGE'], '-j', '-d', 'mdb', 'show'],
                                env=env, capture_output=True, text=True, timeout=10, check=True)
         if state.stderr:
@@ -75,13 +75,18 @@ def learning_snapshot(env):
 
 def packet_bridge_snapshot(env, traffic=False, pedit_counter_sample=False):
     state = bridge_snapshot(env)
+    if os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1':
+        observed = subprocess.run([os.environ['KER_FORWARDING_BRIDGE'], '-j', '-d', 'fdb', 'show', 'br', 'br1'],
+            env=env, capture_output=True, text=True, timeout=10, check=True)
+        if observed.stderr: raise RuntimeError('native L2 miss FDB observation warning: '+observed.stderr)
+        state['fdb'] = json.loads(observed.stdout)
     query = [os.environ['KER_FORWARDING_IP'], '-s', '-d', '-j', 'link', 'show']
     result = subprocess.run(query, env=env, capture_output=True, text=True, timeout=10, check=True)
     if result.stderr:
         raise RuntimeError('native MDB port observation warning: ' + result.stderr)
     state['links'] = json.loads(result.stdout)
     if traffic:
-        devices = (('veth0','veth1','veth2','veth3') if (os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1') else
+        devices = (('veth0','veth1','veth2','veth3') if (os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or (os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1')) else
                    ('br0','veth3') if os.environ.get('KER_FORWARDING_BRIDGE_MDB_API') == '1' else
                    ('veth0','veth1','veth3') if os.environ.get('KER_FORWARDING_BRIDGE_LOCKED') == '1' else
                    ('veth0', 'veth3') if (os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1') else ('veth3',))
@@ -105,7 +110,10 @@ def packet_bridge_snapshot(env, traffic=False, pedit_counter_sample=False):
             state['filters_by_device'] = filters
         if counter_sample is not None:
             state['pedit_veth1_counter_sample'] = counter_sample
-    if traffic and (os.environ.get('KER_FORWARDING_BRIDGE_MCAST') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1'):
+    if traffic and (os.environ.get('KER_FORWARDING_BRIDGE_MCAST') == '1' or
+                    os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or
+                    os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or
+                    os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1'):
         state['egress_filters'] = {}
         for device in ('veth1','veth2'):
             observed = subprocess.run([os.environ['KER_FORWARDING_TC'],'-j','-s','filter','show','dev',device,'egress'],
@@ -231,7 +239,7 @@ def main():
                                       os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or
                                       os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' or
                                       os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or
-                                      os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1')):
+                                      (os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1'))):
                 raise RuntimeError('unsupported native tool: ' + tool)
             command = [os.environ['KER_FORWARDING_' + tool.upper()], *words]
         if tool == 'bridge' and os.environ.get('KER_FORWARDING_BRIDGE_MDB_HOST') == '1':
@@ -269,6 +277,9 @@ def main():
         observe_range = os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' and tool in ('tc','mausezahn')
         if observe_range:
             record['range_before'] = packet_bridge_snapshot(env, True)
+        observe_l2 = os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1' and tool in ('tc','mausezahn','bridge')
+        if observe_l2:
+            record['l2_before'] = packet_bridge_snapshot(env, True)
         if observe_pedit:
             sample_delete = tool == 'tc' and words[:4] == ['filter','del','dev','veth1']
             sample_add = tool == 'tc' and words[:5] == ['filter','add','dev','veth1','ingress']
@@ -289,10 +300,10 @@ def main():
                 env=env, capture_output=True, text=True, timeout=10, check=True)
             if features.stderr: raise RuntimeError('native ethtool feature query warning: ' + features.stderr)
             record['ethtool_features_before'] = json.loads(features.stdout)
-        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1':
+        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or (os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1'):
             record['started_monotonic'] = time.monotonic()
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
-        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1':
+        if os.environ.get('KER_FORWARDING_BRIDGE_UNAWARE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_SG') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_PEDIT') == '1' or (os.environ.get('KER_FORWARDING_BRIDGE_FLOWER_RANGE') == '1' or os.environ.get('KER_FORWARDING_BRIDGE_L2MISS') == '1'):
             record['finished_monotonic'] = time.monotonic()
         record.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
         if tool == 'ethtool':
@@ -302,6 +313,8 @@ def main():
             record['ethtool_features_after'] = json.loads(features.stdout)
         if observe_range:
             record['range_after'] = packet_bridge_snapshot(env, True)
+        if observe_l2:
+            record['l2_after'] = packet_bridge_snapshot(env, True)
         if observe_pedit:
             record['pedit_after'] = packet_bridge_snapshot(env, True, pedit_counter_sample=sample_add)
         if observe_mdb_max:

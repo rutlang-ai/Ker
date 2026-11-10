@@ -1,4 +1,4 @@
-"""All twenty-four complete bridge entries and both native realtime ABI controls are mandatory."""
+"""All twenty-five complete bridge entries and both native realtime ABI controls are mandatory."""
 import json
 from pathlib import Path
 import subprocess
@@ -38,6 +38,7 @@ class BridgeProfileTests(unittest.TestCase):
             'pedit_l4port.sh': 'pedit-l4port-transcript.json',
             'pedit_dsfield.sh': 'pedit-dsfield-transcript.json',
             'tc_flower_port_range.sh': 'tc-flower-port-range-transcript.json',
+            'tc_flower_l2_miss.sh': 'tc-flower-l2-miss-transcript.json',
         }
         control = native_tests.LINUX_BRIDGE_REALTIME_TEST
         packet_control = native_tests.LINUX_BRIDGE_PACKET_REALTIME_TEST
@@ -46,7 +47,7 @@ class BridgeProfileTests(unittest.TestCase):
                  ('skipped-control', None), ('failed-control', None), ('failed-ctest', None)]
         cases.extend((mutation, None) for mutation in ('missing-packet-control', 'duplicate-packet-control',
                                                       'skipped-packet-control', 'failed-packet-control'))
-        cases.extend(('missing-tc', option) for option in ('NET_CLS_ACT', 'NET_SCH_INGRESS', 'NET_CLS_FLOWER', 'NET_ACT_GACT', 'NET_ACT_MIRRED', 'NET_ACT_PEDIT', 'XFRM_USER', 'DUMMY'))
+        cases.extend(('missing-tc', option) for option in ('NET_CLS_ACT', 'NET_SCH_INGRESS', 'NET_CLS_FLOWER', 'NET_ACT_GACT', 'NET_ACT_MIRRED', 'NET_ACT_PEDIT', 'NET_TC_SKB_EXT', 'SKB_EXTENSIONS', 'XFRM_USER', 'DUMMY'))
         evidence_mutations = ('missing-entry', 'duplicate-entry', 'skipped-entry',
                               'wrong-fingerprint', 'failed-evidence', 'wrong-program',
                               'missing-phase', 'leaked-bridge', 'missing-proof')
@@ -69,7 +70,7 @@ class BridgeProfileTests(unittest.TestCase):
                     kernel=str(root), fingerprint='candidate')))
                 options = ['CONFIG_' + name + '=y' for name in
                            ('VETH', 'NET_VRF', 'VLAN_8021Q', 'IP_ROUTE_MULTIPATH',
-                            'IP_MULTIPLE_TABLES', 'IPV6_MULTIPLE_TABLES', 'BRIDGE', 'BRIDGE_VLAN_FILTERING', 'BRIDGE_IGMP_SNOOPING', 'NET_CLS_ACT', 'NET_SCH_INGRESS', 'NET_CLS_FLOWER', 'NET_ACT_GACT', 'NET_ACT_MIRRED', 'NET_ACT_PEDIT', 'XFRM_USER', 'DUMMY')]
+                            'IP_MULTIPLE_TABLES', 'IPV6_MULTIPLE_TABLES', 'BRIDGE', 'BRIDGE_VLAN_FILTERING', 'BRIDGE_IGMP_SNOOPING', 'NET_CLS_ACT', 'NET_SCH_INGRESS', 'NET_CLS_FLOWER', 'NET_ACT_GACT', 'NET_ACT_MIRRED', 'NET_ACT_PEDIT', 'NET_TC_SKB_EXT', 'SKB_EXTENSIONS', 'XFRM_USER', 'DUMMY')]
                 if mutation == 'missing-tc': options.remove('CONFIG_' + target + '=y')
                 if mutation == 'missing-vlan': options.remove('CONFIG_BRIDGE_VLAN_FILTERING=y')
                 if mutation == 'missing-snooping': options.remove('CONFIG_BRIDGE_IGMP_SNOOPING=y')
@@ -94,7 +95,7 @@ class BridgeProfileTests(unittest.TestCase):
                         elif mutation == 'missing-phase':
                             if program == 'ip6_forward_instats_vrf.sh':
                                 report['commands'] = [r for r in report['commands'] if r['arguments'][:1] != ['xfrm']]
-                            elif program in ('pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh'):
+                            elif program in ('pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh', 'tc_flower_l2_miss.sh'):
                                 report['commands'] = [r for r in report['commands'] if r['tool'] != 'tc']
                             elif program == 'router_bridge_vlan_upper_pvid.sh':
                                 report['commands'] = [r for r in report['commands'] if 'pvid_after' not in r]
@@ -110,7 +111,7 @@ class BridgeProfileTests(unittest.TestCase):
                             report['cleanup_state']['links'].append(dict(ifname='router' if program == 'ip6_forward_instats_vrf.sh' else 'br0' if program in ('bridge_mdb_host.sh', 'bridge_sticky_fdb.sh', 'bridge_fdb_learning_limit.sh', 'bridge_mdb_port_down.sh', 'bridge_port_isolation.sh', 'bridge_vlan_unaware.sh', 'bridge_vlan_aware.sh', 'bridge_locked_port.sh', 'bridge_vlan_mcast.sh', 'bridge_igmp.sh', 'bridge_mld.sh', 'bridge_mdb.sh', 'bridge_mdb_max.sh') else 'br1'))
                         elif mutation == 'missing-proof' and program == 'ip6_forward_instats_vrf.sh':
                             report['mixed_poll_control']['returncode'] = 1
-                        elif mutation == 'missing-proof' and program in ('pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh'):
+                        elif mutation == 'missing-proof' and program in ('pedit_ip.sh', 'pedit_l4port.sh', 'pedit_dsfield.sh', 'tc_flower_port_range.sh', 'tc_flower_l2_miss.sh'):
                             report['packet_trace'] = []
                         elif mutation == 'missing-proof' and program == 'bridge_mdb_host.sh':
                             next(r for r in report['commands'] if r['tool'] == 'bridge').pop('mdb_after')
