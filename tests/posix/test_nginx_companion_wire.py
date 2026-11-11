@@ -8,6 +8,8 @@ import select
 import signal
 import socket
 import struct
+import subprocess
+import sys
 import tempfile
 
 from nginx_companion_wire import *
@@ -19,6 +21,12 @@ _COMPANION_SPEC = importlib.util.spec_from_file_location(
 _COMPANION = importlib.util.module_from_spec(_COMPANION_SPEC)
 _COMPANION_SPEC.loader.exec_module(_COMPANION)
 broker_ini_matches = _COMPANION.broker_ini_matches
+
+_TAP_SPEC = importlib.util.spec_from_file_location(
+    '_test_native_nginx_companion_tap', Path(__file__).with_name(
+        'native-nginx-companion-tap.py'))
+_TAP = importlib.util.module_from_spec(_TAP_SPEC)
+_TAP_SPEC.loader.exec_module(_TAP)
 
 
 class CompanionWireTest(unittest.TestCase):
@@ -54,6 +62,32 @@ class CompanionWireTest(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             companion.reload()
         self.assertFalse(companion.unresolved)
+
+    def test_prepared_retention_requires_supervisor_to_outlive_timeout(self):
+        for code in (0, 7):
+            with self.subTest(exit_code=code):
+                process = subprocess.Popen([sys.executable, '-c',
+                    f'import sys; sys.exit({code})'])
+                with self.assertRaisesRegex(RuntimeError,
+                        rf'exited before the retention timeout \(rc={code}\)'):
+                    _TAP.require_wait_timeout(process, 2, 'test retention')
+                self.assertEqual(process.wait(timeout=2), code)
+
+        process = subprocess.Popen([sys.executable, '-c',
+            'import os, signal; os.kill(os.getpid(), signal.SIGKILL)'])
+        with self.assertRaisesRegex(RuntimeError,
+                r'exited before the retention timeout \(rc=-9\)'):
+            _TAP.require_wait_timeout(process, 2, 'test retention')
+        self.assertEqual(process.wait(timeout=2), -signal.SIGKILL)
+
+        process = subprocess.Popen([sys.executable, '-c',
+            'import time; time.sleep(5)'])
+        try:
+            self.assertTrue(_TAP.require_wait_timeout(process, 0.05,
+                'test retention'))
+        finally:
+            process.terminate()
+            self.assertEqual(process.wait(timeout=2), -signal.SIGTERM)
 
     def _helper_owner_ready_rejects(self, *, change=None, with_rights=False,
                                     truncate=False, exit_before_receive=False,

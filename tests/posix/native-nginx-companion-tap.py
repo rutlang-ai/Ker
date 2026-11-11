@@ -53,6 +53,16 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def require_wait_timeout(process, timeout, context):
+    """Require a live process to retain ownership until the timeout expires."""
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return True
+    raise RuntimeError(
+        f'{context}: process exited before the retention timeout (rc={process.returncode})')
+
+
 def wait_line(process, expected, timeout=10):
     deadline = time.monotonic() + timeout
     selector = select.poll()
@@ -592,9 +602,8 @@ http {{
                         supervisor.send_signal(signal.SIGTERM)
                         launcher_shutdown_unresolved = False
                         unresolved_stats = None
-                        try:
-                            supervisor.wait(timeout=15)
-                        except subprocess.TimeoutExpired:
+                        if require_wait_timeout(supervisor, 15,
+                                'PREPARED companion shutdown'):
                             launcher_shutdown_unresolved = True
                             output.flush()
                             unresolved_log = output_path.read_text(errors='replace')
