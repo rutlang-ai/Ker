@@ -32,6 +32,15 @@ def fdb(state,mac,port=None,kind='dynamic',vid=1):
                 row.get('flags',[])==(['locked'] if kind=='locked' else []), 'native FDB port/VID/locked/authentication state changed')
 
 
+def fdb_absent_or_locked(state,mac,port,vid=1):
+    all_rows=[row for row in state['fdb'] if row.get('mac')==mac]
+    found=entries(state,mac,vid)
+    require(len(all_rows)<=1 and len(found)==len(all_rows),
+            'native locked-port prelearned FDB entry duplicated or on wrong VID')
+    if found:
+        fdb(state,mac,port,'locked',vid)
+
+
 def topology(state):
     devices=links(state);data=devices['br0']['linkinfo']['info_data']
     require(devices['br0']['linkinfo']['info_kind']=='bridge' and 'UP' in devices['br0']['flags'] and
@@ -104,6 +113,7 @@ def validate_evidence(report):
                 'original destination port admission flags changed')
         vid=100 if 8<=i<12 else 1
         if i in (2,6,10,15):fdb(row['unaware_before'],host,'veth1','static',vid)
+        elif i==14:fdb_absent_or_locked(row['unaware_before'],host,'veth1',vid)
         else:fdb(row['unaware_before'],host,None,vid=vid)
         if i==14 or i==17:fdb(row['unaware_after'],host,'veth1','locked')
         if i==13 or i==16:fdb(row['unaware_after'],host)
