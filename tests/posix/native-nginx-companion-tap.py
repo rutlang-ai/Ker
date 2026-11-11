@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real pinned Nginx traffic/HUP/settlement through ker-run's companion."""
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -8,10 +9,12 @@ from pathlib import Path
 import select
 import shlex
 import signal
+import secrets
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 
@@ -69,10 +72,12 @@ def wait_worker(master, previous, timeout):
     raise RuntimeError(f'Nginx did not publish the expected worker: {last!r}')
 
 
-def http_get():
+def http_get(path='/', return_source_port=False):
     connection = socket.create_connection(('198.18.0.2', 80), timeout=5)
     try:
-        connection.sendall(b'GET / HTTP/1.1\r\nHost: ker.test\r\n'
+        source_port = connection.getsockname()[1]
+        request = f'GET {path} HTTP/1.1\r\nHost: ker.test\r\n'.encode('ascii')
+        connection.sendall(request +
             b'Connection: close\r\n\r\n')
         response = bytearray()
         while True:
@@ -84,17 +89,17 @@ def http_get():
         require(separator and b' 200 ' in header.split(b'\r\n', 1)[0],
             f'original-Linux Nginx request did not return HTTP 200: {header!r}')
         require(body == BODY, f'original-Linux response body changed: {body!r}')
-        return bytes(response)
+        return (bytes(response), source_port) if return_source_port else bytes(response)
     finally:
         connection.close()
 
 
-def wait_http(timeout=20):
+def wait_http(timeout=20, path='/'):
     deadline = time.monotonic() + timeout
     last_error = None
     while time.monotonic() < deadline:
         try:
-            return http_get()
+            return http_get(path)
         except OSError as error:
             last_error = error
             time.sleep(0.05)
@@ -112,6 +117,9 @@ def run(args):
         root = Path(directory)
         rpc_path = root / 'broker.sock'
         stats_path = root / 'stats.json'
+        stop_marker = root / 'pending-stop.txt'
+        owner_hold_release = root / 'owner-callback-release'
+        probe_token = secrets.token_hex(12)
         prefix = root / 'nginx'
         logs = prefix / 'logs'
         html = prefix / 'html'
@@ -126,6 +134,11 @@ def run(args):
             if args.owner_activation_module is not None else '')
         ready_environment = ('env KER_FSTACK_NGINX_INI;\n'
             if args.owner_activation_module is not None else '')
+        if args.rx_owner_relay:
+            ready_environment += ('env KER_NGINX_RX_OWNER_RELAY_FD;\n'
+                'env KER_NGINX_RX_OWNER_RELAY_SUPERVISOR_PID;\n'
+                'env KER_NGINX_RX_OWNER_RELAY_NONCE;\n'
+                'env KER_NGINX_RX_OWNER_RELAY_EPOCH;\n')
         config.write_text(f'''{module_config}daemon off;
 master_process on;
 worker_processes 1;
@@ -177,16 +190,25 @@ http {{
         if args.owner_activation_module is not None:
             command += ['--control-nginx-owner-ready',
                 '--control-nginx-owner-module', str(args.owner_activation_module.resolve())]
+        if args.rx_owner_relay:
+            command += ['--rx-decision', '--control-nginx-rx-relay']
         for item in control_env:
             command += ['--control-nginx-env', item]
-        command += ['--', str(args.broker.resolve()), str(rpc_path)]
+        relay_application = args.rx_owner_relay_app if args.rx_owner_relay else args.broker
+        command += ['--', str(relay_application.resolve()), str(rpc_path)]
 
         output_path = root / 'ker-run.log'
         pid_path = logs / 'nginx.pid'
         pidfds = []
+        launch_env = os.environ.copy()
+        if args.rx_owner_relay:
+            launch_env['KER_RX_OWNER_RELAY_PROBE_TOKEN'] = probe_token
+        if args.rx_owner_relay_stop_pending:
+            launch_env['KER_RX_OWNER_RELAY_TEST_STOP_MARKER'] = str(stop_marker)
+            launch_env['KER_RX_OWNER_RELAY_TEST_STOP_RELEASE'] = str(owner_hold_release)
         with output_path.open('wb') as output:
             supervisor = subprocess.Popen(command, stdout=output,
-                stderr=subprocess.STDOUT, start_new_session=True)
+                stderr=subprocess.STDOUT, start_new_session=True, env=launch_env)
             helper_pidfd = -1
             master_pidfd = -1
             worker_pidfds = []
@@ -198,6 +220,12 @@ http {{
                         output.flush()
                         raise RuntimeError('ker-run exited before the pinned Nginx master '
                             f'started: {output_path.read_text(errors="replace")}')
+                    output.flush()
+                    startup_log = output_path.read_text(errors='replace')
+                    if ('ker-nginx-companion:' in startup_log or
+                            'helper credentials ' in startup_log):
+                        raise RuntimeError('Nginx companion startup failed before pidfile: ' +
+                            startup_log)
                     if pid_path.is_file() and pid_path.read_text().strip():
                         break
                     time.sleep(0.02)
@@ -225,7 +253,12 @@ http {{
                     if len(pidfds) >= 3:
                         break
                     time.sleep(0.02)
-                wait_http()
+                try:
+                    wait_http()
+                except BaseException as error:
+                    output.flush()
+                    raise RuntimeError(f'{error}; ker-run output: '
+                        f'{output_path.read_text(errors="replace")}') from error
 
                 # Exercise the launcher signal path: it must consume and clear
                 # the pending flag, relay HUP through the pinned companion,
@@ -254,8 +287,162 @@ http {{
                     require(ready.get('pid') == worker and ready.get('master_pid') == master and
                         ready.get('tid', 0) > 0 and ready.get('role') == 0 and
                         ready.get('slot_device', 0) > 0 and ready.get('slot_inode', 0) > 0 and
+                        ready.get('cookie', 0) > 0 and
                         ready.get('source') == 'authenticated-C22-worker-READY',
                         f'authenticated READY did not identify the actual ff_run worker: {ready!r}')
+                    if args.rx_owner_relay:
+                        expected_auth_lines = [line for line in output_path.read_text(
+                            errors='replace').splitlines()
+                            if line.startswith('KER_RX_OWNER_EXPECTED_AUTH ')]
+                        require(len(expected_auth_lines) == 1,
+                            'C31 app did not ACK exactly one supervisor-authenticated owner record')
+                        expected_auth = json.loads(expected_auth_lines[0].split(' ', 1)[1])
+                        require(all(expected_auth.get(key) == ready.get(key) for key in
+                            ('pid', 'start_ticks', 'tid', 'role', 'slot_device',
+                             'slot_inode', 'cookie')),
+                            f'supervisor owner AUTH and C22 READY differ: {expected_auth!r} vs {ready!r}')
+                        auth_ack_lines = [line for line in output_path.read_text(
+                            errors='replace').splitlines()
+                            if line.startswith('RX_OWNER_RELAY_AUTH_ACK ')]
+                        require(len(auth_ack_lines) == 1,
+                            'relay app did not report exactly one validated owner AUTH_ACK')
+                        auth_ack = dict(item.split('=', 1) for item in
+                            auth_ack_lines[0].split()[1:])
+                        require(int(auth_ack['pid']) == ready['pid'] and
+                            int(auth_ack['tid']) == ready['tid'] and
+                            int(auth_ack['start']) == ready['start_ticks'],
+                            f'relay AUTH_ACK identity disagrees with C22 READY: {auth_ack!r} vs {ready!r}')
+                        # This distinct request is correlated with its exact TCP frame
+                        # and source port in the owner relay fixture.
+                        if args.rx_owner_relay_stop_pending:
+                            probe_socket = socket.create_connection(('198.18.0.2', 80), timeout=5)
+                            probe_source_port = probe_socket.getsockname()[1]
+                            probe_socket.sendall(
+                                f'GET /?probe={probe_token} HTTP/1.1\r\n'
+                                'Host: ker.test\r\nConnection: close\r\n\r\n'.encode('ascii'))
+                            deadline = time.monotonic() + 5
+                            while time.monotonic() < deadline and not stop_marker.is_file():
+                                output.flush()
+                                require(supervisor.poll() is None,
+                                    'supervisor exited before pending relay STOP barrier')
+                                time.sleep(0.005)
+                            require(stop_marker.is_file(),
+                                'did not observe the actual deferred lease before STOP')
+                            pending_id, original_deadline = map(int,
+                                stop_marker.read_text(encoding='ascii').split())
+                            require(pending_id > 0 and original_deadline > time.monotonic_ns(),
+                                'pending relay marker did not contain a live lease deadline')
+                            # The app has requested C31 STOP while this exact lease
+                            # remains outstanding. Also stop ker-run while the owner
+                            # callback is deliberately held, then release only after
+                            # the unchanged packet deadline.
+                            retained_children = {}
+                            for pid in child_pids(supervisor.pid):
+                                command_line = process_command(pid)
+                                if (str(args.worker.resolve()) in command_line or
+                                        str(args.rx_owner_relay_app.resolve()) in command_line):
+                                    try:
+                                        child_fd = os.pidfd_open(pid, 0)
+                                    except ProcessLookupError:
+                                        continue
+                                    pidfds.append(child_fd)
+                                    retained_children[pid] = child_fd
+                            require(len(retained_children) == 2,
+                                f'could not pin both native worker and C31 app before STOP: '
+                                f'{retained_children!r}')
+                            os.kill(supervisor.pid, signal.SIGTERM)
+                            require(supervisor.poll() is None and
+                                not pidfd_dead(master_pidfd) and
+                                not pidfd_dead(worker_pidfds[-1]) and
+                                all(not pidfd_dead(fd) for fd in retained_children.values()),
+                                'native owner/application actor exited before pending lease release')
+                            time.sleep(0.025)
+                            output.flush()
+                            pre_release_log = output_path.read_text(errors='replace')
+                            require('BROKER_DONE' not in pre_release_log and
+                                'KER_NATIVE_DONE' not in pre_release_log and
+                                not any(line.startswith('RX_OWNER_RELAY_RESULT ')
+                                    for line in pre_release_log.splitlines()),
+                                'native/app reported healthy completion before pending lease disposition')
+                            while time.monotonic_ns() <= original_deadline:
+                                time.sleep(0.001)
+                            owner_hold_release.write_text('release after original deadline\n',
+                                encoding='ascii')
+                            outcome_deadline = time.monotonic() + 5
+                            pending_log = ''
+                            while time.monotonic() < outcome_deadline:
+                                output.flush()
+                                pending_log = output_path.read_text(errors='replace')
+                                if ('companion shutdown UNRESOLVED' in pending_log or
+                                        supervisor.poll() is not None):
+                                    break
+                                time.sleep(0.02)
+                            require('RX_OWNER_RELAY_STOP_REQUEST pending=1' in pre_release_log,
+                                f'app did not request STOP with a deferred packet: {pre_release_log}')
+                            require('RX_OWNER_RELAY_STOP_REQUEST pending=1' in pending_log,
+                                'pending-stop marker disappeared from final log')
+                            result_line = next((line for line in pending_log.splitlines()
+                                if line.startswith('RX_OWNER_RELAY_RESULT ')), '')
+                            result = dict(item.split('=', 1) for item in result_line.split()[1:]) \
+                                if result_line else {}
+                            require('ker: RX decision lease failed closed: Connection timed out' in
+                                    pending_log and
+                                'ker-run: native Linux shutdown did not complete' in pending_log and
+                                int(result.get('deferred', '0')) >
+                                    int(result.get('completed', '0')) and
+                                int(result.get('deferred', '0')) -
+                                    int(result.get('completed', '0')) == 1 and
+                                int(result.get('broker', '0')) != 0 and
+                                int(result.get('run', '0')) != 0,
+                                f'expected unresolved lease/IO timeout was not reported: {pending_log}')
+                            require('KER_NATIVE_DONE\n' not in pending_log and
+                                'BROKER_DONE' not in pending_log and
+                                result_line and (int(result.get('broker', '0')) != 0 or
+                                    int(result.get('run', '0')) != 0),
+                                f'central C31/native ownership was reported settled without disposition: {pending_log}')
+                            stats = json.loads(stats_path.read_text(encoding='utf-8')) \
+                                if stats_path.exists() else None
+                            if stats is not None:
+                                require(stats.get('outstanding', 0) > 0 or
+                                    stats.get('rx_decision_settled') is not True,
+                                    f'native stats falsely report a settled zero-outstanding run: {stats!r}')
+                            probe_socket.close()
+                            targets = worker_pidfds + pidfds
+                            if master_pidfd >= 0:
+                                targets.append(master_pidfd)
+                            for fd in targets:
+                                try:
+                                    signal.pidfd_send_signal(fd, signal.SIGTERM)
+                                except OSError:
+                                    pass
+                            cleanup_deadline = time.monotonic() + 2
+                            while time.monotonic() < cleanup_deadline and any(
+                                    not pidfd_dead(fd) for fd in targets):
+                                time.sleep(0.02)
+                            for fd in targets:
+                                if not pidfd_dead(fd):
+                                    try:
+                                        signal.pidfd_send_signal(fd, signal.SIGKILL)
+                                    except OSError:
+                                        pass
+                            if supervisor.poll() is None:
+                                try:
+                                    supervisor.wait(timeout=3)
+                                except subprocess.TimeoutExpired:
+                                    os.killpg(supervisor.pid, signal.SIGKILL)
+                                    supervisor.wait(timeout=3)
+                            require(all(pidfd_dead(fd) for fd in targets),
+                                'pending STOP fixture did not clean all pidfd-owned children')
+                            scenario_cleanup_complete = True
+                            print('RX_OWNER_RELAY_PENDING_STOP exact_lease=%d original_deadline_ns=%d '
+                                'pre_release_native_app_owner_alive=1 owner_released_after_deadline=1 '
+                                'timeout_failclosed=1 deferred=%s completed=%s broker=%s run=%s stats=%s: PASS' %
+                                (pending_id, original_deadline, result.get('deferred'),
+                                 result.get('completed'), result.get('broker'), result.get('run'),
+                                 json.dumps(stats, sort_keys=True) if stats is not None else 'not-written'))
+                            return
+                        probe_response, probe_source_port = http_get(
+                            f'/?probe={probe_token}', return_source_port=True)
 
                 if args.break_helper:
                     helper = None
@@ -421,6 +608,37 @@ http {{
                     f'{supervisor.returncode}; {log}')
                 require('BROKER_DONE' in log,
                     f'broker did not report native cleanup completion: {log}')
+                if args.rx_owner_relay:
+                    result_line = next((line for line in log.splitlines()
+                        if line.startswith('RX_OWNER_RELAY_RESULT ')), '')
+                    result = dict(item.split('=', 1) for item in result_line.split()[1:])
+                    callbacks = int(result.get('callbacks', '0'))
+                    deferred = int(result.get('deferred', '0'))
+                    completed = int(result.get('completed', '0'))
+                    startup_drops = int(result.get('startup_drops', '-1'))
+                    require(result_line and callbacks > 0 and callbacks == deferred == completed and
+                        result.get('broker') == '0' and result.get('run') == '0',
+                        f'C31 owner relay did not report settled frame results: {log}')
+                    require(int(result.get('probe_witnesses', '0')) == 1 and
+                        int(result.get('probe_packet_id', '0')) > 0 and
+                        int(result.get('probe_source_port', '0')) == probe_source_port and
+                        int(result.get('probe_frame_hash', '0')) > 0,
+                        f'unique post-READY HTTP request did not map to one exact relayed frame: {result!r}')
+                    probe_frames = [line for line in log.splitlines()
+                        if line.startswith('RX_OWNER_RELAY_PROBE_FRAME ')]
+                    require(len(probe_frames) == 1,
+                        'owner callback did not return exactly one full-frame probe witness')
+                    frame_record = dict(item.split('=', 1) for item in
+                        probe_frames[0].split()[1:])
+                    probe_frame = bytes.fromhex(frame_record['frame_hex'])
+                    require(int(frame_record['packet_id']) ==
+                            int(result['probe_packet_id']) and
+                        int(frame_record['bytes']) == len(probe_frame) and
+                        f'GET /?probe={probe_token} HTTP/1.1'.encode('ascii') in probe_frame,
+                        'full-frame witness does not contain the unique post-READY HTTP request')
+                    probe_frame_sha256 = hashlib.sha256(probe_frame).hexdigest()
+                    require(len(probe_frame_sha256) == 64,
+                        'full-frame witness SHA-256 encoding is invalid')
                 stats = json.loads(stats_path.read_text(encoding='utf-8'))
                 require(stats.get('outstanding') == 0 and stats.get('tx', 0) > 0 and
                     stats.get('rx', 0) > 0 and stats.get('control_eof') is True and
@@ -428,6 +646,16 @@ http {{
                     stats.get('run_shutdown') is True and
                     stats.get('run_shutdown_ack') is True,
                     f'worker/native cleanup accounting was incomplete: {stats!r}')
+                if args.rx_owner_relay:
+                    leases = stats.get('rx_decision_leases', -1)
+                    forwarded = stats.get('rx_decision_forwarded', -1)
+                    local = stats.get('rx_decision_local', -1)
+                    drops = stats.get('rx_decision_drops', -1)
+                    cancelled = stats.get('rx_decision_local_cancelled', -1)
+                    require(leases == local + drops and forwarded == local and
+                        local == completed and drops == startup_drops and cancelled == 0 and
+                        stats.get('rx_decision_settled') is True,
+                        f'C31 disposition counters do not reconcile with relay completions: {stats!r}')
                 require(not Path(f'/proc/{master}').exists(),
                     'Nginx master remained alive after companion SETTLED')
                 require(pidfd_dead(master_pidfd, 2),
@@ -435,6 +663,64 @@ http {{
                 for fd in worker_pidfds + pidfds:
                     require(pidfd_dead(fd, 2),
                         'Nginx worker/helper/runtime child remained alive after ker-run exit')
+                if args.rx_owner_relay:
+                    receipt_path = os.environ.get('KER_RX_OWNER_RELAY_RECEIPT')
+                    if receipt_path:
+                        repository = Path(__file__).resolve().parents[2]
+                        source_paths = {
+                            'owner_module': repository / 'src/posix/fstack-nginx-owner-activation-module.c',
+                            'runtime': repository / 'src/posix/fstack-nginx-runtime.c',
+                            'preload': repository / 'src/posix/socket-broker-preload.c',
+                            'wire': repository / 'src/posix/rx-owner-relay-wire.h',
+                            'ker_run': Path(args.launcher),
+                            'test_fixture': repository / 'tests/posix/socket-broker-rx-owner-relay-fixture.c',
+                            'tap': Path(__file__).resolve(),
+                        }
+                        binary_paths = {
+                            'app': args.rx_owner_relay_app,
+                            'worker': args.worker,
+                            'library': args.library,
+                            'nginx': args.nginx,
+                            'runtime_library': args.fstack_runtime,
+                            'preload_library': args.preload_library,
+                            'owner_module': args.owner_activation_module,
+                            'worker_shim': args.worker_shim,
+                        }
+                        sha256 = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+                        receipt = {
+                            'candidate_head': subprocess.run(['git', '-C', str(repository),
+                                'rev-parse', 'HEAD'], check=True, capture_output=True,
+                                text=True).stdout.strip(),
+                            'source_sha256': {name: sha256(path)
+                                for name, path in source_paths.items()},
+                            'binary_sha256': {name: sha256(path)
+                                for name, path in binary_paths.items()},
+                            'ready': ready,
+                            'expected_owner_auth': expected_auth,
+                            'auth_ack': auth_ack,
+                            'result': result,
+                            'worker_stats': stats,
+                            'probe': {
+                                'token': probe_token,
+                                'source_port': probe_source_port,
+                                'packet_id': int(frame_record['packet_id']),
+                                'bytes': len(probe_frame),
+                                'frame_hex': probe_frame.hex(),
+                                'sha256': probe_frame_sha256,
+                            },
+                        }
+                        receipt_path = Path(receipt_path)
+                        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+                        receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n',
+                            encoding='utf-8')
+                        print('RX_OWNER_RELAY_QUALIFICATION ' + json.dumps({
+                            'ready': ready, 'auth_ack': auth_ack, 'result': result,
+                            'probe_packet_id': receipt['probe']['packet_id'],
+                            'probe_source_port': probe_source_port,
+                            'probe_sha256': probe_frame_sha256,
+                            'source_sha256': receipt['source_sha256'],
+                            'binary_sha256': receipt['binary_sha256'],
+                        }, sort_keys=True))
                 scenario_cleanup_complete = True
             finally:
                 if not scenario_cleanup_complete:
@@ -498,6 +784,7 @@ def main():
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--worker', type=Path, required=True)
     parser.add_argument('--broker', type=Path, required=True)
+    parser.add_argument('--rx-owner-relay-app', type=Path)
     parser.add_argument('--nginx', type=Path, required=True)
     parser.add_argument('--fstack-runtime', type=Path, required=True)
     parser.add_argument('--preload-library', type=Path, required=True)
@@ -508,6 +795,8 @@ def main():
     parser.add_argument('--owner-activation-module', type=Path)
     parser.add_argument('--worker-shim', type=Path)
     parser.add_argument('--owner-death', action='store_true')
+    parser.add_argument('--rx-owner-relay', action='store_true')
+    parser.add_argument('--rx-owner-relay-stop-pending', action='store_true')
     args = parser.parse_args()
     if not args.inside:
         command = ['unshare', '-Un', '--keep-caps',
@@ -516,6 +805,12 @@ def main():
         for name in ('launcher', 'library', 'worker', 'broker', 'nginx',
                 'fstack-runtime', 'preload-library', 'dpdk-plugin-dir'):
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
+        if args.rx_owner_relay_app is not None:
+            command += ['--rx-owner-relay-app', str(args.rx_owner_relay_app.resolve())]
+        if args.rx_owner_relay:
+            command.append('--rx-owner-relay')
+        if args.rx_owner_relay_stop_pending:
+            command.append('--rx-owner-relay-stop-pending')
         if args.owner_activation_module is not None:
             command += ['--owner-activation-module',
                 str(args.owner_activation_module.resolve())]
@@ -530,6 +825,11 @@ def main():
         return 0
     if args.owner_death and args.owner_activation_module is None:
         raise ValueError('--owner-death requires the authenticated owner READY profile')
+    if args.rx_owner_relay and (args.owner_activation_module is None or
+            args.worker_shim is None or args.rx_owner_relay_app is None):
+        raise ValueError('--rx-owner-relay requires the alias module, worker shim and combined app')
+    if args.rx_owner_relay_stop_pending and not args.rx_owner_relay:
+        raise ValueError('--rx-owner-relay-stop-pending requires --rx-owner-relay')
     set_up_network()
     run(args)
     return 0

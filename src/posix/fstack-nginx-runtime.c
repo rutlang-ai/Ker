@@ -52,6 +52,10 @@ static _Thread_local int pending_init_plan_ready;
 static volatile sig_atomic_t runtime_stop;
 static intptr_t *nginx_max_sockets;
 static int (*nginx_is_fstack_fd)(int);
+static dispatch_func_context_t rx_owner_dispatcher;
+static pid_t rx_owner_dispatch_tid;
+static pid_t rx_owner_dispatch_pid;
+static int rx_owner_dispatch_run_consumed;
 static _Atomic uint64_t ff_leaf_epoll_ctl_calls;
 static void runtime_trace(const char *format, ...);
 static int runtime_fail(int error, const char *message);
@@ -477,8 +481,19 @@ ff_run(loop_func_t loop, void *arg)
         (void)syscall(SYS_write, STDERR_FILENO, message, sizeof(message) - 1);
         abort();
     }
+    if (getenv("KER_NGINX_RX_OWNER_RELAY_FD")) {
+        if (!ker_sb_preload_ff_owner_is_current() ||
+            rx_owner_dispatch_run_consumed) {
+            runtime_trace("ff_run RX owner relay rejected stale owner or reused run pid=%ld tid=%ld\n",
+                (long)getpid(), (long)syscall(SYS_gettid));
+            abort();
+        }
+        rx_owner_dispatch_run_consumed = 1;
+    }
     runtime_stop = 0;
     if (ker_sb_preload_owner_loop_enter() != 0) abort();
+    if (rx_owner_dispatcher && (rx_owner_dispatch_pid != getpid() ||
+            rx_owner_dispatch_tid != (pid_t)syscall(SYS_gettid))) abort();
     typedef int (*worker_ready_fn)(void);
     worker_ready_fn notify_ready = (worker_ready_fn)dlsym(RTLD_DEFAULT,
         "ker_fstack_nginx_owner_activation_worker_ready");
@@ -610,9 +625,43 @@ unsupported_abort(const char *name)
 }
 
 void ff_regist_packet_dispatcher_context(dispatch_func_context_t callback)
-{ (void)callback; unsupported_abort("ff_regist_packet_dispatcher_context"); }
+{
+    if (!callback || !runtime_initialized || !getenv("KER_NGINX_RX_OWNER_RELAY_FD") ||
+        rx_owner_dispatcher || !ker_sb_preload_ff_owner_is_current())
+        unsupported_abort("ff_regist_packet_dispatcher_context");
+    rx_owner_dispatcher = callback;
+    rx_owner_dispatch_tid = (pid_t)syscall(SYS_gettid);
+    rx_owner_dispatch_pid = getpid();
+}
+
 void ff_unregist_packet_dispatcher_context(void)
-{ unsupported_abort("ff_unregist_packet_dispatcher_context"); }
+{
+    if (!runtime_initialized || !rx_owner_dispatcher ||
+        rx_owner_dispatch_pid != getpid() ||
+        rx_owner_dispatch_tid != (pid_t)syscall(SYS_gettid))
+        unsupported_abort("ff_unregist_packet_dispatcher_context");
+    rx_owner_dispatcher = NULL;
+    rx_owner_dispatch_tid = 0;
+    rx_owner_dispatch_pid = 0;
+}
+
+int ker_fstack_rx_owner_relay_dispatch_ready(void)
+{ return rx_owner_dispatcher != NULL && rx_owner_dispatch_pid == getpid(); }
+
+int ker_fstack_rx_owner_relay_dispatch(void *data, uint16_t *length,
+    uint16_t queue_id, uint16_t queue_count, uint16_t vlan_tci,
+    uint8_t vlan_stripped, int32_t *result)
+{
+    if (!rx_owner_dispatcher || !data || !length || !*length || !queue_count ||
+        queue_id >= queue_count || !result || !ker_sb_preload_owner_loop_active() ||
+        rx_owner_dispatch_pid != getpid() ||
+        rx_owner_dispatch_tid != (pid_t)syscall(SYS_gettid)) return -ENOTCONN;
+    struct ff_dispatcher_context context = {0};
+    context.vlan.stripped = vlan_stripped;
+    context.vlan.vlan_tci = vlan_tci;
+    *result = rx_owner_dispatcher(data, length, queue_id, queue_count, context);
+    return 0;
+}
 int ff_syncache_count(void)
 {
     uint64_t count = 0;

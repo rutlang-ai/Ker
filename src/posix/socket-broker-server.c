@@ -272,6 +272,10 @@ struct ker_socket_broker_server {
     bool readiness_bootstrap_complete;
     bool readiness_sent;
     bool readiness_stop_requested;
+#ifdef KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING
+    int (*test_run_pump)(void *);
+    void *test_run_context;
+#endif
 };
 
 static void owner_group_activation_poison(struct ker_socket_broker_server *server,
@@ -5643,6 +5647,12 @@ static int broker_pump(void *argument)
     pump_owner_admission_endpoints(server);
     advance_group_cutovers(server);
     finish_member_census_jobs(server);
+#ifdef KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING
+    if (server->test_run_pump) {
+        int hook_result = server->test_run_pump(server->test_run_context);
+        if (hook_result) server->failure = hook_result < 0 ? -hook_result : hook_result;
+    }
+#endif
     bool should_stop = server->failure || server->readiness_stop_requested ||
         (server->stop_when_empty &&
         !object_count(server) && !client_count(server));
@@ -5751,6 +5761,23 @@ int ker_socket_broker_server_run(struct ker_socket_broker_server *server, int st
     if (server->failure) return fail(server->failure);
     return 0;
 }
+
+#ifdef KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING
+int ker_socket_broker_server_run_with_test_hooks(
+    struct ker_socket_broker_server *server, int stop_when_empty,
+    ker_socket_broker_test_run_hook prepare,
+    ker_socket_broker_test_run_hook pump, void *context)
+{
+    if (!server || !prepare || !pump || server->test_run_pump) return fail(EINVAL);
+    server->test_run_pump = pump;
+    server->test_run_context = context;
+    int prepared = prepare(context);
+    int result = prepared ? prepared : ker_socket_broker_server_run(server, stop_when_empty);
+    server->test_run_pump = NULL;
+    server->test_run_context = NULL;
+    return result;
+}
+#endif
 
 int ker_socket_broker_server_destroy_checked(struct ker_socket_broker_server *server)
 {
