@@ -70,13 +70,14 @@ def _close_fds(fds):
 class NginxCompanion:
     """Own one helper and one exact pinned non-daemon Nginx master subtree."""
     def __init__(self, binary, config, prefix, nginx_env, cycle_control_fd=None,
-                 owner_ready_required=False):
+                 owner_ready_required=False, rx_owner_relay_fd=None):
         self.binary = Path(binary).resolve(strict=True)
         self.config = Path(config).resolve(strict=True)
         self.prefix = Path(prefix).resolve(strict=True)
         self.nginx_env = dict(nginx_env)
         self.cycle_control_fd = cycle_control_fd
         self.owner_ready_required = bool(owner_ready_required)
+        self.rx_owner_relay_fd = rx_owner_relay_fd
         self.owner_pidfd = -1
         self.owner_pid = 0
         self.owner_start = 0
@@ -84,6 +85,7 @@ class NginxCompanion:
         self.owner_role = 0
         self.owner_slot_device = 0
         self.owner_slot_inode = 0
+        self.owner_cookie = 0
         cycle_keys = {key for key in self.nginx_env if key.startswith('KER_NGINX_CYCLE_')}
         required_cycle_keys = {'KER_NGINX_CYCLE_FD', 'KER_NGINX_CYCLE_NONCE',
             'KER_NGINX_CYCLE_RUNTIME_NONCE', 'KER_NGINX_CYCLE_RUNTIME_EPOCH',
@@ -222,6 +224,9 @@ class NginxCompanion:
             helper_pass_fds.append(self.cycle_control_fd)
         if self.owner_ready_required:
             command.append('--owner-ready-required')
+        if self.rx_owner_relay_fd is not None:
+            command += ['--rx-owner-relay-fd', str(self.rx_owner_relay_fd)]
+            helper_pass_fds.append(self.rx_owner_relay_fd)
         for key, value in sorted(self.nginx_env.items()):
             command += ['--nginx-env', f'{key}={value}']
         env = {'PATH': '/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1'}
@@ -284,7 +289,7 @@ class NginxCompanion:
                         expected_gid=os.getgid(), expected_role=0)
                     (owner_pid, owner_uid, owner_gid, owner_role, owner_tid,
                      _reserved, owner_start, slot_device, slot_inode,
-                     _cookie) = fields
+                     owner_cookie) = fields
                     worker_pidfd = fds.pop()
                     if (_pidfd_pid(worker_pidfd) != owner_pid or
                             not process_alive(worker_pidfd) or
@@ -305,6 +310,7 @@ class NginxCompanion:
                     self.owner_role = owner_role
                     self.owner_slot_device = slot_device
                     self.owner_slot_inode = slot_inode
+                    self.owner_cookie = owner_cookie
                     worker_pidfd = -1
                 finally:
                     _close_fds(fds)
