@@ -306,12 +306,52 @@ def control_nginx_profile(args):
     source_flowmap_test = any(
         item.partition('=')[0] == 'KER_NGINX_SOURCE_FLOWMAP_TEST'
         for item in supplied_env)
+    source_admission_relay = any(
+        item.partition('=')[0] == 'KER_NGINX_SOURCE_ADMISSION_RELAY'
+        for item in supplied_env)
     if source_flowmap_test:
         if (not rx_owner_relay or owner_module is None or
                 Path(owner_module).name !=
                     'ker-fstack-nginx-owner-activation-alias-test.so'):
             raise ValueError('source flow-map qualification requires the alias RX relay profile')
         allowed.add('KER_NGINX_SOURCE_FLOWMAP_TEST')
+    if source_admission_relay:
+        slot_values = [item.partition('=')[2] for item in supplied_env
+            if item.partition('=')[0] == 'KER_NGINX_CANDIDATE_SLOT_FD']
+        transfer_text = os.environ.get('KER_NGINX_CANDIDATE_SLOT_TRANSFER_FD')
+        try:
+            slot_fd = int(slot_values[0], 10) if len(slot_values) == 1 else -1
+            transfer_fd = int(transfer_text, 10) if transfer_text is not None else -2
+        except ValueError:
+            slot_fd = transfer_fd = -3
+        if (not rx_owner_relay or owner_module is None or
+                Path(owner_module).name !=
+                    'ker-fstack-nginx-owner-activation-alias-test.so' or
+                source_flowmap_test or slot_fd < 3 or transfer_fd != slot_fd):
+            raise ValueError('source-map admission requires the authenticated C16 candidate capability and RX relay profile')
+        if next((item.partition('=')[2] for item in supplied_env
+                if item.partition('=')[0] == 'KER_NGINX_SOURCE_ADMISSION_RELAY'), None) != '1':
+            raise ValueError('source-map admission requires the explicit profile value 1')
+        try:
+            os.fstat(transfer_fd)
+        except OSError as error:
+            raise ValueError('candidate slot transfer endpoint is not an open descriptor') from error
+        allowed.update({'KER_NGINX_SOURCE_ADMISSION_RELAY',
+            'KER_NGINX_CANDIDATE_SLOT_FD'})
+        if any(item.partition('=')[0] ==
+                'KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US' for item in supplied_env):
+            if next((item.partition('=')[2] for item in supplied_env
+                    if item.partition('=')[0] ==
+                        'KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US'), None) != '350000':
+                raise ValueError('source-admission expiry control has an invalid bounded delay')
+            allowed.add('KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US')
+        if any(item.partition('=')[0] ==
+                'KER_C16_TEST_PUMP_FAIL_AFTER_STEP' for item in supplied_env):
+            if next((item.partition('=')[2] for item in supplied_env
+                    if item.partition('=')[0] ==
+                        'KER_C16_TEST_PUMP_FAIL_AFTER_STEP'), None) != '1':
+                raise ValueError('source-admission failure injection has an invalid value')
+            allowed.add('KER_C16_TEST_PUMP_FAIL_AFTER_STEP')
     env = {}
     for item in supplied_env:
         key, separator, value = item.partition('=')
@@ -1761,7 +1801,10 @@ def main():
                 nginx_companion_prefix, nginx_companion_env,
                 owner_ready_required=nginx_owner_ready_required,
                 rx_owner_relay_fd=(owner_relay_owner.fileno()
-                    if owner_relay_owner is not None else None))
+                    if owner_relay_owner is not None else None),
+                candidate_slot_transfer_fd=(int(os.environ['KER_NGINX_CANDIDATE_SLOT_TRANSFER_FD'])
+                    if nginx_companion_env.get('KER_NGINX_SOURCE_ADMISSION_RELAY') == '1'
+                    else None))
         for interface in args.interfaces:
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
@@ -1769,6 +1812,8 @@ def main():
         env = {key: value for key, value in os.environ.items()
             if not key.startswith(('LKL_', 'KER_PACKET_', 'KER_RUNTIME_SERVICE_',
                                    'KER_BROKER_', 'KER_RUN_CONTROL_'))}
+        env.pop('KER_NGINX_CANDIDATE_SLOT_TRANSFER_FD', None)
+        env.pop('KER_NGINX_CANDIDATE_SLOT_FD', None)
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
             KER_NATIVE_TX_FEATURES=str(info['tx_offload_features']), KER_RUN_FD=str(run_app.fileno()), KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
             KER_PACKET_CONTROL_FD=str(mtu_app.fileno()), KER_PACKET_MAX_MTU=str(args.max_mtu),

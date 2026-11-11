@@ -1278,10 +1278,11 @@ static int staged_candidate_failure_wire(struct ker_socket_client *client,
 }
 
 static int staged_admission_initial(struct ker_socket_client *client,
-    int transfer_fd, unsigned port)
+    int transfer_fd, unsigned port, bool activate_initial)
 {
     int pending_candidate_census = -1;
     uint64_t candidate_listener_cookie = 0;
+    uint64_t initial_listener_cookie = 0;
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port)};
     if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) return -1;
     int owner = ker_socket_client_ff_owner_create(client);
@@ -1291,7 +1292,41 @@ static int staged_admission_initial(struct ker_socket_client *client,
     int slot0 = ker_socket_client_owner_group_slot(client, plan, 0);
     if (slot0 < 0 || ker_socket_client_ff_owner_group_claim(client, owner, slot0))
         return -1;
-    int group = ker_socket_client_owner_group_publish_initial(client, plan);
+    int initial_listener = -1;
+    int group = -1;
+    if (activate_initial) {
+        initial_listener = ker_socket_client_owner_group_activate_initial(client,
+            owner, slot0);
+        if (initial_listener < 0) {
+            fprintf(stderr, "staged activated initial socket: %s\n", strerror(errno));
+            return -1;
+        }
+        int one = 1;
+        if (ker_socket_client_setsockopt(client, initial_listener, SOL_SOCKET,
+                SO_REUSEADDR, &one, sizeof(one))) {
+            fprintf(stderr, "staged activated SO_REUSEADDR: %s\n", strerror(errno));
+            return -1;
+        }
+        if (ker_socket_client_setsockopt(client, initial_listener, SOL_SOCKET,
+                SO_REUSEPORT, &one, sizeof(one))) {
+            fprintf(stderr, "staged activated SO_REUSEPORT: %s\n", strerror(errno));
+            return -1;
+        }
+        if (ker_socket_client_bind(client, initial_listener,
+                (const struct sockaddr *)&address, sizeof(address))) {
+            fprintf(stderr, "staged activated bind: %s\n", strerror(errno));
+            return -1;
+        }
+        if (ker_socket_client_listen(client, initial_listener, 16)) {
+            fprintf(stderr, "staged activated listen: %s\n", strerror(errno));
+            return -1;
+        }
+        group = ker_socket_client_owner_group_control(client, plan);
+        if (group < 0)
+            fprintf(stderr, "staged activated group control: %s\n", strerror(errno));
+    } else {
+        group = ker_socket_client_owner_group_publish_initial(client, plan);
+    }
     if (group < 0) return -1;
     int member0 = ker_socket_client_owner_group_member(client, owner, slot0);
     int slot1 = ker_socket_client_owner_group_slot(client, plan, 1);
@@ -1315,6 +1350,7 @@ static int staged_admission_initial(struct ker_socket_client *client,
         if (initial_census >= 0) close(initial_census);
         errno = EPROTO; return -1;
     }
+    initial_listener_cookie = initial_snapshot.listener_cookie;
     close(initial_census);
     int caps[1] = {slot1};
     char byte = 'C';
@@ -1412,6 +1448,86 @@ static int staged_admission_initial(struct ker_socket_client *client,
             close(pending_candidate_census);
             pending_candidate_census = -1;
             puts("C25_LAST_ALIAS_CLOSED_LISTEN0"); fflush(stdout);
+        } else if (!strcmp(command, "RECOVER_DEAD\n")) {
+            if (pending_candidate_census >= 0) {
+                close(pending_candidate_census);
+                pending_candidate_census = -1;
+            }
+            if (slot1 >= 0) {
+                close(slot1);
+                slot1 = -1;
+            }
+            uint64_t deadline = 0;
+            struct timespec now = {0};
+            if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+            deadline = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                (uint64_t)now.tv_nsec + UINT64_C(10000000000);
+            for (;;) {
+                int recovered = ker_socket_client_owner_group_recover_dead_plan(
+                    client, plan);
+                if (recovered >= 0) {
+                    close(plan);
+                    plan = recovered;
+                    break;
+                }
+                if (errno != EAGAIN) {
+                    fprintf(stderr, "C25 dead candidate recovery failed: %s\n",
+                        strerror(errno));
+                    return -1;
+                }
+                if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+                uint64_t current = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                    (uint64_t)now.tv_nsec;
+                if (current >= deadline) {
+                    errno = ETIMEDOUT;
+                    fprintf(stderr, "C25 dead candidate recovery timed out\n");
+                    return -1;
+                }
+                struct timespec pause = {.tv_nsec = 10000000};
+                while (nanosleep(&pause, &pause) && errno == EINTR) { }
+            }
+            close(group);
+            group = ker_socket_client_owner_group_control(client, plan);
+            if (group < 0) {
+                fprintf(stderr, "C25 recovered group control failed: %s\n",
+                    strerror(errno));
+                return -1;
+            }
+            int census = ker_socket_client_member_census_create(client, group, 0);
+            struct ker_socket_member_census_snapshot snapshot = {0};
+            if (census < 0 || ker_socket_client_member_census_snapshot(client,
+                    census, &snapshot) || snapshot.total < 1 ||
+                snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] != 1 ||
+                snapshot.listener_cookie != initial_listener_cookie) {
+                fprintf(stderr, "C25 recovered initial census mismatch status=%d total=%llu listen=%llu cookie=%llu expected=%llu\n",
+                    errno, (unsigned long long)snapshot.total,
+                    (unsigned long long)snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN],
+                    (unsigned long long)snapshot.listener_cookie,
+                    (unsigned long long)initial_listener_cookie);
+                if (census >= 0) close(census);
+                errno = EPROTO;
+                return -1;
+            }
+            close(census);
+            printf("C25_DEAD_CANDIDATE_RECOVERED initial_listen=%llu cookie=%llu\n",
+                (unsigned long long)snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN],
+                (unsigned long long)snapshot.listener_cookie);
+            fflush(stdout);
+        } else if (!strcmp(command, "INITIAL_CENSUS\n")) {
+            int census = ker_socket_client_member_census_create(client, group, 0);
+            struct ker_socket_member_census_snapshot snapshot = {0};
+            if (census < 0 || ker_socket_client_member_census_snapshot(client,
+                    census, &snapshot) || snapshot.total < 1 ||
+                snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] != 1 ||
+                !snapshot.listener_cookie) {
+                if (census >= 0) close(census);
+                errno = EPROTO;
+                return -1;
+            }
+            close(census);
+            printf("C25_INITIAL_LISTENER listen=1 cookie=%llu\n",
+                (unsigned long long)snapshot.listener_cookie);
+            fflush(stdout);
         } else if (!strcmp(command, "FLIP0\n")) {
             if (ker_socket_client_reuseport_group_select(client, group, 0)) return -1;
             puts("C25_SELECTOR0_RESTORED"); fflush(stdout);
@@ -1659,7 +1775,10 @@ static int staged_admission_initial(struct ker_socket_client *client,
     }
     if (held >= 0) close(held);
     if (cutover >= 0) close(cutover);
-    close(member0); close(slot0); close(slot1); close(group); close(plan); close(owner);
+    close(member0); if (initial_listener >= 0) close(initial_listener);
+    close(slot0);
+    if (slot1 >= 0) close(slot1);
+    close(group); close(plan); close(owner);
     return 0;
 }
 
@@ -1676,7 +1795,8 @@ int main(int argc, char **argv)
         if (result) { errno = error; perror("staged owner group wire"); return 1; }
         return 0;
     }
-    if (argc == 6 && !strcmp(argv[5], "--staged-admission-initial")) {
+    if (argc == 6 && (!strcmp(argv[5], "--staged-admission-initial") ||
+            !strcmp(argv[5], "--staged-admission-initial-activated"))) {
         char *end = NULL; long transfer = strtol(argv[2], &end, 10);
         if (!argv[2][0] || !end || *end || transfer < 0 || transfer > INT32_MAX)
             return 2;
@@ -1685,7 +1805,8 @@ int main(int argc, char **argv)
         struct ker_socket_client client;
         if (ker_socket_client_open(&client, argv[1])) return 2;
         int result = staged_admission_initial(&client, (int)transfer,
-            (unsigned)port);
+            (unsigned)port,
+            !strcmp(argv[5], "--staged-admission-initial-activated"));
         int error = errno;
         ker_socket_client_close(&client);
         if (result) { errno = error; perror("staged admission initial"); return 1; }

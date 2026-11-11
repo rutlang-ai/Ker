@@ -912,6 +912,9 @@ jobs:
             ${{ runner.temp }}/native-linux-mptcp-kunit/native-linux.json
             ${{ runner.temp }}/native-linux-mptcp-kunit/mptcp-kunit*.log
             build-native-on/linux-original-*.json
+            build-native-on/Testing/Temporary/rx-source-admission-qualification.json
+            build-native-on/Testing/Temporary/rx-source-admission-revoke-qualification.json
+            build-native-on/Testing/Temporary/rx-source-admission-prepared-failure-qualification.json
             build-native-on/linux-mptcp-fixture-shutdown.json
             build-native-sockopt/linux-original-mptcp-sockopt-shell.json
             build-native-on/linux-original-mptcp-*-captures/

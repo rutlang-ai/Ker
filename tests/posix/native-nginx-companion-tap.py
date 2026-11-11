@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real pinned Nginx traffic/HUP/settlement through ker-run's companion."""
 import argparse
+import array
 import hashlib
 import json
 import os
@@ -22,9 +23,51 @@ import time
 BODY = b'ker-c35-companion-http\n'
 
 
+def checksum16(data):
+    if len(data) & 1:
+        data += b'\0'
+    total = sum((data[index] << 8) | data[index + 1]
+        for index in range(0, len(data), 2))
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    return (~total) & 0xffff
+
+
+def unadmitted_ack_frame(template, source_port, destination_port,
+        source_address='198.18.0.99'):
+    frame = bytearray(template[:54])
+    require(len(frame) == 54 and frame[12:14] == b'\x08\x00',
+        'cannot construct the unadmitted IPv4 ACK from the captured Ethernet tuple')
+    frame[14:34] = (b'\x45\x00\x00\x28\x71\x5a\x40\x00\x40\x06\x00\x00' +
+        socket.inet_aton(source_address) + socket.inet_aton('198.18.0.2'))
+    frame[34:54] = (struct.pack('!HHII', source_port, destination_port,
+        0x12345678, 0x87654321) + b'\x50\x10\xff\xff\x00\x00\x00\x00')
+    struct.pack_into('!H', frame, 24, checksum16(bytes(frame[14:34])))
+    pseudo = bytes(frame[26:34]) + b'\x00\x06' + struct.pack('!H', 20)
+    struct.pack_into('!H', frame, 50, checksum16(pseudo + bytes(frame[34:54])))
+    return bytes(frame)
+
+
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def wait_line(process, expected, timeout=10):
+    deadline = time.monotonic() + timeout
+    selector = select.poll()
+    selector.register(process.stdout.fileno(), select.POLLIN | select.POLLHUP | select.POLLERR)
+    while time.monotonic() < deadline:
+        ready = selector.poll(max(1, int((deadline - time.monotonic()) * 1000)))
+        if not ready:
+            break
+        line = process.stdout.readline()
+        if not line:
+            raise RuntimeError(f'process exited before {expected}: rc={process.poll()}')
+        decoded = line.decode('utf-8', errors='replace').rstrip('\n')
+        if expected in decoded:
+            return decoded
+    raise RuntimeError(f'process did not emit {expected} before deadline')
 
 
 def validate_source_classifier_frame(record, owner):
@@ -117,8 +160,16 @@ def wait_worker(master, previous, timeout):
     raise RuntimeError(f'Nginx did not publish the expected worker: {last!r}')
 
 
-def http_get(path='/', return_source_port=False):
-    connection = socket.create_connection(('198.18.0.2', 80), timeout=5)
+def process_start_ticks(pid):
+    fields = Path(f'/proc/{pid}/stat').read_text(encoding='ascii')
+    tail = fields[fields.rfind(')') + 2:].split()
+    if len(tail) <= 19:
+        raise RuntimeError(f'cannot read process start ticks for pid {pid}')
+    return int(tail[19], 10)
+
+
+def http_get(path='/', return_source_port=False, port=80):
+    connection = socket.create_connection(('198.18.0.2', port), timeout=5)
     try:
         source_port = connection.getsockname()[1]
         request = f'GET {path} HTTP/1.1\r\nHost: ker.test\r\n'.encode('ascii')
@@ -166,12 +217,32 @@ def run(args):
         owner_hold_release = root / 'owner-callback-release'
         probe_token = secrets.token_hex(12)
         source_probe_port = 0
+        source_peer_port = 0
         probe_source_port = 0
-        if args.rx_owner_relay_source_flowmap:
+        candidate_transfer_parent = candidate_transfer_child = None
+        candidate_helper = None
+        candidate_slot_fd = -1
+        candidate_slot_identity = None
+        candidate_initial_census = None
+        candidate_helper_transfer_parent = candidate_helper_transfer_child = None
+        source_admission_port = 4108
+        if args.rx_owner_relay_source_admission:
+            require(args.reuseport_group_client is not None,
+                'source-admission relay requires the staged reuseport helper')
+            candidate_transfer_parent, candidate_transfer_child = socket.socketpair(
+                socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+            # Enable credentials before the receiver process inherits this
+            # endpoint; queued messages sent earlier otherwise carry pid 0.
+            candidate_transfer_child.setsockopt(
+                socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        if args.rx_owner_relay_source_flowmap or args.rx_owner_relay_source_admission:
             port_reserver = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             port_reserver.bind(('127.0.0.1', 0))
             source_probe_port = port_reserver.getsockname()[1]
             port_reserver.close()
+            source_peer_port = 40000 + ((source_probe_port + 1739) % 20000)
+            if args.rx_owner_relay_source_admission_revoke:
+                source_peer_port = source_probe_port
         prefix = root / 'nginx'
         logs = prefix / 'logs'
         html = prefix / 'html'
@@ -193,6 +264,17 @@ def run(args):
                 'env KER_NGINX_RX_OWNER_RELAY_EPOCH;\n')
         if args.rx_owner_relay_source_flowmap:
             ready_environment += 'env KER_NGINX_SOURCE_FLOWMAP_TEST;\n'
+        if args.rx_owner_relay_source_admission:
+            ready_environment += ('env KER_NGINX_SOURCE_ADMISSION_RELAY;\n'
+                'env KER_NGINX_CANDIDATE_SLOT_FD;\n'
+                'env KER_FSTACK_RUNTIME_TRACE;\n')
+        if args.rx_owner_relay_source_admission_revoke:
+            ready_environment += 'env KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US;\n'
+        if args.rx_owner_relay_source_admission_prepared_failure:
+            ready_environment += 'env KER_C16_TEST_PUMP_FAIL_AFTER_STEP;\n'
+        listen_port = source_admission_port if args.rx_owner_relay_source_admission else 80
+        listen_backlog = (' backlog=16'
+            if args.rx_owner_relay_source_admission else '')
         config.write_text(f'''{module_config}daemon off;
 master_process on;
 worker_processes 1;
@@ -209,7 +291,7 @@ http {{
     tcp_nopush off;
     keepalive_timeout 0;
     server {{
-        listen 198.18.0.2:80 reuseport;
+        listen 198.18.0.2:{listen_port} reuseport{listen_backlog};
         server_name ker.test;
         root {html};
         index index.html;
@@ -248,6 +330,16 @@ http {{
             command += ['--rx-decision', '--control-nginx-rx-relay']
         if args.rx_owner_relay_source_flowmap:
             command += ['--control-nginx-env', 'KER_NGINX_SOURCE_FLOWMAP_TEST=1']
+        if args.rx_owner_relay_source_admission:
+            command += ['--control-nginx-env', 'KER_NGINX_SOURCE_ADMISSION_RELAY=1',
+                '--control-nginx-env',
+                f'KER_NGINX_CANDIDATE_SLOT_FD={candidate_transfer_child.fileno()}']
+            control_env += (f'KER_FSTACK_RUNTIME_TRACE={root / "runtime.trace"}',)
+        if args.rx_owner_relay_source_admission_revoke:
+            command += ['--control-nginx-env',
+                'KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US=350000']
+        if args.rx_owner_relay_source_admission_prepared_failure:
+            command += ['--control-nginx-env', 'KER_C16_TEST_PUMP_FAIL_AFTER_STEP=1']
         for item in control_env:
             command += ['--control-nginx-env', item]
         relay_application = args.rx_owner_relay_app if args.rx_owner_relay else args.broker
@@ -256,23 +348,111 @@ http {{
         output_path = root / 'ker-run.log'
         pid_path = logs / 'nginx.pid'
         pidfds = []
+        launcher_children = []
         launch_env = os.environ.copy()
+        if args.rx_owner_relay_source_admission:
+            # Broker admission creates a private 0700 endpoint directory. Use
+            # this test-owned, mapped-UID directory instead of host /dev/shm,
+            # whose owner is unmapped inside the user namespace.
+            launch_env['TMPDIR'] = str(root)
         if args.rx_owner_relay:
             launch_env['KER_RX_OWNER_RELAY_PROBE_TOKEN'] = probe_token
         if args.rx_owner_relay_source_flowmap:
             launch_env['KER_RX_OWNER_RELAY_SOURCE_FLOWMAP_TEST'] = '1'
             launch_env['KER_RX_OWNER_RELAY_SOURCE_FLOWMAP_PORT'] = str(source_probe_port)
+        if args.rx_owner_relay_source_admission:
+            launch_env['KER_NGINX_CANDIDATE_SLOT_TRANSFER_FD'] = str(
+                candidate_transfer_child.fileno())
+            launch_env['KER_RX_OWNER_RELAY_SOURCE_ADMISSION_TEST'] = '1'
+            launch_env['KER_RX_OWNER_RELAY_SOURCE_FLOWMAP_TEST'] = '1'
+            launch_env['KER_RX_OWNER_RELAY_SOURCE_FLOWMAP_PORT'] = str(source_probe_port)
+            launch_env['KER_RX_OWNER_RELAY_SOURCE_PEER_TEST'] = '1'
+            launch_env['KER_RX_OWNER_RELAY_SOURCE_PEER_PORT'] = str(source_peer_port)
+            if args.rx_owner_relay_source_admission_revoke:
+                launch_env['KER_RX_OWNER_RELAY_SOURCE_REVOKE_TEST'] = '1'
         if args.rx_owner_relay_stop_pending:
             launch_env['KER_RX_OWNER_RELAY_TEST_STOP_MARKER'] = str(stop_marker)
             launch_env['KER_RX_OWNER_RELAY_TEST_STOP_RELEASE'] = str(owner_hold_release)
         with output_path.open('wb') as output:
             supervisor = subprocess.Popen(command, stdout=output,
-                stderr=subprocess.STDOUT, start_new_session=True, env=launch_env)
+                stderr=subprocess.STDOUT, start_new_session=True, env=launch_env,
+                pass_fds=((candidate_transfer_child.fileno(),)
+                    if candidate_transfer_child is not None else ()))
+            if candidate_transfer_child is not None:
+                candidate_transfer_child.close()
+                candidate_transfer_child = None
             helper_pidfd = -1
             master_pidfd = -1
             worker_pidfds = []
             scenario_cleanup_complete = False
             try:
+                def start_staged_candidate():
+                    nonlocal candidate_helper, candidate_slot_fd
+                    nonlocal candidate_slot_identity, candidate_initial_census
+                    candidate_helper_transfer_parent, candidate_helper_transfer_child = \
+                        socket.socketpair(socket.AF_UNIX,
+                            socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+                    candidate_helper_transfer_parent.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+                    candidate_helper_transfer_parent.settimeout(10)
+                    candidate_helper = subprocess.Popen([
+                        str(args.reuseport_group_client.resolve()), str(rpc_path),
+                        str(candidate_helper_transfer_child.fileno()),
+                        str(source_admission_port), '0',
+                        ('--staged-admission-initial-activated'
+                            if args.rx_owner_relay_source_admission else
+                            '--staged-admission-initial')],
+                        pass_fds=(candidate_helper_transfer_child.fileno(),),
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, bufsize=0)
+                    candidate_helper_transfer_child.close()
+                    caps = []
+                    try:
+                        packet, ancillary, flags, _ = candidate_helper_transfer_parent.recvmsg(
+                            1, socket.CMSG_SPACE(array.array('i').itemsize) +
+                            socket.CMSG_SPACE(struct.calcsize('=3i')))
+                        creds = []
+                        malformed = False
+                        for level, kind, data in ancillary:
+                            if level != socket.SOL_SOCKET:
+                                malformed = True
+                            elif kind == socket.SCM_RIGHTS and len(data) % 4 == 0:
+                                values = array.array('i'); values.frombytes(data)
+                                caps.extend(values)
+                            elif kind == socket.SCM_CREDENTIALS and len(data) == struct.calcsize('=3i'):
+                                creds.append(struct.unpack('=3i', data))
+                            else:
+                                malformed = True
+                        require(packet == b'C' and not flags and not malformed and
+                            len(caps) == 1 and creds == [(candidate_helper.pid,
+                                os.getuid(), os.getgid())],
+                            f'staged helper transfer mismatch packet={packet!r} flags={flags} '
+                            f'malformed={malformed} rights={len(caps)} credentials={creds!r} '
+                            f'expected={(candidate_helper.pid, os.getuid(), os.getgid())!r}')
+                        candidate_slot_fd = caps.pop()
+                        candidate_slot_stat = os.fstat(candidate_slot_fd)
+                        candidate_slot_identity = (candidate_slot_stat.st_dev,
+                            candidate_slot_stat.st_ino)
+                        rights = array.array('i', [candidate_slot_fd])
+                        sent = candidate_transfer_parent.sendmsg(
+                            [b'KER_CANDIDATE_SLOT_V1'], [(socket.SOL_SOCKET,
+                                socket.SCM_RIGHTS, rights)])
+                        require(sent == len(b'KER_CANDIDATE_SLOT_V1'),
+                            'candidate capability forwarding to ker-run was short')
+                        os.close(candidate_slot_fd)
+                        candidate_slot_fd = -1
+                        wait_line(candidate_helper, 'C20_STAGED_INITIAL_READY', 10)
+                        candidate_helper.stdin.write(b'INITIAL_CENSUS\n')
+                        candidate_helper.stdin.flush()
+                        candidate_initial_census = wait_line(candidate_helper,
+                            'C25_INITIAL_LISTENER', 5)
+                    finally:
+                        for fd in caps:
+                            try: os.close(fd)
+                            except OSError: pass
+                        candidate_helper_transfer_parent.close()
+                        candidate_helper_transfer_child.close()
+
                 deadline = time.monotonic() + 45
                 while time.monotonic() < deadline:
                     if supervisor.poll() is not None:
@@ -281,6 +461,9 @@ http {{
                             f'started: {output_path.read_text(errors="replace")}')
                     output.flush()
                     startup_log = output_path.read_text(errors='replace')
+                    if (args.rx_owner_relay_source_admission and
+                            candidate_helper is None and rpc_path.exists()):
+                        start_staged_candidate()
                     if ('ker-nginx-companion:' in startup_log or
                             'helper credentials ' in startup_log):
                         raise RuntimeError('Nginx companion startup failed before pidfile: ' +
@@ -293,6 +476,7 @@ http {{
                 master = int(pid_path.read_text().strip())
                 master_pidfd = os.pidfd_open(master, 0)
                 worker = wait_worker(master, None, 20)
+                worker_start_ticks = process_start_ticks(worker)
                 worker_pidfds.append(os.pidfd_open(worker, 0))
                 # Record the dedicated helper as a direct ker-run child. It is
                 # separate from the worker and application children.
@@ -308,11 +492,25 @@ http {{
                         except ProcessLookupError:
                             continue
                         pidfds.append(fd)
+                        command_line = process_command(pid)
+                        if str(args.worker.resolve()) in command_line:
+                            role = 'io-worker'
+                        elif (args.rx_owner_relay_app is not None and
+                                str(args.rx_owner_relay_app.resolve()) in command_line):
+                            role = 'broker-app'
+                        elif 'ker-nginx-companion' in command_line:
+                            role = 'companion-helper'
+                        else:
+                            role = 'other'
+                        launcher_children.append({'pid': pid, 'role': role,
+                            'command': command_line, 'start_ticks': process_start_ticks(pid),
+                            'pidfd': fd})
                         seen_direct_children.add(pid)
                     if len(pidfds) >= 3:
                         break
                     time.sleep(0.02)
-                if not args.rx_owner_relay_source_flowmap:
+                if not (args.rx_owner_relay_source_flowmap or
+                        args.rx_owner_relay_source_admission):
                     try:
                         wait_http()
                     except BaseException as error:
@@ -329,6 +527,159 @@ http {{
                     worker_pidfds.append(os.pidfd_open(replacement, 0))
                     wait_http()
                 else:
+                    if args.rx_owner_relay_source_admission_prepared_failure:
+                        failure_deadline = time.monotonic() + 8
+                        while time.monotonic() < failure_deadline and not pidfd_dead(
+                                worker_pidfds[-1]):
+                            if supervisor.poll() is not None:
+                                break
+                            time.sleep(0.01)
+                        nginx_error = (logs / 'error.log').read_text(
+                            errors='replace') if (logs / 'error.log').exists() else ''
+                        runtime_trace = (root / 'runtime.trace').read_text(
+                            errors='replace') if (root / 'runtime.trace').exists() else ''
+                        require(pidfd_dead(worker_pidfds[-1]) and
+                            'worker process' in nginx_error and
+                            'exited on signal 6' in nginx_error and
+                            'ff_owner_pump failure stage=before-loop errno=104' in runtime_trace,
+                            f'PREPARED failure did not terminate the exact candidate worker: '
+                            f'error={nginx_error!r} runtime_trace={runtime_trace!r}')
+                        require(candidate_slot_identity is not None and
+                            candidate_initial_census is not None,
+                            'PREPARED candidate identity/capability was not retained from before death')
+                        require(candidate_helper is not None and supervisor.poll() is None,
+                            'broker or staged recovery helper exited before dead-plan recovery')
+                        if not pidfd_dead(master_pidfd):
+                            signal.pidfd_send_signal(master_pidfd, signal.SIGQUIT)
+                        master_deadline = time.monotonic() + 5
+                        while time.monotonic() < master_deadline and not pidfd_dead(master_pidfd):
+                            time.sleep(0.01)
+                        require(pidfd_dead(master_pidfd),
+                            'test-owned candidate master did not stop before staged-plan recovery')
+                        candidate_helper.stdin.write(b'RECOVER_DEAD\n')
+                        candidate_helper.stdin.flush()
+                        try:
+                            recovered = wait_line(candidate_helper,
+                                'C25_DEAD_CANDIDATE_RECOVERED', 15)
+                        except BaseException as error:
+                            if candidate_helper.poll() is not None:
+                                _, helper_errors = candidate_helper.communicate(timeout=1)
+                                raise RuntimeError(f'{error}; recovery helper stderr={helper_errors!r}')
+                            raise
+                        recovery_fields = dict(item.split('=', 1) for item in recovered.split()[1:])
+                        initial_fields = dict(item.split('=', 1) for item in
+                            candidate_initial_census.split()[1:])
+                        require(recovery_fields.get('initial_listen') == '1' and
+                            recovery_fields.get('cookie') == initial_fields.get('cookie'),
+                            f'dead candidate recovery did not retain the exact initial listener: {recovered!r}')
+                        candidate_helper.stdin.write(b'STOP\n')
+                        candidate_helper.stdin.flush()
+                        _, helper_errors = candidate_helper.communicate(timeout=10)
+                        require(candidate_helper.returncode == 0,
+                            f'C16 dead-plan recovery helper failed: {helper_errors!r}')
+                        startup_log = output_path.read_text(errors='replace')
+                        require('KER_NGINX_OWNER_READY ' not in startup_log and
+                            'RX_OWNER_RELAY_AUTH_ACK ' not in startup_log and
+                            'C20_STAGED_SELECTOR1' not in startup_log,
+                            'failed PREPARED candidate emitted READY/AUTH or selected slot 1')
+                        release_lines = [line for line in startup_log.splitlines()
+                            if line.startswith('C17_TASK_RELEASE released status=0 ')]
+                        require(any(f'pid={worker} ' in line and 'mark=2 ' in line and
+                                int(dict(item.split('=', 1) for item in line.split()[2:])
+                                    .get('lease', '0')) > 0
+                                for line in release_lines),
+                            f'broker did not release the dead candidate task/lease: {release_lines!r}')
+                        supervisor.send_signal(signal.SIGTERM)
+                        launcher_shutdown_unresolved = False
+                        unresolved_stats = None
+                        try:
+                            supervisor.wait(timeout=15)
+                        except subprocess.TimeoutExpired:
+                            launcher_shutdown_unresolved = True
+                            output.flush()
+                            unresolved_log = output_path.read_text(errors='replace')
+                            require('companion shutdown UNRESOLVED' in unresolved_log and
+                                'retaining native broker and worker resources' in unresolved_log and
+                                'BROKER_DONE' not in unresolved_log and
+                                'KER_NATIVE_DONE' not in unresolved_log and
+                                not stats_path.exists(),
+                                'PREPARED containment did not report the expected unresolved shutdown')
+                            retained_children = [{**child,
+                                'alive': not pidfd_dead(child['pidfd'])}
+                                for child in launcher_children]
+                            retained_roles = {child['role'] for child in retained_children}
+                            retained_io = [child for child in retained_children
+                                if child['role'] == 'io-worker' and child['alive']]
+                            require(bool(retained_io),
+                                f'PREPARED unresolved state did not retain its native actors: {retained_children!r}')
+                            launcher_pidfd = os.pidfd_open(supervisor.pid, 0)
+                            try:
+                                if not pidfd_dead(launcher_pidfd):
+                                    signal.pidfd_send_signal(launcher_pidfd, signal.SIGKILL)
+                                supervisor.wait(timeout=5)
+                            finally:
+                                os.close(launcher_pidfd)
+                            require(launcher_shutdown_unresolved and
+                                supervisor.returncode == -signal.SIGKILL,
+                                'PREPARED failure must retain the launcher until explicit test cleanup')
+                            owned_targets = list(dict.fromkeys(pidfds + worker_pidfds +
+                                ([master_pidfd] if master_pidfd >= 0 else [])))
+                            for fd in owned_targets:
+                                try:
+                                    signal.pidfd_send_signal(fd, signal.SIGTERM)
+                                except ProcessLookupError:
+                                    pass
+                            cleanup_deadline = time.monotonic() + 2
+                            while time.monotonic() < cleanup_deadline and any(
+                                    not pidfd_dead(fd) for fd in owned_targets):
+                                time.sleep(0.02)
+                            for fd in owned_targets:
+                                if not pidfd_dead(fd):
+                                    signal.pidfd_send_signal(fd, signal.SIGKILL)
+                            require(all(pidfd_dead(fd, 3) for fd in owned_targets),
+                                'forced test teardown did not reap every captured launcher child')
+                            receipt_path = os.environ.get('KER_RX_OWNER_RELAY_RECEIPT')
+                            if receipt_path:
+                                repository = Path(__file__).resolve().parents[2]
+                                receipt = {
+                                    'scenario': 'source admission PREPARED failure and exact dead-plan recovery',
+                                    'candidate_head': subprocess.check_output(
+                                        ['git', '-C', str(repository), 'rev-parse', 'HEAD'],
+                                        text=True).strip(),
+                                    'candidate_worker_pid': worker,
+                                    'candidate_worker_start_ticks': worker_start_ticks,
+                                    'candidate_worker_dead': pidfd_dead(worker_pidfds[-1]),
+                                    'candidate_slot_identity': {
+                                        'device': candidate_slot_identity[0],
+                                        'inode': candidate_slot_identity[1]},
+                                    'initial_listener_before_failure': candidate_initial_census,
+                                    'candidate_error_log': nginx_error,
+                                    'task_release_events': release_lines,
+                                    'recovery': recovered,
+                                    'helper_exit': candidate_helper.returncode,
+                                    'launcher_exit': supervisor.returncode,
+                                    'launcher_shutdown_unresolved': launcher_shutdown_unresolved,
+                                    'healthy_stats_before_forced_cleanup': False,
+                                    'forced_test_cleanup': 'SIGKILL launcher via pidfd; SIGTERM then SIGKILL retained actor pidfds as needed',
+                                    'retained_actors_before_cleanup': [
+                                        {key: value for key, value in child.items() if key != 'pidfd'}
+                                        for child in retained_children],
+                                'captured_children_dead_after_cleanup': [
+                                    {'pid': child['pid'], 'role': child['role'], 'dead': True}
+                                    for child in launcher_children],
+                                    'native_stats': None,
+                                    'owner_ready_or_auth': False,
+                                    'candidate_selected': False,
+                                    'claim_boundary': 'test-only PREPARED failure: broker dead-plan recovery succeeded; ker-run companion shutdown remained explicitly UNRESOLVED with native actors retained, then only captured test-owned pidfds were force-reaped; no normal native cleanup, successful source admission or graceful reload claim'}
+                                destination = Path(receipt_path)
+                                destination.parent.mkdir(parents=True, exist_ok=True)
+                                destination.write_text(json.dumps(receipt, indent=2,
+                                    sort_keys=True) + '\n', encoding='utf-8')
+                        candidate_helper = None
+                        scenario_cleanup_complete = True
+                        print('SOURCE_ADMISSION_PREPARED_FAILURE recovered exact dead candidate, '
+                            'released admission task and retained initial listener: PASS')
+                        return
                     ready_lines = []
                     ready_deadline = time.monotonic() + 5
                     while time.monotonic() < ready_deadline:
@@ -345,7 +696,8 @@ http {{
                         'ker-run did not publish exactly one authenticated owner READY record')
                     ready = json.loads(ready_lines[0].split(' ', 1)[1])
                     require(ready.get('pid') == worker and ready.get('master_pid') == master and
-                        ready.get('tid', 0) > 0 and ready.get('role') == 0 and
+                        ready.get('tid', 0) > 0 and
+                        ready.get('role') == (1 if args.rx_owner_relay_source_admission else 0) and
                         ready.get('slot_device', 0) > 0 and ready.get('slot_inode', 0) > 0 and
                         ready.get('cookie', 0) > 0 and
                         ready.get('source') == 'authenticated-C22-worker-READY',
@@ -381,7 +733,165 @@ http {{
                             int(auth_ack['tid']) == ready['tid'] and
                             int(auth_ack['start']) == ready['start_ticks'],
                             f'relay AUTH_ACK identity disagrees with C22 READY: {auth_ack!r} vs {ready!r}')
-                        if args.rx_owner_relay_source_flowmap:
+                        if args.rx_owner_relay_source_admission:
+                            def candidate_command(value, marker):
+                                candidate_helper.stdin.write((value + '\n').encode())
+                                candidate_helper.stdin.flush()
+                                return wait_line(candidate_helper, marker, 10)
+                            candidate_command('CENSUS_READY',
+                                'C20_STAGED_CANDIDATE_LISTEN_CENSUS')
+                            def wait_log_line(marker, timeout=10):
+                                deadline = time.monotonic() + timeout
+                                while time.monotonic() < deadline:
+                                    output.flush()
+                                    lines = output_path.read_text(
+                                        errors='replace').splitlines()
+                                    match = next((line for line in lines
+                                        if marker in line), None)
+                                    if match is not None: return match
+                                    require(supervisor.poll() is None,
+                                        f'ker-run exited before {marker}: {lines[-30:]}')
+                                    time.sleep(0.01)
+                                raise RuntimeError(f'ker-run did not emit {marker}')
+                            registered = wait_log_line('C20_STAGED REGISTERED')
+                            listening = wait_log_line('C20_STAGED LISTEN')
+                            registered_fields = dict(item.split('=', 1) for item in
+                                registered.split('C20_STAGED REGISTERED ', 1)[1].split())
+                            listening_fields = dict(item.split('=', 1) for item in
+                                listening.split('C20_STAGED LISTEN ', 1)[1].split())
+                            require(registered_fields.get('fd', '').isdigit() and
+                                registered_fields.get('mark', '').isdigit() and
+                                registered_fields == listening_fields and
+                                int(registered_fields['mark']) == 2,
+                                f'C16 candidate listener registration changed identity/mark: '
+                                f'{registered_fields!r} {listening_fields!r}')
+                            candidate_command('FLIP', 'C20_STAGED_SELECTOR1')
+                            probe_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            probe_socket.settimeout(2 if args.rx_owner_relay_source_admission_revoke else 8)
+                            probe_socket.bind(('0.0.0.0', source_probe_port))
+                            probe_source_port = probe_socket.getsockname()[1]
+                            if args.rx_owner_relay_source_admission_revoke:
+                                try:
+                                    probe_socket.connect(('198.18.0.2', source_admission_port))
+                                except OSError:
+                                    connect_rejected = True
+                                else:
+                                    connect_rejected = False
+                                require(connect_rejected,
+                                    'expired C16 admission unexpectedly completed TCP connect/SYNACK')
+                                probe_socket.close()
+                            else:
+                                probe_socket.connect(('198.18.0.2', source_admission_port))
+                                request = (f'GET /?probe={probe_token} HTTP/1.1\r\n'
+                                    'Host: ker.test\r\nConnection: close\r\n\r\n').encode('ascii')
+                                probe_socket.sendall(request)
+                                response = bytearray()
+                                while True:
+                                    chunk = probe_socket.recv(4096)
+                                    if not chunk: break
+                                    response.extend(chunk)
+                                header, separator, response_body = bytes(response).partition(b'\r\n\r\n')
+                                require(separator and b' 200 ' in header.split(b'\r\n', 1)[0] and
+                                    response_body == BODY,
+                                    f'admitted original flow did not reach Nginx over Linux: {bytes(response)!r}')
+                                probe_socket.close()
+                            witness_deadline = time.monotonic() + 8
+                            witness_lines = []
+                            while time.monotonic() < witness_deadline:
+                                output.flush()
+                                witness_lines = [line for line in output_path.read_text(
+                                    errors='replace').splitlines()
+                                    if line.startswith('RX_OWNER_RELAY_PROBE_FRAME ')]
+                                nginx_log = (logs / 'error.log').read_text(errors='replace')
+                                map_ready = 'SOURCE_UNPREFIXED_MAP_ADMIT allowed=1 created=1' in nginx_log
+                                revoke_ready = 'SOURCE_UNPREFIXED_MAP_REVOKE status=1' in nginx_log
+                                if witness_lines and map_ready and (
+                                        revoke_ready if args.rx_owner_relay_source_admission_revoke else True):
+                                    break
+                                require(supervisor.poll() is None,
+                                    'admitted source relay exited before map/probe evidence')
+                                time.sleep(0.01)
+                            require(len(witness_lines) == 1,
+                                'candidate SYN did not yield one exact relay frame witness')
+                            witness = dict(item.split('=', 1) for item in witness_lines[0].split()[1:])
+                            require(int(witness['bytes']) == len(bytes.fromhex(witness['frame_hex'])) and
+                                int(witness['packet_id']) > 0,
+                                'candidate SYN packet witness metadata is inconsistent')
+                            probe_frame = bytes.fromhex(witness['frame_hex'])
+                            if args.rx_owner_relay_source_admission_revoke:
+                                revoke_frame = unadmitted_ack_frame(probe_frame,
+                                    source_probe_port, source_admission_port,
+                                    source_address='198.18.0.1')
+                                raw_sender = socket.socket(socket.AF_PACKET, socket.SOCK_RAW,
+                                    socket.htons(3))
+                                try:
+                                    raw_sender.bind(('kerhost', 0))
+                                    require(raw_sender.send(revoke_frame) == len(revoke_frame),
+                                        'post-revoke ACK was not sent through kerhost')
+                                finally:
+                                    raw_sender.close()
+                                peer_deadline = time.monotonic() + 8
+                                peer_lines = []
+                                while time.monotonic() < peer_deadline:
+                                    output.flush()
+                                    peer_lines = [line for line in output_path.read_text(
+                                        errors='replace').splitlines()
+                                        if line.startswith('RX_OWNER_RELAY_PEER_FRAME ')]
+                                    require(supervisor.poll() is None,
+                                        'relay exited before revoked-key PEER witness')
+                                    if peer_lines: break
+                                    time.sleep(0.01)
+                                require(len(peer_lines) == 1,
+                                    'revoked flow did not produce one later PEER witness')
+                                peer_witness = dict(item.split('=', 1) for item in
+                                    peer_lines[0].split()[1:])
+                                peer_frame = bytes.fromhex(peer_witness['frame_hex'])
+                                require(peer_frame == revoke_frame and
+                                    int(peer_witness['dispatcher_result']) == -3 and
+                                    int(peer_witness['source_port']) == source_probe_port,
+                                    f'actual revoked tuple did not miss source map: {peer_witness!r}')
+                            else:
+                                nginx_log = (logs / 'error.log').read_text(errors='replace')
+                            witness_deadline = time.monotonic() + 8
+                            if not args.rx_owner_relay_source_admission_revoke:
+                                foreign_frame = unadmitted_ack_frame(
+                                    probe_frame, source_peer_port, source_admission_port)
+                                raw_sender = socket.socket(socket.AF_PACKET, socket.SOCK_RAW,
+                                    socket.htons(3))
+                                try:
+                                    raw_sender.bind(('kerhost', 0))
+                                    require(raw_sender.send(foreign_frame) == len(foreign_frame),
+                                        'raw unadmitted ACK was not sent through kerhost')
+                                finally:
+                                    raw_sender.close()
+                                peer_deadline = time.monotonic() + 8
+                                peer_lines = []
+                                while time.monotonic() < peer_deadline:
+                                    output.flush()
+                                    peer_lines = [line for line in output_path.read_text(
+                                        errors='replace').splitlines()
+                                        if line.startswith('RX_OWNER_RELAY_PEER_FRAME ')]
+                                    require(supervisor.poll() is None,
+                                        'source relay exited before unadmitted PEER witness')
+                                    if peer_lines: break
+                                    time.sleep(0.01)
+                                require(len(peer_lines) == 1,
+                                    'unadmitted non-SYN tuple did not produce one relay callback witness')
+                                peer_witness = dict(item.split('=', 1) for item in
+                                    peer_lines[0].split()[1:])
+                                peer_frame = bytes.fromhex(peer_witness['frame_hex'])
+                                require(peer_frame == foreign_frame and
+                                    int(peer_witness['bytes']) == len(foreign_frame) and
+                                    int(peer_witness['source_port']) == source_peer_port and
+                                    int(peer_witness['dispatcher_result']) == -3 and
+                                    int(peer_witness['packet_id']) > int(witness['packet_id']) and
+                                    socket.inet_ntoa(peer_frame[26:30]) == '198.18.0.99' and
+                                    socket.inet_ntoa(peer_frame[30:34]) == '198.18.0.2' and
+                                    int.from_bytes(peer_frame[36:38], 'big') == source_admission_port and
+                                    peer_frame[47] & 0x10 and not peer_frame[47] & 0x02,
+                                    f'foreign unadmitted ACK did not produce exact PEER result: '
+                                    f'{peer_witness!r}')
+                        elif args.rx_owner_relay_source_flowmap:
                             probe_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                             probe_socket.settimeout(5)
                             probe_socket.bind(('0.0.0.0', source_probe_port))
@@ -542,7 +1052,8 @@ http {{
                                  result.get('completed'), result.get('broker'), result.get('run'),
                                  json.dumps(stats, sort_keys=True) if stats is not None else 'not-written'))
                             return
-                        if not args.rx_owner_relay_source_flowmap:
+                        if not (args.rx_owner_relay_source_flowmap or
+                                args.rx_owner_relay_source_admission):
                             probe_response, probe_source_port = http_get(
                                 f'/?probe={probe_token}', return_source_port=True)
 
@@ -694,8 +1205,77 @@ http {{
                     return
 
                 signal_number = signal.SIGINT if args.shutdown_signal == 'int' else signal.SIGTERM
+                candidate_cleanup = None
+                candidate_cleanup_errors = []
+                if args.rx_owner_relay_source_admission:
+                    # Let ker-run issue the authenticated companion STOP. The
+                    # companion kills the owner, then this watcher retires the
+                    # C16 group while the shared broker is still running.
+                    def cleanup_staged_group_after_owner_exit():
+                        try:
+                            poller = select.poll()
+                            poller.register(master_pidfd, select.POLLIN | select.POLLHUP)
+                            poller.register(worker_pidfds[-1], select.POLLIN | select.POLLHUP)
+                            if not poller.poll(20000):
+                                raise TimeoutError('owner did not exit during companion STOP')
+                            death_deadline = time.monotonic() + 5
+                            while time.monotonic() < death_deadline and (
+                                    not pidfd_dead(master_pidfd) or
+                                    not pidfd_dead(worker_pidfds[-1])):
+                                time.sleep(0.01)
+                            if not pidfd_dead(master_pidfd) or not pidfd_dead(worker_pidfds[-1]):
+                                raise RuntimeError('master/worker pidfd signalled without confirmed death')
+                            release_deadline = time.monotonic() + 5
+                            while time.monotonic() < release_deadline:
+                                output.flush()
+                                release_lines = [line for line in
+                                    output_path.read_text(errors='replace').splitlines()
+                                    if line.startswith('C17_TASK_RELEASE released status=0 ')]
+                                released_candidate = any(
+                                    dict(item.split('=', 1) for item in line.split()[2:]).get('pid') ==
+                                        str(worker) and
+                                    dict(item.split('=', 1) for item in line.split()[2:]).get('mark') ==
+                                        registered_fields['mark'] and
+                                    int(dict(item.split('=', 1) for item in line.split()[2:]).get(
+                                        'lease', '0')) > 0 for line in release_lines)
+                                if released_candidate:
+                                    break
+                                time.sleep(0.01)
+                            else:
+                                raise TimeoutError('broker did not release the exact candidate admission task: '
+                                    f'worker={worker} mark={registered_fields["mark"]} '
+                                    f'events={release_lines!r}')
+                            def candidate_command(value, marker):
+                                candidate_helper.stdin.write((value + '\n').encode())
+                                candidate_helper.stdin.flush()
+                                try:
+                                    return wait_line(candidate_helper, marker, 10)
+                                except BaseException as error:
+                                    if candidate_helper.poll() is not None:
+                                        _, helper_errors = candidate_helper.communicate(timeout=1)
+                                        raise RuntimeError(
+                                            f'{error}; candidate helper stderr={helper_errors!r}')
+                                    raise
+                            candidate_command('CHECK_CLOSED', 'C25_LAST_ALIAS_CLOSED_LISTEN0')
+                            candidate_command('FLIP0', 'C25_SELECTOR0_RESTORED')
+                            candidate_helper.stdin.write(b'STOP\n')
+                            candidate_helper.stdin.flush()
+                            _, helper_errors = candidate_helper.communicate(timeout=10)
+                            if candidate_helper.returncode != 0:
+                                raise RuntimeError(
+                                    f'staged candidate helper cleanup failed: {helper_errors!r}')
+                        except BaseException as error:
+                            candidate_cleanup_errors.append(error)
+                    candidate_cleanup = threading.Thread(
+                        target=cleanup_staged_group_after_owner_exit, daemon=True)
+                    candidate_cleanup.start()
                 os.kill(supervisor.pid, signal_number)
                 supervisor.wait(timeout=35)
+                if candidate_cleanup is not None:
+                    candidate_cleanup.join(timeout=12)
+                    require(not candidate_cleanup.is_alive() and not candidate_cleanup_errors,
+                        f'staged admission cleanup failed: {candidate_cleanup_errors!r}')
+                    candidate_helper = None
                 if args.rx_owner_relay_source_flowmap:
                     probe_socket.close()
                 output.flush()
@@ -730,6 +1310,18 @@ http {{
                             int(result.get('probe_frame_hash', '0')) > 0 and
                             int(result.get('probe_dispatcher_result', '0')) == -3,
                             f'source classifier did not return PEER for the unique frame: {result!r}')
+                    elif args.rx_owner_relay_source_admission:
+                        require(int(result.get('probe_witnesses', '0')) == 1 and
+                            int(result.get('probe_packet_id', '0')) > 0 and
+                            int(result.get('probe_source_port', '0')) == source_probe_port and
+                            int(result.get('probe_frame_hash', '0')) > 0 and
+                            int(result.get('probe_dispatcher_result', '-99')) == 0,
+                            f'admitted source classifier did not return LOCAL for the unique frame: {result!r}')
+                        require(int(result.get('peer_witnesses', '0')) == 1 and
+                            int(result.get('peer_packet_id', '0')) > 0 and
+                            int(result.get('peer_source_port', '0')) == source_peer_port and
+                            int(result.get('peer_dispatcher_result', '0')) == -3,
+                            f'unadmitted source flow did not reach the original PEER result: {result!r}')
                     else:
                         require(int(result.get('probe_witnesses', '0')) == 1 and
                             int(result.get('probe_packet_id', '0')) > 0 and
@@ -747,13 +1339,22 @@ http {{
                             int(result['probe_packet_id']) and
                         int(frame_record['bytes']) == len(probe_frame),
                         'full-frame witness metadata does not match the completed packet lease')
-                    if args.rx_owner_relay_source_flowmap:
-                        require(len(probe_frame) >= 54 and
-                            int(probe_frame[34]) * 256 + probe_frame[35] ==
-                                source_probe_port and
-                            bool(probe_frame[47] & 0x10) and
-                            not bool(probe_frame[47] & 0x02),
-                            'source-flowmap witness was not the unique client TCP ACK flow')
+                    if (args.rx_owner_relay_source_flowmap or
+                            args.rx_owner_relay_source_admission):
+                        if args.rx_owner_relay_source_admission_revoke:
+                            require(len(probe_frame) >= 54 and
+                                int(probe_frame[34]) * 256 + probe_frame[35] ==
+                                    source_probe_port and
+                                bool(probe_frame[47] & 0x02) and
+                                not bool(probe_frame[47] & 0x10),
+                                'revoke-control witness was not the unique client TCP SYN')
+                        else:
+                            require(len(probe_frame) >= 54 and
+                                int(probe_frame[34]) * 256 + probe_frame[35] ==
+                                    source_probe_port and
+                                bool(probe_frame[47] & 0x10) and
+                                not bool(probe_frame[47] & 0x02),
+                                'source-flowmap witness was not the unique client TCP ACK flow')
                     else:
                         require(f'GET /?probe={probe_token} HTTP/1.1'.encode('ascii') in
                             probe_frame,
@@ -774,7 +1375,8 @@ http {{
                     local = stats.get('rx_decision_local', -1)
                     drops = stats.get('rx_decision_drops', -1)
                     cancelled = stats.get('rx_decision_local_cancelled', -1)
-                    if args.rx_owner_relay_source_flowmap:
+                    if (args.rx_owner_relay_source_flowmap or
+                            args.rx_owner_relay_source_admission):
                         require(leases == local + drops and forwarded == local and
                             drops > startup_drops and drops >= 1 and cancelled == 0 and
                             stats.get('rx_decision_settled') is True,
@@ -805,6 +1407,7 @@ http {{
                             'candidate_admission': repository / 'src/posix/nginx-candidate-admission.c',
                             'source_flowmap_fixture': repository / 'src/posix/nginx-source-flowmap-fixture.c',
                             'source_flowmap_wrapper': repository / 'src/posix/nginx-original-flowmap-source.c',
+                            'source_admission': repository / 'src/posix/nginx-source-map-admission.c',
                             'native_linux_cmake': repository / 'cmake/NativeLinux.cmake',
                             'nginx_companion_cmake': repository / 'cmake/NginxCompanionTests.cmake',
                             'tap': Path(__file__).resolve(),
@@ -822,6 +1425,8 @@ http {{
                             'owner_module': args.owner_activation_module,
                             'worker_shim': args.worker_shim,
                         }
+                        if args.reuseport_group_client is not None:
+                            binary_paths['reuseport_group_client'] = args.reuseport_group_client
                         sha256 = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
                         receipt = {
                             'candidate_head': subprocess.run(['git', '-C', str(repository),
@@ -884,6 +1489,105 @@ http {{
                                 'relay_disposition': 'C31 DROP for FF_DISPATCH_PEER',
                                 'claim_boundary': 'fixture-only unprefixed source map; no broker SYN admission',
                             }
+                        if args.rx_owner_relay_source_admission:
+                            map_admissions = [line for line in nginx_log.splitlines()
+                                if 'SOURCE_UNPREFIXED_MAP_ADMIT ' in line]
+                            require(bool(map_admissions) and all(
+                                'allowed=1 created=1' in line for line in map_admissions),
+                                'qualification receipt lacks real created entries in the unprefixed source map')
+                            admission_records = [dict(item.split('=', 1) for item in
+                                line.split('SOURCE_UNPREFIXED_MAP_ADMIT ', 1)[1].split())
+                                for line in map_admissions]
+                            admission_fields = admission_records[0]
+                            frame_source = socket.inet_ntoa(probe_frame[26:30])
+                            frame_destination = socket.inet_ntoa(probe_frame[30:34])
+                            frame_source_port = int.from_bytes(probe_frame[34:36], 'big')
+                            frame_destination_port = int.from_bytes(probe_frame[36:38], 'big')
+                            admit_time = int(admission_fields['monotonic_ns'])
+                            probe_time = int(frame_record['monotonic_ns'])
+                            for record in admission_records:
+                                require(int(record['family']) == 4 and
+                                    record['source'] == frame_source and
+                                    record['destination'] == frame_destination and
+                                    int(record['source_port']) == frame_source_port == source_probe_port and
+                                    int(record['destination_port']) == frame_destination_port == source_admission_port and
+                                    int(record['pid']) == ready['pid'] and
+                                    int(record['tid']) == ready['tid'] and
+                                    (probe_time < int(record['monotonic_ns']) if
+                                        args.rx_owner_relay_source_admission_revoke else
+                                        int(record['monotonic_ns']) < probe_time),
+                                    f'C16-created source-map key did not match the exact relayed tuple/owner ordering: '
+                                    f'{record!r} vs {frame_record!r}')
+                            admit_time = int(admission_records[-1]['monotonic_ns'])
+                            revoke_lines = [line for line in nginx_log.splitlines()
+                                if 'SOURCE_UNPREFIXED_MAP_REVOKE ' in line]
+                            revoke_fields = None
+                            revoke_records = []
+                            if args.rx_owner_relay_source_admission_revoke:
+                                revoke_records = [dict(item.split('=', 1) for item in
+                                    line.split('SOURCE_UNPREFIXED_MAP_REVOKE ', 1)[1].split())
+                                    for line in revoke_lines]
+                                require(len(revoke_records) == len(admission_records) and all(
+                                    record.get('status') == '1' for record in revoke_records),
+                                    f'actual C16 expiry did not revoke every created map entry: '
+                                    f'{map_admissions!r} {revoke_lines!r}')
+                                for admitted, revoked in zip(admission_records, revoke_records):
+                                    require(revoked['source'] == admitted['source'] and
+                                        revoked['destination'] == admitted['destination'] and
+                                        revoked['source_port'] == admitted['source_port'] and
+                                        revoked['destination_port'] == admitted['destination_port'] and
+                                        revoked['pid'] == admitted['pid'] and revoked['tid'] == admitted['tid'] and
+                                        int(revoked['monotonic_ns']) > int(admitted['monotonic_ns']),
+                                        f'revoke did not match its exact created map entry: {admitted!r} {revoked!r}')
+                                revoke_fields = revoke_records[-1]
+                                require(int(revoke_fields['monotonic_ns']) <
+                                    int(peer_witness['monotonic_ns']),
+                                    f'last revoke did not precede the exact post-revoke PEER witness: '
+                                    f'{revoke_fields!r} {peer_witness!r}')
+                            peer_receipt = {
+                                'packet_id': int(peer_witness['packet_id']),
+                                'source_address': socket.inet_ntoa(peer_frame[26:30]),
+                                'destination_address': socket.inet_ntoa(peer_frame[30:34]),
+                                'source_port': int(peer_witness['source_port']),
+                                'destination_port': int.from_bytes(peer_frame[36:38], 'big'),
+                                'frame_hex': peer_frame.hex(),
+                                'sha256': hashlib.sha256(peer_frame).hexdigest(),
+                                'classifier_result': int(peer_witness['dispatcher_result']),
+                                'c31_disposition': 'DROP; no peer-generation forwarding'}
+                            peer_receipt_key = ('post_revoke_same_key' if
+                                args.rx_owner_relay_source_admission_revoke else
+                                'foreign_unadmitted')
+                            receipt['source_admission'] = {
+                                'staged_helper': str(args.reuseport_group_client.resolve()),
+                                'candidate_listener': registered_fields,
+                                'candidate_slot_identity': {
+                                    'device': ready['slot_device'],
+                                    'inode': ready['slot_inode']},
+                                'map_admit_events': map_admissions,
+                                'map_revoke_events': revoke_lines,
+                                'map_key_matches_relayed_probe': True,
+                                'admission_monotonic_ns': admit_time,
+                                'probe_monotonic_ns': probe_time,
+                                'revocation_monotonic_ns': int(revoke_fields['monotonic_ns'])
+                                    if revoke_fields else None,
+                                'admitted_flow': {
+                                    'family': 4,
+                                    'source': frame_source,
+                                    'destination': frame_destination,
+                                    'source_port': frame_source_port,
+                                    'destination_port': frame_destination_port},
+                                'classifier_result': int(result['probe_dispatcher_result']),
+                                'c31_disposition': 'LOCAL for original source-map queue result',
+                                'http_status': ('connect rejected before SYNACK' if
+                                    args.rx_owner_relay_source_admission_revoke else '200'),
+                                peer_receipt_key: peer_receipt,
+                                'worker_drop_accounting': {
+                                    'decision_drops': stats.get('rx_decision_drops'),
+                                    'decision_forwarded': stats.get('rx_decision_forwarded'),
+                                    'outstanding': stats.get('outstanding'),
+                                    'settled': stats.get('rx_decision_settled')},
+                                'claim_boundary': 'real C16 staged SYN admission populates the original unprefixed map; no old-generation PEER routing/full reload claim',
+                            }
                         receipt_path = Path(receipt_path)
                         receipt_path.parent.mkdir(parents=True, exist_ok=True)
                         receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n',
@@ -933,6 +1637,27 @@ http {{
                         os.close(fd)
                     except OSError:
                         pass
+                if candidate_helper is not None:
+                    if candidate_helper.poll() is None:
+                        try:
+                            candidate_helper.send_signal(signal.SIGTERM)
+                            candidate_helper.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            candidate_helper.kill()
+                            candidate_helper.wait(timeout=3)
+                    try:
+                        candidate_helper.communicate(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        candidate_helper.kill()
+                        candidate_helper.communicate()
+                if candidate_slot_fd >= 0:
+                    try: os.close(candidate_slot_fd)
+                    except OSError: pass
+                for transfer_socket in (candidate_transfer_parent,
+                        candidate_transfer_child):
+                    if transfer_socket is not None:
+                        try: transfer_socket.close()
+                        except OSError: pass
                 if not scenario_cleanup_complete:
                     archive = Path('/dev/shm/ker-c35-last-failure')
                     archive.mkdir(exist_ok=True)
@@ -943,6 +1668,11 @@ http {{
                         shutil.copy2(error_log, archive / 'nginx-error.log')
                     if stats_path.exists():
                         shutil.copy2(stats_path, archive / 'stats.json')
+                    for source_path, archived_name in ((config, 'nginx.conf'),
+                            (ini, 'fstack.ini'),
+                            (root / 'runtime.trace', 'runtime.trace')):
+                        if source_path.exists():
+                            shutil.copy2(source_path, archive / archived_name)
                     print(f'UNQUALIFIED diagnostic archive: {archive}', file=sys.stderr)
                     if (archive / 'nginx-error.log').exists():
                         print((archive / 'nginx-error.log').read_text(errors='replace')[-12000:],
@@ -973,6 +1703,10 @@ def main():
     parser.add_argument('--owner-death', action='store_true')
     parser.add_argument('--rx-owner-relay', action='store_true')
     parser.add_argument('--rx-owner-relay-source-flowmap', action='store_true')
+    parser.add_argument('--rx-owner-relay-source-admission', action='store_true')
+    parser.add_argument('--rx-owner-relay-source-admission-revoke', action='store_true')
+    parser.add_argument('--rx-owner-relay-source-admission-prepared-failure', action='store_true')
+    parser.add_argument('--reuseport-group-client', type=Path)
     parser.add_argument('--rx-owner-relay-stop-pending', action='store_true')
     args = parser.parse_args()
     if not args.inside:
@@ -991,6 +1725,14 @@ def main():
             command.append('--rx-owner-relay')
         if args.rx_owner_relay_source_flowmap:
             command.append('--rx-owner-relay-source-flowmap')
+        if args.rx_owner_relay_source_admission:
+            command.append('--rx-owner-relay-source-admission')
+        if args.rx_owner_relay_source_admission_revoke:
+            command.append('--rx-owner-relay-source-admission-revoke')
+        if args.rx_owner_relay_source_admission_prepared_failure:
+            command.append('--rx-owner-relay-source-admission-prepared-failure')
+        if args.reuseport_group_client is not None:
+            command += ['--reuseport-group-client', str(args.reuseport_group_client.resolve())]
         if args.rx_owner_relay_stop_pending:
             command.append('--rx-owner-relay-stop-pending')
         if args.owner_activation_module is not None:
@@ -1014,6 +1756,13 @@ def main():
         raise ValueError('--rx-owner-relay-stop-pending requires --rx-owner-relay')
     if args.rx_owner_relay_source_flowmap and not args.rx_owner_relay:
         raise ValueError('--rx-owner-relay-source-flowmap requires --rx-owner-relay')
+    if args.rx_owner_relay_source_admission and (not args.rx_owner_relay or
+            args.owner_activation_module is None or args.reuseport_group_client is None):
+        raise ValueError('--rx-owner-relay-source-admission requires the owner relay and staged helper')
+    if args.rx_owner_relay_source_admission_revoke and not args.rx_owner_relay_source_admission:
+        raise ValueError('--source-admission-revoke requires source admission mode')
+    if args.rx_owner_relay_source_admission_prepared_failure and not args.rx_owner_relay_source_admission:
+        raise ValueError('--source-admission-prepared-failure requires source admission mode')
     set_up_network()
     run(args)
     return 0

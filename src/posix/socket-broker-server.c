@@ -327,11 +327,14 @@ static void owner_admission_endpoint_close(struct sb_owner *owner)
     owner->admission_directory[0] = '\0';
 }
 #ifdef KER_C16_ADMISSION_TEST_TRACE
-static void owner_admission_task_trace(const char *event, int status)
+static void owner_admission_task_trace(const struct sb_owner *owner,
+    const char *event, int status, uint64_t lease)
 {
-    char line[128];
+    char line[192];
     int length = snprintf(line, sizeof(line),
-        "C17_TASK_RELEASE %s status=%d\n", event, status);
+        "C17_TASK_RELEASE %s status=%d pid=%ld mark=%u lease=%llu\n",
+        event, status, (long)(owner ? owner->pid : 0),
+        owner ? owner->mark : 0, (unsigned long long)lease);
     if (length > 0 && (size_t)length < sizeof(line))
         (void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
 }
@@ -353,10 +356,10 @@ static int owner_admission_task_release(struct sb_owner *owner)
     if (!status) owner->released_admission_lease = lease;
 #ifdef KER_C16_ADMISSION_TEST_TRACE
     if (status == -EBUSY && !owner->admission_release_busy_logged) {
-        owner_admission_task_trace("deferred", status);
+        owner_admission_task_trace(owner, "deferred", status, lease);
         owner->admission_release_busy_logged = true;
     } else if (!status) {
-        owner_admission_task_trace("released", status);
+        owner_admission_task_trace(owner, "released", status, lease);
         owner->admission_release_busy_logged = false;
     }
 #endif
