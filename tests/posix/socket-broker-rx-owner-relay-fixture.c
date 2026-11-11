@@ -35,6 +35,8 @@ struct fixture {
     uint64_t probe_packet_id;
     uint32_t probe_frame_hash;
     uint16_t probe_source_port;
+    uint16_t expected_probe_source_port;
+    int32_t probe_dispatcher_result;
     uint32_t current_frame_hash;
     const char *probe_token;
     bool pending_probe;
@@ -115,6 +117,25 @@ static bool frame_is_probe(const uint8_t *frame, size_t bytes,
     if (request_bytes <= 0 || (size_t)request_bytes > payload_bytes ||
         memmem(payload, payload_bytes, request, (size_t)request_bytes) == NULL) return false;
     *source_port = (uint16_t)((uint16_t)frame[tcp] << 8 | frame[tcp + 1]);
+    return true;
+}
+
+static bool frame_is_source_probe_ack(const uint8_t *frame, size_t bytes,
+    uint16_t expected_source_port, uint16_t *source_port)
+{
+    if (!frame || bytes < 54 ||
+        ((uint16_t)frame[12] << 8 | frame[13]) != 0x0800 ||
+        (frame[14] >> 4) != 4 || frame[23] != 6) return false;
+    size_t ip_header = (size_t)(frame[14] & 0x0f) * 4;
+    if (ip_header < 20 || bytes < 14 + ip_header + 20) return false;
+    size_t tcp = 14 + ip_header;
+    uint16_t port = (uint16_t)((uint16_t)frame[tcp] << 8 | frame[tcp + 1]);
+    uint16_t destination = (uint16_t)((uint16_t)frame[tcp + 2] << 8 |
+        frame[tcp + 3]);
+    uint8_t flags = frame[tcp + 13];
+    if (port != expected_source_port || destination != 80 ||
+        !(flags & 0x10) || (flags & 0x02)) return false;
+    *source_port = port;
     return true;
 }
 
@@ -399,8 +420,14 @@ static int relay_decision(const struct ker_rx_decision_packet *packet, void *opa
         packet->full_frame_bytes);
     memcpy(fixture->pending_frame, packet->full_frame, packet->full_frame_bytes);
     uint16_t probe_port = 0;
-    fixture->pending_probe = frame_is_probe(packet->full_frame, packet->full_frame_bytes,
+    fixture->pending_probe = !fixture->probe_packet_id &&
+        frame_is_probe(packet->full_frame, packet->full_frame_bytes,
             fixture->probe_token, &probe_port);
+    if (!fixture->pending_probe && fixture->expected_probe_source_port &&
+        !fixture->probe_packet_id)
+        fixture->pending_probe = frame_is_source_probe_ack(packet->full_frame,
+            packet->full_frame_bytes, fixture->expected_probe_source_port,
+            &probe_port);
     if (fixture->pending_probe) {
         fixture->probe_witnesses++;
         fixture->probe_packet_id = packet->packet_id;
@@ -558,6 +585,7 @@ static int app_loop(void *opaque)
             fixture->completed++;
             if (fixture->probe_packet_id == reply.packet_id) {
                 fixture->probe_frame_hash = reply.frame_hash32;
+                fixture->probe_dispatcher_result = reply.dispatcher_result;
             }
             if (fixture->pending_probe) {
                 static const char digits[] = "0123456789abcdef";
@@ -611,6 +639,14 @@ int main(int argc, char **argv)
         .supervisor_pidfd = -1};
     fixture.probe_token = getenv("KER_RX_OWNER_RELAY_PROBE_TOKEN");
     if (!fixture.probe_token || strlen(fixture.probe_token) != 24) return 2;
+    if (getenv("KER_RX_OWNER_RELAY_SOURCE_FLOWMAP_TEST")) {
+        const char *port_text = getenv("KER_RX_OWNER_RELAY_SOURCE_FLOWMAP_PORT");
+        char *end = NULL;
+        unsigned long port = port_text ? strtoul(port_text, &end, 10) : 0;
+        if (!port_text || end == port_text || *end || !port || port > UINT16_MAX)
+            return 2;
+        fixture.expected_probe_source_port = (uint16_t)port;
+    }
     if (decode_hex(nonce_text, fixture.broker_nonce, sizeof(fixture.broker_nonce)) ||
         decode_hex(profile_text, fixture.profile_hash, sizeof(fixture.profile_hash))) return 2;
     if (decode_hex(relay_nonce, fixture.nonce, sizeof(fixture.nonce))) return 2;
@@ -652,13 +688,14 @@ int main(int argc, char **argv)
     int run_result = broker_run(&fixture);
     int run_errno = errno;
     int broker_result = ker_socket_broker_server_destroy_checked(server);
-    printf("RX_OWNER_RELAY_RESULT callbacks=%llu deferred=%llu completed=%llu startup_drops=%llu probe_witnesses=%llu probe_packet_id=%llu probe_source_port=%u probe_frame_hash=%u broker=%d run=%d\n",
+    printf("RX_OWNER_RELAY_RESULT callbacks=%llu deferred=%llu completed=%llu startup_drops=%llu probe_witnesses=%llu probe_packet_id=%llu probe_source_port=%u probe_frame_hash=%u probe_dispatcher_result=%d broker=%d run=%d\n",
         (unsigned long long)fixture.callbacks, (unsigned long long)fixture.deferred,
         (unsigned long long)fixture.completed,
         (unsigned long long)fixture.startup_drops,
         (unsigned long long)fixture.probe_witnesses,
         (unsigned long long)fixture.probe_packet_id, fixture.probe_source_port,
-        fixture.probe_frame_hash, fixture.broker_status, run_result);
+        fixture.probe_frame_hash, fixture.probe_dispatcher_result,
+        fixture.broker_status, run_result);
     fflush(stdout);
     if (!run_result && !fixture.broker_status && !broker_result &&
         fixture.callbacks > 0 && fixture.deferred == fixture.completed)

@@ -19,6 +19,11 @@ extern volatile ngx_cycle_t *ngx_cycle;
 static struct ff_reload_state *candidate_state;
 struct ff_config ff_global_cfg;
 
+struct ff_reload_state *ker_nginx_source_flowmap_state(void)
+{
+    return candidate_state;
+}
+
 int ker_nginx_candidate_master_prepare(ngx_cycle_t *cycle)
 {
     int *enabled = dlsym(RTLD_DEFAULT, "ngx_ff_graceful_reload");
@@ -38,6 +43,25 @@ int ker_nginx_candidate_master_prepare(ngx_cycle_t *cycle)
         return -1;
     }
     candidate_state = *block;
+#ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
+    const char *source_test = getenv("KER_NGINX_SOURCE_FLOWMAP_TEST");
+    if (source_test && strcmp(source_test, "1") != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (source_test) {
+        uint32_t epoch = 0, target = 0;
+        /* Exercise the original reload window transition API against the
+         * source-created block. This is a private classifier fixture, not a
+         * production HUP/FSM lifecycle claim. */
+        ff_reload_master_begin(&epoch, &target);
+        if (!epoch || target >= FF_RELOAD_GEN_MAX ||
+            !ff_reload_state_attached() || !ff_reload_hw_locked()) {
+            errno = EPROTO;
+            return -1;
+        }
+    }
+#endif
     return 0;
 }
 
