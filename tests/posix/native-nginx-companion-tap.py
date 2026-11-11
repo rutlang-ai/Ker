@@ -982,6 +982,9 @@ def main():
         for name in ('launcher', 'library', 'worker', 'broker', 'nginx',
                 'fstack-runtime', 'preload-library', 'dpdk-plugin-dir'):
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
+        if args.source_nginx_module_source is not None:
+            command += ['--source-nginx-module-source',
+                str(args.source_nginx_module_source.resolve())]
         if args.rx_owner_relay_app is not None:
             command += ['--rx-owner-relay-app', str(args.rx_owner_relay_app.resolve())]
         if args.rx_owner_relay:
