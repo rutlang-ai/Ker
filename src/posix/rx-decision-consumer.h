@@ -21,13 +21,17 @@ struct ker_rx_decision_packet {
     uint16_t vlan_tci;
     uint16_t flags;
     uint64_t rx_offload_flags;
+    uint32_t full_frame_bytes;
+    const void *full_frame;
     const void *first_segment;
 };
 
 typedef int (*ker_rx_decision_handler)(
     const struct ker_rx_decision_packet *packet, void *context);
 
-/* A handler may return DEFER after copying any packet data it needs. Exactly
+/* A handler may return DEFER after copying any packet data it needs. The full
+ * frame and first-segment alias are read-only and valid only during the call.
+ * Exactly
  * one packet lease remains pending until the owner thread completes it. Before
  * stopping the application loop, callers must complete any pending lease and
  * switch the handler to its own bounded synchronous drain policy; a handler

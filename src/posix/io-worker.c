@@ -386,13 +386,30 @@ static int rx_decision_handle_control(struct ker_rx_decision_worker *worker,
     return 0;
 }
 
+static int rx_frame_read(struct rte_mbuf *packet, uint16_t mtu,
+        void *scratch, size_t scratch_bytes, const void **frame)
+{
+    if (!packet || !scratch || !frame || packet->pkt_len < RTE_ETHER_HDR_LEN ||
+        packet->pkt_len > scratch_bytes ||
+        packet->pkt_len > (uint32_t)mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN)
+        return -EMSGSIZE;
+    const void *bytes = rte_pktmbuf_read(packet, 0, packet->pkt_len, scratch);
+    if (!bytes) return -EIO;
+    *frame = bytes;
+    return 0;
+}
+
 static int rx_decision_lease(struct ker_rx_decision_worker *worker,
         struct rte_mbuf *packet, uint16_t queue, uint16_t queue_count,
-        uint16_t mtu, uint32_t *action, bool *stopping)
+        uint16_t mtu, const void *full_frame, uint32_t full_frame_bytes,
+        uint32_t *action, bool *stopping)
 {
-    if (!worker || !packet || !action || !worker->epoch ||
+    if (!worker || !packet || !full_frame || full_frame_bytes != packet->pkt_len ||
+        !action || !worker->epoch ||
         worker->packet_id == UINT64_MAX || packet->pkt_len > KER_RX_DECISION_MAX_FRAME ||
         packet->pkt_len > (uint32_t)mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN ||
+        packet->pkt_len > KER_RX_DECISION_MAX_MESSAGE - sizeof(struct ker_rx_decision_header) -
+            sizeof(struct ker_rx_decision_data) ||
         packet->data_len > packet->pkt_len || packet->nb_segs == 0 ||
         packet->data_off > packet->buf_len || packet->data_len > packet->buf_len - packet->data_off ||
         packet->data_len > KER_RX_DECISION_MAX_MESSAGE - sizeof(struct ker_rx_decision_header) -
@@ -416,7 +433,7 @@ static int rx_decision_lease(struct ker_rx_decision_worker *worker,
     header.version = KER_RX_DECISION_VERSION;
     header.type = KER_RX_DECISION_DATA;
     header.header_bytes = sizeof(header);
-    header.message_bytes = sizeof(header) + sizeof(struct ker_rx_decision_data) + packet->data_len;
+    header.message_bytes = sizeof(header) + sizeof(struct ker_rx_decision_data) + packet->pkt_len;
     memcpy(header.run_nonce, worker->nonce, sizeof(worker->nonce));
     header.worker_epoch = worker->epoch;
     header.packet_id = packet_id;
@@ -427,7 +444,7 @@ static int rx_decision_lease(struct ker_rx_decision_worker *worker,
         .vlan_tci = packet->vlan_tci, .flags = 0, .rx_offload_flags = packet->ol_flags,
         .data_room_bytes = packet->buf_len};
     struct iovec vectors[] = {{&header, sizeof(header)}, {&data, sizeof(data)},
-        {rte_pktmbuf_mtod(packet, void *), packet->data_len}};
+        {(void *)full_frame, packet->pkt_len}};
     struct msghdr message = {.msg_iov = vectors, .msg_iovlen = 3};
     for (;;) {
         if (ker_worker_now_ns(&now_ns) || now_ns < 0 || (uint64_t)now_ns >= deadline_ns)
@@ -793,7 +810,7 @@ static int rx_authority_test(const char *mode)
             }
             if (!status && before && rx_authority_test_io(release_worker[0], (char[1]){0}, 1, false)) _exit(20);
             if (!status) status = rx_decision_lease(&worker, &packet, 0, 1, 1500,
-                &action, &stopping);
+                storage, packet.pkt_len, &action, &stopping);
             struct rx_authority_test_result outcome = {.status = status, .action = action,
                 .packet_id = worker.packet_id};
             if (rx_authority_test_io(events[1], &outcome, sizeof(outcome), true)) _exit(21);
@@ -868,6 +885,281 @@ cleanup:
     close(release_consumer[1]); close(release_consumer_done[1]);
     return failure;
 }
+
+#define RX_FRAME_TEST_BYTES (KER_NATIVE_MAX_MTU + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN)
+struct rx_frame_test_record {
+    uint32_t frame_bytes;
+    uint32_t first_segment_bytes;
+    uint16_t segment_count;
+    uint16_t action;
+    uint32_t reserved;
+};
+
+static uint8_t rx_frame_test_byte(size_t offset, unsigned packet)
+{
+    return (uint8_t)(offset * 73u + (offset >> 4) * 19u + packet * 29u + 11u);
+}
+
+static int rx_frame_test_oracle(int fd, int report_fd, pid_t producer,
+        const uint8_t nonce[KER_RX_DECISION_NONCE_BYTES], uint64_t epoch)
+{
+    uint8_t message[KER_RX_DECISION_MAX_MESSAGE];
+    struct rx_frame_test_record records[2];
+    uint8_t captured_frames[2][RX_FRAME_TEST_BYTES];
+    for (unsigned packet = 0; packet < 2; ++packet) {
+        char control[CMSG_SPACE(sizeof(struct ucred))] = {0};
+        struct iovec vector = {.iov_base = message, .iov_len = sizeof(message)};
+        struct msghdr received = {.msg_iov = &vector, .msg_iovlen = 1,
+            .msg_control = control, .msg_controllen = sizeof(control)};
+        ssize_t length;
+        do { length = recvmsg(fd, &received, 0); } while (length < 0 && errno == EINTR);
+        struct ucred credential = {0};
+        bool have_credential = false;
+        for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&received); cmsg;
+                cmsg = CMSG_NXTHDR(&received, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_CREDENTIALS &&
+                cmsg->cmsg_len == CMSG_LEN(sizeof(credential))) {
+                memcpy(&credential, CMSG_DATA(cmsg), sizeof(credential));
+                have_credential = true;
+            }
+        }
+        if (length < (ssize_t)(sizeof(struct ker_rx_decision_header) +
+                sizeof(struct ker_rx_decision_data))) return 10;
+        struct ker_rx_decision_header header;
+        struct ker_rx_decision_data data;
+        memcpy(&header, message, sizeof(header));
+        memcpy(&data, message + sizeof(header), sizeof(data));
+        const uint8_t *frame = message + sizeof(header) + sizeof(data);
+        if (!have_credential || credential.pid != producer || credential.uid != getuid() ||
+            credential.gid != getgid() ||
+            header.magic != KER_RX_DECISION_MAGIC || header.version != 2 ||
+            header.type != KER_RX_DECISION_DATA || header.header_bytes != sizeof(header) ||
+            header.message_bytes != (uint32_t)length || header.worker_epoch != epoch ||
+            header.packet_id != packet + 1 ||
+            memcmp(header.run_nonce, nonce, sizeof(header.run_nonce)) ||
+            !header.deadline_ns ||
+            data.packet_bytes != RX_FRAME_TEST_BYTES ||
+            !data.first_segment_bytes || data.first_segment_bytes >= data.packet_bytes ||
+            data.segment_count < 2 || data.queue_id != 2 || data.queue_count != 4 ||
+            length != (ssize_t)(sizeof(header) + sizeof(data) + data.packet_bytes)) return 11;
+        for (size_t i = 0; i < data.packet_bytes; ++i)
+            if (frame[i] != rx_frame_test_byte(i, packet)) return 12;
+        struct rx_frame_test_record record = {.frame_bytes = data.packet_bytes,
+            .first_segment_bytes = data.first_segment_bytes,
+            .segment_count = data.segment_count,
+            .action = packet ? KER_RX_DECISION_DROP : KER_RX_DECISION_LOCAL};
+        struct ker_rx_decision_result decision = {.action = record.action};
+        struct ker_rx_decision_header result = {
+            .magic = KER_RX_DECISION_MAGIC, .version = KER_RX_DECISION_VERSION,
+            .type = KER_RX_DECISION_RESULT, .header_bytes = sizeof(result),
+            .message_bytes = sizeof(result) + sizeof(decision), .worker_epoch = epoch,
+            .packet_id = header.packet_id,
+        };
+        memcpy(result.run_nonce, nonce, sizeof(result.run_nonce));
+        struct iovec result_vectors[] = {{&result, sizeof(result)}, {&decision, sizeof(decision)}};
+        struct msghdr outgoing = {.msg_iov = result_vectors, .msg_iovlen = 2};
+        ssize_t sent;
+        do { sent = sendmsg(fd, &outgoing, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR);
+        if (sent != result.message_bytes) return 14;
+        /* Keep the oracle alive until the producer has completed its
+         * post-RESULT authority check. Otherwise a fast oracle can exit
+         * between sending RESULT and that check, making the lease fail
+         * depending on scheduling. */
+        uint64_t acknowledged_packet = 0;
+        if (rx_authority_test_io(fd, &acknowledged_packet,
+                sizeof(acknowledged_packet), false) ||
+            acknowledged_packet != header.packet_id) return 15;
+        /* Evidence is drained only after RESULT so a small pipe cannot stall
+         * the producer while it waits for the lease decision. */
+        records[packet] = record;
+        memcpy(captured_frames[packet], frame, data.packet_bytes);
+    }
+    for (unsigned packet = 0; packet < 2; ++packet)
+        if (rx_authority_test_io(report_fd, &records[packet], sizeof(records[packet]), true) ||
+            rx_authority_test_io(report_fd, captured_frames[packet],
+                records[packet].frame_bytes, true)) return 13;
+    return 0;
+}
+
+static int rx_decision_full_frame_test(int argc, char **argv)
+{
+    int pair[2] = {-1, -1}, report[2] = {-1, -1};
+    pid_t oracle = -1;
+    int oracle_pidfd = -1, self_pidfd = -1;
+    struct rte_mempool *pool = NULL;
+    struct rte_mbuf *active_packet = NULL;
+    int status = 1;
+    bool eal_ready = false;
+    uint8_t nonce[KER_RX_DECISION_NONCE_BYTES];
+    memset(nonce, 0x6d, sizeof(nonce));
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair) ||
+        pipe2(report, O_CLOEXEC)) goto cleanup;
+    int passcred = 1;
+    if (setsockopt(pair[0], SOL_SOCKET, SO_PASSCRED, &passcred, sizeof(passcred)) ||
+        setsockopt(pair[1], SOL_SOCKET, SO_PASSCRED, &passcred, sizeof(passcred))) goto cleanup;
+    oracle = fork();
+    if (oracle < 0) goto cleanup;
+    if (!oracle) {
+        close(pair[0]); close(report[0]);
+        int result = rx_frame_test_oracle(pair[1], report[1], getppid(), nonce, 91);
+        close(pair[1]); close(report[1]);
+        _exit(result);
+    }
+    close(pair[1]); pair[1] = -1;
+    close(report[1]); report[1] = -1;
+    /* The test marker is argv[1]; pass EAL a fresh conventional argv[0]. */
+    char **eal_argv = calloc((size_t)argc, sizeof(*eal_argv));
+    if (!eal_argv) goto cleanup;
+    eal_argv[0] = (char *)"rx-decision-full-frame-test";
+    for (int i = 2; i < argc; ++i) eal_argv[i - 1] = argv[i];
+    int eal_result = rte_eal_init(argc - 1, eal_argv);
+    free(eal_argv);
+    if (eal_result < 0) goto cleanup;
+    eal_ready = true;
+    pool = rte_pktmbuf_pool_create("rx_decision_frame_test", 127, 0, 0,
+        RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
+    if (!pool) goto cleanup;
+    struct ker_rx_decision_worker worker = {.fd = pair[0], .epoch = 91,
+        .bootstrapped = true, .supervisor = {.pid = getpid(), .uid = getuid(),
+            .gid = getgid(), .pidfd = -1}, .consumer = {.pid = oracle,
+            .uid = getuid(), .gid = getgid(), .pidfd = -1}};
+    memcpy(worker.nonce, nonce, sizeof(nonce));
+    worker.supervisor.pidfd = self_pidfd = rx_authority_test_pidfd(getpid());
+    worker.consumer.pidfd = oracle_pidfd = rx_authority_test_pidfd(oracle);
+    if (worker.supervisor.pidfd < 0 || worker.consumer.pidfd < 0 ||
+        rx_decision_process_start(getpid(), &worker.supervisor.start_ticks) ||
+        rx_decision_process_start(oracle, &worker.consumer.start_ticks)) goto cleanup;
+    unsigned initial_available = rte_mempool_avail_count(pool);
+    for (unsigned packet_index = 0; packet_index < 2; ++packet_index) {
+        uint8_t source[RX_FRAME_TEST_BYTES];
+        uint8_t scratch[WIRE_MAX], verify_scratch[WIRE_MAX];
+        for (size_t i = 0; i < sizeof(source); ++i)
+            source[i] = rx_frame_test_byte(i, packet_index);
+        struct rte_mbuf *packet = ker_worker_mbuf_from_bytes(pool, source, sizeof(source));
+        active_packet = packet;
+        if (!packet || packet->pkt_len != sizeof(source) || packet->nb_segs < 2 ||
+            !packet->data_len || packet->data_len >= packet->pkt_len) goto cleanup;
+        uint16_t original_segments = packet->nb_segs;
+        uint16_t original_first_segment = packet->data_len;
+        const void *full_frame = NULL;
+        if (rx_frame_read(packet, 9000, scratch, sizeof(scratch), &full_frame) ||
+            memcmp(full_frame, source, sizeof(source)) ||
+            rte_mempool_avail_count(pool) != initial_available - original_segments ||
+            rte_mbuf_refcnt_read(packet) != 1) {
+            rte_pktmbuf_free(packet); active_packet = NULL; goto cleanup;
+        }
+        uint32_t action = UINT32_MAX;
+        bool stopping = false;
+        int decided = rx_decision_lease(&worker, packet, 2, 4, 9000, full_frame,
+            packet->pkt_len, &action, &stopping);
+        if (decided)
+            fprintf(stderr, "full-frame chain lease %u failed: %s\n", packet_index + 1,
+                strerror(-decided));
+        if (decided || action != (packet_index ? KER_RX_DECISION_DROP : KER_RX_DECISION_LOCAL) ||
+            packet->pkt_len != sizeof(source) || packet->nb_segs != original_segments ||
+            packet->data_len != original_first_segment || rte_mbuf_refcnt_read(packet) != 1 ||
+            rte_mempool_avail_count(pool) != initial_available - original_segments) {
+            rte_pktmbuf_free(packet); active_packet = NULL; goto cleanup;
+        }
+        /* A successful lease return proves the producer's post-RESULT
+         * consumer-authority check completed while the oracle was alive. */
+        uint64_t acknowledged_packet = packet_index + 1;
+        ssize_t acknowledged;
+        do { acknowledged = send(pair[0], &acknowledged_packet,
+                sizeof(acknowledged_packet), MSG_NOSIGNAL); }
+        while (acknowledged < 0 && errno == EINTR);
+        if (acknowledged != (ssize_t)sizeof(acknowledged_packet)) {
+            rte_pktmbuf_free(packet); active_packet = NULL; goto cleanup;
+        }
+        const void *retained_frame = NULL;
+        if (rx_frame_read(packet, 9000, verify_scratch, sizeof(verify_scratch),
+                &retained_frame) || memcmp(retained_frame, source, sizeof(source))) {
+            rte_pktmbuf_free(packet); active_packet = NULL; goto cleanup;
+        }
+        if (action == KER_RX_DECISION_LOCAL) {
+            int local[2];
+            if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, local)) {
+                rte_pktmbuf_free(packet); active_packet = NULL; goto cleanup;
+            }
+            struct ker_packet_header packet_header = {0};
+            struct iovec vectors[] = {{&packet_header, sizeof(packet_header)},
+                {(void *)retained_frame, packet->pkt_len}};
+            struct msghdr outgoing = {.msg_iov = vectors, .msg_iovlen = 2};
+            ssize_t sent = sendmsg(local[0], &outgoing, MSG_NOSIGNAL);
+            uint8_t forwarded[RX_FRAME_TEST_BYTES];
+            char received[sizeof(struct ker_packet_header) + RX_FRAME_TEST_BYTES];
+            ssize_t got = recv(local[1], received, sizeof(received), 0);
+            if (got == sent && got >= (ssize_t)sizeof(packet_header))
+                memcpy(forwarded, received + sizeof(packet_header), sizeof(forwarded));
+            if (sent != (ssize_t)(sizeof(packet_header) + packet->pkt_len) ||
+                got != sent || memcmp(received, &packet_header, sizeof(packet_header)) ||
+                memcmp(forwarded, source, sizeof(source))) {
+                close(local[0]); close(local[1]); rte_pktmbuf_free(packet);
+                active_packet = NULL; goto cleanup;
+            }
+            close(local[0]); close(local[1]);
+        }
+        rte_pktmbuf_free(packet);
+        active_packet = NULL;
+        if (rte_mempool_avail_count(pool) != initial_available) goto cleanup;
+    }
+    /* The producer's supported MTU cap is 9018 bytes even though the private
+     * wire ceiling leaves four additional defensive bytes. */
+    uint8_t overbound[RX_FRAME_TEST_BYTES + 1];
+    memset(overbound, 0xa7, sizeof(overbound));
+    struct rte_mbuf *too_large = ker_worker_mbuf_from_bytes(pool, overbound,
+        sizeof(overbound));
+    if (!too_large) goto cleanup;
+    active_packet = too_large;
+    uint8_t scratch[WIRE_MAX];
+    const void *full_frame = NULL;
+    if (rx_frame_read(too_large, 9000, scratch, sizeof(scratch), &full_frame) != -EMSGSIZE) {
+        rte_pktmbuf_free(too_large); active_packet = NULL; goto cleanup;
+    }
+    rte_pktmbuf_free(too_large);
+    active_packet = NULL;
+    struct rx_frame_test_record record;
+    uint8_t captured[RX_FRAME_TEST_BYTES];
+    for (unsigned i = 0; i < 2; ++i) {
+        if (rx_authority_test_io(report[0], &record, sizeof(record), false) ||
+            record.frame_bytes != sizeof(captured) || record.action !=
+                (i ? KER_RX_DECISION_DROP : KER_RX_DECISION_LOCAL) ||
+            rx_authority_test_io(report[0], captured, sizeof(captured), false) ||
+            fwrite(&record, sizeof(record), 1, stdout) != 1 ||
+            fwrite(captured, sizeof(captured), 1, stdout) != 1) goto cleanup;
+    }
+    int oracle_status = 0;
+    pid_t waited;
+    do { waited = waitpid(oracle, &oracle_status, 0); }
+    while (waited < 0 && errno == EINTR);
+    if (waited != oracle) goto cleanup;
+    oracle = -1;
+    if (!WIFEXITED(oracle_status) || WEXITSTATUS(oracle_status) != 0 ||
+        rte_mempool_avail_count(pool) != initial_available) goto cleanup;
+    status = 0;
+cleanup:
+    if (oracle > 0) {
+#ifdef SYS_pidfd_send_signal
+        if (oracle_pidfd >= 0)
+            (void)syscall(SYS_pidfd_send_signal, oracle_pidfd, SIGKILL, NULL, 0);
+        else
+#endif
+            (void)kill(oracle, SIGKILL);
+        do { waited = waitpid(oracle, NULL, 0); }
+        while (waited < 0 && errno == EINTR);
+        if (waited == oracle) oracle = -1;
+    }
+    if (active_packet) rte_pktmbuf_free(active_packet);
+    if (pool) rte_mempool_free(pool);
+    if (pair[0] >= 0) close(pair[0]);
+    if (pair[1] >= 0) close(pair[1]);
+    if (report[0] >= 0) close(report[0]);
+    if (report[1] >= 0) close(report[1]);
+    if (self_pidfd >= 0) close(self_pidfd);
+    if (oracle_pidfd >= 0) close(oracle_pidfd);
+    if (eal_ready) rte_eal_cleanup();
+    return status;
+}
 #endif
 
 int main(int argc, char **argv)
@@ -881,6 +1173,8 @@ int main(int argc, char **argv)
 #ifdef KER_RX_DECISION_TESTING
     if (argc == 3 && !strcmp(argv[1], "--rx-decision-authority-test"))
         return rx_authority_test(argv[2]);
+    if (argc >= 3 && !strcmp(argv[1], "--rx-decision-full-frame-test"))
+        return rx_decision_full_frame_test(argc, argv);
 #endif
     int packet_fd = -1, control_fd = -1, mtu_fd = -1, rx_decision_fd = -1, split = 0;
     bool rss_enabled = false;
@@ -1590,8 +1884,8 @@ int main(int argc, char **argv)
             uint32_t length = packet->pkt_len;
             const void *bytes = NULL;
             bool supported_metadata = ker_io_worker_metadata_supported(packet);
-            if (length >= RTE_ETHER_HDR_LEN && length <= (uint32_t)mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN && supported_metadata)
-                bytes = rte_pktmbuf_read(packet, 0, length, rx_bytes);
+            if (supported_metadata)
+                (void)rx_frame_read(packet, (uint16_t)mtu, rx_bytes, sizeof(rx_bytes), &bytes);
             if (bytes && frame_size_supported(bytes, length, mtu)) {
                 enum ker_exception_route route = ker_worker_exception_route(&exception, packet);
                 if (!ker_io_worker_route_metadata_supported(packet, route,
@@ -1632,8 +1926,8 @@ int main(int argc, char **argv)
                     if (!rx_decision_authorized[rx_index]) {
                         uint32_t decision = 0;
                         int decided = rx_decision_lease(&rx_decision, packet,
-                            rx_queue_id[rx_index], (uint16_t)queues, (uint16_t)mtu,
-                            &decision, &rx_decision_stopping);
+                            rx_queue_id[rx_index], (uint16_t)queues, (uint16_t)mtu, bytes,
+                            length, &decision, &rx_decision_stopping);
                         if (decided) {
                             fprintf(stderr, "ker: RX decision lease failed closed: %s\n",
                                 strerror(-decided));

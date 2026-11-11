@@ -680,12 +680,17 @@ if(BUILD_TESTING)
     target_compile_features(ker-rx-decision-consumer-test PRIVATE c_std_11)
     target_compile_options(ker-rx-decision-consumer-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-rx-decision-consumer-test PRIVATE Threads::Threads)
-    foreach(case positive defer shutdown-pending late-complete late-settle worker-death-defer supervisor-death-defer wrong-role bad-sequence expired bad-bounds bad-flags replay wrong-thread no-handler)
+    foreach(case positive defer shutdown-pending late-complete late-settle worker-death-defer supervisor-death-defer wrong-role bad-sequence expired bad-bounds bad-flags replay wrong-thread no-handler old-version-ready old-version-data truncated-frame trailing-frame over-cap)
         add_test(NAME rx-decision-consumer-${case}
             COMMAND "$<TARGET_FILE:ker-rx-decision-consumer-test>" "${case}")
         set_tests_properties(rx-decision-consumer-${case} PROPERTIES
             LABELS "rx-decision;seqpacket;credentials;lifecycle" TIMEOUT 5)
     endforeach()
+    add_test(NAME rx-decision-wire-python
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/unit/test_rx_decision_wire.py")
+    set_tests_properties(rx-decision-wire-python PROPERTIES
+        LABELS "rx-decision;wire;python" TIMEOUT 5)
     add_test(NAME native-linux-builder-wiring
         COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tests/unit/test_native_linux_builder_wiring.py")

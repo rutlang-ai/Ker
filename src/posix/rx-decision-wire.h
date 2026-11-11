@@ -14,7 +14,7 @@
 #endif
 
 #define KER_RX_DECISION_MAGIC UINT32_C(0x4b525844) /* "KRXD" */
-#define KER_RX_DECISION_VERSION UINT16_C(1)
+#define KER_RX_DECISION_VERSION UINT16_C(2)
 #define KER_RX_DECISION_MAX_MESSAGE UINT32_C(9216)
 #define KER_RX_DECISION_MAX_FRAME UINT32_C(9022)
 #define KER_RX_DECISION_MAX_PENDING UINT32_C(1)
@@ -87,9 +87,10 @@ struct __attribute__((packed)) ker_rx_decision_bootstrap {
     uint64_t supervisor_start_ticks;
 };
 
-/* DATA metadata. The datagram then contains exactly first_segment_bytes of
- * read-only snapshot data. The producer retains the original mbuf until one
- * valid RESULT or its fail-closed expiry; this snapshot is never reinjected. */
+/* DATA metadata. The datagram then contains exactly packet_bytes of complete,
+ * read-only frame snapshot data. first_segment_bytes remains the original
+ * mbuf's first-segment geometry. The producer retains the original mbuf until
+ * one valid RESULT or its fail-closed expiry; this snapshot is never reinjected. */
 struct __attribute__((packed)) ker_rx_decision_data {
     uint32_t packet_bytes;
     uint32_t first_segment_bytes;
