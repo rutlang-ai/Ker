@@ -139,6 +139,9 @@ int ker_nginx_owner_ready_sender_send(struct ker_nginx_owner_ready_sender *sende
     int status = endpoint_matches(sender);
     if (!status) status = same_identity(sender->peer_pidfd, &sender->pidfd_identity);
     if (status) return status == -EINTR ? -EAGAIN : status;
+    long owner_tid = syscall(SYS_gettid);
+    if (owner_tid <= 0 || owner_tid > UINT32_MAX) return -ERANGE;
+    sender->record.owner_tid = (uint32_t)owner_tid;
     struct pollfd fds[] = {{.fd = sender->peer_pidfd, .events = POLLIN},
         {.fd = sender->fd, .events = POLLHUP}};
     if (syscall(SYS_poll, fds, 2, 0) < 0) return errno == EINTR ? -EAGAIN : -errno;

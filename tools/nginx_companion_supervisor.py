@@ -53,6 +53,12 @@ def _pidfd_pid(fd):
     raise OSError(9, 'invalid pidfd')
 
 
+def process_alive(pidfd):
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+    return not poller.poll(0)
+
+
 def _close_fds(fds):
     for fd in fds:
         try:
@@ -63,12 +69,21 @@ def _close_fds(fds):
 
 class NginxCompanion:
     """Own one helper and one exact pinned non-daemon Nginx master subtree."""
-    def __init__(self, binary, config, prefix, nginx_env, cycle_control_fd=None):
+    def __init__(self, binary, config, prefix, nginx_env, cycle_control_fd=None,
+                 owner_ready_required=False):
         self.binary = Path(binary).resolve(strict=True)
         self.config = Path(config).resolve(strict=True)
         self.prefix = Path(prefix).resolve(strict=True)
         self.nginx_env = dict(nginx_env)
         self.cycle_control_fd = cycle_control_fd
+        self.owner_ready_required = bool(owner_ready_required)
+        self.owner_pidfd = -1
+        self.owner_pid = 0
+        self.owner_start = 0
+        self.owner_tid = 0
+        self.owner_role = 0
+        self.owner_slot_device = 0
+        self.owner_slot_inode = 0
         cycle_keys = {key for key in self.nginx_env if key.startswith('KER_NGINX_CYCLE_')}
         required_cycle_keys = {'KER_NGINX_CYCLE_FD', 'KER_NGINX_CYCLE_NONCE',
             'KER_NGINX_CYCLE_RUNTIME_NONCE', 'KER_NGINX_CYCLE_RUNTIME_EPOCH',
@@ -205,6 +220,8 @@ class NginxCompanion:
         if self.cycle_control_fd is not None:
             command += ['--cycle-control-fd', str(self.cycle_control_fd)]
             helper_pass_fds.append(self.cycle_control_fd)
+        if self.owner_ready_required:
+            command.append('--owner-ready-required')
         for key, value in sorted(self.nginx_env.items()):
             command += ['--nginx-env', f'{key}={value}']
         env = {'PATH': '/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1'}
@@ -248,6 +265,51 @@ class NginxCompanion:
             self.master_pid = pid
             self.master_start = start_ticks
             self.master_pidfd = fds.pop()
+            if self.owner_ready_required:
+                packet, fds = self._receive((wire.OWNER_READY_BYTES,
+                    wire.ERROR_BYTES), deadline, 1)
+                worker_pidfd = -1
+                try:
+                    record_type, nonce, epoch, sequence = wire.unpack_header(packet)
+                    if ((nonce, epoch, sequence) != (self.nonce, self.epoch, 1)):
+                        raise ValueError('Nginx owner READY correlation mismatch')
+                    if record_type == wire.ERROR:
+                        fields = wire.unpack_record(packet, wire.ERROR, self.nonce,
+                            self.epoch, 1, wire.ERROR_BODY)
+                        wire.validate_error(fields)
+                        raise RuntimeError(f'Nginx owner READY failed: {fields!r}')
+                    fields = wire.unpack_record(packet, wire.OWNER_READY,
+                        self.nonce, self.epoch, 1, wire.OWNER_READY_BODY)
+                    wire.validate_owner_ready(fields, expected_uid=os.getuid(),
+                        expected_gid=os.getgid(), expected_role=0)
+                    (owner_pid, owner_uid, owner_gid, owner_role, owner_tid,
+                     _reserved, owner_start, slot_device, slot_inode,
+                     _cookie) = fields
+                    worker_pidfd = fds.pop()
+                    if (_pidfd_pid(worker_pidfd) != owner_pid or
+                            not process_alive(worker_pidfd) or
+                            _start_ticks(owner_pid) != owner_start or
+                            _sha256(f'/proc/{owner_pid}/exe') != self.binary_hash or
+                            not Path(f'/proc/{owner_pid}/task/{owner_tid}').exists()):
+                        raise PermissionError('Nginx worker READY PIDFD/process identity mismatch')
+                    worker_stat = Path(f'/proc/{owner_pid}/stat').read_text(encoding='ascii')
+                    worker_fields = worker_stat[worker_stat.rfind(')') + 2:].split()
+                    if (owner_uid != os.getuid() or owner_gid != os.getgid() or
+                            len(worker_fields) <= 1 or
+                            int(worker_fields[1], 10) != self.master_pid):
+                        raise PermissionError('Nginx READY worker is not a child of pinned master')
+                    self.owner_pidfd = worker_pidfd
+                    self.owner_pid = owner_pid
+                    self.owner_start = owner_start
+                    self.owner_tid = owner_tid
+                    self.owner_role = owner_role
+                    self.owner_slot_device = slot_device
+                    self.owner_slot_inode = slot_inode
+                    worker_pidfd = -1
+                finally:
+                    _close_fds(fds)
+                    if worker_pidfd >= 0:
+                        os.close(worker_pidfd)
             self.started = True
         except BaseException:
             self.unresolved = True
@@ -280,6 +342,9 @@ class NginxCompanion:
             raise
 
     def reload(self, timeout=10.0):
+        if self.owner_ready_required:
+            raise NotImplementedError(
+                'reload is unavailable until successor FF worker READY is authenticated')
         def validate(packet, _record_type):
             fields = wire.unpack_record(packet, wire.RELOAD_RESULT, self.nonce,
                 self.epoch, self.sequence, wire.RELOAD_RESULT_BODY)
@@ -296,6 +361,11 @@ class NginxCompanion:
         if self.helper.poll() is not None:
             self.unresolved = True
             raise RuntimeError('Nginx containment helper exited before SETTLED')
+        if self.owner_ready_required and (self.owner_pidfd < 0 or
+                not process_alive(self.owner_pidfd) or
+                _start_ticks(self.owner_pid) != self.owner_start):
+            self.unresolved = True
+            raise RuntimeError('delegated Nginx FF owner exited or changed identity')
         poller = select.poll()
         poller.register(self.channel.fileno(), select.POLLIN | select.POLLHUP |
             select.POLLERR | select.POLLNVAL)
@@ -341,6 +411,8 @@ class NginxCompanion:
                 self.profile)
             if fields[0] != 0:
                 raise RuntimeError(f'Nginx settlement failed: {fields!r}')
+            if self.owner_ready_required and process_alive(self.owner_pidfd):
+                raise RuntimeError('Nginx companion settled while delegated FF owner remains alive')
             self.settled_record = bytes(packet)
         self._request(wire.STOP, (wire.SETTLED, wire.ERROR),
             wire.SETTLED_BYTES, timeout, validate)
@@ -368,6 +440,9 @@ class NginxCompanion:
         if self.master_pidfd >= 0:
             os.close(self.master_pidfd)
             self.master_pidfd = -1
+        if self.owner_pidfd >= 0:
+            os.close(self.owner_pidfd)
+            self.owner_pidfd = -1
         if self.supervisor_pidfd >= 0:
             os.close(self.supervisor_pidfd)
             self.supervisor_pidfd = -1

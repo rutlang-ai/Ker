@@ -173,7 +173,10 @@ def control_nginx_profile(args):
     fields = tuple(getattr(args, name, None) for name in
         ('control_nginx_binary', 'control_nginx_config', 'control_nginx_prefix'))
     supplied_env = getattr(args, 'control_nginx_env', None) or []
-    requested = any(value is not None for value in fields) or bool(supplied_env)
+    owner_ready_required = bool(getattr(args, 'control_nginx_owner_ready', False))
+    owner_module = getattr(args, 'control_nginx_owner_module', None)
+    requested = (any(value is not None for value in fields) or bool(supplied_env) or
+        owner_ready_required or owner_module is not None)
     if not requested:
         return None
     if (not args.broker_readiness or not args.runtime_service or args.rx_decision or
@@ -196,14 +199,31 @@ def control_nginx_profile(args):
     preload_names = [Path(item).name for item in env['LD_PRELOAD'].split(':') if item]
     if (not any(name.startswith('libfstack.so') for name in preload_names) or
             not any(name.startswith('libker-socket-preload.so') for name in preload_names) or
-            any('nginx-worker-shim' in name for name in preload_names)):
+            (any('nginx-worker-shim' in name for name in preload_names) and
+             not owner_ready_required)):
         raise ValueError('control-only Nginx requires the pinned F-Stack socket preload profile')
+    if owner_ready_required:
+        shim_names = [name for name in preload_names
+            if name == 'libker-fstack-nginx-worker-shim.so']
+        if len(shim_names) != 1:
+            raise ValueError('owner READY requires exactly one pinned Nginx worker shim')
+        if owner_module is None:
+            raise ValueError('owner READY requires the C22 owner-activation module')
+        module = owner_module.resolve(strict=True)
+        if not module.is_file():
+            raise ValueError('owner READY activation module is not a regular file')
+        import hashlib
+        env['KER_NGINX_OWNER_MODULE_PATH'] = str(module)
+        env['KER_NGINX_OWNER_MODULE_SHA256'] = hashlib.sha256(
+            module.read_bytes()).hexdigest()
+    elif getattr(args, 'control_nginx_owner_module', None) is not None:
+        raise ValueError('owner activation module requires owner READY mode')
     binary, config, prefix = (value.resolve(strict=True) for value in fields)
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError('control-only Nginx binary is not an executable file')
     if not config.is_file() or not prefix.is_dir():
         raise ValueError('control-only Nginx config/prefix does not exist')
-    return binary, config, prefix, env
+    return binary, config, prefix, env, owner_ready_required
 
 
 # CMake substitutes the relative library path for the installed launcher.
@@ -710,6 +730,10 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     parser.add_argument('--control-nginx-config', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--control-nginx-prefix', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--control-nginx-env', action='append', help=argparse.SUPPRESS)
+    parser.add_argument('--control-nginx-owner-ready', action='store_true',
+        help=argparse.SUPPRESS)
+    parser.add_argument('--control-nginx-owner-module', type=Path,
+        help=argparse.SUPPRESS)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     supplied = parser.parse_args(argv)
     values = dict(CONFIG_DEFAULTS)
@@ -1571,7 +1595,12 @@ def main():
                 run_control.bind_runtime(broker_readiness_channel, worker,
                     worker_pidfd, worker_path, app_executable_hash)
         if control_nginx is not None:
-            nginx_companion_server = nginx_companion.NginxCompanion(*control_nginx)
+            nginx_companion_binary, nginx_companion_config, nginx_companion_prefix, \
+                nginx_companion_env, nginx_owner_ready_required = control_nginx
+            nginx_companion_server = nginx_companion.NginxCompanion(
+                nginx_companion_binary, nginx_companion_config,
+                nginx_companion_prefix, nginx_companion_env,
+                owner_ready_required=nginx_owner_ready_required)
         for interface in args.interfaces:
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
@@ -1754,6 +1783,18 @@ def main():
                     if (broker_readiness_channel.poll_ready() and
                             nginx_companion_server is not None):
                         nginx_companion_server.start()
+                        if nginx_companion_server.owner_ready_required:
+                            print('KER_NGINX_OWNER_READY ' + json.dumps({
+                                'pid': nginx_companion_server.owner_pid,
+                                'start_ticks': nginx_companion_server.owner_start,
+                                'tid': nginx_companion_server.owner_tid,
+                                'role': nginx_companion_server.owner_role,
+                                'slot_device': nginx_companion_server.owner_slot_device,
+                                'slot_inode': nginx_companion_server.owner_slot_inode,
+                                'master_pid': nginx_companion_server.master_pid,
+                                'master_start_ticks': nginx_companion_server.master_start,
+                                'source': 'authenticated-C22-worker-READY'},
+                                sort_keys=True, separators=(',', ':')), flush=True)
                 if run_control is not None:
                     run_control.poll(request_relay_shutdown)
                     start_relay_shutdown()

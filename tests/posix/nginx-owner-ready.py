@@ -19,7 +19,8 @@ def cookie(endpoint):
     return struct.unpack('=Q', endpoint.getsockopt(socket.SOL_SOCKET, SO_COOKIE, 8))[0]
 
 
-def validate(data, ancillary, flags, *, pid, pidfd, slot_identity, endpoint_cookie, role):
+def validate(data, ancillary, flags, *, pid, pidfd, slot_identity, endpoint_cookie,
+             role, owner_tid=None):
     credentials = []
     invalid_ancillary = False
     for level, kind, body in ancillary:
@@ -35,15 +36,18 @@ def validate(data, ancillary, flags, *, pid, pidfd, slot_identity, endpoint_cook
             invalid_ancillary = True
     if flags or len(data) != WIRE.size or invalid_ancillary or credentials != [(pid, os.getuid(), os.getgid())]:
         raise RuntimeError('malformed or unauthenticated worker READY')
-    magic, version, length, actual_role, reserved, device, inode, ticks, worker, reserved2, actual_cookie, reserved3 = WIRE.unpack(data)
-    if ((magic, version, length, actual_role, reserved, device, inode, worker, reserved2, actual_cookie, reserved3) !=
-            (MAGIC, 1, WIRE.size, role, 0, slot_identity.st_dev, slot_identity.st_ino, pid, 0, endpoint_cookie, 0)):
+    magic, version, length, actual_role, reserved, device, inode, ticks, worker, actual_tid, actual_cookie, reserved3 = WIRE.unpack(data)
+    if ((magic, version, length, actual_role, reserved, device, inode, worker, actual_cookie, reserved3) !=
+            (MAGIC, 2, WIRE.size, role, 0, slot_identity.st_dev, slot_identity.st_ino, pid, endpoint_cookie, 0) or
+            actual_tid <= 0 or (owner_tid is not None and actual_tid != owner_tid)):
         raise RuntimeError('worker READY identity/slot/frame mismatch')
     if select.select([pidfd], [], [], 0)[0] or start_ticks(pid) != ticks:
         raise RuntimeError('worker READY refers to an exited or replaced worker')
     if select.select([pidfd], [], [], 0)[0]:
         raise RuntimeError('worker exited during READY validation')
-    return {'pid': pid, 'start_time': ticks, 'role': role,
+    if not Path(f'/proc/{pid}/task/{actual_tid}').exists():
+        raise RuntimeError('worker READY owner thread is not live')
+    return {'pid': pid, 'start_time': ticks, 'owner_tid': actual_tid, 'role': role,
         'slot_device': device, 'slot_inode': inode, 'endpoint_cookie': actual_cookie}
 
 

@@ -122,17 +122,20 @@ def run(args):
         ini.write_text(f'[ker_socket_broker]\nversion=1\npath={rpc_path}\n\n'
             '[dpdk]\ngraceful_reload=0\n', encoding='utf-8')
         config = prefix / 'nginx.conf'
-        config.write_text(f'''daemon off;
+        module_config = (f'load_module {args.owner_activation_module.resolve()};\n'
+            if args.owner_activation_module is not None else '')
+        ready_environment = ('env KER_FSTACK_NGINX_INI;\n'
+            if args.owner_activation_module is not None else '')
+        config.write_text(f'''{module_config}daemon off;
 master_process on;
 worker_processes 1;
-user root;
 fstack_conf "fstack.ini";
 timer_resolution 1ms;
 pid {logs / 'nginx.pid'};
 error_log {logs / 'error.log'} notice;
 env LD_PRELOAD;
 env KER_SOCKET_BROKER_PATH;
-events {{ worker_connections 256; use epoll; }}
+{ready_environment}events {{ worker_connections 256; use epoll; }}
 http {{
     access_log off;
     sendfile off;
@@ -157,6 +160,12 @@ http {{
             f'KER_SOCKET_BROKER_PATH={rpc_path}',
             f'KER_FSTACK_NGINX_INI={ini}',
         )
+        if args.owner_activation_module is not None:
+            require(args.worker_shim is not None,
+                'owner READY integration requires the C22 worker activation shim')
+            control_env = (f'LD_PRELOAD={args.worker_shim.resolve()}:'
+                f'{args.fstack_runtime.resolve()}:{args.preload_library.resolve()}',
+                f'KER_SOCKET_BROKER_PATH={rpc_path}', f'KER_FSTACK_NGINX_INI={ini}')
         command = [sys.executable, str(args.launcher.resolve()),
             '--library', str(args.library.resolve()),
             '--io-worker', str(args.worker.resolve()),
@@ -165,6 +174,9 @@ http {{
             '--control-nginx-binary', str(args.nginx.resolve()),
             '--control-nginx-config', str(config),
             '--control-nginx-prefix', str(prefix), '--stats', str(stats_path)]
+        if args.owner_activation_module is not None:
+            command += ['--control-nginx-owner-ready',
+                '--control-nginx-owner-module', str(args.owner_activation_module.resolve())]
         for item in control_env:
             command += ['--control-nginx-env', item]
         command += ['--', str(args.broker.resolve()), str(rpc_path)]
@@ -218,10 +230,32 @@ http {{
                 # Exercise the launcher signal path: it must consume and clear
                 # the pending flag, relay HUP through the pinned companion,
                 # and leave the existing ker-run reactor available for STOP.
-                os.kill(supervisor.pid, signal.SIGHUP)
-                replacement = wait_worker(master, worker, 30)
-                worker_pidfds.append(os.pidfd_open(replacement, 0))
-                wait_http()
+                if args.owner_activation_module is None:
+                    os.kill(supervisor.pid, signal.SIGHUP)
+                    replacement = wait_worker(master, worker, 30)
+                    worker_pidfds.append(os.pidfd_open(replacement, 0))
+                    wait_http()
+                else:
+                    ready_lines = []
+                    ready_deadline = time.monotonic() + 5
+                    while time.monotonic() < ready_deadline:
+                        if supervisor.poll() is not None:
+                            break
+                        output.flush()
+                        ready_lines = [line for line in output_path.read_text(
+                            errors='replace').splitlines()
+                            if line.startswith('KER_NGINX_OWNER_READY ')]
+                        if ready_lines:
+                            break
+                        time.sleep(0.01)
+                    require(len(ready_lines) == 1,
+                        'ker-run did not publish exactly one authenticated owner READY record')
+                    ready = json.loads(ready_lines[0].split(' ', 1)[1])
+                    require(ready.get('pid') == worker and ready.get('master_pid') == master and
+                        ready.get('tid', 0) > 0 and ready.get('role') == 0 and
+                        ready.get('slot_device', 0) > 0 and ready.get('slot_inode', 0) > 0 and
+                        ready.get('source') == 'authenticated-C22-worker-READY',
+                        f'authenticated READY did not identify the actual ff_run worker: {ready!r}')
 
                 if args.break_helper:
                     helper = None
@@ -300,14 +334,88 @@ http {{
                         'PASS; harness forcibly terminated retained processes (not normal shutdown)')
                     return
 
+                if args.owner_death:
+                    helper = next((pid for pid in child_pids(supervisor.pid)
+                        if 'ker-nginx-companion' in process_command(pid)), None)
+                    require(helper is not None, 'could not identify the pinned companion helper')
+                    helper_pidfd = os.pidfd_open(helper, 0)
+                    pidfds.append(helper_pidfd)
+                    io_worker = app_pid = None
+                    for pid in child_pids(supervisor.pid):
+                        command_line = process_command(pid)
+                        if str(args.worker.resolve()) in command_line:
+                            io_worker = pid
+                        if str(args.broker.resolve()) in command_line:
+                            app_pid = pid
+                    require(io_worker is not None and app_pid is not None,
+                        'could not identify live native broker children for owner-death control')
+                    io_worker_pidfd = os.pidfd_open(io_worker, 0)
+                    app_pidfd = os.pidfd_open(app_pid, 0)
+                    pidfds.extend((io_worker_pidfd, app_pidfd))
+                    signal.pidfd_send_signal(worker_pidfds[-1], signal.SIGKILL)
+                    deadline = time.monotonic() + 8
+                    while time.monotonic() < deadline:
+                        output.flush()
+                        if 'companion shutdown UNRESOLVED' in output_path.read_text(
+                                errors='replace'):
+                            break
+                        time.sleep(0.02)
+                    else:
+                        raise RuntimeError('delegated owner death did not trigger containment failure')
+                    require(pidfd_dead(worker_pidfds[-1], 1) and
+                        pidfd_dead(master_pidfd, 1) and pidfd_dead(helper_pidfd, 1),
+                        'owner-death containment did not settle the pinned Nginx subtree')
+                    signal_number = signal.SIGTERM
+                    os.kill(supervisor.pid, signal_number)
+                    time.sleep(0.25)
+                    require(supervisor.poll() is None and
+                        not pidfd_dead(io_worker_pidfd) and not pidfd_dead(app_pidfd),
+                        'ker-run released native resources after owner-death containment failure')
+                    output.flush()
+                    retained_log = output_path.read_text(errors='replace')
+                    require('BROKER_DONE' not in retained_log and
+                        'KER_NATIVE_DONE' not in retained_log and
+                        'worker_exit_code' not in retained_log and not stats_path.exists(),
+                        'native cleanup completed despite unresolved owner-death containment')
+                    os.kill(supervisor.pid, signal.SIGKILL)
+                    supervisor.wait(timeout=5)
+                    for fd in (io_worker_pidfd, app_pidfd):
+                        try:
+                            signal.pidfd_send_signal(fd, signal.SIGTERM)
+                        except OSError:
+                            pass
+                    time.sleep(0.2)
+                    for fd in (io_worker_pidfd, app_pidfd):
+                        if not pidfd_dead(fd):
+                            try:
+                                signal.pidfd_send_signal(fd, signal.SIGKILL)
+                            except OSError:
+                                pass
+                    deadline = time.monotonic() + 3
+                    while time.monotonic() < deadline and any(
+                            not pidfd_dead(fd) for fd in (io_worker_pidfd, app_pidfd)):
+                        time.sleep(0.02)
+                    require(all(pidfd_dead(fd) for fd in
+                        (worker_pidfds[-1], master_pidfd, helper_pidfd,
+                         io_worker_pidfd, app_pidfd)),
+                        'owner-death fixture left a test-owned process alive')
+                    scenario_cleanup_complete = True
+                    print('C35 delegated owner idle-death containment: PASS; '
+                        'helper detected pidfd death, settled Nginx, retained native resources')
+                    return
+
                 signal_number = signal.SIGINT if args.shutdown_signal == 'int' else signal.SIGTERM
                 os.kill(supervisor.pid, signal_number)
                 supervisor.wait(timeout=35)
                 output.flush()
                 log = output_path.read_text(errors='replace')
                 nginx_log = (logs / 'error.log').read_text(errors='replace')
-                require('signal 1 (SIGHUP) received' in nginx_log,
-                    'actual pinned Nginx did not record the ker-run reload signal')
+                if args.owner_activation_module is None:
+                    require('signal 1 (SIGHUP) received' in nginx_log,
+                        'actual pinned Nginx did not record the ker-run reload signal')
+                else:
+                    require('signal 1 (SIGHUP) received' not in nginx_log,
+                        'owner READY opt-in unexpectedly delivered an unauthenticated reload')
                 require(supervisor.returncode == 128 + signal_number,
                     f'ker-run exit status after orderly companion STOP: '
                     f'{supervisor.returncode}; {log}')
@@ -378,7 +486,10 @@ http {{
                     if (archive / 'nginx-error.log').exists():
                         print((archive / 'nginx-error.log').read_text(errors='replace')[-12000:],
                             file=sys.stderr)
-        print('C35 real pinned Nginx HTTP/HUP/worker-replacement/companion-SETTLED/native-DONE: PASS')
+        if args.owner_activation_module is None:
+            print('C35 real pinned Nginx HTTP/HUP/worker-replacement/companion-SETTLED/native-DONE: PASS')
+        else:
+            print('C35 real pinned Nginx HTTP/C22 owner READY/companion-SETTLED/native-DONE: PASS')
 
 
 def main():
@@ -394,18 +505,31 @@ def main():
     parser.add_argument('--inside', action='store_true')
     parser.add_argument('--shutdown-signal', choices=('term', 'int'), default='term')
     parser.add_argument('--break-helper', action='store_true')
+    parser.add_argument('--owner-activation-module', type=Path)
+    parser.add_argument('--worker-shim', type=Path)
+    parser.add_argument('--owner-death', action='store_true')
     args = parser.parse_args()
     if not args.inside:
-        command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
-            '--inside']
+        command = ['unshare', '-Un', '--keep-caps',
+            f'--map-user={os.getuid()}', f'--map-group={os.getgid()}',
+            sys.executable, str(Path(__file__).resolve()), '--inside']
         for name in ('launcher', 'library', 'worker', 'broker', 'nginx',
                 'fstack-runtime', 'preload-library', 'dpdk-plugin-dir'):
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
+        if args.owner_activation_module is not None:
+            command += ['--owner-activation-module',
+                str(args.owner_activation_module.resolve())]
+        if args.owner_death:
+            command.append('--owner-death')
+        if args.worker_shim is not None:
+            command += ['--worker-shim', str(args.worker_shim.resolve())]
         command += ['--shutdown-signal', args.shutdown_signal]
         if args.break_helper:
             command.append('--break-helper')
         subprocess.run(command, check=True)
         return 0
+    if args.owner_death and args.owner_activation_module is None:
+        raise ValueError('--owner-death requires the authenticated owner READY profile')
     set_up_network()
     run(args)
     return 0

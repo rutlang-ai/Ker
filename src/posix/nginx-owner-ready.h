@@ -7,13 +7,13 @@
 #include <sys/types.h>
 
 #define KER_NGINX_OWNER_READY_MAGIC UINT32_C(0x4b4e5244)
-#define KER_NGINX_OWNER_READY_VERSION 1
+#define KER_NGINX_OWNER_READY_VERSION 2
 struct ker_nginx_owner_ready_record {
     uint32_t magic;
     uint16_t version, length;
     uint32_t role, reserved;
     uint64_t slot_device, slot_inode, worker_start_time;
-    uint32_t worker_pid, reserved2;
+    uint32_t worker_pid, owner_tid;
     uint64_t endpoint_cookie, reserved3;
 };
 _Static_assert(sizeof(struct ker_nginx_owner_ready_record) == 64,
@@ -21,8 +21,8 @@ _Static_assert(sizeof(struct ker_nginx_owner_ready_record) == 64,
 
 /* Host-only, private pinned-caller transport. Init runs in the master; bind
  * runs in its worker after the authenticated slot claim. Send is called only
- * once the worker's FF event loop is entered. Success is idempotent; transient
- * pre-transfer errors yield EAGAIN. Zero-initialize the sender before init.
+ * from the worker's FF event loop and records that owner TID. Success is
+ * idempotent; transient pre-transfer errors yield EAGAIN. Zero-initialize the sender before init.
  * Successful init takes ownership of this process copy of fd; failures leave
  * it with the caller. Close checks identity before touching fds. */
 struct ker_nginx_owner_ready_sender {

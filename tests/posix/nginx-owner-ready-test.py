@@ -21,9 +21,10 @@ class Receiver(unittest.TestCase):
         self.slot, self.slot_write = os.pipe()
         self.pidfd = os.pidfd_open(os.getpid())
         self.expected = dict(pid=os.getpid(), pidfd=self.pidfd,
-            slot_identity=os.fstat(self.slot_write), endpoint_cookie=123, role=1)
-        self.fields = [ready.MAGIC, 1, 64, 1, 0, self.expected['slot_identity'].st_dev,
-            self.expected['slot_identity'].st_ino, ready.start_ticks(os.getpid()), os.getpid(), 0, 123, 0]
+            slot_identity=os.fstat(self.slot_write), endpoint_cookie=123, role=1,
+            owner_tid=os.getpid())
+        self.fields = [ready.MAGIC, 2, 64, 1, 0, self.expected['slot_identity'].st_dev,
+            self.expected['slot_identity'].st_ino, ready.start_ticks(os.getpid()), os.getpid(), os.getpid(), 123, 0]
         self.credentials = [(socket.SOL_SOCKET, socket.SCM_CREDENTIALS,
             struct.pack('=3i', os.getpid(), os.getuid(), os.getgid()))]
 
@@ -110,7 +111,8 @@ class Transport(unittest.TestCase):
                     proc.stdin.write(b'1'); proc.stdin.flush()
                     if mode == 'valid':
                         report = ready.receive(peer, timeout=5, pid=pid, pidfd=pidfd,
-                            slot_identity=os.fstat(writer), endpoint_cookie=cookie, role=1)
+                            slot_identity=os.fstat(writer), endpoint_cookie=cookie, role=1,
+                            owner_tid=pid)
                         self.assertEqual(report['pid'], pid)
                         self.assertEqual(proc.stdout.readline(), b'SENT\n')
                         self.assertEqual(peer.recv(64), b'')  # Exactly one packet, then EOF.
