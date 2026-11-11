@@ -11,6 +11,7 @@ import shlex
 import signal
 import secrets
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,50 @@ BODY = b'ker-c35-companion-http\n'
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def validate_source_classifier_frame(record, owner):
+    frame = bytes.fromhex(record['hex'])
+    af = int(record['af'])
+    require(int(record['pid']) == owner['pid'] and int(record['tid']) == owner['tid'],
+        'source-family frame was not generated on the authenticated owner thread')
+    require(int(record['bytes']) == len(frame) and len(frame) >= 54,
+        'source-family frame length metadata is invalid')
+
+    def checksum_ok(data):
+        if len(data) & 1:
+            data += b'\0'
+        total = sum((data[index] << 8) | data[index + 1]
+            for index in range(0, len(data), 2))
+        while total >> 16:
+            total = (total & 0xffff) + (total >> 16)
+        return total == 0xffff
+
+    if af == 4:
+        require(frame[12:14] == b'\x08\x00' and frame[14] == 0x45 and
+            struct.unpack_from('!H', frame, 16)[0] == len(frame) - 14 and
+            frame[23] == 6 and checksum_ok(frame[14:34]),
+            'source IPv4 fixture is not a complete checksummed IPv4/TCP frame')
+        tcp_offset = 34
+        pseudo = frame[26:34] + b'\0\x06' + struct.pack('!H', len(frame) - tcp_offset)
+        expected_source_port = 43127
+    elif af == 6:
+        require(frame[12:14] == b'\x86\xdd' and frame[14] >> 4 == 6 and
+            struct.unpack_from('!H', frame, 18)[0] == len(frame) - 54 and
+            frame[20] == 6,
+            'source IPv6 fixture does not have a complete TCP payload')
+        tcp_offset = 54
+        pseudo = (frame[22:54] + struct.pack('!I', len(frame) - tcp_offset) +
+            b'\0\0\0\x06')
+        expected_source_port = 43128
+    else:
+        raise RuntimeError(f'unsupported source frame family {af}')
+    require(frame[tcp_offset + 12] >> 4 == 5 and
+        struct.unpack_from('!HH', frame, tcp_offset) ==
+            (expected_source_port, 8080) and
+        checksum_ok(pseudo + frame[tcp_offset:]),
+        'source TCP fixture tuple, header, or checksum is invalid')
+    return frame
 
 
 def set_up_network():
@@ -120,6 +165,13 @@ def run(args):
         stop_marker = root / 'pending-stop.txt'
         owner_hold_release = root / 'owner-callback-release'
         probe_token = secrets.token_hex(12)
+        source_probe_port = 0
+        probe_source_port = 0
+        if args.rx_owner_relay_source_flowmap:
+            port_reserver = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            port_reserver.bind(('127.0.0.1', 0))
+            source_probe_port = port_reserver.getsockname()[1]
+            port_reserver.close()
         prefix = root / 'nginx'
         logs = prefix / 'logs'
         html = prefix / 'html'
@@ -139,6 +191,8 @@ def run(args):
                 'env KER_NGINX_RX_OWNER_RELAY_SUPERVISOR_PID;\n'
                 'env KER_NGINX_RX_OWNER_RELAY_NONCE;\n'
                 'env KER_NGINX_RX_OWNER_RELAY_EPOCH;\n')
+        if args.rx_owner_relay_source_flowmap:
+            ready_environment += 'env KER_NGINX_SOURCE_FLOWMAP_TEST;\n'
         config.write_text(f'''{module_config}daemon off;
 master_process on;
 worker_processes 1;
@@ -192,6 +246,8 @@ http {{
                 '--control-nginx-owner-module', str(args.owner_activation_module.resolve())]
         if args.rx_owner_relay:
             command += ['--rx-decision', '--control-nginx-rx-relay']
+        if args.rx_owner_relay_source_flowmap:
+            command += ['--control-nginx-env', 'KER_NGINX_SOURCE_FLOWMAP_TEST=1']
         for item in control_env:
             command += ['--control-nginx-env', item]
         relay_application = args.rx_owner_relay_app if args.rx_owner_relay else args.broker
@@ -203,6 +259,9 @@ http {{
         launch_env = os.environ.copy()
         if args.rx_owner_relay:
             launch_env['KER_RX_OWNER_RELAY_PROBE_TOKEN'] = probe_token
+        if args.rx_owner_relay_source_flowmap:
+            launch_env['KER_RX_OWNER_RELAY_SOURCE_FLOWMAP_TEST'] = '1'
+            launch_env['KER_RX_OWNER_RELAY_SOURCE_FLOWMAP_PORT'] = str(source_probe_port)
         if args.rx_owner_relay_stop_pending:
             launch_env['KER_RX_OWNER_RELAY_TEST_STOP_MARKER'] = str(stop_marker)
             launch_env['KER_RX_OWNER_RELAY_TEST_STOP_RELEASE'] = str(owner_hold_release)
@@ -253,12 +312,13 @@ http {{
                     if len(pidfds) >= 3:
                         break
                     time.sleep(0.02)
-                try:
-                    wait_http()
-                except BaseException as error:
-                    output.flush()
-                    raise RuntimeError(f'{error}; ker-run output: '
-                        f'{output_path.read_text(errors="replace")}') from error
+                if not args.rx_owner_relay_source_flowmap:
+                    try:
+                        wait_http()
+                    except BaseException as error:
+                        output.flush()
+                        raise RuntimeError(f'{error}; ker-run output: '
+                            f'{output_path.read_text(errors="replace")}') from error
 
                 # Exercise the launcher signal path: it must consume and clear
                 # the pending flag, relay HUP through the pinned companion,
@@ -301,9 +361,18 @@ http {{
                             ('pid', 'start_ticks', 'tid', 'role', 'slot_device',
                              'slot_inode', 'cookie')),
                             f'supervisor owner AUTH and C22 READY differ: {expected_auth!r} vs {ready!r}')
-                        auth_ack_lines = [line for line in output_path.read_text(
-                            errors='replace').splitlines()
-                            if line.startswith('RX_OWNER_RELAY_AUTH_ACK ')]
+                        auth_ack_lines = []
+                        auth_ack_deadline = time.monotonic() + 5
+                        while time.monotonic() < auth_ack_deadline:
+                            output.flush()
+                            auth_ack_lines = [line for line in output_path.read_text(
+                                errors='replace').splitlines()
+                                if line.startswith('RX_OWNER_RELAY_AUTH_ACK ')]
+                            if auth_ack_lines:
+                                break
+                            require(supervisor.poll() is None,
+                                'relay supervisor exited before authenticated owner ACK')
+                            time.sleep(0.01)
                         require(len(auth_ack_lines) == 1,
                             'relay app did not report exactly one validated owner AUTH_ACK')
                         auth_ack = dict(item.split('=', 1) for item in
@@ -312,6 +381,38 @@ http {{
                             int(auth_ack['tid']) == ready['tid'] and
                             int(auth_ack['start']) == ready['start_ticks'],
                             f'relay AUTH_ACK identity disagrees with C22 READY: {auth_ack!r} vs {ready!r}')
+                        if args.rx_owner_relay_source_flowmap:
+                            probe_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            probe_socket.settimeout(5)
+                            probe_socket.bind(('0.0.0.0', source_probe_port))
+                            probe_socket.connect(('198.18.0.2', 80))
+                            probe_source_port = probe_socket.getsockname()[1]
+                            witness_deadline = time.monotonic() + 8
+                            witness_lines = []
+                            while time.monotonic() < witness_deadline:
+                                output.flush()
+                                witness_lines = [line for line in output_path.read_text(
+                                    errors='replace').splitlines()
+                                    if line.startswith('RX_OWNER_RELAY_PROBE_FRAME ')]
+                                nginx_log = (logs / 'error.log').read_text(errors='replace')
+                                if witness_lines and 'SOURCE_FLOWMAP_CYCLE ' in nginx_log:
+                                    break
+                                require(supervisor.poll() is None,
+                                    'source-flowmap relay process exited before its witness')
+                                time.sleep(0.01)
+                            require(len(witness_lines) == 1,
+                                'source-mode probe did not produce one relayed TCP frame witness')
+                            witness = dict(item.split('=', 1) for item in
+                                witness_lines[0].split()[1:])
+                            witness_frame = bytes.fromhex(witness['frame_hex'])
+                            require(int(witness['bytes']) == len(witness_frame) and
+                                int(witness['packet_id']) > 0 and
+                                len(witness_frame) >= 54 and
+                                int(witness_frame[34]) * 256 + witness_frame[35] ==
+                                    source_probe_port and
+                                bool(witness_frame[47] & 0x10) and
+                                not bool(witness_frame[47] & 0x02),
+                                'source-mode witness was not the unique IPv4 client ACK flow')
                         # This distinct request is correlated with its exact TCP frame
                         # and source port in the owner relay fixture.
                         if args.rx_owner_relay_stop_pending:
@@ -441,8 +542,9 @@ http {{
                                  result.get('completed'), result.get('broker'), result.get('run'),
                                  json.dumps(stats, sort_keys=True) if stats is not None else 'not-written'))
                             return
-                        probe_response, probe_source_port = http_get(
-                            f'/?probe={probe_token}', return_source_port=True)
+                        if not args.rx_owner_relay_source_flowmap:
+                            probe_response, probe_source_port = http_get(
+                                f'/?probe={probe_token}', return_source_port=True)
 
                 if args.break_helper:
                     helper = None
@@ -594,6 +696,8 @@ http {{
                 signal_number = signal.SIGINT if args.shutdown_signal == 'int' else signal.SIGTERM
                 os.kill(supervisor.pid, signal_number)
                 supervisor.wait(timeout=35)
+                if args.rx_owner_relay_source_flowmap:
+                    probe_socket.close()
                 output.flush()
                 log = output_path.read_text(errors='replace')
                 nginx_log = (logs / 'error.log').read_text(errors='replace')
@@ -619,11 +723,19 @@ http {{
                     require(result_line and callbacks > 0 and callbacks == deferred == completed and
                         result.get('broker') == '0' and result.get('run') == '0',
                         f'C31 owner relay did not report settled frame results: {log}')
-                    require(int(result.get('probe_witnesses', '0')) == 1 and
-                        int(result.get('probe_packet_id', '0')) > 0 and
-                        int(result.get('probe_source_port', '0')) == probe_source_port and
-                        int(result.get('probe_frame_hash', '0')) > 0,
-                        f'unique post-READY HTTP request did not map to one exact relayed frame: {result!r}')
+                    if args.rx_owner_relay_source_flowmap:
+                        require(int(result.get('probe_witnesses', '0')) == 1 and
+                            int(result.get('probe_packet_id', '0')) > 0 and
+                            int(result.get('probe_source_port', '0')) == source_probe_port and
+                            int(result.get('probe_frame_hash', '0')) > 0 and
+                            int(result.get('probe_dispatcher_result', '0')) == -3,
+                            f'source classifier did not return PEER for the unique frame: {result!r}')
+                    else:
+                        require(int(result.get('probe_witnesses', '0')) == 1 and
+                            int(result.get('probe_packet_id', '0')) > 0 and
+                            int(result.get('probe_source_port', '0')) == probe_source_port and
+                            int(result.get('probe_frame_hash', '0')) > 0,
+                            f'unique post-READY HTTP request did not map to one exact relayed frame: {result!r}')
                     probe_frames = [line for line in log.splitlines()
                         if line.startswith('RX_OWNER_RELAY_PROBE_FRAME ')]
                     require(len(probe_frames) == 1,
@@ -633,9 +745,19 @@ http {{
                     probe_frame = bytes.fromhex(frame_record['frame_hex'])
                     require(int(frame_record['packet_id']) ==
                             int(result['probe_packet_id']) and
-                        int(frame_record['bytes']) == len(probe_frame) and
-                        f'GET /?probe={probe_token} HTTP/1.1'.encode('ascii') in probe_frame,
-                        'full-frame witness does not contain the unique post-READY HTTP request')
+                        int(frame_record['bytes']) == len(probe_frame),
+                        'full-frame witness metadata does not match the completed packet lease')
+                    if args.rx_owner_relay_source_flowmap:
+                        require(len(probe_frame) >= 54 and
+                            int(probe_frame[34]) * 256 + probe_frame[35] ==
+                                source_probe_port and
+                            bool(probe_frame[47] & 0x10) and
+                            not bool(probe_frame[47] & 0x02),
+                            'source-flowmap witness was not the unique client TCP ACK flow')
+                    else:
+                        require(f'GET /?probe={probe_token} HTTP/1.1'.encode('ascii') in
+                            probe_frame,
+                            'full-frame witness does not contain the unique post-READY HTTP request')
                     probe_frame_sha256 = hashlib.sha256(probe_frame).hexdigest()
                     require(len(probe_frame_sha256) == 64,
                         'full-frame witness SHA-256 encoding is invalid')
@@ -652,9 +774,15 @@ http {{
                     local = stats.get('rx_decision_local', -1)
                     drops = stats.get('rx_decision_drops', -1)
                     cancelled = stats.get('rx_decision_local_cancelled', -1)
-                    require(leases == local + drops and forwarded == local and
-                        local == completed and drops == startup_drops and cancelled == 0 and
-                        stats.get('rx_decision_settled') is True,
+                    if args.rx_owner_relay_source_flowmap:
+                        require(leases == local + drops and forwarded == local and
+                            drops > startup_drops and drops >= 1 and cancelled == 0 and
+                            stats.get('rx_decision_settled') is True,
+                            f'PEER did not map to an explicit C31 DROP: {stats!r}')
+                    else:
+                        require(leases == local + drops and forwarded == local and
+                            local == completed and drops == startup_drops and cancelled == 0 and
+                            stats.get('rx_decision_settled') is True,
                         f'C31 disposition counters do not reconcile with relay completions: {stats!r}')
                 require(not Path(f'/proc/{master}').exists(),
                     'Nginx master remained alive after companion SETTLED')
@@ -674,8 +802,16 @@ http {{
                             'wire': repository / 'src/posix/rx-owner-relay-wire.h',
                             'ker_run': Path(args.launcher),
                             'test_fixture': repository / 'tests/posix/socket-broker-rx-owner-relay-fixture.c',
+                            'candidate_admission': repository / 'src/posix/nginx-candidate-admission.c',
+                            'source_flowmap_fixture': repository / 'src/posix/nginx-source-flowmap-fixture.c',
+                            'source_flowmap_wrapper': repository / 'src/posix/nginx-original-flowmap-source.c',
+                            'native_linux_cmake': repository / 'cmake/NativeLinux.cmake',
+                            'nginx_companion_cmake': repository / 'cmake/NginxCompanionTests.cmake',
                             'tap': Path(__file__).resolve(),
                         }
+                        if args.source_nginx_module_source:
+                            source_paths['pinned_nginx_flowmap_module'] = \
+                                args.source_nginx_module_source.resolve()
                         binary_paths = {
                             'app': args.rx_owner_relay_app,
                             'worker': args.worker,
@@ -709,6 +845,45 @@ http {{
                                 'sha256': probe_frame_sha256,
                             },
                         }
+                        if args.rx_owner_relay_source_flowmap:
+                            cycle_lines = [line for line in nginx_log.splitlines()
+                                if line.startswith('SOURCE_FLOWMAP_CYCLE ')]
+                            require(len(cycle_lines) == 1,
+                                'source callback did not emit exactly one authenticated classifier cycle')
+                            cycle_fields = dict(item.split('=', 1) for item in
+                                cycle_lines[0].split()[1:])
+                            require(int(cycle_fields['pid']) == ready['pid'] and
+                                int(cycle_fields['tid']) == ready['tid'] and
+                                cycle_fields.get('owner') == 'authenticated',
+                                'source classifier cycle did not run on the authenticated READY owner')
+                            frame_lines = [line for line in nginx_log.splitlines()
+                                if line.startswith('SOURCE_FLOWMAP_FRAME ')]
+                            require(len(frame_lines) == 2,
+                                'source classifier did not preserve both IPv4/IPv6 fixture frames')
+                            source_frames = []
+                            for line in frame_lines:
+                                frame_record = dict(item.split('=', 1) for item in
+                                    line.split()[1:])
+                                frame = validate_source_classifier_frame(frame_record, ready)
+                                source_frames.append({
+                                    'family': int(frame_record['af']),
+                                    'bytes': len(frame),
+                                    'hex': frame.hex(),
+                                    'sha256': hashlib.sha256(frame).hexdigest(),
+                                })
+                            require({item['family'] for item in source_frames} == {4, 6},
+                                'source classifier cycle lacks one fixture frame per family')
+                            receipt['source_flowmap_cycle'] = {
+                                'log': cycle_lines[0],
+                                'owner_pid': int(cycle_fields['pid']),
+                                'owner_tid': int(cycle_fields['tid']),
+                                'families': {'ipv4': cycle_fields['v4'],
+                                    'ipv6': cycle_fields['v6']},
+                                'input_frames': source_frames,
+                                'classification_result': int(result['probe_dispatcher_result']),
+                                'relay_disposition': 'C31 DROP for FF_DISPATCH_PEER',
+                                'claim_boundary': 'fixture-only unprefixed source map; no broker SYN admission',
+                            }
                         receipt_path = Path(receipt_path)
                         receipt_path.parent.mkdir(parents=True, exist_ok=True)
                         receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n',
@@ -786,6 +961,7 @@ def main():
     parser.add_argument('--broker', type=Path, required=True)
     parser.add_argument('--rx-owner-relay-app', type=Path)
     parser.add_argument('--nginx', type=Path, required=True)
+    parser.add_argument('--source-nginx-module-source', type=Path)
     parser.add_argument('--fstack-runtime', type=Path, required=True)
     parser.add_argument('--preload-library', type=Path, required=True)
     parser.add_argument('--dpdk-plugin-dir', type=Path, required=True)
@@ -796,6 +972,7 @@ def main():
     parser.add_argument('--worker-shim', type=Path)
     parser.add_argument('--owner-death', action='store_true')
     parser.add_argument('--rx-owner-relay', action='store_true')
+    parser.add_argument('--rx-owner-relay-source-flowmap', action='store_true')
     parser.add_argument('--rx-owner-relay-stop-pending', action='store_true')
     args = parser.parse_args()
     if not args.inside:
@@ -809,6 +986,8 @@ def main():
             command += ['--rx-owner-relay-app', str(args.rx_owner_relay_app.resolve())]
         if args.rx_owner_relay:
             command.append('--rx-owner-relay')
+        if args.rx_owner_relay_source_flowmap:
+            command.append('--rx-owner-relay-source-flowmap')
         if args.rx_owner_relay_stop_pending:
             command.append('--rx-owner-relay-stop-pending')
         if args.owner_activation_module is not None:
@@ -830,6 +1009,8 @@ def main():
         raise ValueError('--rx-owner-relay requires the alias module, worker shim and combined app')
     if args.rx_owner_relay_stop_pending and not args.rx_owner_relay:
         raise ValueError('--rx-owner-relay-stop-pending requires --rx-owner-relay')
+    if args.rx_owner_relay_source_flowmap and not args.rx_owner_relay:
+        raise ValueError('--rx-owner-relay-source-flowmap requires --rx-owner-relay')
     set_up_network()
     run(args)
     return 0
