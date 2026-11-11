@@ -66,6 +66,14 @@ target_link_options(ker-io-worker-rx-decision-test PRIVATE -Wl,--disable-new-dta
 set_target_properties(ker-io-worker-rx-decision-test PROPERTIES
     BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
 
+foreach(authority_case before-lease result-after-data)
+    add_test(NAME rx-decision-producer-authority-${authority_case}
+        COMMAND "$<TARGET_FILE:ker-io-worker-rx-decision-test>"
+            --rx-decision-authority-test "${authority_case}")
+    set_tests_properties(rx-decision-producer-authority-${authority_case} PROPERTIES
+        TIMEOUT 5 LABELS "rx-decision;producer;authority;lifecycle")
+endforeach()
+
 list(GET DPDK_LIBRARY_DIRS 0 ker_rx_decision_dpdk_plugin_dir)
 add_test(NAME native-rx-decision-forward-tap
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/rx-decision-forward-tap.py"

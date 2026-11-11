@@ -936,3 +936,20 @@ recovery must still return `EOPNOTSUPP`. Existing prepared-death tests require
 quarantine and refuse the new API. This extends native recovery prerequisites,
 not the original same-master HUP/USR2 FSM or an original shell fault case.
 Inventory remains 362 scenario-adapted, 0 partial, 1 blocked.
+
+## Source graceful-startup boundary
+
+The pinned-source `native-nginx-fstack-source-graceful-failclosed` test now
+starts the unchanged Nginx master in private user, mount, PID, and network
+namespaces. It proves that the source-created inherited reload block reaches
+the Ker runtime preflight and that the current broker runtime rejects it with
+`ENOTSUP` before opening a broker owner session. The bounded trace records the
+source block's validated generation/epoch fields and the absent dispatcher and
+packet-owner bindings. This is an observation of the source symbol and the
+existing reload helpers; it does not prove their pointers are identical.
+
+This gate is a safety prerequisite only. Graceful reload remains unsupported:
+the Ker runtime has no authenticated generation packet-owner or packet
+dispatcher binding, and no source FSM, handover, drain, rollback, or repeated
+generation qualification is claimed. Graceful-off source lifecycle remains
+covered by `native-nginx-fstack-runtime-lifecycle`.

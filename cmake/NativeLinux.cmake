@@ -680,7 +680,7 @@ if(BUILD_TESTING)
     target_compile_features(ker-rx-decision-consumer-test PRIVATE c_std_11)
     target_compile_options(ker-rx-decision-consumer-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-rx-decision-consumer-test PRIVATE Threads::Threads)
-    foreach(case positive wrong-role bad-sequence expired bad-bounds bad-flags replay wrong-thread no-handler)
+    foreach(case positive defer shutdown-pending late-complete late-settle worker-death-defer supervisor-death-defer wrong-role bad-sequence expired bad-bounds bad-flags replay wrong-thread no-handler)
         add_test(NAME rx-decision-consumer-${case}
             COMMAND "$<TARGET_FILE:ker-rx-decision-consumer-test>" "${case}")
         set_tests_properties(rx-decision-consumer-${case} PROPERTIES
@@ -1293,6 +1293,19 @@ if(BUILD_TESTING)
                 --dpdk-plugin-dir "${ker_session_pmd_dir}")
         set_tests_properties(native-nginx-fstack-runtime-lifecycle PROPERTIES
             TIMEOUT 420 LABELS "native-tcp;fstack;socket-broker;nginx;runtime-profile")
+        add_test(NAME native-nginx-fstack-source-graceful-failclosed
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                --nginx-binary "${KER_FSTACK_NGINX_BINARY}"
+                --nginx-workers 1 --nginx-test-source-graceful-failclosed
+                --dpdk-plugin-dir "${ker_session_pmd_dir}")
+        set_tests_properties(native-nginx-fstack-source-graceful-failclosed PROPERTIES
+            TIMEOUT 90 LABELS "native-tcp;fstack;socket-broker;nginx;source-bootstrap;failure-boundary")
         if(TARGET ker-fstack-nginx-worker-shim)
             if(TARGET ker-fstack-nginx-owner-activation)
                 add_test(NAME native-nginx-fstack-owner-activation

@@ -10,9 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 #include <rte_config.h>
@@ -152,6 +154,13 @@ static int rx_decision_check_peer(const struct ker_rx_decision_peer *peer)
     return -EOPNOTSUPP;
 #endif
     return 0;
+}
+
+static int rx_decision_check_authority(const struct ker_rx_decision_worker *worker)
+{
+    int result = rx_decision_check_peer(&worker->consumer);
+    if (!result) result = rx_decision_check_peer(&worker->supervisor);
+    return result;
 }
 
 static int rx_decision_recv(int fd, void *buffer, size_t capacity, ssize_t *length,
@@ -355,7 +364,7 @@ static int rx_decision_handle_control(struct ker_rx_decision_worker *worker,
         return result;
     }
     if (!rx_decision_credential_matches(&sender, &worker->consumer) ||
-        rx_decision_check_peer(&worker->consumer) ||
+        rx_decision_check_authority(worker) ||
         length < (ssize_t)sizeof(struct ker_rx_decision_header)) return -EPROTO;
     struct ker_rx_decision_header header;
     memcpy(&header, buffer, sizeof(header));
@@ -395,7 +404,7 @@ static int rx_decision_lease(struct ker_rx_decision_worker *worker,
         (ip_status && ip_status != RTE_MBUF_F_RX_IP_CKSUM_GOOD) ||
         (l4_status && l4_status != RTE_MBUF_F_RX_L4_CKSUM_GOOD) || packet->vlan_tci)
         return -EOPNOTSUPP;
-    int result = rx_decision_check_peer(&worker->consumer);
+    int result = rx_decision_check_authority(worker);
     if (result) return result;
     int64_t now_ns;
     if (ker_worker_now_ns(&now_ns) || now_ns < 0 ||
@@ -479,7 +488,7 @@ static int rx_decision_lease(struct ker_rx_decision_worker *worker,
             &sender, unexpected_fds, 0);
         if (result) return result;
         if (!rx_decision_credential_matches(&sender, &worker->consumer) ||
-            rx_decision_check_peer(&worker->consumer) ||
+            rx_decision_check_authority(worker) ||
             length < (ssize_t)sizeof(struct ker_rx_decision_header)) return -EPROTO;
         struct ker_rx_decision_header response;
         memcpy(&response, buffer, sizeof(response));
@@ -649,6 +658,218 @@ static uint16_t tx_burst(void *context, struct rte_mbuf **packets, uint16_t coun
     return rte_eth_tx_burst(*(uint16_t *)context, 0, packets, count);
 }
 
+#ifdef KER_RX_DECISION_TESTING
+struct rx_authority_test_notice { pid_t supervisor, producer, consumer; };
+struct rx_authority_test_result { int status; uint32_t action; uint64_t packet_id; };
+
+static int rx_authority_test_io(int fd, void *data, size_t length, bool write_mode)
+{
+    uint8_t *cursor = data;
+    while (length) {
+        ssize_t count = write_mode ? write(fd, cursor, length) : read(fd, cursor, length);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) return -1;
+        cursor += (size_t)count; length -= (size_t)count;
+    }
+    return 0;
+}
+
+static int rx_authority_test_pidfd(pid_t pid)
+{
+#ifdef SYS_pidfd_open
+    return (int)syscall(SYS_pidfd_open, pid, 0);
+#else
+    (void)pid; errno = ENOSYS; return -1;
+#endif
+}
+
+static int rx_authority_test(const char *mode)
+{
+    bool before = !strcmp(mode, "before-lease");
+    bool after = !strcmp(mode, "result-after-data");
+    if (!before && !after) return 2;
+    int events[2], release_worker[2], release_consumer[2], release_consumer_done[2];
+    int failure = 0, supervisor_pidfd = -1, consumer_pidfd = -1;
+    bool supervisor_reaped = false;
+    pid_t note_producer = -1, note_consumer = -1;
+    (void)prctl(PR_SET_CHILD_SUBREAPER, 1);
+    if (pipe2(events, O_CLOEXEC) || pipe2(release_worker, O_CLOEXEC) ||
+        pipe2(release_consumer, O_CLOEXEC) || pipe2(release_consumer_done, O_CLOEXEC)) return 3;
+    pid_t supervisor = fork();
+    if (supervisor < 0) return 4;
+    if (!supervisor) {
+        if (setpgid(0, 0)) _exit(5);
+        int pair[2], worker_start[2];
+        if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair) ||
+            pipe2(worker_start, O_CLOEXEC)) _exit(10);
+        int pass = 1;
+        if (setsockopt(pair[0], SOL_SOCKET, SO_PASSCRED, &pass, sizeof(pass)) ||
+            setsockopt(pair[1], SOL_SOCKET, SO_PASSCRED, &pass, sizeof(pass))) _exit(11);
+        pid_t consumer = fork();
+        if (consumer < 0) _exit(12);
+        if (!consumer) {
+            close(pair[1]); close(release_worker[0]); close(release_worker[1]);
+            close(release_consumer_done[1]);
+            close(worker_start[0]); close(worker_start[1]);
+            if (after) {
+                uint8_t buffer[KER_RX_DECISION_MAX_MESSAGE];
+                ssize_t length = recv(pair[0], buffer, sizeof(buffer), 0);
+                if (length < (ssize_t)(sizeof(struct ker_rx_decision_header) +
+                        sizeof(struct ker_rx_decision_data))) _exit(13);
+                struct ker_rx_decision_header data;
+                memcpy(&data, buffer, sizeof(data));
+                if (data.type != KER_RX_DECISION_DATA || data.packet_id != 1) _exit(14);
+                if (rx_authority_test_io(events[1], "D", 1, true) ||
+                    rx_authority_test_io(release_consumer[0], (char[1]){0}, 1, false)) _exit(15);
+                struct ker_rx_decision_result verdict = {.action = KER_RX_DECISION_LOCAL};
+                struct ker_rx_decision_header result = {
+                    .magic = KER_RX_DECISION_MAGIC, .version = KER_RX_DECISION_VERSION,
+                    .type = KER_RX_DECISION_RESULT, .header_bytes = sizeof(result),
+                    .message_bytes = sizeof(result) + sizeof(verdict),
+                    .worker_epoch = data.worker_epoch, .packet_id = data.packet_id,
+                };
+                memcpy(result.run_nonce, data.run_nonce, sizeof(result.run_nonce));
+                struct iovec vectors[] = {{&result, sizeof(result)}, {&verdict, sizeof(verdict)}};
+                struct msghdr msg = {.msg_iov = vectors, .msg_iovlen = 2};
+                if (sendmsg(pair[0], &msg, MSG_NOSIGNAL) != result.message_bytes ||
+                    rx_authority_test_io(release_consumer_done[0], (char[1]){0}, 1, false)) _exit(16);
+                _exit(0);
+            }
+            if (rx_authority_test_io(release_consumer[0], (char[1]){0}, 1, false)) _exit(17);
+            struct pollfd pending_data = {.fd = pair[0], .events = POLLIN};
+            int polled = poll(&pending_data, 1, 150);
+            if (polled < 0) _exit(18);
+            if (polled > 0 && (pending_data.revents & POLLIN)) {
+                uint8_t buffer[KER_RX_DECISION_MAX_MESSAGE];
+                ssize_t length = recv(pair[0], buffer, sizeof(buffer), 0);
+                if (length < 0) _exit(19);
+                if (length > 0 && length < (ssize_t)(sizeof(struct ker_rx_decision_header) +
+                        sizeof(struct ker_rx_decision_data))) _exit(19);
+                if (length > 0) {
+                    struct ker_rx_decision_header data;
+                    memcpy(&data, buffer, sizeof(data));
+                    struct ker_rx_decision_result verdict = {.action = KER_RX_DECISION_LOCAL};
+                    struct ker_rx_decision_header result = {
+                        .magic = KER_RX_DECISION_MAGIC, .version = KER_RX_DECISION_VERSION,
+                        .type = KER_RX_DECISION_RESULT, .header_bytes = sizeof(result),
+                        .message_bytes = sizeof(result) + sizeof(verdict),
+                        .worker_epoch = data.worker_epoch, .packet_id = data.packet_id,
+                    };
+                    memcpy(result.run_nonce, data.run_nonce, sizeof(result.run_nonce));
+                    struct iovec vectors[] = {{&result, sizeof(result)}, {&verdict, sizeof(verdict)}};
+                    struct msghdr msg = {.msg_iov = vectors, .msg_iovlen = 2};
+                    if (sendmsg(pair[0], &msg, MSG_NOSIGNAL) != result.message_bytes) _exit(20);
+                }
+            }
+            if (rx_authority_test_io(release_consumer_done[0], (char[1]){0}, 1, false)) _exit(21);
+            _exit(0);
+        }
+        pid_t producer = fork();
+        if (producer < 0) _exit(18);
+        if (!producer) {
+            close(pair[0]); close(release_consumer[0]); close(release_consumer[1]);
+            close(release_consumer_done[0]); close(release_consumer_done[1]);
+            close(worker_start[1]);
+            if (rx_authority_test_io(worker_start[0], (char[1]){0}, 1, false)) _exit(18);
+            close(worker_start[0]);
+            struct ker_rx_decision_worker worker = {.fd = pair[1],
+                .supervisor = {.pidfd = -1}, .consumer = {.pidfd = -1},
+                .bootstrapped = true, .epoch = 73};
+            memset(worker.nonce, 0x73, sizeof(worker.nonce));
+            int status = rx_decision_prepare(pair[1], &worker);
+            worker.supervisor.pidfd = rx_authority_test_pidfd(worker.supervisor.pid);
+            worker.consumer.pid = consumer; worker.consumer.uid = getuid();
+            worker.consumer.gid = getgid(); worker.consumer.pidfd = rx_authority_test_pidfd(consumer);
+            status = status ? status : rx_decision_process_start(consumer,
+                &worker.consumer.start_ticks);
+            if (!status && (worker.supervisor.pidfd < 0 || worker.consumer.pidfd < 0)) status = -errno;
+            uint32_t action = UINT32_MAX; bool stopping = false;
+            struct rte_mbuf packet = {0}; uint8_t storage[2048] = {0};
+            packet.buf_addr = storage; packet.buf_len = sizeof(storage);
+            packet.data_off = 128; packet.data_len = 64; packet.pkt_len = 64; packet.nb_segs = 1;
+            if (!status && before && rx_authority_test_io(events[1], "P", 1, true)) {
+                dprintf(2, "producer notify failed fd=%d errno=%d\n", events[1], errno);
+                _exit(19);
+            }
+            if (!status && before && rx_authority_test_io(release_worker[0], (char[1]){0}, 1, false)) _exit(20);
+            if (!status) status = rx_decision_lease(&worker, &packet, 0, 1, 1500,
+                &action, &stopping);
+            struct rx_authority_test_result outcome = {.status = status, .action = action,
+                .packet_id = worker.packet_id};
+            if (rx_authority_test_io(events[1], &outcome, sizeof(outcome), true)) _exit(21);
+            _exit(status < 0 && action == UINT32_MAX ? 0 : 22);
+        }
+        close(pair[0]); close(pair[1]); close(worker_start[0]);
+        close(release_consumer_done[0]);
+        struct rx_authority_test_notice note = {getpid(), producer, consumer};
+        if (rx_authority_test_io(events[1], &note, sizeof(note), true)) _exit(23);
+        if (rx_authority_test_io(worker_start[1], "S", 1, true)) _exit(24);
+        close(worker_start[1]);
+        for (;;) pause();
+    }
+    close(events[1]); close(release_worker[0]); close(release_consumer[0]);
+    close(release_consumer_done[0]);
+    struct rx_authority_test_notice note;
+    struct rx_authority_test_result outcome;
+    if (rx_authority_test_io(events[0], &note, sizeof(note), false)) { failure = 5; goto cleanup; }
+    note_producer = note.producer; note_consumer = note.consumer;
+    supervisor_pidfd = rx_authority_test_pidfd(supervisor);
+    if (supervisor_pidfd < 0) { failure = 6; goto cleanup; }
+    char event;
+    if (rx_authority_test_io(events[0], &event, 1, false) ||
+        event != (after ? 'D' : 'P')) { failure = 7; goto cleanup; }
+    if (kill(supervisor, SIGKILL)) { failure = 8; goto cleanup; }
+    struct pollfd exited = {.fd = supervisor_pidfd, .events = POLLIN};
+    if (poll(&exited, 1, 1000) != 1 || !(exited.revents & POLLIN)) { failure = 9; goto cleanup; }
+    if (before && rx_authority_test_io(release_worker[1], "X", 1, true)) { failure = 10; goto cleanup; }
+    if (rx_authority_test_io(release_consumer[1], "X", 1, true)) { failure = 11; goto cleanup; }
+    if (rx_authority_test_io(events[0], &outcome, sizeof(outcome), false)) { failure = 12; goto cleanup; }
+    consumer_pidfd = rx_authority_test_pidfd(note.consumer);
+    struct pollfd consumer_alive = {.fd = consumer_pidfd, .events = POLLIN};
+    if (consumer_pidfd < 0 || poll(&consumer_alive, 1, 0) != 0) { failure = 13; goto cleanup; }
+    if (rx_authority_test_io(release_consumer_done[1], "X", 1, true)) { failure = 14; goto cleanup; }
+    int status;
+    if (waitpid(supervisor, &status, 0) != supervisor) { failure = 15; goto cleanup; }
+    supervisor_reaped = true; supervisor = -1;
+    if (!WIFSIGNALED(status)) { failure = 15; goto cleanup; }
+    for (size_t i = 0; i < 2; ++i) {
+        pid_t child_pid = i ? note.consumer : note.producer;
+        if (waitpid(child_pid, &status, 0) != child_pid) { failure = 16; goto cleanup; }
+        if (i) note_consumer = -1; else note_producer = -1;
+        if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+            fprintf(stderr, "producer-authority child %ld status=0x%x\n",
+                (long)child_pid, status);
+            failure = 16; goto cleanup;
+        }
+    }
+    if (before ? !(outcome.status == -ESTALE && outcome.action == UINT32_MAX &&
+            outcome.packet_id == 0) : !(outcome.status == -EPROTO &&
+            outcome.action == UINT32_MAX && outcome.packet_id == 1)) failure = 17;
+cleanup:
+    if (failure) fprintf(stderr, "producer authority test failed at step %d\n", failure);
+    if (failure) {
+        if (supervisor > 0 && !supervisor_reaped) {
+            (void)kill(-supervisor, SIGKILL);
+            (void)kill(supervisor, SIGKILL);
+        }
+        if (note_producer > 0) (void)kill(note_producer, SIGKILL);
+        if (note_consumer > 0) (void)kill(note_consumer, SIGKILL);
+        if (supervisor > 0 && !supervisor_reaped) {
+            (void)waitpid(supervisor, NULL, 0);
+            supervisor = -1;
+        }
+        if (note_producer > 0) { (void)waitpid(note_producer, NULL, 0); note_producer = -1; }
+        if (note_consumer > 0) { (void)waitpid(note_consumer, NULL, 0); note_consumer = -1; }
+        while (waitpid(-1, NULL, WNOHANG) > 0) {}
+    }
+    if (consumer_pidfd >= 0) close(consumer_pidfd);
+    if (supervisor_pidfd >= 0) close(supervisor_pidfd);
+    close(events[0]); close(release_worker[1]);
+    close(release_consumer[1]); close(release_consumer_done[1]);
+    return failure;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     /* Build-matched capability query used by ker-run preflight; this path
@@ -657,6 +878,10 @@ int main(int argc, char **argv)
         printf("{\"max_numa_nodes\":%d}\n", RTE_MAX_NUMA_NODES);
         return RTE_MAX_NUMA_NODES > 0 ? 0 : 1;
     }
+#ifdef KER_RX_DECISION_TESTING
+    if (argc == 3 && !strcmp(argv[1], "--rx-decision-authority-test"))
+        return rx_authority_test(argv[2]);
+#endif
     int packet_fd = -1, control_fd = -1, mtu_fd = -1, rx_decision_fd = -1, split = 0;
     bool rss_enabled = false;
     int queues = 1;

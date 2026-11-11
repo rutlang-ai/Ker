@@ -105,10 +105,10 @@ main(void)
     }
     if (setenv("KER_SOCKET_BROKER_PATH", broker, 1) ||
         snprintf(profile, sizeof(profile),
-            "[ker_socket_broker]\nversion=1\npath=%s\n[dpdk]\ngraceful_reload=1\n",
+            "[ker_socket_broker]\nversion=1\npath=%s\n[dpdk]\ngraceful_reload=1\nlcore_mask=0x3\n",
             broker) >= (int)sizeof(profile) || write_profile(config_path, profile) ||
-        expect_reject(EINVAL, primary)) {
-        fputs("FF nginx runtime did not reject graceful_reload=1\n", stderr);
+        expect_reject(EPROTO, primary)) {
+        fputs("FF nginx runtime did not fail closed for graceful_reload=1 without source ownership\n", stderr);
         failed = 1;
     }
     if (snprintf(profile, sizeof(profile),
