@@ -303,6 +303,15 @@ def control_nginx_profile(args):
         raise ValueError('Nginx RX relay requires RX-decision, broker-readiness, owner READY and a complete pinned profile')
     allowed = {'LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
         'KER_FSTACK_NGINX_INI', 'KER_FSTACK_RUNTIME_TRACE'}
+    source_flowmap_test = any(
+        item.partition('=')[0] == 'KER_NGINX_SOURCE_FLOWMAP_TEST'
+        for item in supplied_env)
+    if source_flowmap_test:
+        if (not rx_owner_relay or owner_module is None or
+                Path(owner_module).name !=
+                    'ker-fstack-nginx-owner-activation-alias-test.so'):
+            raise ValueError('source flow-map qualification requires the alias RX relay profile')
+        allowed.add('KER_NGINX_SOURCE_FLOWMAP_TEST')
     env = {}
     for item in supplied_env:
         key, separator, value = item.partition('=')

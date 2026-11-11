@@ -26,6 +26,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
@@ -75,6 +76,9 @@ static uint64_t rx_owner_relay_supervisor_start;
 static uint64_t rx_owner_relay_last_packet;
 static pid_t rx_owner_relay_supervisor_pid;
 static bool rx_owner_relay_authenticated;
+#ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
+static bool rx_owner_source_flowmap_cycle_done;
+#endif
 typedef int (*rx_owner_relay_dispatch_fn)(void *, uint16_t *, uint16_t,
     uint16_t, uint16_t, uint8_t, int32_t *);
 static rx_owner_relay_dispatch_fn rx_owner_relay_dispatch;
@@ -264,6 +268,26 @@ static int rx_owner_relay_pump(void *context)
         !rx_owner_relay_pidfd_alive(rx_owner_relay_app_pidfd) ||
         !rx_owner_relay_pidfd_alive(rx_owner_relay_supervisor_pidfd)) return -EPROTO;
     if (!rx_owner_relay_dispatch) return -ENOSYS;
+#ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
+    if (!rx_owner_source_flowmap_cycle_done &&
+        getenv("KER_NGINX_SOURCE_FLOWMAP_TEST")) {
+        int (*cycle)(void) = (int (*)(void))dlsym(RTLD_DEFAULT,
+            "ker_nginx_source_flowmap_fixture_cycle");
+        if (!cycle) return -ENOSYS;
+        int cycle_status = cycle();
+        if (cycle_status) return cycle_status;
+        rx_owner_source_flowmap_cycle_done = true;
+        char evidence[192];
+        int evidence_bytes = snprintf(evidence, sizeof(evidence),
+            "SOURCE_FLOWMAP_CYCLE pid=%ld tid=%ld "
+            "v4=miss,admit,hit,revoke,miss v6=miss,admit,hit,revoke,miss "
+            "owner=authenticated\n", (long)getpid(),
+            (long)syscall(SYS_gettid));
+        if (evidence_bytes > 0 && (size_t)evidence_bytes < sizeof(evidence))
+            (void)syscall(SYS_write, STDERR_FILENO, evidence,
+                (size_t)evidence_bytes);
+    }
+#endif
     unsigned char original[KER_RX_OWNER_RELAY_MAX_FRAME];
     memcpy(original, message + sizeof(header), header.frame_bytes);
     uint16_t frame_length = (uint16_t)header.frame_bytes;
@@ -309,6 +333,15 @@ static int rx_owner_relay_register(void)
     long fd = strtol(value, &end, 10);
     if (errno || end == value || *end || fd < 3 || fd > INT_MAX) return -EINVAL;
     if (rx_owner_relay_registered) return (int)fd == rx_owner_relay_fd ? 0 : -ESTALE;
+#ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
+    if (getenv("KER_NGINX_SOURCE_FLOWMAP_TEST")) {
+        extern struct ff_reload_state *ker_nginx_source_flowmap_state(void);
+        extern int ker_nginx_source_flowmap_owner_ready(struct ff_reload_state *);
+        int source_status = ker_nginx_source_flowmap_owner_ready(
+            ker_nginx_source_flowmap_state());
+        if (source_status) return source_status < 0 ? source_status : -EPROTO;
+    }
+#endif
     const char *pid_text = getenv("KER_NGINX_RX_OWNER_RELAY_SUPERVISOR_PID");
     const char *nonce_text = getenv("KER_NGINX_RX_OWNER_RELAY_NONCE");
     const char *epoch_text = getenv("KER_NGINX_RX_OWNER_RELAY_EPOCH");
@@ -349,7 +382,8 @@ static int rx_owner_relay_register(void)
     typedef int (*register_fn)(int (*)(void *), void *);
     typedef int (*dispatch_ready_fn)(void);
 #ifdef KER_NGINX_RX_RELAY_TEST_CALLBACK
-    ff_regist_packet_dispatcher_context(test_rx_owner_dispatcher);
+    if (!getenv("KER_NGINX_SOURCE_FLOWMAP_TEST"))
+        ff_regist_packet_dispatcher_context(test_rx_owner_dispatcher);
 #endif
     rx_owner_relay_dispatch = (rx_owner_relay_dispatch_fn)dlsym(RTLD_DEFAULT,
         "ker_fstack_rx_owner_relay_dispatch");
@@ -1296,6 +1330,17 @@ module_init(ngx_cycle_t *cycle)
             "C22 owner-activation module refuses unsupported Nginx profile");
         return NGX_ERROR;
     }
+#ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
+    const char *source_flowmap_test = getenv("KER_NGINX_SOURCE_FLOWMAP_TEST");
+    if (source_flowmap_test) {
+        if (strcmp(source_flowmap_test, "1") != 0 ||
+            (!ngx_test_config && ker_nginx_candidate_master_prepare(cycle) != 0)) {
+            ngx_log_error(NGX_LOG_ERR, cycle->log, errno,
+                "source flow-map fixture could not create the original reload block");
+            return NGX_ERROR;
+        }
+    }
+#endif
     /* Delegated startup is one-shot. HUP must not fall back to creating an
      * unrelated initial plan when Nginx rebuilds its environment. */
     if (candidate_mode || delegated_initial_mode) {
@@ -1425,6 +1470,13 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
 
 int ker_fstack_nginx_owner_activation_worker_commit(void)
 {
+#ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
+    const char *source_flowmap_test = getenv("KER_NGINX_SOURCE_FLOWMAP_TEST");
+    if (source_flowmap_test && strcmp(source_flowmap_test, "1") == 0)
+        /* The source-classifier fixture arms the original dispatcher after
+         * ff_mod_init's unchanged consistency check, on the owner loop. */
+        return 0;
+#endif
     if (!candidate_mode) return 0;
     if (!worker_prepared || current_slot < 0) { errno = EPROTO; return -1; }
     int result = ker_nginx_candidate_worker_commit(current_slot);

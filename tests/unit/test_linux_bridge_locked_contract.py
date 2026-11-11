@@ -13,7 +13,7 @@ contract=importlib.util.module_from_spec(spec);spec.loader.exec_module(contract)
 class BridgeLockedContractTests(unittest.TestCase):
     def test_complete_original_lock_mab_and_redirect(self):
         fixture=json.loads(Path(__file__).with_name('bridge-locked-transcript.json').read_text())
-        cases=('complete','delayed-burst','random-dest-variation','default-payload-variation','redirect-background',
+        cases=('complete','delayed-burst','random-dest-variation','default-payload-variation','redirect-background','mab-locked-prelearn',
                'missing-outcome','skip','unpinned-tc','missing-probe','missing-command','wrong-command-order',
                'missing-ping','locked-ping-succeeds','authenticated-ping-fails','wrong-ping-count','wrong-ping-output','clock-missing',
                'wrong-bridge','wrong-vlan-protocol','wrong-peer','same-vrf','wrong-host-address','wrong-host-vlan','wrong-vlan-master',
@@ -22,7 +22,7 @@ class BridgeLockedContractTests(unittest.TestCase):
                'missing-query','wrong-query-result','query-locked-flag-missing','query-wrong-port','query-native-fdb-missing',
                'missing-burst','short-burst','wrong-burst-delay','short-burst-time','missing-frame','extra-frame','short-native-send',
                'wrong-frame-source','wrong-frame-protocol','wrong-udp-length','wrong-frame-interface','burst-ingress-missing',
-               'roam-destination-locked','locked-roam-back','flush-static1-lost','flush-static2-lost','flush-other-locked-lost','flush-locked1-retained',
+               'roam-destination-locked','locked-roam-back','mab-prelearn-wrong-port','mab-prelearn-wrong-vid','mab-prelearn-static','mab-prelearn-unlocked','mab-prelearn-missing-state','mab-prelearn-duplicate','flush-static1-lost','flush-static2-lost','flush-other-locked-lost','flush-locked1-retained',
                'wrong-redirect-kind','wrong-redirect-direction','wrong-redirect-destination','redirect-counter-zero','redirect-byte-counter-zero',
                'redirect-filter-retained','redirect-learns-locked','missing-native-filter','missing-tc-command',
                'vlan100-admission-missing','vlan100-leaked','missing-ping-observation','missing-burst-query-proof',
@@ -45,6 +45,25 @@ class BridgeLockedContractTests(unittest.TestCase):
                     frame=bytearray.fromhex(r['packet_trace'][0]['frame_hex']);frame[0]^=2;r['packet_trace'][0]['frame_hex']=frame.hex()
                 elif case=='default-payload-variation':
                     frame=bytearray.fromhex(r['packet_trace'][0]['frame_hex']);frame.extend(b'body');frame[16:18]=(32).to_bytes(2,'big');frame[38:40]=(12).to_bytes(2,'big');r['packet_trace'][0].update(frame_hex=frame.hex(),length=46,result=46);r['native_fixture']['bridge_packet_bytes']+=4
+                elif case=='mab-locked-prelearn':
+                    pings[14]['unaware_before']['fdb'].extend(copy.deepcopy(contract.entries(pings[14]['unaware_after'],host)))
+                elif case=='mab-prelearn-wrong-port':
+                    entry=copy.deepcopy(contract.entries(pings[14]['unaware_after'],host)[0]);entry['ifname']='veth2'
+                    pings[14]['unaware_before']['fdb'].append(entry)
+                elif case=='mab-prelearn-wrong-vid':
+                    entry=copy.deepcopy(contract.entries(pings[14]['unaware_after'],host)[0]);entry['vlan']=2
+                    pings[14]['unaware_before']['fdb'].append(entry)
+                elif case=='mab-prelearn-static':
+                    entry=copy.deepcopy(contract.entries(pings[14]['unaware_after'],host)[0]);entry['state']='static';entry['flags']=[]
+                    pings[14]['unaware_before']['fdb'].append(entry)
+                elif case=='mab-prelearn-unlocked':
+                    entry=copy.deepcopy(contract.entries(pings[14]['unaware_after'],host)[0]);entry['flags']=[]
+                    pings[14]['unaware_before']['fdb'].append(entry)
+                elif case=='mab-prelearn-missing-state':
+                    entry=copy.deepcopy(contract.entries(pings[14]['unaware_after'],host)[0]);entry.pop('state')
+                    pings[14]['unaware_before']['fdb'].append(entry)
+                elif case=='mab-prelearn-duplicate':
+                    pings[14]['unaware_before']['fdb'].extend(copy.deepcopy(contract.entries(pings[14]['unaware_after'],host))*2)
                 elif case=='redirect-background':
                     a=rule(pings[16]['unaware_before'])['options']['actions'][0]['stats'];b=rule(pings[16]['unaware_after'])['options']['actions'][0]['stats']
                     for stats in (a,b):stats['packets']+=5;stats['bytes']+=500
@@ -130,7 +149,7 @@ class BridgeLockedContractTests(unittest.TestCase):
                 elif case=='live-socket':r['native_fixture']['live']=1
                 elif case=='packet-leaked':r['stats']['outstanding']=1
                 elif case=='forced-stop':r['stats']['shutdown_timed_out']=True
-                if case in ('complete','delayed-burst','random-dest-variation','default-payload-variation','redirect-background'):contract.validate_evidence(r)
+                if case in ('complete','delayed-burst','random-dest-variation','default-payload-variation','redirect-background','mab-locked-prelearn'):contract.validate_evidence(r)
                 else:
                     with self.assertRaises((RuntimeError,KeyError,StopIteration)):contract.validate_evidence(r)
 
