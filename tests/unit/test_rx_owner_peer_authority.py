@@ -40,6 +40,7 @@ assert len(fds)==2 and creds==[(os.getppid(),os.getuid(),os.getgid())]
 assert h[2]==3 and h[11]==h[12]==os.getpid()
 assert 'Pid:\t'+str(h[10])+'\n' in open('/proc/self/fdinfo/'+str(fds[0])).read()
 assert 'Pid:\t'+str(h[13])+'\n' in open('/proc/self/fdinfo/'+str(fds[1])).read()
+if len(sys.argv)>3: os.write(int(sys.argv[3]), b'R')
 if mode=='no-ack':
  try: s.recv(1)
  except ConnectionResetError: pass
@@ -97,6 +98,7 @@ class PeerAuthority(unittest.TestCase):
         primary_channel, primary_worker = pair()
         old_channel, old_worker = pair()
         slot0, slot1 = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        old_ready_read, old_ready_write = os.pipe()
         primary = old = app = None
         proofs = []
         handles = []
@@ -110,8 +112,10 @@ class PeerAuthority(unittest.TestCase):
             primary = subprocess.Popen([sys.executable, '-c', ACTOR, str(primary_worker.fileno()), 'primary'],
                 pass_fds=(primary_worker.fileno(),), stderr=subprocess.PIPE)
             actor_mode = mode if mode in ('bad-ack', 'no-ack', 'peer-loop') else 'valid'
-            old = subprocess.Popen([sys.executable, '-c', ACTOR, str(old_worker.fileno()), actor_mode],
-                pass_fds=(old_worker.fileno(),), stderr=subprocess.PIPE)
+            old = subprocess.Popen([sys.executable, '-c', ACTOR, str(old_worker.fileno()), actor_mode,
+                    str(old_ready_write)], pass_fds=(old_worker.fileno(), old_ready_write),
+                stderr=subprocess.PIPE)
+            os.close(old_ready_write); old_ready_write = -1
             primary_worker.close(); old_worker.close()
             current = proof(primary, slot1, 1); previous = proof(old, slot0, 0)
             proofs.extend([current, previous])
@@ -182,6 +186,11 @@ class PeerAuthority(unittest.TestCase):
                     socks.extend([stream, stream_other]); rights[1] = stream.fileno()
                 packet = ker_run._RX_OWNER_PEER_AUTH_RECORD.pack(*fields)
                 if mode == 'trailing': packet += b'x'
+                # Bootstrap first so immediate receiver rejection cannot race
+                # the actor's pidfd identity assertion during teardown.
+                ker_run.rx_owner_relay_auth(old_channel, app, app_pidfd, supervisor_pidfd,
+                    previous, NONCE, 77)
+                self.assertEqual(os.read(old_ready_read, 1), b'R')
                 if mode == 'foreign-supervisor':
                     sender = os.fork()
                     if sender == 0:
@@ -190,14 +199,14 @@ class PeerAuthority(unittest.TestCase):
                     self.assertEqual(os.waitpid(sender, 0), (sender, 0))
                 else:
                     control.sendmsg([packet], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', rights))])
-                ker_run.rx_owner_relay_auth(old_channel, app, app_pidfd, supervisor_pidfd,
-                    previous, NONCE, 77)
             stdout, stderr = app.communicate(timeout=6)
             self.assertEqual(app.returncode, 0, (stdout, stderr))
             self.assertIn(f'PEER_AUTH_RECEIVER status={expected}', stderr.decode())
         finally:
             for s in socks: s.close()
             for f in handles: os.close(f)
+            os.close(old_ready_read)
+            if old_ready_write >= 0: os.close(old_ready_write)
             for p in proofs: os.close(p.owner_pidfd)
             for process in (app, primary, old):
                 if process is None: continue
