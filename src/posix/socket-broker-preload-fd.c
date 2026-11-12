@@ -41,6 +41,7 @@ static _Thread_local unsigned preload_lock_depth;
 static _Thread_local pid_t preload_fork_owner_tid;
 static struct ker_socket_client preload_client = {.session_fd = -1};
 static bool client_open;
+static pid_t preload_origin_pid;
 static struct network_entry network_fds[PRELOAD_FD_SLOTS];
 static struct epoll_entry epoll_fds[PRELOAD_FD_SLOTS];
 static int private_fds[PRELOAD_PRIVATE_SLOTS];
@@ -437,6 +438,30 @@ error:
         errno = saved_errno;
         return -1;
     }
+}
+
+int ker_sb_preload_source_detach_forget(void)
+{
+    /* Cooperative fork adaptation, not authority to open a source generation.
+     * The original slim-primary loop will close every inherited FD. Keeping
+     * private classifications here would make our close() reject those FDs,
+     * and keeping the cached client would alias a freshly reused FD afterward.
+     * Do not close anything here or preserve selected handles across the loop. */
+    if (!ker_sb_preload_runtime_ready() || !getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH") ||
+        getpid() == preload_origin_pid || getppid() == preload_origin_pid ||
+        ker_sb_preload_ff_owner_is_current()) { errno = EOPNOTSUPP; return -1; }
+    ker_sb_preload_lock();
+    for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
+        network_fds[i] = (struct network_entry){.app_fd = -1, .private_fd = -1};
+        epoll_fds[i] = (struct epoll_entry){.app_fd = -1, .broker_fd = -1};
+    }
+    for (size_t i = 0; i < PRELOAD_PRIVATE_SLOTS; ++i) private_fds[i] = -1;
+    for (size_t i = 0; i < PRELOAD_WAIT_SLOTS; ++i)
+        wait_pins[i] = (struct wait_pin_entry){.host_fd = -1, .broker_fd = -1};
+    preload_client = (struct ker_socket_client){.session_fd = -1};
+    client_open = false;
+    ker_sb_preload_unlock();
+    return 0;
 }
 
 int ker_sb_preload_any_native_locked(int fd)
@@ -885,6 +910,7 @@ static int initialize_inherited_capabilities(void)
 
 __attribute__((constructor)) static void socket_broker_preload_initialize(void)
 {
+    preload_origin_pid = getpid();
     if (ker_sb_preload_resolve_host_functions()) {
         static const char message[] = "ker socket preload: cannot resolve host libc calls\n";
         (void)syscall(SYS_write, STDERR_FILENO, message, sizeof(message) - 1);

@@ -54,6 +54,7 @@ struct sb_group_cutover {
     uint64_t candidate_task_lease;
     uint64_t lease;
     uint64_t deadline_ns;
+    uint64_t control_deadline_ns;
     struct ker_posix_ff_ingress_controller *controller;
     uint32_t packet_ids[64];
     uint32_t packet_count;
@@ -66,6 +67,7 @@ struct sb_group_cutover {
     bool disarmed;
     bool drained;
     bool accept_pending;
+    bool test_accept_poll_reported;
 };
 
 struct sb_group {
@@ -3221,7 +3223,7 @@ static int group_cutover_create(struct ker_socket_broker_server *server,
 }
 
 static int group_cutover_request(struct ker_socket_broker_server *server,
-    int cap_fd, bool commit)
+    int cap_fd, bool commit, uint64_t control_deadline_ns)
 {
     struct sb_object *object = lookup_cap(server, cap_fd);
     if (!object || object->kind != KER_SOCKET_BROKER_FF_OWNER_CUTOVER ||
@@ -3230,6 +3232,22 @@ static int group_cutover_request(struct ker_socket_broker_server *server,
     if (!group->live || object->group_incarnation != group->incarnation ||
         group->cutover_object_slot < 0) return -ESTALE;
     struct sb_group_cutover *cutover = &group->cutover;
+    if (control_deadline_ns) {
+        uint64_t now = host_monotonic_ns();
+        if (!commit) return -EINVAL;
+        if ((cutover->control_deadline_ns &&
+                cutover->control_deadline_ns != control_deadline_ns) ||
+                (!cutover->control_deadline_ns &&
+                    cutover->phase != KER_SOCKET_GROUP_CUTOVER_PREPARED &&
+                    cutover->phase != KER_SOCKET_GROUP_CUTOVER_STARTING)) return -EALREADY;
+        if (!now || control_deadline_ns <= now) {
+            if (!group_cutover_terminal(cutover->phase)) {
+                cutover->control_deadline_ns = control_deadline_ns;
+                group_cutover_quarantine(group, -ETIMEDOUT);
+            }
+            return -ETIMEDOUT;
+        }
+    } else if (commit && cutover->control_deadline_ns) return -EALREADY;
     uint32_t requested = commit ? KER_SOCKET_GROUP_CUTOVER_COMMITTING :
         KER_SOCKET_GROUP_CUTOVER_ABORTING;
     if (group_cutover_terminal(cutover->phase))
@@ -3239,8 +3257,18 @@ static int group_cutover_request(struct ker_socket_broker_server *server,
     if (cutover->phase != KER_SOCKET_GROUP_CUTOVER_PREPARED &&
         cutover->phase != KER_SOCKET_GROUP_CUTOVER_STARTING) return -EALREADY;
     if (!commit && group->selected_member != 0) return -EALREADY;
+    if (control_deadline_ns) cutover->control_deadline_ns = control_deadline_ns;
     cutover->phase = requested;
     return 0;
+}
+
+static bool group_cutover_control_expired(struct sb_group *group)
+{
+    if (!group->cutover.control_deadline_ns) return false;
+    uint64_t now = host_monotonic_ns();
+    if (now && now < group->cutover.control_deadline_ns) return false;
+    group_cutover_quarantine(group, -ETIMEDOUT);
+    return true;
 }
 
 static void group_cutover_advance(struct ker_socket_broker_server *server,
@@ -3275,6 +3303,7 @@ static void group_cutover_advance(struct ker_socket_broker_server *server,
             group_cutover_quarantine(group, cutover->result);
         return;
     }
+    if (group_cutover_control_expired(group)) return;
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now)) {
         group_cutover_quarantine(group, -errno); return;
@@ -3331,6 +3360,14 @@ static void group_cutover_advance(struct ker_socket_broker_server *server,
                     group_cutover_quarantine(group, -EPROTO); return;
                 }
                 cutover->packet_ids[cutover->packet_count++] = packet.id;
+#ifdef KER_C28_CUTOVER_TESTING
+                if (getenv("KER_C28_TEST_CONTROLLER_TRACE")) {
+                    fprintf(stderr, "C28_HELD packet_id=%u lease=%llu deadline_ns=%llu\n",
+                        packet.id, (unsigned long long)packet.lease,
+                        (unsigned long long)packet.deadline_ns);
+                    fflush(stderr);
+                }
+#endif
             }
         }
         return;
@@ -3341,10 +3378,19 @@ static void group_cutover_advance(struct ker_socket_broker_server *server,
         }
         status = ker_posix_ff_ingress_controller_check(cutover->controller);
         if (status) { group_cutover_quarantine(group, status); return; }
+        if (group_cutover_control_expired(group)) return;
         if (cutover->phase == KER_SOCKET_GROUP_CUTOVER_COMMITTING) {
             status = group_set_selector(group, 1);
             if (status) { group_cutover_quarantine(group, status); return; }
             cutover->selector_changed = true;
+#ifdef KER_C28_CUTOVER_TESTING
+            if (getenv("KER_C28_TEST_CONTROLLER_TRACE")) {
+                fprintf(stderr, "C28_SELECTOR_CHANGED monotonic_ns=%llu\n",
+                    (unsigned long long)host_monotonic_ns());
+                fflush(stderr);
+            }
+#endif
+            if (group_cutover_control_expired(group)) return;
         }
         cutover->decision_started = true;
         return;
@@ -3389,18 +3435,49 @@ static void group_cutover_advance(struct ker_socket_broker_server *server,
                 group_cutover_quarantine(group, status ? status : -EIO); return;
             }
             cutover->accept_pending = true;
+#ifdef KER_C28_CUTOVER_TESTING
+            if (getenv("KER_C28_TEST_CONTROLLER_TRACE")) {
+                fprintf(stderr, "C28_ACCEPT_BEGIN packet_id=%u sent=%d monotonic_ns=%llu\n",
+                    cutover->packet_ids[cutover->accepted_count], sent,
+                    (unsigned long long)host_monotonic_ns());
+                fflush(stderr);
+            }
+#endif
+            if (group_cutover_control_expired(group)) return;
             return;
         }
+#ifdef KER_C28_CUTOVER_TESTING
+        const char *accept_gate = getenv("KER_C28_TEST_ACCEPT_POLL_GATE");
+        if (accept_gate && syscall(SYS_access, accept_gate, F_OK) != 0) {
+            if (!cutover->test_accept_poll_reported) {
+                const char *marker = getenv("KER_C28_TEST_ACCEPT_POLL_MARKER");
+                if (marker) {
+                    int marker_fd = (int)syscall(SYS_openat, AT_FDCWD, marker,
+                        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+                    if (marker_fd >= 0) {
+                        static const char pending[] = "C28_ASYNC_ACCEPT_PENDING\n";
+                        (void)syscall(SYS_write, marker_fd, pending, sizeof(pending) - 1);
+                        (void)syscall(SYS_close, marker_fd);
+                    }
+                }
+                cutover->test_accept_poll_reported = true;
+            }
+            return;
+        }
+#endif
+        if (group_cutover_control_expired(group)) return;
         status = ker_posix_ff_ingress_controller_accept_poll(cutover->controller);
         if (status < 0) { group_cutover_quarantine(group, status); return; }
         if (!status) return;
         cutover->accept_pending = false;
         cutover->accepted_count++;
+        if (group_cutover_control_expired(group)) return;
         return;
     }
     status = ker_posix_ff_ingress_controller_close(cutover->controller);
     if (status) { group_cutover_quarantine(group, status); return; }
     cutover->controller = NULL;
+    if (group_cutover_control_expired(group)) return;
     cutover->phase = cutover->selector_changed ?
         KER_SOCKET_GROUP_CUTOVER_COMMITTED : KER_SOCKET_GROUP_CUTOVER_ABORTED;
     cutover->result = 0;
@@ -4644,9 +4721,17 @@ static int dispatch_request(struct ker_socket_broker_server *server,
     }
     case KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT:
     case KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT: {
-        if (input_length || fd_count != 1) return -EPROTO;
+        if (fd_count != 1 ||
+            (input_length && (request->operation != KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT ||
+                input_length != sizeof(uint64_t)))) return -EPROTO;
+        uint64_t control_deadline_ns = 0;
+        if (input_length) {
+            memcpy(&control_deadline_ns, input, sizeof(control_deadline_ns));
+            if (!control_deadline_ns) return -EINVAL;
+        }
         status = group_cutover_request(server, fds[0],
-            request->operation == KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT);
+            request->operation == KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT,
+            control_deadline_ns);
         if (status) return status;
         *result = 0; return 0;
     }

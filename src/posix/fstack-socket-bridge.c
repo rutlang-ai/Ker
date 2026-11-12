@@ -25,12 +25,16 @@ static int unsupported(void)
 
 #ifdef KER_FSTACK_NGINX_RUNTIME
 extern void ker_fstack_runtime_trace_leaf(const char *name, int fd, long result);
+extern int ker_fstack_runtime_application_io_allowed(void);
 #define FF_TRACE(fd, result) ker_fstack_runtime_trace_leaf(__func__, (fd), (long)(result))
+#define FF_IO_ALLOWED() ker_fstack_runtime_application_io_allowed()
 #else
 #define FF_TRACE(fd, result) ((void)0)
+#define FF_IO_ALLOWED() 1
 #endif
 
 #define FF_DISPATCH_RETURN(type, expression) do { \
+    if (!FF_IO_ALLOWED()) return (type)-1; \
     if (ker_sb_preload_ff_dispatch_begin(fd)) return (type)-1; \
     type result = (expression); \
     int saved_errno = errno; \
@@ -42,6 +46,7 @@ extern void ker_fstack_runtime_trace_leaf(const char *name, int fd, long result)
 
 int ff_socket(int domain, int type, int protocol)
 {
+    if (!FF_IO_ALLOWED()) return -1;
     int family = domain == AF_INET6_LINUX ? AF_INET6 : domain;
     if (family != AF_INET && family != AF_INET6) return unsupported();
     int base = type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
@@ -62,6 +67,7 @@ int ff_connect(int fd, const struct linux_sockaddr *address, socklen_t length)
 
 int ff_listen(int fd, int backlog)
 {
+    if (!FF_IO_ALLOWED()) return -1;
     if (ker_sb_preload_ff_dispatch_begin(fd)) return -1;
     int result = ker_sb_posix_listen(fd, backlog);
     int saved_errno = errno;
@@ -83,6 +89,7 @@ int ff_close(int fd)
 
 int ff_socket_drain_count(void)
 {
+    if (!FF_IO_ALLOWED()) return -1;
     int count = ker_sb_preload_socket_drain_count();
     if (count < 0) {
         char message[128];
@@ -98,6 +105,7 @@ int ff_socket_drain_count(void)
 
 int ff_socket_snd_pending(void)
 {
+    if (!FF_IO_ALLOWED()) return -1;
     struct ker_socket_member_payload_snapshot snapshot = {0};
     if (ker_sb_preload_ff_owner_payload(&snapshot) < 0) {
         char message[160];

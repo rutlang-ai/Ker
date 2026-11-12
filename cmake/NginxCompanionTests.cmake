@@ -127,6 +127,48 @@ if(KER_BUILD_FSTACK_NGINX_RUNTIME AND KER_FSTACK_NGINX_BINARY)
                 set_tests_properties(native-nginx-companion-rx-source-peer-continuity PROPERTIES
                     TIMEOUT 190
                     LABELS "native-tcp;fstack;socket-broker;nginx-companion;rx-decision;owner-relay;source-classifier;peer")
+                add_test(NAME native-nginx-companion-rx-source-peer-accept-expiry
+                    COMMAND "${Python3_EXECUTABLE}"
+                        "${PROJECT_SOURCE_DIR}/tests/posix/native-nginx-peer-source.py"
+                        --build "${CMAKE_BINARY_DIR}"
+                        --nginx "${KER_FSTACK_NGINX_BINARY}"
+                        --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                        --source-nginx-module-source
+                        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules/ngx_ff_module.c"
+                        --async-accept-expiry
+                        --root "/dev/shm/kc28")
+                set_tests_properties(native-nginx-companion-rx-source-peer-accept-expiry PROPERTIES
+                    TIMEOUT 190
+                    LABELS "native-tcp;fstack;socket-broker;nginx-companion;rx-decision;owner-relay;source-classifier;peer;async-accept;expiry;quarantine")
+            endif()
+            if(TARGET ker-nginx-owner-group-controller AND
+               TARGET ker-socket-broker-rx-owner-relay-fixture AND
+               TARGET ker-fstack-nginx-owner-activation)
+                add_test(NAME native-nginx-source-master-first-hup
+                    COMMAND "${Python3_EXECUTABLE}"
+                        "${PROJECT_SOURCE_DIR}/tests/posix/native-nginx-source-master.py"
+                        --build "${CMAKE_BINARY_DIR}"
+                        --nginx "${KER_FSTACK_NGINX_BINARY}"
+                        --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                        --source-nginx-module-source
+                        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules/ngx_ff_module.c"
+                        --root "${CMAKE_BINARY_DIR}/Testing/Temporary/native-nginx-source-master")
+                set_tests_properties(native-nginx-source-master-first-hup PROPERTIES
+                    TIMEOUT 300
+                    LABELS "native-tcp;fstack;socket-broker;nginx-companion;source-bootstrap;source-master;first-hup")
+                add_test(NAME native-nginx-source-master-expired-commit
+                    COMMAND "${Python3_EXECUTABLE}"
+                        "${PROJECT_SOURCE_DIR}/tests/posix/native-nginx-source-master.py"
+                        --build "${CMAKE_BINARY_DIR}"
+                        --nginx "${KER_FSTACK_NGINX_BINARY}"
+                        --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                        --source-nginx-module-source
+                        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules/ngx_ff_module.c"
+                        --mode shared-budget-expiry
+                        --root "${CMAKE_BINARY_DIR}/Testing/Temporary/native-nginx-source-master-expiry")
+                set_tests_properties(native-nginx-source-master-expired-commit PROPERTIES
+                    TIMEOUT 180
+                    LABELS "native-tcp;fstack;socket-broker;nginx-companion;source-bootstrap;source-master;expiry;containment")
             endif()
             if(TARGET ker-socket-broker-reuseport-group-client)
                 add_test(NAME native-nginx-companion-rx-source-admission

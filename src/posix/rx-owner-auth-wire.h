@@ -9,8 +9,15 @@
 #define KER_RX_OWNER_AUTH_ACK UINT16_C(2)
 #define KER_RX_OWNER_AUTH_PEER UINT16_C(3)
 #define KER_RX_OWNER_AUTH_PEER_ACK UINT16_C(4)
+#define KER_RX_OWNER_SOURCE_ROUTE_PREPARE UINT16_C(5)
+#define KER_RX_OWNER_SOURCE_ROUTE_PREPARED UINT16_C(6)
+#define KER_RX_OWNER_SOURCE_ROUTE_COMMIT UINT16_C(7)
+#define KER_RX_OWNER_SOURCE_ROUTE_COMMITTED UINT16_C(8)
+#define KER_RX_OWNER_SOURCE_ROUTE_ABORT UINT16_C(9)
+#define KER_RX_OWNER_SOURCE_ROUTE_ABORTED UINT16_C(10)
 #define KER_RX_OWNER_AUTH_NONCE_BYTES 16
 #define KER_RX_OWNER_PEER_MAX_AUTHORITY_NS UINT64_C(300000000000)
+#define KER_RX_OWNER_SOURCE_ROUTE_EPOCH UINT32_C(1)
 
 struct ker_rx_owner_auth_record {
     uint32_t magic;
@@ -47,7 +54,25 @@ struct ker_rx_owner_peer_auth_record {
     uint64_t authority_deadline_ns;
 };
 
+/* First same-master source-HUP route transition. The nested peer proof names
+ * the already-authenticated role-0 owner and the fresh role-1 candidate. The
+ * source master pidfd and exact launch epoch bind the candidate to this one
+ * original master round. Commands are monotonic and non-renewable. */
+struct ker_rx_owner_source_route_record {
+    struct ker_rx_owner_peer_auth_record pair;
+    uint64_t operation_id;
+    uint64_t command_sequence;
+    uint64_t source_master_start_ticks;
+    uint32_t source_master_pid;
+    uint32_t source_epoch;
+    int32_t status;
+    uint32_t reserved;
+    uint64_t command_deadline_ns;
+};
+
 _Static_assert(sizeof(struct ker_rx_owner_auth_record) == 96, "owner AUTH ABI");
 _Static_assert(sizeof(struct ker_rx_owner_peer_auth_record) == 144, "peer AUTH ABI");
+_Static_assert(sizeof(struct ker_rx_owner_source_route_record) == 192,
+    "source route ABI");
 
 #endif

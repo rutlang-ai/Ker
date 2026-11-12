@@ -948,11 +948,9 @@ source block's validated generation/epoch fields and the absent dispatcher and
 packet-owner bindings. This is an observation of the source symbol and the
 existing reload helpers; it does not prove their pointers are identical.
 
-This gate is a safety prerequisite only. Graceful reload remains unsupported:
-the Ker runtime has no authenticated generation packet-owner or packet
-dispatcher binding, and no source FSM, handover, drain, rollback, or repeated
-generation qualification is claimed. Graceful-off source lifecycle remains
-covered by `native-nginx-fstack-runtime-lifecycle`.
+This default gate remains closed without an authenticated source bootstrap.
+Graceful-off source lifecycle remains covered by
+`native-nginx-fstack-runtime-lifecycle`.
 
 ## Original CPS probe across explicit commit and abort
 
@@ -1003,3 +1001,44 @@ independent controller connections. These are correctness samples, not a
 throughput comparison. The existing 180-second source LC commit profile and
 the ordinary commit/abort profiles also passed; the LC oracle retained its
 original bounded old-connection closure policy.
+
+## Bounded original same-master HUP
+
+The explicit source bootstrap profile now delegates an initial worker and its
+first HUP successor to the unchanged master. The slim primary still closes all
+inherited descriptors; the adapter reconnects afterward and authenticates the
+actual master, shared source block, runtime and I/O pidfds. Its control-only
+grant has no application socket or packet-owner authority. Each worker receives
+an exact SDK FIFO slot, relay and distinct READY channel. The companion consumes
+the original credentialed READY receiver rather than a supervisor copy.
+The supervisor hashes held read-only executable descriptors and reads the
+master's ELF exports from that same inode. Live checks retain the exact
+pidfd/start identity and compare both the executing inode and held descriptor's
+metadata, avoiding repeated executable hashing inside the handover deadline.
+
+`KER_NGINX_SOURCE_FIRST_HUP_ENABLE=1` requires this complete authenticated
+profile. A candidate stages its original flow map and native admission queue
+before its first socket. Its original source READY publication waits for both
+module authentication and C31's independent PREPARED proof, followed by the
+supervisor's one-use ACTIVATE. C31 keeps the initial role immutable while
+pending, then moves its existing authenticated channel into PEER authority
+when the exact candidate becomes primary.
+
+The master retains its original park, release and FSM writes. Before park, an
+adapter establishes the native original-SYN queue. Before HANDOVER_DONE, C31
+and native selector commit must finish within the same immutable 100 ms PARK
+deadline, and the companion must acknowledge the successor watch. Active old
+TCP requests continue through the original classifier's PEER decision and old
+owner LOCAL delivery into original Linux TCP. Real native connection, queued
+payload and request-sock counts feed the source's one-Hz drain reports. The
+old listener retires after the original drain/QUIT/death sequence. Native
+admission disables and drains pending admission/revoke work before the surviving
+original dispatcher and flow map close.
+
+The integration test exercises one actual master HUP, the six original FSM
+transitions, an active old response, fresh candidate traffic and traffic after
+map retirement. Expired or uncertain control outcomes require whole-profile
+authority withdrawal and quarantine; they do not certify healthy rollback.
+Repeated HUP, USR2, respawn and the complete original shell matrix remain outside
+this finite first-successor profile. Inventory remains 362 adapted, 0 partial,
+1 blocked; `test_graceful_reload.sh::entrypoint` is unchanged.

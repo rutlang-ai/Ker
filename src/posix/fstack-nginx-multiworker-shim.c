@@ -392,6 +392,7 @@ validate_worker_cycle(int argc, char * const argv[], ngx_cycle_t **cycle_out,
     ngx_listening_t *listeners;
     ngx_uint_t worker;
     int primary, seen[2] = {0, 0};
+    int source_worker = 0;
 
     if (getenv("FF_FAULT") != NULL)
         return unsupported("FF_FAULT is unsupported by this bounded profile");
@@ -414,15 +415,27 @@ validate_worker_cycle(int argc, char * const argv[], ngx_cycle_t **cycle_out,
         cycle->conf_ctx[core_module->index] == NULL)
         return unsupported("Nginx core module configuration layout mismatch");
 
+    if (getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH")) {
+        int *graceful = dlsym(RTLD_DEFAULT, "ngx_ff_graceful_reload");
+        ngx_int_t *ff_process = dlsym(RTLD_DEFAULT, "ngx_ff_process");
+        if (!graceful || *graceful != 1 || !ff_process ||
+            *ff_process != NGX_FF_PROCESS_SECONDARY)
+            return unsupported("source worker is not an original graceful secondary");
+        source_worker = 1;
+    }
     if (*process_slot != NGX_PROCESS_WORKER || *worker_slot > 1 ||
         parse_worker_argument(argc, argv, &worker, &primary) != 0 ||
-        worker != *worker_slot || (worker == 0) != (primary != 0))
+        (source_worker ? (*worker_slot != 0 || worker != 1 || primary) :
+        (worker != *worker_slot || (worker == 0) != (primary != 0))))
         return unsupported("F-Stack role does not match the Nginx worker identity");
+    if (source_worker) worker = *worker_slot;
 
     core_conf = (ngx_core_conf_t *)ngx_get_conf(cycle->conf_ctx, core_module[0]);
     if (core_conf == NULL || !core_conf->master ||
         (core_conf->worker_processes != 1 && core_conf->worker_processes != 2))
         return unsupported("only master mode with one or two workers is supported");
+    if (source_worker && core_conf->worker_processes != 1)
+        return unsupported("source worker requires exactly one secondary");
     if (worker != *worker_slot || worker >= (ngx_uint_t)core_conf->worker_processes)
         return unsupported("worker identity is outside the configured Nginx worker set");
 
@@ -505,10 +518,41 @@ ff_init(int argc, char * const argv[])
     if (error != NULL || runtime_preflight == NULL || runtime_commit == NULL)
         return unsupported("the Ker FF runtime preflight/commit entry points are unavailable");
 
+    if (getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH")) {
+        ngx_int_t *ff_process = dlsym(RTLD_DEFAULT, "ngx_ff_process");
+        ngx_uint_t *process = dlsym(RTLD_DEFAULT, "ngx_process");
+        int *graceful = dlsym(RTLD_DEFAULT, "ngx_ff_graceful_reload");
+        if (ff_process && *ff_process == NGX_FF_PROCESS_SLIM_PRIMARY) {
+            ngx_module_t *core = dlsym(RTLD_DEFAULT, "ngx_core_module");
+            ngx_cycle_t **cycle_slot = dlsym(RTLD_DEFAULT, "ngx_cycle");
+            ngx_uint_t proc_id;
+            int primary;
+            if (!process || *process != NGX_PROCESS_MASTER || !graceful || *graceful != 1 ||
+                parse_worker_argument(argc, argv, &proc_id, &primary) || proc_id || !primary ||
+                !core || core->version != nginx_version || !core->signature ||
+                strcmp(core->signature, NGX_MODULE_SIGNATURE) || !cycle_slot || !*cycle_slot)
+                return unsupported("source slim role or pinned Nginx ABI mismatch");
+            cycle = *cycle_slot;
+            if (!cycle->modules || !cycle->conf_ctx || !cycle->modules_n ||
+                cycle->modules_n > 4096 || core->index >= cycle->modules_n ||
+                cycle->modules[core->index] != core || !cycle->conf_ctx[core->index])
+                return unsupported("source slim core configuration mismatch");
+            ngx_core_conf_t *conf = (ngx_core_conf_t *)cycle->conf_ctx[core->index];
+            if (!conf->master || conf->worker_processes != 1)
+                return unsupported("source slim requires exactly one configured secondary worker");
+            /* No legacy listener preparation or owner claim for this actor.
+             * Preflight still authenticates its post-close bootstrap and the
+             * exact original shared block before the control-only commit. */
+            if (runtime_preflight(argc, argv)) return -1;
+            return runtime_commit();
+        }
+    }
+
     if (validate_worker_cycle(argc, argv, &cycle, &worker, &worker_count) != 0)
         return -1;
 
-    secondary_authorization_active = worker == 1 && worker_count == 2;
+    secondary_authorization_active = (worker == 1 && worker_count == 2) ||
+        getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH") != NULL;
     if (runtime_preflight(argc, argv) != 0) {
         secondary_authorization_active = 0;
         return -1;

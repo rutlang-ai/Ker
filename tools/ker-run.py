@@ -41,6 +41,13 @@ _RX_OWNER_AUTH_ACK = 2
 _RX_OWNER_AUTH_PEER = 3
 _RX_OWNER_AUTH_PEER_ACK = 4
 _RX_OWNER_PEER_AUTH_RECORD = struct.Struct('=IHHIIIIIIQQQQQQ16sIIQQQQQ')
+_RX_OWNER_SOURCE_ROUTE_RECORD = struct.Struct('=IHHIIIIIIQQQQQQ16sIIQQQQQQQQIIiIQ')
+_RX_OWNER_SOURCE_ROUTE_PREPARE = 5
+_RX_OWNER_SOURCE_ROUTE_PREPARED = 6
+_RX_OWNER_SOURCE_ROUTE_COMMIT = 7
+_RX_OWNER_SOURCE_ROUTE_COMMITTED = 8
+_RX_OWNER_SOURCE_ROUTE_ABORT = 9
+_RX_OWNER_SOURCE_ROUTE_ABORTED = 10
 _RX_DECISION_WIRE_SPEC = importlib.util.spec_from_file_location(
     '_ker_run_rx_decision_wire', _RX_DECISION_WIRE_PATH)
 if _RX_DECISION_WIRE_SPEC is None or _RX_DECISION_WIRE_SPEC.loader is None:
@@ -337,6 +344,212 @@ def rx_owner_peer_auth(endpoint, peer_channel, app, app_pidfd, supervisor_pidfd,
             'old_pid': old.owner_pid, 'old_cookie': old.owner_cookie,
             'primary_pid': primary.owner_pid, 'primary_cookie': primary.owner_cookie,
             'authority_deadline_ns': authority_deadline_ns}, sort_keys=True), flush=True)
+    finally:
+        for fd in extra_fds:
+            os.close(fd)
+
+
+def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
+                                  supervisor_pidfd, current, candidate,
+                                  source_master, nonce, epoch,
+                                  authority_deadline_ns, operation_id,
+                                  command_sequence=1):
+    """Stage a fresh same-master source candidate while retaining current route.
+
+    The candidate ACK is consumed by C31 after this function sends supervisor
+    APP_AUTH; this function waits only for C31's independently validated
+    PREPARED response. The caller must send source-worker ACTIVATE afterward.
+    """
+    now = time.monotonic_ns()
+    if (not nonce or len(nonce) != 16 or not epoch or
+            authority_deadline_ns <= now or
+            authority_deadline_ns - now > 300_000_000_000 or
+            current.owner_role != 0 or candidate.owner_role != 1 or
+            current.owner_pid == candidate.owner_pid or
+            current.owner_cookie == candidate.owner_cookie or
+            (current.owner_slot_device, current.owner_slot_inode) ==
+                (candidate.owner_slot_device, candidate.owner_slot_inode) or
+            operation_id <= 0 or command_sequence <= 0):
+        raise ValueError('invalid finite source-route candidate authority')
+    supervisor = os.getpid()
+    supervisor_start = process_start_ticks(supervisor)
+    app_start = process_start_ticks(app.pid)
+    master_start = process_start_ticks(source_master.pid)
+    expected_master_start = getattr(source_master, 'start_ticks', master_start)
+    if master_start != expected_master_start:
+        raise ProcessLookupError('source master start time changed before PREPARE')
+    for owner in (current, candidate):
+        if (not all(value > 0 for value in (owner.owner_pid, owner.owner_tid,
+                owner.owner_start, owner.owner_slot_device, owner.owner_slot_inode,
+                owner.owner_cookie)) or
+                nginx_companion._pidfd_pid(owner.owner_pidfd) != owner.owner_pid or
+                process_start_ticks(owner.owner_pid) != owner.owner_start or
+                not Path(f'/proc/{owner.owner_pid}/task/{owner.owner_tid}').is_dir() or
+                not nginx_companion.process_alive(owner.owner_pidfd)):
+            raise ProcessLookupError('source-route READY identity is stale')
+    if (nginx_companion._pidfd_pid(app_pidfd) != app.pid or
+            nginx_companion._pidfd_pid(supervisor_pidfd) != supervisor or
+            nginx_companion._pidfd_pid(source_master.pidfd) != source_master.pid or
+            not nginx_companion.process_alive(source_master.pidfd)):
+        raise ProcessLookupError('source-route app, supervisor, or master is stale')
+    fields = [
+        _RX_OWNER_AUTH_MAGIC, _RX_OWNER_AUTH_VERSION, _RX_OWNER_SOURCE_ROUTE_PREPARE,
+        _RX_OWNER_SOURCE_ROUTE_RECORD.size, supervisor, candidate.owner_pid,
+        candidate.owner_tid, candidate.owner_role, 0, epoch, supervisor_start,
+        candidate.owner_start, candidate.owner_slot_device,
+        candidate.owner_slot_inode, candidate.owner_cookie, nonce,
+        current.owner_pid, current.owner_tid, current.owner_start,
+        current.owner_slot_device, current.owner_slot_inode, current.owner_cookie,
+        authority_deadline_ns,
+    ]
+    payload = _RX_OWNER_SOURCE_ROUTE_RECORD.pack(*fields, operation_id,
+        command_sequence, master_start, source_master.pid, 1, 0, 0, 0)
+    if (candidate_channel.family != socket.AF_UNIX or
+            candidate_channel.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) !=
+                socket.SOCK_SEQPACKET):
+        raise ValueError('candidate route requires a Unix packet channel')
+    # The receiving app must enable credentials before APP_AUTH can queue ACK.
+    candidate_channel.setblocking(False)
+    candidate_channel.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+    rights = array.array('i', (candidate.owner_pidfd, candidate_channel.fileno(),
+        source_master.pidfd))
+    sent = endpoint.sendmsg([payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
+        getattr(socket, 'MSG_NOSIGNAL', 0) | getattr(socket, 'MSG_DONTWAIT', 0))
+    if sent != len(payload):
+        raise RuntimeError('short supervisor-to-C31 source-route PREPARE send')
+    rx_owner_relay_auth(candidate_channel, app, app_pidfd, supervisor_pidfd,
+        candidate, nonce, epoch)
+    deadline = min(time.monotonic() + 5, authority_deadline_ns / 1e9)
+    with selectors.DefaultSelector() as selector:
+        selector.register(endpoint, selectors.EVENT_READ)
+        if not selector.select(max(0, deadline - time.monotonic())):
+            raise TimeoutError('C31 did not validate candidate APP_AUTH_ACK')
+    packet, ancillary, flags, _ = endpoint.recvmsg(_RX_OWNER_SOURCE_ROUTE_RECORD.size + 1,
+        socket.CMSG_SPACE(struct.calcsize('=3i')) + socket.CMSG_SPACE(4 * 4),
+        getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
+    extra_fds = []
+    credentials = []
+    invalid = False
+    try:
+        for level, kind, value in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS and len(value) == 12:
+                credentials.append(struct.unpack('=3i', value))
+            elif level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                values = array.array('i')
+                values.frombytes(value[:len(value) - len(value) % values.itemsize])
+                extra_fds.extend(values)
+                invalid = True
+            else:
+                invalid = True
+        expected = fields.copy()
+        expected[2] = _RX_OWNER_SOURCE_ROUTE_PREPARED
+        expected_wire = _RX_OWNER_SOURCE_ROUTE_RECORD.pack(*expected, operation_id,
+            command_sequence, master_start, source_master.pid, 1, 0, 0, 0)
+        if (invalid or extra_fds or flags & (getattr(socket, 'MSG_TRUNC', 0) |
+                getattr(socket, 'MSG_CTRUNC', 0)) or
+                credentials != [(app.pid, os.stat(f'/proc/{app.pid}').st_uid,
+                    os.stat(f'/proc/{app.pid}').st_gid)] or
+                len(packet) != _RX_OWNER_SOURCE_ROUTE_RECORD.size):
+            raise PermissionError('source-route PREPARED credentials or size mismatch')
+        actual = list(_RX_OWNER_SOURCE_ROUTE_RECORD.unpack(packet))
+        status = actual[28]
+        actual[28] = 0
+        if tuple(actual) != _RX_OWNER_SOURCE_ROUTE_RECORD.unpack(expected_wire):
+            raise PermissionError('source-route PREPARED identity/context mismatch')
+        if status:
+            raise PermissionError(f'C31 rejected source-route candidate: {status}')
+        if (time.monotonic() >= deadline or process_start_ticks(app.pid) != app_start or
+                process_start_ticks(supervisor) != supervisor_start or
+                not all(nginx_companion.process_alive(fd) for fd in
+                    (app_pidfd, supervisor_pidfd, candidate.owner_pidfd,
+                     current.owner_pidfd, source_master.pidfd))):
+            raise ProcessLookupError('source authority expired or actor died before PREPARED')
+        print('KER_RX_OWNER_SOURCE_ROUTE_PREPARED ' + json.dumps({
+            'current_pid': current.owner_pid, 'candidate_pid': candidate.owner_pid,
+            'operation_id': operation_id, 'command_sequence': command_sequence,
+            'authority_deadline_ns': authority_deadline_ns},
+            sort_keys=True, separators=(',', ':')), flush=True)
+        return SimpleNamespace(fields=fields, operation_id=operation_id,
+            command_sequence=command_sequence, master_start=master_start,
+            master_pid=source_master.pid, source_epoch=1, app_pid=app.pid,
+            app_start=app_start, app_pidfd=app_pidfd,
+            supervisor_pid=supervisor, supervisor_start=supervisor_start)
+    finally:
+        for fd in extra_fds:
+            os.close(fd)
+
+
+def send_source_route_command(endpoint, prepared, command_type, command_sequence,
+                              operation_deadline_ns=None):
+    """Send a bounded monotonic COMMIT/ABORT for one prepared source route.
+
+    A late or missing ACK can follow a completed swap. After sending COMMIT,
+    an exception requires quarantine; it never proves the old route survived.
+    """
+    transitions = {
+        _RX_OWNER_SOURCE_ROUTE_COMMIT: _RX_OWNER_SOURCE_ROUTE_COMMITTED,
+        _RX_OWNER_SOURCE_ROUTE_ABORT: _RX_OWNER_SOURCE_ROUTE_ABORTED,
+    }
+    if (command_type not in transitions or command_sequence <= prepared.command_sequence):
+        raise ValueError('invalid source-route command type or sequence')
+    command_deadline_ns = min(time.monotonic_ns() + 5_000_000_000, prepared.fields[22])
+    if operation_deadline_ns is not None:
+        command_deadline_ns = min(command_deadline_ns, operation_deadline_ns)
+    deadline = command_deadline_ns / 1e9
+    if (time.monotonic() >= deadline or
+            nginx_companion._pidfd_pid(prepared.app_pidfd) != prepared.app_pid or
+            not nginx_companion.process_alive(prepared.app_pidfd) or
+            process_start_ticks(prepared.app_pid) != prepared.app_start):
+        raise TimeoutError('source-route command authority expired or C31 exited')
+    fields = prepared.fields.copy()
+    fields[2] = command_type
+    payload = _RX_OWNER_SOURCE_ROUTE_RECORD.pack(*fields,
+        prepared.operation_id, command_sequence, prepared.master_start,
+        prepared.master_pid, prepared.source_epoch, 0, 0, command_deadline_ns)
+    if endpoint.send(payload, getattr(socket, 'MSG_NOSIGNAL', 0) |
+            getattr(socket, 'MSG_DONTWAIT', 0)) != len(payload):
+        raise RuntimeError('short source-route COMMIT/ABORT send')
+    with selectors.DefaultSelector() as selector:
+        selector.register(endpoint, selectors.EVENT_READ)
+        if not selector.select(max(0, deadline - time.monotonic())):
+            raise TimeoutError('C31 did not acknowledge source-route command')
+    packet, ancillary, flags, _ = endpoint.recvmsg(_RX_OWNER_SOURCE_ROUTE_RECORD.size + 1,
+        socket.CMSG_SPACE(struct.calcsize('=3i')) + socket.CMSG_SPACE(4 * 4),
+        getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
+    credentials = []
+    invalid = False
+    extra_fds = []
+    try:
+        for level, kind, value in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS and len(value) == 12:
+                credentials.append(struct.unpack('=3i', value))
+            elif level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                rights = array.array('i')
+                rights.frombytes(value[:len(value) - len(value) % rights.itemsize])
+                extra_fds.extend(rights)
+                invalid = True
+            else:
+                invalid = True
+        expected = list(prepared.fields)
+        expected[2] = transitions[command_type]
+        expected.extend((prepared.operation_id, command_sequence, prepared.master_start,
+            prepared.master_pid, prepared.source_epoch, 0, 0, command_deadline_ns))
+        if (invalid or flags & (getattr(socket, 'MSG_TRUNC', 0) |
+                getattr(socket, 'MSG_CTRUNC', 0)) or
+                len(packet) != _RX_OWNER_SOURCE_ROUTE_RECORD.size or
+                credentials != [(prepared.app_pid, os.getuid(), os.getgid())]):
+            raise PermissionError('source-route command ACK credentials or shape mismatch')
+        actual = list(_RX_OWNER_SOURCE_ROUTE_RECORD.unpack(packet))
+        status = actual[28]
+        actual[28] = 0
+        if tuple(actual) != tuple(expected):
+            raise PermissionError('source-route command ACK identity/context mismatch')
+        if (time.monotonic() >= deadline or
+                not nginx_companion.process_alive(prepared.app_pidfd) or
+                process_start_ticks(prepared.app_pid) != prepared.app_start):
+            raise TimeoutError('source-route ACK arrived after authority/deadline')
+        prepared.command_sequence = command_sequence
+        return status
     finally:
         for fd in extra_fds:
             os.close(fd)
