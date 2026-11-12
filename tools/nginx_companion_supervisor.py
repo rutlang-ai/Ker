@@ -10,6 +10,7 @@ import struct
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 _WIRE_SPEC = importlib.util.spec_from_file_location(
     '_ker_nginx_companion_wire', Path(__file__).resolve().with_name(
@@ -71,13 +72,17 @@ class NginxCompanion:
     """Own one helper and one exact pinned non-daemon Nginx master subtree."""
     def __init__(self, binary, config, prefix, nginx_env, cycle_control_fd=None,
                  owner_ready_required=False, rx_owner_relay_fd=None,
-                 candidate_slot_transfer_fd=None, initial_slot_transfer_fd=None):
+                 candidate_slot_transfer_fd=None, initial_slot_transfer_fd=None,
+                 source_bootstrap_required=False):
         self.binary = Path(binary).resolve(strict=True)
         self.config = Path(config).resolve(strict=True)
         self.prefix = Path(prefix).resolve(strict=True)
         self.nginx_env = dict(nginx_env)
         self.cycle_control_fd = cycle_control_fd
         self.owner_ready_required = bool(owner_ready_required)
+        self.source_bootstrap_required = bool(source_bootstrap_required)
+        if self.source_bootstrap_required and not self.owner_ready_required:
+            raise ValueError('source bootstrap requires authenticated worker READY')
         self.rx_owner_relay_fd = rx_owner_relay_fd
         if candidate_slot_transfer_fd is not None and initial_slot_transfer_fd is not None:
             raise ValueError('one delegated owner role is required')
@@ -144,6 +149,20 @@ class NginxCompanion:
         self.settled = False
         self.settled_record = None
         self.unresolved = False
+        self.source_watch = None
+        self.source_candidate = None
+        self.source_candidate_attempted = False
+
+    def watch_source_worker(self, watch, receiver, timeout=5.0):
+        if (not self.source_bootstrap_required or self.master_pidfd < 0 or
+                self.started or self.unresolved or self.source_watch is not None):
+            raise RuntimeError('source startup watch is not available')
+        body = wire.SOURCE_WATCH_BODY.pack(watch['pid'], watch['tid'],
+            watch['role'], 0, watch['start'], watch['slot_device'],
+            watch['slot_inode'], watch['cookie'])
+        self._send(wire.pack_record(wire.SOURCE_WATCH, body, self.nonce,
+            self.epoch, 1), (receiver.fileno(), watch['pidfd']), time.monotonic() + timeout)
+        self.source_watch = dict(watch)
 
     def _send(self, packet, rights, deadline):
         sent_rights = False
@@ -171,6 +190,7 @@ class NginxCompanion:
                 poller.poll(max(1, int(remaining * 1000)))
 
     def _receive(self, expected_size, deadline, rights_count):
+        allowed_rights = (rights_count,) if isinstance(rights_count, int) else rights_count
         expected_sizes = ((expected_size,) if isinstance(expected_size, int)
             else tuple(expected_size))
         if not expected_sizes or any(size <= 0 for size in expected_sizes):
@@ -202,7 +222,7 @@ class NginxCompanion:
                         elif ancillary_error is None:
                             credentials = _UCRED.unpack(payload)
                     elif level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
-                        if rights_count == 0:
+                        if allowed_rights == (0,):
                             ancillary_error = ValueError('unexpected helper descriptor ancillary data')
                         usable = len(payload) - len(payload) % 4
                         if usable:
@@ -216,7 +236,7 @@ class NginxCompanion:
                 if credentials != (self.helper.pid, os.getuid(), os.getgid()):
                     raise PermissionError(f'helper credentials {credentials!r} did not match '
                         f'pinned Popen child {(self.helper.pid, os.getuid(), os.getgid())!r}')
-                if len(packet) not in expected_sizes or len(fds) != rights_count:
+                if len(packet) not in expected_sizes or len(fds) not in allowed_rights:
                     kind = wire.unpack_header(packet)[0] if len(packet) >= wire.HEADER.size else None
                     details = None
                     if kind == wire.ERROR and len(packet) == wire.ERROR_BYTES:
@@ -296,9 +316,11 @@ class NginxCompanion:
             self.candidate_slot_transfer_fd = None
             raise
 
-    def start(self, timeout=15.0):
+    def start(self, timeout=15.0, *, on_master_started=None):
         if self.helper is not None:
             raise RuntimeError('Nginx companion is one-use')
+        if self.source_bootstrap_required and not callable(on_master_started):
+            raise ValueError('source bootstrap requires a pinned master binding callback')
         if self.candidate_slot_transfer_fd is not None:
             self._receive_candidate_slot(timeout)
         parent, child = socket.socketpair(socket.AF_UNIX,
@@ -316,6 +338,8 @@ class NginxCompanion:
             helper_pass_fds.append(self.cycle_control_fd)
         if self.owner_ready_required:
             command.append('--owner-ready-required')
+        if self.source_bootstrap_required:
+            command.append('--source-bootstrap-required')
         if self.rx_owner_relay_fd is not None:
             command += ['--rx-owner-relay-fd', str(self.rx_owner_relay_fd)]
             helper_pass_fds.append(self.rx_owner_relay_fd)
@@ -375,6 +399,11 @@ class NginxCompanion:
             self.master_pid = pid
             self.master_start = start_ticks
             self.master_pidfd = fds.pop()
+            # STARTED already authenticates the exact helper-owned master.
+            # Source slim startup is waiting for re-delegation at this point;
+            # bind it before waiting for the first worker's independent READY.
+            if on_master_started is not None:
+                on_master_started(self)
             if self.owner_ready_required:
                 packet, fds = self._receive((wire.OWNER_READY_BYTES,
                     wire.ERROR_BYTES), deadline, 1)
@@ -399,6 +428,15 @@ class NginxCompanion:
                             slot_device != self.candidate_slot_stat.st_dev or
                             slot_inode != self.candidate_slot_stat.st_ino):
                         raise PermissionError('Nginx candidate READY does not identify the transferred slot capability')
+                    if self.source_bootstrap_required:
+                        if self.source_watch is None or any((
+                            owner_pid != self.source_watch['pid'],
+                            owner_tid != self.source_watch['tid'],
+                            owner_start != self.source_watch['start'],
+                            slot_device != self.source_watch['slot_device'],
+                            slot_inode != self.source_watch['slot_inode'],
+                            owner_cookie != self.source_watch['cookie'])):
+                            raise PermissionError('source worker READY differs from exact delegated watch')
                     worker_pidfd = fds.pop()
                     if (_pidfd_pid(worker_pidfd) != owner_pid or
                             not process_alive(worker_pidfd) or
@@ -468,6 +506,122 @@ class NginxCompanion:
                 raise OSError(fields[0], 'Nginx reload failed')
         self._request(wire.RELOAD, (wire.RELOAD_RESULT,),
             (wire.RELOAD_RESULT_BYTES, wire.ERROR_BYTES), timeout, validate)
+
+    def signal_source_hup(self, timeout=5.0):
+        """Deliver HUP to the pinned source master; does not certify a reload.
+
+        The original FSM and a separately authenticated successor determine
+        the result. The current owner watch remains in force throughout.
+        """
+        if not self.source_bootstrap_required or not self.owner_ready_required:
+            raise RuntimeError('source HUP requires the authenticated source profile')
+
+        def validate(packet, _record_type):
+            fields = wire.unpack_record(packet, wire.SOURCE_HUP_DELIVERED,
+                self.nonce, self.epoch, self.sequence, wire.RELOAD_RESULT_BODY)
+            wire.validate_reload_result(fields, self.master_start, self.profile)
+            if fields[0] != 0:
+                raise OSError(fields[0], 'source HUP delivery failed')
+
+        self._request(wire.SOURCE_HUP, (wire.SOURCE_HUP_DELIVERED,),
+            (wire.RELOAD_RESULT_BYTES, wire.ERROR_BYTES), timeout, validate)
+
+    def watch_source_candidate(self, watch, receiver, timeout=20.0):
+        """Authenticate successor READY, retaining the current owner's watch."""
+        if (not self.source_bootstrap_required or not self.started or self.unresolved or
+                self.settled or self.source_candidate_attempted or self.owner_role != 0 or
+                watch['role'] != 1 or watch['source_epoch'] != 1 or watch['generation'] != 1):
+            raise RuntimeError('source candidate watch is not available')
+        self.source_candidate_attempted = True
+        deadline = time.monotonic() + timeout
+        body = wire.SOURCE_WATCH_BODY.pack(watch['pid'], watch['tid'], 1, 0,
+            watch['start'], watch['slot_device'], watch['slot_inode'], watch['cookie'])
+        fds = []
+        failed = None
+        try:
+            self._send(wire.pack_record(wire.SOURCE_CANDIDATE_WATCH, body,
+                self.nonce, self.epoch, self.sequence),
+                (receiver.fileno(), watch['pidfd']), deadline)
+            packet, fds = self._receive((wire.OWNER_READY_BYTES, wire.ERROR_BYTES),
+                deadline, (0, 1))
+            kind, nonce, epoch, sequence = wire.unpack_header(packet)
+            if (nonce, epoch, sequence) != (self.nonce, self.epoch, self.sequence):
+                raise ValueError('source candidate response correlation mismatch')
+            if kind == wire.SOURCE_CANDIDATE_FAILED:
+                fields = wire.unpack_record(packet, kind, self.nonce, self.epoch,
+                    self.sequence, wire.ERROR_BODY)
+                wire.validate_error(fields)
+                if fds or fields[2:] != (self.master_pid, 0, self.master_start, self.profile):
+                    raise PermissionError('source candidate failure changed master identity')
+                failed = fields[0]
+            elif kind == wire.SOURCE_CANDIDATE_READY:
+                fields = wire.unpack_record(packet, kind, self.nonce, self.epoch,
+                    self.sequence, wire.OWNER_READY_BODY)
+                wire.validate_owner_ready(fields, expected_uid=os.getuid(),
+                    expected_gid=os.getgid(), expected_role=1, expected_cookie=watch['cookie'])
+                pid, _, _, role, tid, _, start, dev, inode, cookie = fields
+                if (len(fds) != 1 or (pid, tid, start, dev, inode) !=
+                        (watch['pid'], watch['tid'], watch['start'],
+                            watch['slot_device'], watch['slot_inode']) or
+                        _pidfd_pid(fds[0]) != pid or not process_alive(fds[0]) or
+                        _start_ticks(pid) != start or _sha256(f'/proc/{pid}/exe') != self.binary_hash or
+                        int(Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[1]) != self.master_pid or
+                        pid == self.owner_pid or cookie == self.owner_cookie or
+                        (dev, inode) == (self.owner_slot_device, self.owner_slot_inode)):
+                    raise PermissionError('source successor READY does not match delegated identity')
+                self.source_candidate = SimpleNamespace(owner_pid=pid, owner_tid=tid,
+                    owner_start=start, owner_role=role, owner_slot_device=dev,
+                    owner_slot_inode=inode, owner_cookie=cookie, owner_pidfd=fds.pop())
+            else:
+                raise ValueError('unexpected source candidate response')
+            self.sequence += 1
+            if self.sequence > wire.MAX_SEQUENCE:
+                raise OverflowError('companion request sequence exhausted')
+        except BaseException:
+            self.unresolved = True
+            raise
+        finally:
+            _close_fds(fds)
+        if failed is not None:
+            raise ChildProcessError(failed, 'original source candidate failed before READY')
+        return self.source_candidate
+
+    def promote_source_candidate(self, timeout=5.0):
+        """Replace containment watch after caller verifies native/source commit.
+
+        This ack does not move a selector or source FSM. The caller must keep
+        the original master paused at its handover hook until this returns.
+        """
+        candidate = self.source_candidate
+        if (not self.source_bootstrap_required or candidate is None or
+                not self.started or self.unresolved or self.settled):
+            raise RuntimeError('source promotion is not available')
+        fields = (candidate.owner_pid, os.getuid(), os.getgid(), 1,
+            candidate.owner_tid, 0, candidate.owner_start, candidate.owner_slot_device,
+            candidate.owner_slot_inode, candidate.owner_cookie)
+        deadline = time.monotonic() + timeout
+        fds = []
+        try:
+            self._send(wire.pack_record(wire.SOURCE_PROMOTE,
+                wire.OWNER_READY_BODY.pack(*fields), self.nonce, self.epoch,
+                self.sequence), (), deadline)
+            packet, fds = self._receive(wire.OWNER_READY_BYTES, deadline, 0)
+            got = wire.unpack_record(packet, wire.SOURCE_PROMOTED, self.nonce,
+                self.epoch, self.sequence, wire.OWNER_READY_BODY)
+            if got != fields or not process_alive(candidate.owner_pidfd):
+                raise PermissionError('source promotion changed candidate identity')
+            self.sequence += 1
+            if self.sequence > wire.MAX_SEQUENCE:
+                raise OverflowError('companion request sequence exhausted')
+            os.close(self.owner_pidfd)
+            for name, value in vars(candidate).items():
+                setattr(self, name, value)
+            self.source_candidate = None
+        except BaseException:
+            self.unresolved = True
+            raise
+        finally:
+            _close_fds(fds)
 
     def check(self):
         """Raise immediately for an unsolicited pinned-master/helper failure."""
@@ -558,6 +712,9 @@ class NginxCompanion:
         if self.owner_pidfd >= 0:
             os.close(self.owner_pidfd)
             self.owner_pidfd = -1
+        if self.source_candidate is not None:
+            os.close(self.source_candidate.owner_pidfd)
+            self.source_candidate = None
         if self.supervisor_pidfd >= 0:
             os.close(self.supervisor_pidfd)
             self.supervisor_pidfd = -1

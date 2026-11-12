@@ -597,3 +597,20 @@ These are private per-master qualification windows, not the original
 same-master reload FSM or its complete source shell matrix. The public runtime
 profile remains bounded, the source shell entrypoint stays blocked, and the
 inventory counts remain 362 adapted, zero partial and one blocked.
+
+### Bounded original same-master first HUP
+
+The explicit [source bootstrap profile](fstack-nginx-runtime.md#bounded-original-same-master-hup)
+now executes the unchanged master/slim/worker startup and first HUP FSM, rather
+than preparing private per-master reload windows. Exact FIFO slots and fresh
+credentialed READY channels bind both workers. C31 independently authenticates
+the candidate before original READY publication; the master park/release hooks
+bind the native SYN queue and selector to a shared, nonrenewable 100 ms deadline.
+Actual old TCP body continuity, fresh candidate TCP, original drain reports,
+old worker exit and admission retirement precede successful teardown.
+
+This qualifies the bounded first-successor integration. It does not execute
+the full original shell, repeated-HUP or USR2 cases. Failed/expired handover
+authority requires quarantine and explicit subtree/resource settlement, with
+failed source health retained. The source shell entrypoint remains blocked;
+the inventory remains 362 adapted, zero partial and one blocked.

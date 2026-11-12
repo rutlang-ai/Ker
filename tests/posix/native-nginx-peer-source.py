@@ -7,6 +7,7 @@ not qualification of the complete original same-master reload shell/FSM.
 import argparse
 import array
 from concurrent.futures import ThreadPoolExecutor
+import ctypes
 import hashlib
 import importlib.util
 import ipaddress
@@ -21,6 +22,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from types import SimpleNamespace
 
@@ -78,6 +80,10 @@ class Control:
 def supervisor(args):
     kr = load('peer_ker_run', ROOT / 'tools/ker-run.py')
     root, build = args.root, args.build
+    if args.async_accept_expiry:
+        require(len(str(root)) < 64,
+            'C28 admission test TMPDIR must stay below the native 64-byte path bound')
+        os.environ['RUNTIME_DIRECTORY'] = str(root)
     ctrl = Control(args.control_fd, os.getppid(), args.token)
     nonce, epoch = secrets.token_bytes(16), secrets.randbits(63) or 1
     supfd = os.pidfd_open(os.getpid())
@@ -133,6 +139,10 @@ def supervisor(args):
             KER_RX_OWNER_RELAY_PROBE_TOKEN=secrets.token_hex(12),
             KER_RX_OWNER_RELAY_SOURCE_PEER_TEST='1', KER_RX_OWNER_RELAY_SOURCE_PEER_PORT='41081',
             RUNTIME_DIRECTORY=str(root), TMPDIR=str(root))
+        if args.async_accept_expiry:
+            env.update(KER_C28_TEST_CONTROLLER_TRACE='1',
+                KER_C28_TEST_ACCEPT_POLL_GATE=str(root / 'accept-poll-release'),
+                KER_C28_TEST_ACCEPT_POLL_MARKER=str(root / 'accept-poll-pending'))
         env.update(service.env)
         env.update(ready.environment())
         app = subprocess.Popen([str(build / 'ker-app'), str(executable), str(root / 'broker.sock')],
@@ -218,7 +228,20 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         run_sup.send(b'OK\n')
         require(app.wait(timeout=10) == 0, 'C31 broker exit failed')
         native = kr.native_statistics(status)
-        require(native and native.get('passive_opens', 0) >= 3, f'no original TCP evidence: {native}')
+        if args.async_accept_expiry:
+            require(native and native.get('passive_opens') == 2 and
+                native.get('buffers_live') == 0 and
+                native.get('buffer_allocations') == native.get('buffer_releases') +
+                    native.get('buffer_shutdown_releases') and
+                worker.stats.get('outstanding') == 0 and
+                worker.stats.get('control_eof') is True and
+                worker.stats.get('worker_exit_code') == 0 and
+                worker.stats.get('shutdown_timed_out') is False and
+                worker.stats.get('rx_decision_settled') and
+                worker.stats.get('rx_decision_drops') == 0,
+                f'uncertain async ACCEPT or control resources did not settle: native={native} io={worker.stats}')
+        else:
+            require(native and native.get('passive_opens', 0) >= 3, f'no original TCP evidence: {native}')
         ctrl.send('DONE', native=native, io=worker.stats, startup=status.decode())
     finally:
         # Failed runs retain their logs and never produce a successful receipt.
@@ -237,6 +260,14 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
 
 
 def inside(args):
+    if args.async_accept_expiry:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p,
+            ctypes.c_char_p, ctypes.c_ulong, ctypes.c_void_p]
+        require(libc.mount(None, b'/', None, 16384 | (1 << 18), None) == 0,
+            'private mount propagation failed')
+        require(libc.mount(b'tmpfs', b'/run', b'tmpfs', 2 | 4,
+            b'mode=0755,size=8m') == 0, 'private /run tmpfs mount failed')
     base = load('peer_tap_helpers', ROOT / 'tests/posix/native-nginx-companion-tap.py')
     probe = load('peer_original_http_probe', ROOT / 'tests/upstream/fstack/tests/integration/common/reload_probes/http_probe.py')
     base.set_up_network()
@@ -248,6 +279,8 @@ def inside(args):
         '--nginx', str(args.nginx), '--dpdk-plugin-dir', str(args.dpdk_plugin_dir),
         '--root', str(root), '--source-nginx-module-source', str(args.source_nginx_module_source), '--token', token, '--control-fd', str(child.fileno()),
         '--initial-fd', str(transfers[0][1].fileno()), '--candidate-fd', str(transfers[1][1].fileno())]
+    if args.async_accept_expiry:
+        command.append('--async-accept-expiry')
     process = subprocess.Popen(command, pass_fds=(child.fileno(), *(p[1].fileno() for p in transfers)),
         stdout=(root / 'supervisor.stdout').open('wb'), stderr=(root / 'supervisor.stderr').open('wb'))
     child.close()
@@ -301,6 +334,100 @@ def inside(args):
         http(held, 'old')
         before = time.monotonic_ns()
         command('BEGIN')
+        if args.async_accept_expiry:
+            bounded_deadline = time.monotonic_ns() + 500_000_000
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                queued = pool.submit(connect, 41082)
+                command('QUEUED')
+                command('HELD')
+                require(not queued.done(), 'original SYN completed before selector change')
+                marker = root / 'accept-poll-pending'
+                release = root / 'accept-poll-release'
+
+                def release_after_deadline():
+                    marker_deadline = time.monotonic() + 10
+                    while time.monotonic() < marker_deadline and not marker.exists():
+                        time.sleep(.001)
+                    require(marker.exists(), 'C28 never entered async ACCEPT poll')
+                    while time.monotonic_ns() <= bounded_deadline + 20_000_000:
+                        time.sleep(.001)
+                    release.touch()
+
+                releaser = threading.Thread(target=release_after_deadline, daemon=True)
+                releaser.start()
+                command('COMMIT_BEFORE_QUARANTINE ' + str(bounded_deadline))
+                releaser.join(timeout=12)
+                require(not releaser.is_alive() and release.exists(),
+                    'async ACK poll gate did not release after the absolute deadline')
+                try:
+                    uncertain = queued.result(timeout=3)
+                    connect_outcome = 'kernel_completed_before_quarantine'
+                    uncertain.close()
+                except OSError as error:
+                    connect_outcome = 'not_completed:' + type(error).__name__
+            http(held, 'old')
+            after = time.monotonic_ns()
+            require(after > bounded_deadline,
+                'async quarantine test did not cross the absolute deadline')
+            held.shutdown(socket.SHUT_WR)
+            require(held.recv(1) == b'', 'old TCP did not close normally')
+            held.close(); held = None
+            command('RELEASE')
+            ctrl.send('STOP_OLD'); ctrl.receive('OLD_STOPPED')
+            ctrl.send('STOP_NEW'); ctrl.receive('NEW_STOPPED')
+            controller.stdin.write(b'STOP\n'); controller.stdin.flush()
+            require(controller.wait(timeout=10) == 0, 'group controller failed after quarantine')
+            ctrl.send('STOP_RUNTIME')
+            done = ctrl.receive('DONE')
+            require(process.wait(timeout=10) == 0, 'supervisor failed after quarantine')
+            broker = (root / 'broker.stdout').read_text() + (root / 'broker.stderr').read_text()
+            controller_log = (root / 'controller.stderr').read_text()
+            held_match = re.search(r'C28_HELD packet_id=(\d+) lease=(\d+) deadline_ns=(\d+)', broker)
+            quarantine_match = re.search(
+                r'C28_ASYNC_ACCEPT_QUARANTINED phase=(\d+) result=(-\d+) received=(\d+) accepted=(\d+) monotonic_ns=(\d+)',
+                controller_log)
+            selector_match = re.search(r'C28_SELECTOR_CHANGED monotonic_ns=(\d+)', broker)
+            accept_match = re.search(
+                r'C28_ACCEPT_BEGIN packet_id=(\d+) sent=1 monotonic_ns=(\d+)', broker)
+            require(held_match, 'did not capture original held C28 packet ID')
+            require(quarantine_match and tuple(map(int, quarantine_match.groups()[:4])) ==
+                (6, -110, 1, 0), f'async C28 did not remain quarantined: {controller_log}')
+            require(selector_match and accept_match and
+                accept_match.group(1) == held_match.group(1) and
+                int(selector_match.group(1)) < int(accept_match.group(2)) < bounded_deadline <
+                    int(quarantine_match.group(5)) and
+                int(held_match.group(3)) > bounded_deadline,
+                'selector change, same held-SYN ACCEPT, absolute expiry, and quarantine did not order correctly')
+            require(marker.read_text() == 'C28_ASYNC_ACCEPT_PENDING\n',
+                'C28 test gate did not observe pending asynchronous ACK poll')
+            native = done.get('native')
+            io = done.get('io')
+            require(native and native.get('passive_opens') == 2 and
+                native.get('buffers_live') == 0 and
+                native.get('buffer_allocations') == native.get('buffer_releases') +
+                    native.get('buffer_shutdown_releases') and
+                io and io.get('outstanding') == 0 and io.get('control_eof') is True and
+                io.get('worker_exit_code') == 0 and io.get('shutdown_timed_out') is False and
+                io.get('rx_decision_settled') and io.get('rx_decision_drops') == 0,
+                f'quarantined SYN or control resources did not settle: native={native} io={io}')
+            evidence = dict(status='PASS_ASYNC_OUTCOME_QUARANTINED', owners=owners,
+                held_packet_id=int(held_match.group(1)), held_lease=int(held_match.group(2)),
+                held_deadline_ns=int(held_match.group(3)), control_deadline_ns=bounded_deadline,
+                accept_poll_marker=marker.read_text().strip(),
+                quarantine_phase=int(quarantine_match.group(1)),
+                quarantine_result=int(quarantine_match.group(2)),
+                received_packets=int(quarantine_match.group(3)),
+                accepted_packets=int(quarantine_match.group(4)),
+                quarantine_monotonic_ns=int(quarantine_match.group(5)),
+                selector_changed_monotonic_ns=int(selector_match.group(1)),
+                accept_begin_monotonic_ns=int(accept_match.group(2)),
+                queued_connect_outcome=connect_outcome,
+                queued_connect_semantics='Unknown after timeout: kernel connect can complete before quarantine; no rejection or rollback is claimed.',
+                old_body_before_ns=before, old_body_after_ns=after,
+                native=native, io=io)
+            (root / 'receipt.json').write_text(json.dumps(evidence, indent=2) + '\n')
+            print(json.dumps(evidence, sort_keys=True))
+            return
         with ThreadPoolExecutor(max_workers=1) as pool:
             queued = pool.submit(connect, 41082)
             command('QUEUED')
@@ -381,6 +508,8 @@ def main():
     parser.add_argument('--source-nginx-module-source', type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
     parser.add_argument('--supervisor', action='store_true')
+    parser.add_argument('--async-accept-expiry', action='store_true',
+        help='expire a native asynchronous ACCEPT outcome under the fixed 500 ms deadline')
     for name in ('control-fd', 'initial-fd', 'candidate-fd'):
         parser.add_argument('--' + name, type=int)
     parser.add_argument('--token')
@@ -392,10 +521,18 @@ def main():
     else:
         root = args.root or Path(tempfile.mkdtemp(prefix='ker-peer-source-', dir='/dev/shm'))
         root.mkdir(exist_ok=True)
+        if args.async_accept_expiry:
+            root = root / f'r{time.time_ns()}-{os.getpid()}'
+            root.mkdir()
         print(f'evidence: {root}', flush=True)
-        subprocess.run(['unshare', '-Urn', sys.executable, __file__, '--inside', '--build', str(args.build.resolve()),
+        namespace = ['--user', '--map-auto', '--map-root-user', '--mount', '--net', '--fork'] \
+            if args.async_accept_expiry else ['-Urn']
+        command = ['unshare', *namespace, sys.executable, __file__, '--inside', '--build', str(args.build.resolve()),
             '--nginx', str(args.nginx.resolve()), '--dpdk-plugin-dir', str(args.dpdk_plugin_dir.resolve()),
-            '--root', str(root.resolve()), '--source-nginx-module-source', str(args.source_nginx_module_source.resolve())], check=True, timeout=180)
+            '--root', str(root.resolve()), '--source-nginx-module-source', str(args.source_nginx_module_source.resolve())]
+        if args.async_accept_expiry:
+            command.append('--async-accept-expiry')
+        subprocess.run(command, check=True, timeout=180)
 
 
 if __name__ == '__main__':
