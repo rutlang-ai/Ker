@@ -27,6 +27,10 @@ struct fixture {
     struct ker_socket_broker_server *broker;
     int relay_fd;
     struct ker_rx_owner_relay_peer peer;
+    struct ker_rx_owner_peer_auth_record peer_record;
+    bool peer_authenticated;
+    bool peer_auth_enabled;
+    uint64_t peer_auth_deadline_ns;
     atomic_bool broker_done;
     int broker_status;
     uint64_t callbacks;
@@ -306,6 +310,9 @@ static int receive_owner_auth(struct fixture *fixture)
         credentials.gid != getgid() || ack.magic != KER_RX_OWNER_RELAY_MAGIC ||
         ack.version != KER_RX_OWNER_RELAY_VERSION || ack.type != KER_RX_OWNER_RELAY_AUTH_ACK ||
         ack.app_pid != (uint32_t)getpid() || ack.worker_epoch != fixture->epoch ||
+        ack.app_start_ticks != fixture->app_start ||
+        ack.supervisor_pid != fixture->supervisor_pid ||
+        ack.supervisor_start_ticks != fixture->supervisor_start ||
         memcmp(ack.run_nonce, fixture->nonce, sizeof(ack.run_nonce)) ||
         !ack.owner_pid || !ack.owner_tid || !ack.owner_start_ticks ||
         ack.owner_pid != (uint32_t)fixture->owner_pid ||
@@ -417,6 +424,149 @@ static int receive_supervisor_owner_auth(struct fixture *fixture)
     if (send((int)fd, &record, sizeof(record), MSG_NOSIGNAL) != (ssize_t)sizeof(record))
         return errno ? -errno : -EIO;
     return 0;
+}
+
+static bool current_owner_live(const struct fixture *fixture)
+{
+    pid_t pid = 0;
+    uint64_t start = 0;
+    struct pollfd pfd = {.fd = fixture->owner_pidfd, .events = POLLIN};
+    return fixture->owner_expected && fixture->owner_authenticated &&
+        !pidfd_pid(fixture->owner_pidfd, &pid) && pid == fixture->owner_pid &&
+        !read_start_ticks(pid, &start) && start == fixture->owner_start &&
+        process_thread_exists(pid, fixture->owner_tid) && poll(&pfd, 1, 0) == 0;
+}
+
+static void close_peer_binding(struct fixture *fixture)
+{
+    if (fixture->peer.fd >= 0) close(fixture->peer.fd);
+    if (fixture->peer.pidfd >= 0) close(fixture->peer.pidfd);
+    fixture->peer = (struct ker_rx_owner_relay_peer){.fd = -1, .pidfd = -1};
+    fixture->peer_authenticated = false;
+    fixture->peer_auth_deadline_ns = 0;
+}
+
+static int receive_supervisor_peer_auth(struct fixture *fixture)
+{
+    const char *text = getenv("KER_RX_OWNER_AUTH_FD");
+    char *end = NULL;
+    errno = 0;
+    long fd = text ? strtol(text, &end, 10) : -1;
+    if (!text || errno || end == text || *end || fd < 3 || fd > INT32_MAX) return -EINVAL;
+    struct ker_rx_owner_peer_auth_record record = {0};
+    char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(3 * sizeof(int))] = {0};
+    struct iovec iov = {.iov_base = &record, .iov_len = sizeof(record)};
+    struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control)};
+    ssize_t received = recvmsg((int)fd, &message, MSG_DONTWAIT | MSG_TRUNC | MSG_CMSG_CLOEXEC);
+    if (received < 0) return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : -errno;
+    struct ucred credentials = {0};
+    bool have_credentials = false;
+    int fds[2] = {-1, -1};
+    size_t count = 0;
+    int ancillary = parse_credentials(&message, &credentials, &have_credentials, fds, &count);
+    const struct ker_rx_owner_auth_record *owner = &record.owner;
+    uint64_t now = monotonic_ns();
+    int status = -EPROTO;
+    if ((size_t)received != sizeof(record) || (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
+        ancillary || count != 2 || !have_credentials ||
+        credentials.pid != (pid_t)fixture->supervisor_pid ||
+        credentials.uid != getuid() || credentials.gid != getgid() ||
+        owner->magic != KER_RX_OWNER_AUTH_MAGIC || owner->version != KER_RX_OWNER_AUTH_VERSION ||
+        owner->type != KER_RX_OWNER_AUTH_PEER || owner->record_bytes != sizeof(record) ||
+        owner->supervisor_pid != fixture->supervisor_pid ||
+        owner->supervisor_start_ticks != fixture->supervisor_start ||
+        owner->worker_epoch != fixture->epoch || owner->owner_role != 0 || owner->flags ||
+        !owner->owner_pid || !owner->owner_tid || !owner->owner_start_ticks ||
+        !owner->slot_device || !owner->slot_inode || !owner->cookie ||
+        memcmp(owner->run_nonce, fixture->nonce, sizeof(owner->run_nonce))) goto reject;
+    status = -ESTALE;
+    if (!supervisor_authority_live(fixture) || !current_owner_live(fixture) ||
+        fixture->expected_owner_role != 1 || fixture->peer.fd >= 0 ||
+        record.primary_pid != (uint32_t)fixture->owner_pid ||
+        record.primary_tid != fixture->owner_tid || record.primary_start_ticks != fixture->owner_start ||
+        record.primary_slot_device != fixture->expected_owner_slot_device ||
+        record.primary_slot_inode != fixture->expected_owner_slot_inode ||
+        record.primary_cookie != fixture->expected_owner_cookie ||
+        owner->owner_pid == record.primary_pid || owner->cookie == record.primary_cookie ||
+        (owner->slot_device == record.primary_slot_device && owner->slot_inode == record.primary_slot_inode) ||
+        !now || record.authority_deadline_ns <= now ||
+        record.authority_deadline_ns - now > KER_RX_OWNER_PEER_MAX_AUTHORITY_NS) goto reject;
+    pid_t pid = 0;
+    uint64_t start = 0;
+    if (pidfd_pid(fds[0], &pid) || pid != (pid_t)owner->owner_pid ||
+        read_start_ticks(pid, &start) || start != owner->owner_start_ticks ||
+        !process_thread_exists(pid, owner->owner_tid) ||
+        poll(&(struct pollfd){.fd = fds[0], .events = POLLIN}, 1, 0) != 0) goto reject;
+    int type = 0, domain = 0, enabled = 1;
+    socklen_t size = sizeof(type);
+    status = -EPROTOTYPE;
+    if (getsockopt(fds[1], SOL_SOCKET, SO_TYPE, &type, &size) || type != SOCK_SEQPACKET) goto reject;
+    size = sizeof(domain);
+    if (getsockopt(fds[1], SOL_SOCKET, SO_DOMAIN, &domain, &size) || domain != AF_UNIX ||
+        setsockopt(fds[1], SOL_SOCKET, SO_PASSCRED, &enabled, sizeof(enabled))) goto reject;
+    fixture->peer = (struct ker_rx_owner_relay_peer){.fd = fds[1], .pidfd = fds[0],
+        .uid = credentials.uid, .gid = credentials.gid,
+        .identity = {.magic = KER_RX_OWNER_RELAY_MAGIC, .version = KER_RX_OWNER_RELAY_VERSION,
+            .type = KER_RX_OWNER_RELAY_APP_AUTH, .worker_epoch = fixture->epoch,
+            .app_start_ticks = fixture->app_start, .owner_start_ticks = owner->owner_start_ticks,
+            .supervisor_start_ticks = fixture->supervisor_start,
+            .app_pid = (uint32_t)getpid(), .owner_pid = owner->owner_pid,
+            .owner_tid = owner->owner_tid, .supervisor_pid = fixture->supervisor_pid}};
+    memcpy(fixture->peer.identity.run_nonce, fixture->nonce, sizeof(fixture->nonce));
+    fixture->peer_record = record;
+    fixture->peer_authenticated = false;
+    fixture->peer_auth_deadline_ns = now + UINT64_C(5000000000);
+    if (fixture->peer_auth_deadline_ns > record.authority_deadline_ns)
+        fixture->peer_auth_deadline_ns = record.authority_deadline_ns;
+    return 0;
+reject:
+    for (size_t i = 0; i < count; ++i) close(fds[i]);
+    return status;
+}
+
+static int receive_peer_owner_auth(struct fixture *fixture)
+{
+    if (fixture->peer.fd < 0 || fixture->peer_authenticated) return 0;
+    int status = -ESTALE;
+    if (!supervisor_authority_live(fixture) || !current_owner_live(fixture)) goto reject;
+    if (monotonic_ns() >= fixture->peer_auth_deadline_ns) { status = -ETIMEDOUT; goto reject; }
+    struct fixture old = {.relay_fd = fixture->peer.fd,
+        .owner_expected = true, .owner_pid = (pid_t)fixture->peer.identity.owner_pid,
+        .owner_tid = fixture->peer.identity.owner_tid, .owner_start = fixture->peer.identity.owner_start_ticks,
+        .app_start = fixture->app_start, .supervisor_pid = fixture->supervisor_pid,
+        .supervisor_start = fixture->supervisor_start, .epoch = fixture->epoch};
+    memcpy(old.nonce, fixture->nonce, sizeof(old.nonce));
+    status = receive_owner_auth(&old);
+    if (status) goto reject;
+    if (!old.owner_authenticated) return 0;
+    if (monotonic_ns() >= fixture->peer_auth_deadline_ns) { status = -ETIMEDOUT; goto reject; }
+    if (!supervisor_authority_live(fixture) || !current_owner_live(fixture)) { status = -ESTALE; goto reject; }
+    const char *text = getenv("KER_RX_OWNER_AUTH_FD");
+    char *end = NULL;
+    errno = 0;
+    long fd = text ? strtol(text, &end, 10) : -1;
+    if (!text || errno || end == text || *end || fd < 3 || fd > INT32_MAX) { status = -EINVAL; goto reject; }
+    struct ker_rx_owner_peer_auth_record ack = fixture->peer_record;
+    ack.owner.type = KER_RX_OWNER_AUTH_PEER_ACK;
+    if (send((int)fd, &ack, sizeof(ack), MSG_DONTWAIT | MSG_NOSIGNAL) != (ssize_t)sizeof(ack)) {
+        status = -(errno ? errno : EIO); goto reject;
+    }
+    fixture->peer_authenticated = true;
+    fixture->peer_auth_deadline_ns = 0;
+    return 0;
+reject:
+    close_peer_binding(fixture);
+    return status;
+}
+
+static bool peer_authority_live(const struct fixture *fixture)
+{
+    struct pollfd pfd = {.fd = fixture->peer.pidfd, .events = POLLIN};
+    return fixture->peer_authenticated && fixture->peer.fd >= 0 &&
+        monotonic_ns() < fixture->peer_record.authority_deadline_ns &&
+        supervisor_authority_live(fixture) && current_owner_live(fixture) &&
+        poll(&pfd, 1, 0) == 0;
 }
 
 static int prepare_owner_loop(void *opaque)
@@ -547,6 +697,11 @@ static int app_loop(void *opaque)
         int auth = receive_owner_auth(fixture);
         if (auth) return auth;
     }
+    if (fixture->owner_authenticated && fixture->peer_auth_enabled) {
+        int auth = receive_supervisor_peer_auth(fixture);
+        if (!auth) auth = receive_peer_owner_auth(fixture);
+        if (auth) return auth;
+    }
     if (fixture->packet_id) {
         struct ker_rx_owner_relay_header reply = {0};
         uint8_t reply_buffer[sizeof(reply) + KER_RX_OWNER_RELAY_MAX_FRAME];
@@ -628,16 +783,13 @@ static int app_loop(void *opaque)
             }
             int action = reply.dispatcher_result == fixture->queue_id &&
                 reply.frame_unchanged == 1 ? KER_RX_DECISION_LOCAL : KER_RX_DECISION_DROP;
-            if (reply.dispatcher_result == -3 && reply.frame_unchanged == 1) {
+            if (reply.dispatcher_result == -3 && reply.frame_unchanged == 1 && peer_authority_live(fixture)) {
                 int peer_action = KER_RX_DECISION_DROP;
-                /* No supervisor-authenticated old slot is delegated by the
-                 * current single-owner profile. An unbound/failed transport
-                 * stays DROP; never turn PEER into unconditional native input.
-                 * A future two-owner profile must authenticate/delegate peer
-                 * before any forwarding can succeed. */
+                /* Both process/slot identities and the finite supervisor
+                 * authority must remain live on each side of the hop. */
                 int peer_status = ker_rx_owner_relay_peer_forward(&fixture->peer,
                     &reply, fixture->pending_frame, fixture->frame_bytes, &peer_action);
-                if (!peer_status) action = peer_action;
+                if (!peer_status && peer_authority_live(fixture)) action = peer_action;
             }
             if (monotonic_ns() >= fixture->deadline_ns ||
                 ker_posix_rx_decision_complete(fixture->packet_id, action)) return -EPROTO;
@@ -716,6 +868,9 @@ int main(int argc, char **argv)
     if (!relay_fd_text || errno || end == relay_fd_text || *end || relay_fd < 3) return 2;
     struct fixture fixture = {.relay_fd = (int)relay_fd, .owner_pidfd = -1,
         .supervisor_pidfd = -1, .peer = {.fd = -1, .pidfd = -1}};
+    const char *peer_auth_enabled = getenv("KER_RX_OWNER_PEER_AUTH_ENABLE");
+    if (peer_auth_enabled && strcmp(peer_auth_enabled, "1")) return 2;
+    fixture.peer_auth_enabled = peer_auth_enabled != NULL;
     const char *source_admission_profile =
         getenv("KER_RX_OWNER_RELAY_SOURCE_ADMISSION_TEST");
     if (source_admission_profile && strcmp(source_admission_profile, "1") != 0)
