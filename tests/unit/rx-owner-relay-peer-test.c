@@ -60,7 +60,7 @@ static uint64_t start_ticks(pid_t pid)
     return strtoull(p, NULL, 10);
 }
 
-static void old_owner(int fd, enum mode mode)
+static void old_owner(int fd, enum mode mode, bool reactor)
 {
     unsigned char packet[sizeof(struct ker_rx_owner_relay_header) + 64];
     struct ker_rx_owner_relay_header header;
@@ -72,6 +72,10 @@ static void old_owner(int fd, enum mode mode)
     CHECK(header.frame_bytes == 64 && header.queue_id == 0 && header.queue_count == 2);
     CHECK(!header.dispatcher_result && !header.frame_hash32 && !header.frame_unchanged);
     for (unsigned i = 0; i < 64; ++i) CHECK(packet[sizeof(header) + i] == (unsigned char)i);
+    if (reactor && mode == LOCAL) {
+        char release;
+        CHECK(recv(fd, &release, 1, 0) == 1 && release == 'G');
+    }
     if (mode == DIES_ON_REQUEST) _exit(0);
     if (mode == SLOW) {
         struct timespec delay = {.tv_nsec = 200000000};
@@ -115,12 +119,12 @@ static void old_owner(int fd, enum mode mode)
     _exit(0);
 }
 
-static void run_case(enum mode mode)
+static void run_case(enum mode mode, bool reactor)
 {
     unsigned before = fd_count();
     int channel[2]; CHECK(!socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, channel));
     pid_t child = fork(); CHECK(child >= 0);
-    if (!child) { close(channel[0]); old_owner(channel[1], mode); }
+    if (!child) { close(channel[0]); old_owner(channel[1], mode, reactor); }
     close(channel[1]);
     int pidfd = (int)syscall(SYS_pidfd_open, child, 0); CHECK(pidfd >= 0);
     struct ker_rx_owner_relay_header source = {
@@ -159,7 +163,27 @@ static void run_case(enum mode mode)
     if (mode == WRONG_UID) ++peer.uid;
     struct ker_rx_owner_relay_header saved = source;
     int action = 71;
-    int result = ker_rx_owner_relay_peer_forward(&peer, &source, frame, sizeof(frame), &action);
+    int result;
+    if (!reactor) result = ker_rx_owner_relay_peer_forward(&peer, &source, frame, sizeof(frame), &action);
+    else {
+        result = ker_rx_owner_relay_peer_begin(&peer, &source, frame, sizeof(frame));
+        if (!result) {
+            if (mode == LOCAL) {
+                CHECK(ker_rx_owner_relay_peer_poll(&peer, frame, sizeof(frame), &action) == -EAGAIN);
+                CHECK(action == 71 && peer.pending_active);
+                CHECK(ker_rx_owner_relay_peer_begin(&peer, &source, frame, sizeof(frame)) == -EBUSY);
+                CHECK(send(channel[0], "G", 1, MSG_NOSIGNAL) == 1);
+            }
+            do {
+                result = ker_rx_owner_relay_peer_poll(&peer, frame, sizeof(frame), &action);
+                if (result == -EAGAIN) {
+                    struct timespec pause = {.tv_nsec = 1000000};
+                    nanosleep(&pause, NULL);
+                }
+            } while (result == -EAGAIN);
+            CHECK(!peer.pending_active);
+        }
+    }
     if (mode <= WRONG_QUEUE) {
         CHECK(!result && action == (mode == LOCAL ? KER_RX_DECISION_LOCAL : KER_RX_DECISION_DROP));
         CHECK(peer.last_packet_id == source.packet_id);
@@ -182,13 +206,16 @@ static void run_case(enum mode mode)
     while (waitpid(-1, &status, 0) > 0) {}
     CHECK(errno == ECHILD);
     CHECK(fd_count() == before);
-    printf("PASS peer-relay control %d\n", mode);
+    printf("PASS peer-relay control %d reactor=%u\n", mode, reactor);
 }
 
 int main(void)
 {
     CHECK(!prctl(PR_SET_CHILD_SUBREAPER, 1));
-    for (int mode = LOCAL; mode <= UNBOUND; ++mode) run_case((enum mode)mode);
+    for (int mode = LOCAL; mode <= UNBOUND; ++mode) {
+        run_case((enum mode)mode, false);
+        run_case((enum mode)mode, true);
+    }
     puts("PASS: bounded old-owner frame relay, credentials/pidfd, exact lease, no loops, no FD leaks");
     return 0;
 }

@@ -164,3 +164,31 @@ int ker_nginx_source_flowmap_owner_ready(struct ff_reload_state *state)
     ker_sb_preload_owner_loop_leave();
     return result;
 }
+
+int ker_nginx_source_previous_owner_ready(struct ff_reload_state *state)
+{
+    if (!state || !ff_reload_state_valid(state, sizeof(*state)) || state->epoch != 2)
+        return -ESTALE;
+    ff_reload_attach_state(state);
+    ff_reload_set_epoch(state->epoch);
+    ff_reload_set_gen(0);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    if (!ff_reload_hw_locked() || ff_reload_target_gen() != 0) return -EPROTO;
+    int entered = ker_sb_preload_owner_loop_enter();
+    if (entered) return entered;
+    int status = ker_nginx_original_flow_map_arm();
+    if (!status) {
+        /* The unchanged original callback stays registered as this generation
+         * becomes the previous owner of the next real source-API window. */
+        ff_reload_master_complete();
+        uint32_t epoch = 0, target = 0;
+        ff_reload_master_begin(&epoch, &target);
+        ff_reload_set_epoch(epoch);
+        if (epoch != 3 || target != 1 || ff_reload_gen() != 0 || !ff_reload_hw_locked())
+            status = -EPROTO;
+        else dprintf(STDERR_FILENO, "SOURCE_PREVIOUS_OWNER_ARMED pid=%ld tid=%ld epoch=%u gen=%d target=%d\n",
+            (long)getpid(), (long)syscall(SYS_gettid), epoch, ff_reload_gen(), ff_reload_target_gen());
+    }
+    ker_sb_preload_owner_loop_leave();
+    return status;
+}

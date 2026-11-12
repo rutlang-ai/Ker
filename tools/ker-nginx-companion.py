@@ -38,6 +38,7 @@ ENV_KEYS = frozenset(('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
     'KER_NGINX_RX_OWNER_RELAY_NONCE', 'KER_NGINX_RX_OWNER_RELAY_EPOCH',
     'KER_NGINX_SOURCE_FLOWMAP_TEST', 'KER_NGINX_SOURCE_ADMISSION_RELAY',
     'KER_NGINX_CANDIDATE_SLOT_FD',
+    'KER_NGINX_INITIAL_SLOT_FD', 'KER_NGINX_SOURCE_PEER_OLD', 'KER_NGINX_SOURCE_PEER_PAIR',
     'KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US',
     'KER_C16_TEST_PUMP_FAIL_AFTER_STEP'))
 START_PHASE = 1
@@ -772,6 +773,7 @@ def run(args):
             cycle_socket_type.close()
     test = subprocess.run([str(binary), '-t', '-p', str(prefix) + '/',
         '-c', str(config)], env=nginx_env, stdin=subprocess.DEVNULL,
+        pass_fds=tuple(fd for fd in (args.candidate_slot_fd, args.initial_slot_fd) if fd is not None),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
     if test.returncode:
         raise RuntimeError('pinned Nginx config test failed: ' +
@@ -842,6 +844,8 @@ def run(args):
             master_pass_fds.append(args.rx_owner_relay_fd)
         if args.candidate_slot_fd is not None:
             master_pass_fds.append(args.candidate_slot_fd)
+        if args.initial_slot_fd is not None:
+            master_pass_fds.append(args.initial_slot_fd)
         master = subprocess.Popen([str(binary), '-p', str(prefix) + '/',
             '-c', str(config)], env=nginx_env, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -849,6 +853,9 @@ def run(args):
         if args.candidate_slot_fd is not None:
             os.close(args.candidate_slot_fd)
             args.candidate_slot_fd = None
+        if args.initial_slot_fd is not None:
+            os.close(args.initial_slot_fd)
+            args.initial_slot_fd = None
         if owner_ready_sender is not None:
             owner_ready_sender.close()
             owner_ready_sender = None
@@ -1082,6 +1089,7 @@ def main(argv=None):
     parser.add_argument('--owner-ready-required', action='store_true')
     parser.add_argument('--rx-owner-relay-fd', type=int)
     parser.add_argument('--candidate-slot-fd', type=int)
+    parser.add_argument('--initial-slot-fd', type=int)
     parser.add_argument('--nginx-env', action='append', default=[])
     args = parser.parse_args(argv)
     if (len(args.nonce) != 16 or args.nonce == bytes(16) or args.epoch <= 0 or
@@ -1095,6 +1103,18 @@ def main(argv=None):
         values[key] = item
     args.candidate_slot_mode = args.candidate_slot_fd is not None
     args.candidate_slot_stat = None
+    if args.initial_slot_fd is not None:
+        if (args.candidate_slot_mode or args.initial_slot_fd < 3 or not args.owner_ready_required or
+                values.get('KER_NGINX_INITIAL_SLOT_FD') != str(args.initial_slot_fd) or
+                values.get('KER_NGINX_SOURCE_PEER_OLD') != '1' or
+                values.get('KER_NGINX_SOURCE_PEER_PAIR') != '1'):
+            parser.error('initial slot requires the explicit original old-owner pair profile')
+        try:
+            args.candidate_slot_stat = os.fstat(args.initial_slot_fd)
+        except OSError as error:
+            parser.error(f'initial slot capability is not open: {error}')
+    elif 'KER_NGINX_INITIAL_SLOT_FD' in values or 'KER_NGINX_SOURCE_PEER_OLD' in values:
+        parser.error('old-owner profile requires an inherited initial capability')
     if args.candidate_slot_mode:
         if (args.candidate_slot_fd < 3 or not args.owner_ready_required or
                 values.get('KER_NGINX_CANDIDATE_SLOT_FD') != str(args.candidate_slot_fd) or
@@ -1115,6 +1135,11 @@ def main(argv=None):
             'KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US' in values or
             'KER_C16_TEST_PUMP_FAIL_AFTER_STEP' in values):
         parser.error('candidate slot profile fields require an inherited capability')
+    if 'KER_NGINX_SOURCE_PEER_PAIR' in values and (
+            values['KER_NGINX_SOURCE_PEER_PAIR'] != '1' or
+            args.rx_owner_relay_fd is None or
+            not (args.candidate_slot_mode or args.initial_slot_fd is not None)):
+        parser.error('source peer pair requires an explicit authenticated delegated owner role')
     if args.rx_owner_relay_fd is not None:
         if args.rx_owner_relay_fd < 3 or not args.owner_ready_required:
             parser.error('RX owner relay requires owner READY and a valid inherited descriptor')

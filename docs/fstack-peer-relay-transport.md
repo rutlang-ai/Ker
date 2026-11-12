@@ -55,3 +55,5 @@ ASan/UBSan, and passed the Release CTest with DPDK/native TCP disabled. The
 source flow-map, admission, admission-revoke and PREPARED-failure CTests and
 the existing owner-relay pump test also passed. Inventory audit and guards
 retain 362 adapted, zero partial and one blocked entry.
+
+The [two-real-Nginx continuity qualification](fstack-peer-nginx-continuity.md) uses the begin/poll reactor form so waiting for an old worker never blocks the broker RPCs that worker needs. The synchronous form remains covered for callers that do not share that reactor.

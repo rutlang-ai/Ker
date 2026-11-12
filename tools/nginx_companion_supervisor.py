@@ -71,7 +71,7 @@ class NginxCompanion:
     """Own one helper and one exact pinned non-daemon Nginx master subtree."""
     def __init__(self, binary, config, prefix, nginx_env, cycle_control_fd=None,
                  owner_ready_required=False, rx_owner_relay_fd=None,
-                 candidate_slot_transfer_fd=None):
+                 candidate_slot_transfer_fd=None, initial_slot_transfer_fd=None):
         self.binary = Path(binary).resolve(strict=True)
         self.config = Path(config).resolve(strict=True)
         self.prefix = Path(prefix).resolve(strict=True)
@@ -79,9 +79,18 @@ class NginxCompanion:
         self.cycle_control_fd = cycle_control_fd
         self.owner_ready_required = bool(owner_ready_required)
         self.rx_owner_relay_fd = rx_owner_relay_fd
-        self.candidate_slot_transfer_fd = candidate_slot_transfer_fd
+        if candidate_slot_transfer_fd is not None and initial_slot_transfer_fd is not None:
+            raise ValueError('one delegated owner role is required')
+        self.initial_slot_mode = initial_slot_transfer_fd is not None
+        self.candidate_slot_transfer_fd = (initial_slot_transfer_fd if self.initial_slot_mode
+            else candidate_slot_transfer_fd)
         self.candidate_slot_stat = None
         self.expected_owner_role = 1 if candidate_slot_transfer_fd is not None else 0
+        if self.initial_slot_mode and (
+                self.nginx_env.get('KER_NGINX_INITIAL_SLOT_FD') != str(initial_slot_transfer_fd) or
+                self.nginx_env.get('KER_NGINX_SOURCE_PEER_OLD') != '1' or
+                'KER_NGINX_CANDIDATE_SLOT_FD' in self.nginx_env):
+            raise ValueError('initial slot requires the explicit original old-owner profile')
         if ((candidate_slot_transfer_fd is None) !=
                 ('KER_NGINX_CANDIDATE_SLOT_FD' not in self.nginx_env)):
             raise ValueError('candidate slot descriptor and Nginx profile must be supplied together')
@@ -260,7 +269,8 @@ class NginxCompanion:
             unexpected_flags = flags & ~(getattr(socket, 'MSG_TRUNC', 0) |
                 getattr(socket, 'MSG_CTRUNC', 0) |
                 getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
-            if (packet != b'KER_CANDIDATE_SLOT_V1' or truncation or unexpected_flags or ancillary_error or
+            tag = b'KER_INITIAL_SLOT_V1' if self.initial_slot_mode else b'KER_CANDIDATE_SLOT_V1'
+            if (packet != tag or truncation or unexpected_flags or ancillary_error or
                     credentials != [(peer_pid, peer_uid, peer_gid)] or
                     len(received_fds) != 1):
                 raise ValueError('candidate-cap transfer mismatch '
@@ -310,7 +320,8 @@ class NginxCompanion:
             command += ['--rx-owner-relay-fd', str(self.rx_owner_relay_fd)]
             helper_pass_fds.append(self.rx_owner_relay_fd)
         if self.candidate_slot_transfer_fd is not None:
-            command += ['--candidate-slot-fd', str(self.candidate_slot_transfer_fd)]
+            command += ['--initial-slot-fd' if self.initial_slot_mode else '--candidate-slot-fd',
+                str(self.candidate_slot_transfer_fd)]
             helper_pass_fds.append(self.candidate_slot_transfer_fd)
         for key, value in sorted(self.nginx_env.items()):
             command += ['--nginx-env', f'{key}={value}']

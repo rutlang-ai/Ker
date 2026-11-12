@@ -116,6 +116,18 @@ if(KER_BUILD_FSTACK_NGINX_RUNTIME AND KER_FSTACK_NGINX_BINARY)
                 TIMEOUT 120
                 LABELS "native-tcp;fstack;socket-broker;nginx-companion;rx-decision;owner-relay;source-classifier"
                 ENVIRONMENT "KER_RX_OWNER_RELAY_RECEIPT=${CMAKE_BINARY_DIR}/Testing/Temporary/rx-source-flowmap-qualification.json")
+            if(TARGET ker-nginx-owner-group-controller)
+                add_test(NAME native-nginx-companion-rx-source-peer-continuity
+                    COMMAND "${Python3_EXECUTABLE}"
+                        "${PROJECT_SOURCE_DIR}/tests/posix/native-nginx-peer-source.py"
+                        --build "${CMAKE_BINARY_DIR}"
+                        --nginx "${KER_FSTACK_NGINX_BINARY}"
+                        --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                        --source-nginx-module-source "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules/ngx_ff_module.c")
+                set_tests_properties(native-nginx-companion-rx-source-peer-continuity PROPERTIES
+                    TIMEOUT 190
+                    LABELS "native-tcp;fstack;socket-broker;nginx-companion;rx-decision;owner-relay;source-classifier;peer")
+            endif()
             if(TARGET ker-socket-broker-reuseport-group-client)
                 add_test(NAME native-nginx-companion-rx-source-admission
                     COMMAND "${Python3_EXECUTABLE}"

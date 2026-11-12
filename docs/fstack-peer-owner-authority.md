@@ -80,3 +80,5 @@ ctest --test-dir <build> --output-on-failure \
 The migration catalog remains 362 adapted, zero partial and one blocked. This
 is a concrete paired registration prerequisite, not completion of the original
 reload FSM or `test_graceful_reload.sh::entrypoint`.
+
+The subsequent [two-real-Nginx continuity qualification](fstack-peer-nginx-continuity.md) exercises this opt-in receiver with actual staged owner slots, original classifiers and native Linux TCP. It retains the full original reload shell/FSM boundary.

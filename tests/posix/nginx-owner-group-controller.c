@@ -247,6 +247,25 @@ int main(int argc, char **argv)
             CHECK(state.state_counts[KER_SOCKET_TCP_STATE_ESTABLISHED] >= 13);
             printf("SOURCE_STREAM_CENSUS established=%llu\n",
                 (unsigned long long)state.state_counts[KER_SOCKET_TCP_STATE_ESTABLISHED]);
+        } else if (!strcmp(command, "DRAINED0\n") || !strcmp(command, "DRAINED1\n")) {
+            unsigned index = command[7] - '0';
+            struct ker_socket_member_census_snapshot state;
+            uint64_t deadline = now_ns() + UINT64_C(5000000000);
+            uint64_t live;
+            do {
+                CHECK(census[index] >= 0 && !ker_socket_client_member_census_snapshot(&client, census[index], &state));
+                live = 0;
+                for (unsigned value = KER_SOCKET_TCP_STATE_ESTABLISHED;
+                        value <= KER_SOCKET_TCP_STATE_BOUND_INACTIVE; ++value) {
+                    if (value != KER_SOCKET_TCP_STATE_TIME_WAIT && value != KER_SOCKET_TCP_STATE_CLOSE &&
+                            value != KER_SOCKET_TCP_STATE_LISTEN && value != KER_SOCKET_TCP_STATE_BOUND_INACTIVE)
+                        live += state.state_counts[value];
+                }
+                if (!live) break;
+                struct timespec pause = {.tv_nsec = 1000000};
+                (void)nanosleep(&pause, NULL);
+            } while (now_ns() < deadline);
+            CHECK(!live);
         } else if (!strcmp(command, "BEGIN\n")) {
             CHECK(cutover < 0);
             cutover = ker_socket_client_owner_group_cutover_begin(&client, plan);
