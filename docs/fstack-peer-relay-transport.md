@@ -28,9 +28,11 @@ DROP/expiry; they do not authorize delivery. Calls on one binding are serialized
 
 The C31 relay consumer now uses this boundary for PEER results. Its existing
 single-owner profile deliberately has an unbound old peer and still drops.
-The supervisor does not yet delegate a second authenticated owner/channel;
-connecting that authority and qualifying real old/new Nginx traffic is the next
-integration step. This change does not enable production graceful reload,
+An opt-in [paired authority protocol](fstack-peer-owner-authority.md) now lets a
+trusted supervisor delegate a finite old-owner binding after both owner proofs
+and an independent old-worker channel ACK. The legacy launcher remains single
+owner; orchestrating real old/new Nginx traffic with this protocol is still the
+next integration step. This change does not enable production graceful reload,
 authenticate two generations, preserve old TCP streams by itself, or complete
 the original source shell entrypoint. Migration counts remain unchanged.
 
