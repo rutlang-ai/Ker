@@ -59,6 +59,13 @@ def validate_source_cps(checker, text, returncode, retired_at):
     return fields, later[0]
 
 
+def retry_cps_progress(text, min_elapsed, previous_requests):
+    rows = cps_progress(text)
+    qualifying = [row for row in rows if float(row[1]) >= min_elapsed and
+        int(row[2]) > previous_requests]
+    return qualifying[0][0] if qualifying else None
+
+
 def retry_lc_progress(text, min_elapsed, previous_requests):
     rows = list(re.finditer(r'^LC_PROGRESS elapsed=([0-9.]+) n=(\d+) fail=(\d+)$', text, re.MULTILINE))
     require(all(int(row[3]) == 0 for row in rows), 'LC failure during the aborted-round interval')
@@ -510,23 +517,31 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 record('DEAD_REJECTED_CANDIDATE_ALIAS_BLOCKED_NEW_SLOT')
                 http(held, old_body); fresh(old_body)
                 os.close(held_alias); held_alias = None
-            if source_rt24:
+            if source_rt24 or source_cps:
                 aborted_at = next(event['monotonic_ns'] / 1e9 for event in evidence['events']
                     if event['event'] == 'CUTOVER_ABORTED_WITH_QUEUED_SYN')
-                minimum_elapsed = aborted_at - source_started + 5
-                previous_requests = int(evidence[source_key]['anchor'].split('n=')[1].split()[0])
+                # CPS must also observe old service after the rejected owner
+                # has actually exited, before a replacement even starts.
+                interval_started = time.monotonic() if source_cps else aborted_at
+                minimum_elapsed = interval_started - source_started + 5
+                observed = cps_progress(source_file.read_text()) if source_cps else []
+                previous_requests = int(observed[-1][2]) if source_cps else int(
+                    evidence[source_key]['anchor'].split('n=')[1].split()[0])
                 deadline = time.monotonic() + 20
                 while True:
-                    require(source_probe.poll() is None, 'rt24 LC probe exited before retry')
-                    interval = retry_lc_progress(source_file.read_text(), minimum_elapsed, previous_requests)
+                    require(source_probe.poll() is None, 'source probe exited before retry')
+                    interval = (retry_cps_progress if source_cps else retry_lc_progress)(
+                        source_file.read_text(), minimum_elapsed, previous_requests)
                     if interval is not None: break
                     require(time.monotonic() < deadline, 'no source progress after five-second abort interval')
                     time.sleep(.01)
-                command('ACTIVE0')
+                if not source_cps: command('ACTIVE0')
                 evidence[source_key]['after_abort'] = interval
-                evidence[source_key]['source_case'] = 'rt24 traffic probe; explicit broker abort/retry'
-                record('RT24_ABORT_INTERVAL_WITHOUT_LC_FAILURE', line=interval,
-                    minimum_elapsed=minimum_elapsed)
+                evidence[source_key]['source_case'] = ('rt30 CPS traffic probe' if source_cps else
+                    'rt24 traffic probe') + '; explicit broker abort/retry'
+                record('CPS_OLD_SERVICE_AFTER_CANDIDATE_EXIT' if source_cps else
+                    'RT24_ABORT_INTERVAL_WITHOUT_LC_FAILURE', line=interval,
+                    minimum_elapsed=minimum_elapsed, previous_requests=previous_requests)
             command('RETRY_SLOT'); command('CLOSED_REJECTED')
             retry_slot = receive_candidate_slot()
             retry, retry_body, retry_prefix, retry_fd = start_nginx('retry', retry_slot, True)
@@ -648,10 +663,12 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             checker = importlib.util.module_from_spec(check_spec); check_spec.loader.exec_module(checker)
             if source_cps:
                 retired_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']
-                    if e['event'] == ('NEW_NGINX_RETIRED' if args.nginx_overlap_abort else 'OLD_NGINX_RETIRED')) - source_started
+                    if e['event'] == ('NEW_NGINX_RETIRED' if args.nginx_overlap_abort and
+                        not args.nginx_overlap_retry else 'OLD_NGINX_RETIRED')) - source_started
                 fields, later = validate_source_cps(checker, text, source_probe.returncode, retired_at)
                 evidence[source_key].update(summary=fields, post_retirement_progress=later,
-                    source_case='rt30 traffic probe; explicit broker commit/abort',
+                    source_case='rt30 traffic probe; explicit broker ' +
+                        ('abort/retry/commit' if args.nginx_overlap_retry else 'commit/abort'),
                     retired_at=retired_at)
                 record('ORIGINAL_CPS_ORACLE_PASS', requests=int(fields['n']),
                     elapsed=time.monotonic() - source_started)
