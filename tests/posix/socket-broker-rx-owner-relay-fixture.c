@@ -2,6 +2,7 @@
 #include "rx-decision-consumer.h"
 #include "rx-owner-relay-wire.h"
 #include "rx-owner-auth-wire.h"
+#include "rx-owner-relay-peer.h"
 #include <ker/posix.h>
 #include <ker/socket-broker-server.h>
 
@@ -25,6 +26,7 @@
 struct fixture {
     struct ker_socket_broker_server *broker;
     int relay_fd;
+    struct ker_rx_owner_relay_peer peer;
     atomic_bool broker_done;
     int broker_status;
     uint64_t callbacks;
@@ -624,11 +626,21 @@ static int app_loop(void *opaque)
                 }
                 if (access(release, F_OK) != 0) return -ETIMEDOUT;
             }
+            int action = reply.dispatcher_result == fixture->queue_id &&
+                reply.frame_unchanged == 1 ? KER_RX_DECISION_LOCAL : KER_RX_DECISION_DROP;
+            if (reply.dispatcher_result == -3 && reply.frame_unchanged == 1) {
+                int peer_action = KER_RX_DECISION_DROP;
+                /* No supervisor-authenticated old slot is delegated by the
+                 * current single-owner profile. An unbound/failed transport
+                 * stays DROP; never turn PEER into unconditional native input.
+                 * A future two-owner profile must authenticate/delegate peer
+                 * before any forwarding can succeed. */
+                int peer_status = ker_rx_owner_relay_peer_forward(&fixture->peer,
+                    &reply, fixture->pending_frame, fixture->frame_bytes, &peer_action);
+                if (!peer_status) action = peer_action;
+            }
             if (monotonic_ns() >= fixture->deadline_ns ||
-                ker_posix_rx_decision_complete(fixture->packet_id,
-                    reply.dispatcher_result == fixture->queue_id &&
-                        reply.frame_unchanged == 1 ? KER_RX_DECISION_LOCAL :
-                        KER_RX_DECISION_DROP)) return -EPROTO;
+                ker_posix_rx_decision_complete(fixture->packet_id, action)) return -EPROTO;
             fixture->completed++;
             if (fixture->probe_packet_id == reply.packet_id) {
                 fixture->probe_frame_hash = reply.frame_hash32;
@@ -703,7 +715,7 @@ int main(int argc, char **argv)
     long relay_fd = relay_fd_text ? strtol(relay_fd_text, &end, 10) : -1;
     if (!relay_fd_text || errno || end == relay_fd_text || *end || relay_fd < 3) return 2;
     struct fixture fixture = {.relay_fd = (int)relay_fd, .owner_pidfd = -1,
-        .supervisor_pidfd = -1};
+        .supervisor_pidfd = -1, .peer = {.fd = -1, .pidfd = -1}};
     const char *source_admission_profile =
         getenv("KER_RX_OWNER_RELAY_SOURCE_ADMISSION_TEST");
     if (source_admission_profile && strcmp(source_admission_profile, "1") != 0)
@@ -791,6 +803,8 @@ int main(int argc, char **argv)
     fflush(stdout);
     if (fixture.owner_pidfd >= 0) close(fixture.owner_pidfd);
     if (fixture.supervisor_pidfd >= 0) close(fixture.supervisor_pidfd);
+    if (fixture.peer.fd >= 0) close(fixture.peer.fd);
+    if (fixture.peer.pidfd >= 0) close(fixture.peer.pidfd);
     if (run_result) errno = run_errno;
     return run_result || fixture.broker_status || broker_result ||
         fixture.callbacks == 0 || fixture.deferred != fixture.completed ? 1 : 0;
