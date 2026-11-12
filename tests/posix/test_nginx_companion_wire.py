@@ -1,12 +1,15 @@
 """Validation for the private ker-run companion helper wire codec."""
 import unittest
 import importlib.util
+import json
 import os
 from pathlib import Path
 import select
 import signal
 import socket
 import struct
+import subprocess
+import sys
 import tempfile
 
 from nginx_companion_wire import *
@@ -18,6 +21,12 @@ _COMPANION_SPEC = importlib.util.spec_from_file_location(
 _COMPANION = importlib.util.module_from_spec(_COMPANION_SPEC)
 _COMPANION_SPEC.loader.exec_module(_COMPANION)
 broker_ini_matches = _COMPANION.broker_ini_matches
+
+_TAP_SPEC = importlib.util.spec_from_file_location(
+    '_test_native_nginx_companion_tap', Path(__file__).with_name(
+        'native-nginx-companion-tap.py'))
+_TAP = importlib.util.module_from_spec(_TAP_SPEC)
+_TAP_SPEC.loader.exec_module(_TAP)
 
 
 class CompanionWireTest(unittest.TestCase):
@@ -54,8 +63,35 @@ class CompanionWireTest(unittest.TestCase):
             companion.reload()
         self.assertFalse(companion.unresolved)
 
+    def test_prepared_retention_requires_supervisor_to_outlive_timeout(self):
+        for code in (0, 7):
+            with self.subTest(exit_code=code):
+                process = subprocess.Popen([sys.executable, '-c',
+                    f'import sys; sys.exit({code})'])
+                with self.assertRaisesRegex(RuntimeError,
+                        rf'exited before the retention timeout \(rc={code}\)'):
+                    _TAP.require_wait_timeout(process, 2, 'test retention')
+                self.assertEqual(process.wait(timeout=2), code)
+
+        process = subprocess.Popen([sys.executable, '-c',
+            'import os, signal; os.kill(os.getpid(), signal.SIGKILL)'])
+        with self.assertRaisesRegex(RuntimeError,
+                r'exited before the retention timeout \(rc=-9\)'):
+            _TAP.require_wait_timeout(process, 2, 'test retention')
+        self.assertEqual(process.wait(timeout=2), -signal.SIGKILL)
+
+        process = subprocess.Popen([sys.executable, '-c',
+            'import time; time.sleep(5)'])
+        try:
+            self.assertTrue(_TAP.require_wait_timeout(process, 0.05,
+                'test retention'))
+        finally:
+            process.terminate()
+            self.assertEqual(process.wait(timeout=2), -signal.SIGTERM)
+
     def _helper_owner_ready_rejects(self, *, change=None, with_rights=False,
-                                    truncate=False, exit_before_receive=False):
+                                    truncate=False, exit_before_receive=False,
+                                    expected_role=0, expected_slot=None):
         receiver, sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         receiver.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         gate_read, gate_write = os.pipe()
@@ -117,6 +153,7 @@ class CompanionWireTest(unittest.TestCase):
                 supervisor_pidfd=supervisor_pidfd,
                 supervisor_pid=os.getpid(),
                 supervisor_start=_COMPANION.start_ticks(os.getpid()),
+                expected_role=expected_role, expected_slot=expected_slot,
                 timeout=1.0)
             before_fds = len(os.listdir('/proc/self/fd'))
             with self.assertRaises((ValueError, PermissionError,
@@ -155,6 +192,87 @@ class CompanionWireTest(unittest.TestCase):
         self._helper_owner_ready_rejects(exit_before_receive=True)
         self._helper_owner_ready_rejects(truncate=True)
         self._helper_owner_ready_rejects(with_rights=True)
+
+    def test_source_candidate_ready_rejects_wrong_role_and_exact_slot(self):
+        self._helper_owner_ready_rejects(expected_role=1,
+            expected_slot=(11, 12), change=(3, 0))
+        self._helper_owner_ready_rejects(expected_role=1,
+            expected_slot=(11, 12), change=(5, 14))
+        self._helper_owner_ready_rejects(expected_role=1,
+            expected_slot=(11, 12), change=(6, 15))
+
+    def _candidate_slot_transfer_case(self, mode):
+        receiver, sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        receiver.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        report_read, report_write = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                sender.close()
+                os.close(report_read)
+                transfer_fd = receiver.fileno()
+                companion = object.__new__(NginxCompanion)
+                companion.candidate_slot_transfer_fd = transfer_fd
+                companion.candidate_slot_stat = None
+                before = len(os.listdir('/proc/self/fd'))
+                try:
+                    companion._receive_candidate_slot(1.0)
+                    status = 0
+                    stat = companion.candidate_slot_stat
+                    inheritable = os.get_inheritable(transfer_fd)
+                except BaseException as error:
+                    status = 1
+                    stat = None
+                    inheritable = False
+                    error_text = f'{type(error).__name__}: {error}'
+                after = len(os.listdir('/proc/self/fd'))
+                result = {'status': status, 'before': before, 'after': after,
+                    'device': stat.st_dev if stat else None,
+                    'inode': stat.st_ino if stat else None,
+                    'inheritable': inheritable,
+                    'error': error_text if status else None}
+                if status == 0:
+                    os.close(transfer_fd)
+                os.write(report_write, json.dumps(result).encode())
+                os._exit(0)
+            except BaseException:
+                os._exit(99)
+        receiver.close()
+        os.close(report_write)
+        file_fd = os.open('/dev/null', os.O_RDONLY)
+        try:
+            if mode == 'zero-rights':
+                sender.sendmsg([b'KER_CANDIDATE_SLOT_V1'])
+            else:
+                packet = (b'WRONG_CANDIDATE_SLOT' if mode == 'wrong-packet'
+                    else b'KER_CANDIDATE_SLOT_V1')
+                count = 2 if mode == 'two-rights' else 1
+                sender.sendmsg([packet], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                    struct.pack('i' * count, *([file_fd] * count)))])
+        finally:
+            os.close(file_fd)
+            sender.close()
+        with os.fdopen(report_read, 'rb') as report_file:
+            result = json.loads(report_file.read())
+        _, status = os.waitpid(pid, 0)
+        self.assertTrue(os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0,
+            f'candidate transfer child failed: {status}, {result!r}')
+        return result
+
+    def test_candidate_slot_transfer_authenticates_one_fd_and_closes_rejections(self):
+        expected = os.stat('/dev/null')
+        valid = self._candidate_slot_transfer_case('valid')
+        self.assertEqual(valid['status'], 0, valid)
+        self.assertEqual((valid['device'], valid['inode']),
+            (expected.st_dev, expected.st_ino))
+        self.assertTrue(valid['inheritable'])
+        self.assertEqual(valid['after'], valid['before'])
+        for mode in ('zero-rights', 'two-rights', 'wrong-packet'):
+            with self.subTest(mode=mode):
+                rejected = self._candidate_slot_transfer_case(mode)
+                self.assertEqual(rejected['status'], 1, rejected)
+                self.assertEqual(rejected['after'], rejected['before'] - 1,
+                    f'rejected capability or transfer socket leaked: {rejected!r}')
 
     def test_valid_header_round_trip(self):
         packet = pack_record(HELLO, b'', self.nonce, self.epoch, self.sequence)

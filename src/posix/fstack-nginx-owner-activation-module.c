@@ -382,7 +382,8 @@ static int rx_owner_relay_register(void)
     typedef int (*register_fn)(int (*)(void *), void *);
     typedef int (*dispatch_ready_fn)(void);
 #ifdef KER_NGINX_RX_RELAY_TEST_CALLBACK
-    if (!getenv("KER_NGINX_SOURCE_FLOWMAP_TEST"))
+    if (!getenv("KER_NGINX_SOURCE_FLOWMAP_TEST") &&
+        !getenv("KER_NGINX_SOURCE_ADMISSION_RELAY"))
         ff_regist_packet_dispatcher_context(test_rx_owner_dispatcher);
 #endif
     rx_owner_relay_dispatch = (rx_owner_relay_dispatch_fn)dlsym(RTLD_DEFAULT,
@@ -440,6 +441,15 @@ int ker_fstack_nginx_owner_activation_worker_ready(void)
     if (getenv("KER_NGINX_TEST_SUPPRESS_READY")) return -EAGAIN;
 #endif
     if (!worker_prepared || ngx_process != NGX_PROCESS_WORKER) return -EPERM;
+#ifdef KER_NGINX_SOURCE_ADMISSION_RELAY_TEST
+    const char *source_admission = getenv("KER_NGINX_SOURCE_ADMISSION_RELAY");
+    if (source_admission) {
+        if (strcmp(source_admission, "1") != 0) return -EINVAL;
+        extern int ker_nginx_source_admission_activate(void);
+        int status = ker_nginx_source_admission_activate();
+        if (status) return status < 0 ? status : -EPROTO;
+    }
+#endif
     int relay = rx_owner_relay_register();
     if (relay) return relay;
     return ker_nginx_owner_ready_sender_send(&owner_ready);
@@ -1481,6 +1491,8 @@ int ker_fstack_nginx_owner_activation_worker_commit(void)
     if (!worker_prepared || current_slot < 0) { errno = EPROTO; return -1; }
     int result = ker_nginx_candidate_worker_commit(current_slot);
     int error = errno;
+    if (result) trace_line("C22_CANDIDATE_COMMIT_FAILED pid=%ld slot=%d error=%d\n",
+        (long)getpid(), current_slot, error);
     (void)syscall(SYS_close, current_slot);
     current_slot = -1;
     if (!result) trace_line("NGINX_CANDIDATE_TASK_READY pid=%ld\n", (long)getpid());

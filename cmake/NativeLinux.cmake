@@ -561,6 +561,7 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
         add_library(ker-fstack-nginx-owner-activation-alias-test MODULE
             src/posix/fstack-nginx-owner-activation-module.c
             src/posix/nginx-candidate-admission.c
+            src/posix/nginx-source-map-admission.c
             src/posix/nginx-original-flowmap-source.c
             src/posix/nginx-source-flowmap-fixture.c
             src/posix/nginx-owner-ready.c
@@ -582,7 +583,7 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
         target_compile_options(ker-fstack-nginx-owner-activation-alias-test PRIVATE -Wall -Wextra -Werror)
         target_compile_definitions(ker-fstack-nginx-owner-activation-alias-test PRIVATE
             KER_NGINX_OWNER_TEST_ALIAS=1 KER_NGINX_RX_RELAY_TEST_CALLBACK=1
-            KER_NGINX_SOURCE_FLOWMAP_TEST=1
+            KER_NGINX_SOURCE_FLOWMAP_TEST=1 KER_NGINX_SOURCE_ADMISSION_RELAY_TEST=1
             KER_PINNED_NGINX_FF_MODULE_SOURCE="${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules/ngx_ff_module.c")
         set_source_files_properties(
             src/posix/nginx-original-flowmap-source.c
