@@ -36,7 +36,10 @@ ENV_KEYS = frozenset(('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
     'KER_NGINX_RX_OWNER_RELAY_FD',
     'KER_NGINX_RX_OWNER_RELAY_SUPERVISOR_PID',
     'KER_NGINX_RX_OWNER_RELAY_NONCE', 'KER_NGINX_RX_OWNER_RELAY_EPOCH',
-    'KER_NGINX_SOURCE_FLOWMAP_TEST'))
+    'KER_NGINX_SOURCE_FLOWMAP_TEST', 'KER_NGINX_SOURCE_ADMISSION_RELAY',
+    'KER_NGINX_CANDIDATE_SLOT_FD',
+    'KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US',
+    'KER_C16_TEST_PUMP_FAIL_AFTER_STEP'))
 START_PHASE = 1
 RELOAD_PHASE = 2
 STOP_PHASE = 3
@@ -84,7 +87,8 @@ def process_parent(pid):
 
 def receive_owner_ready(endpoint, *, expected_cookie, binary_hash, master,
                          master_pidfd, master_start, supervisor_pidfd,
-                         supervisor_pid, supervisor_start, timeout=15.0):
+                         supervisor_pid, supervisor_start, expected_role=0,
+                         expected_slot=None, timeout=15.0):
     deadline = time.monotonic() + timeout
     while True:
         remaining = deadline - time.monotonic()
@@ -130,12 +134,14 @@ def receive_owner_ready(endpoint, *, expected_cookie, binary_hash, master,
                 OWNER_READY_RECORD.unpack(packet)
             credential_pid, credential_uid, credential_gid = credentials[0]
             if (magic != OWNER_READY_MAGIC or version != OWNER_READY_VERSION or
-                    length != OWNER_READY_RECORD.size or role != 0 or reserved or reserved3 or
+                    length != OWNER_READY_RECORD.size or role != expected_role or reserved or reserved3 or
                     not slot_device or not slot_inode or cookie_value != expected_cookie or
                     worker_pid != credential_pid or credential_uid != os.getuid() or
                     credential_gid != os.getgid() or owner_tid <= 0 or
                     worker_start <= 0 or worker_pid <= 0):
                 raise PermissionError('Nginx worker READY identity/slot/profile mismatch')
+            if expected_slot is not None and (slot_device, slot_inode) != expected_slot:
+                raise PermissionError('Nginx worker READY did not bind the exact delegated candidate slot')
             if (master.poll() is not None or not process_alive(master_pidfd) or
                     start_ticks(master.pid) != master_start or
                     process_parent(worker_pid) != master.pid or
@@ -191,7 +197,10 @@ def wait_for_master_signal_handlers(master, master_pidfd, master_start,
         if (master.poll() is not None or not process_alive(master_pidfd) or
                 start_ticks(master.pid) != master_start or
                 sha256_file(f'/proc/{master.pid}/exe') != binary_hash):
-            raise ProcessLookupError('Nginx master exited or changed before handler readiness')
+            raise ProcessLookupError(
+                'Nginx master exited or changed before handler readiness '
+                f'(returncode={master.poll()!r}, alive={process_alive(master_pidfd)}, '
+                f'start={start_ticks(master.pid)!r}, expected_start={master_start})')
         if (not process_alive(supervisor_pidfd) or
                 start_ticks(supervisor_pid) != supervisor_start or
                 sha256_file(f'/proc/{supervisor_pid}/exe') != supervisor_hash):
@@ -831,10 +840,15 @@ def run(args):
             master_pass_fds.append(owner_ready_sender.fileno())
         if args.rx_owner_relay_fd is not None:
             master_pass_fds.append(args.rx_owner_relay_fd)
+        if args.candidate_slot_fd is not None:
+            master_pass_fds.append(args.candidate_slot_fd)
         master = subprocess.Popen([str(binary), '-p', str(prefix) + '/',
             '-c', str(config)], env=nginx_env, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             close_fds=True, pass_fds=tuple(master_pass_fds), start_new_session=False)
+        if args.candidate_slot_fd is not None:
+            os.close(args.candidate_slot_fd)
+            args.candidate_slot_fd = None
         if owner_ready_sender is not None:
             owner_ready_sender.close()
             owner_ready_sender = None
@@ -874,15 +888,24 @@ def run(args):
                 master_pidfd=master_pidfd, master_start=master_ticks,
                 supervisor_pidfd=supervisor_pidfd,
                 supervisor_pid=expected_parent_pid,
-                supervisor_start=expected_parent_start)
+                supervisor_start=expected_parent_start,
+                expected_role=1 if args.candidate_slot_mode else 0,
+                expected_slot=((args.candidate_slot_stat.st_dev,
+                    args.candidate_slot_stat.st_ino)
+                    if args.candidate_slot_stat is not None else None))
             owner_ready_receiver.close()
             owner_ready_receiver = None
             owner_ready_record = wire.pack_record(wire.OWNER_READY,
                 wire.OWNER_READY_BODY.pack(*identity), args.nonce, args.epoch, 1)
             send_record(channel, owner_ready_record, (owner_ready_pidfd,),
                 time.monotonic() + 5.0)
-    except BaseException:
+    except BaseException as error:
+        print(f'ker-nginx-companion startup/owner setup failed: '
+            f'{type(error).__name__}: {error}', file=sys.stderr)
         if master is not None:
+            print(f'ker-nginx-companion Nginx master state before cleanup: '
+                f'returncode={master.poll()!r} pid={master.pid} '
+                f'pidfd_alive={process_alive(master_pidfd)}', file=sys.stderr)
             if master.poll() is None:
                 try:
                     if master_pidfd >= 0:
@@ -1058,6 +1081,7 @@ def main(argv=None):
     parser.add_argument('--helper-sha256', type=lambda value: bytes.fromhex(value), required=True)
     parser.add_argument('--owner-ready-required', action='store_true')
     parser.add_argument('--rx-owner-relay-fd', type=int)
+    parser.add_argument('--candidate-slot-fd', type=int)
     parser.add_argument('--nginx-env', action='append', default=[])
     args = parser.parse_args(argv)
     if (len(args.nonce) != 16 or args.nonce == bytes(16) or args.epoch <= 0 or
@@ -1069,6 +1093,28 @@ def main(argv=None):
         if not separator or key not in ENV_KEYS or key in values or not item:
             parser.error('invalid/duplicate Nginx environment entry')
         values[key] = item
+    args.candidate_slot_mode = args.candidate_slot_fd is not None
+    args.candidate_slot_stat = None
+    if args.candidate_slot_mode:
+        if (args.candidate_slot_fd < 3 or not args.owner_ready_required or
+                values.get('KER_NGINX_CANDIDATE_SLOT_FD') != str(args.candidate_slot_fd) or
+                values.get('KER_NGINX_SOURCE_ADMISSION_RELAY') != '1'):
+            parser.error('candidate slot requires the explicit source-admission owner READY profile')
+        try:
+            args.candidate_slot_stat = os.fstat(args.candidate_slot_fd)
+        except OSError as error:
+            parser.error(f'candidate slot capability is not open: {error}')
+        if ('KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US' in values and
+                values['KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US'] != '350000'):
+            parser.error('source-admission test delay is outside its bounded profile')
+        if ('KER_C16_TEST_PUMP_FAIL_AFTER_STEP' in values and
+                values['KER_C16_TEST_PUMP_FAIL_AFTER_STEP'] != '1'):
+            parser.error('source-admission failure injection has an invalid profile value')
+    elif ('KER_NGINX_CANDIDATE_SLOT_FD' in values or
+            'KER_NGINX_SOURCE_ADMISSION_RELAY' in values or
+            'KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US' in values or
+            'KER_C16_TEST_PUMP_FAIL_AFTER_STEP' in values):
+        parser.error('candidate slot profile fields require an inherited capability')
     if args.rx_owner_relay_fd is not None:
         if args.rx_owner_relay_fd < 3 or not args.owner_ready_required:
             parser.error('RX owner relay requires owner READY and a valid inherited descriptor')

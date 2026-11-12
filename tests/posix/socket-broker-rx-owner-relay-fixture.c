@@ -36,10 +36,19 @@ struct fixture {
     uint32_t probe_frame_hash;
     uint16_t probe_source_port;
     uint16_t expected_probe_source_port;
+    uint64_t peer_packet_id;
+    uint32_t peer_frame_hash;
+    uint16_t peer_source_port;
+    uint16_t expected_peer_source_port;
+    uint64_t peer_witnesses;
+    int32_t peer_dispatcher_result;
+    uint16_t expected_probe_destination_port;
     int32_t probe_dispatcher_result;
     uint32_t current_frame_hash;
     const char *probe_token;
     bool pending_probe;
+    bool pending_peer_probe;
+    bool source_revoke_test;
     uint8_t pending_frame[KER_RX_OWNER_RELAY_MAX_FRAME];
     uint64_t packet_id;
     uint64_t deadline_ns;
@@ -92,7 +101,7 @@ static uint32_t frame_hash32(const void *data, size_t bytes)
 }
 
 static bool frame_is_probe(const uint8_t *frame, size_t bytes,
-    const char *token, uint16_t *source_port)
+    const char *token, uint16_t destination_port, uint16_t *source_port)
 {
     if (!frame || !token || !*token || bytes < 14) return false;
     size_t offset = 14;
@@ -107,7 +116,8 @@ static bool frame_is_probe(const uint8_t *frame, size_t bytes,
     size_t ip_header = (size_t)(frame[offset] & 0x0f) * 4;
     if (ip_header < 20 || bytes < offset + ip_header + 20) return false;
     size_t tcp = offset + ip_header;
-    if (((uint16_t)frame[tcp + 2] << 8 | frame[tcp + 3]) != 80) return false;
+    if (((uint16_t)frame[tcp + 2] << 8 | frame[tcp + 3]) != destination_port)
+        return false;
     size_t tcp_header = (size_t)(frame[tcp + 12] >> 4) * 4;
     if (tcp_header < 20 || bytes < tcp + tcp_header) return false;
     const uint8_t *payload = frame + tcp + tcp_header;
@@ -121,7 +131,8 @@ static bool frame_is_probe(const uint8_t *frame, size_t bytes,
 }
 
 static bool frame_is_source_probe_ack(const uint8_t *frame, size_t bytes,
-    uint16_t expected_source_port, uint16_t *source_port)
+    uint16_t expected_source_port, uint16_t expected_destination_port,
+    uint16_t *source_port)
 {
     if (!frame || bytes < 54 ||
         ((uint16_t)frame[12] << 8 | frame[13]) != 0x0800 ||
@@ -133,8 +144,28 @@ static bool frame_is_source_probe_ack(const uint8_t *frame, size_t bytes,
     uint16_t destination = (uint16_t)((uint16_t)frame[tcp + 2] << 8 |
         frame[tcp + 3]);
     uint8_t flags = frame[tcp + 13];
-    if (port != expected_source_port || destination != 80 ||
+    if (port != expected_source_port || destination != expected_destination_port ||
         !(flags & 0x10) || (flags & 0x02)) return false;
+    *source_port = port;
+    return true;
+}
+
+static bool frame_is_source_probe_syn(const uint8_t *frame, size_t bytes,
+    uint16_t expected_source_port, uint16_t expected_destination_port,
+    uint16_t *source_port)
+{
+    if (!frame || bytes < 54 ||
+        ((uint16_t)frame[12] << 8 | frame[13]) != 0x0800 ||
+        (frame[14] >> 4) != 4 || frame[23] != 6) return false;
+    size_t ip_header = (size_t)(frame[14] & 0x0f) * 4;
+    if (ip_header < 20 || bytes < 14 + ip_header + 20) return false;
+    size_t tcp = 14 + ip_header;
+    uint16_t port = (uint16_t)((uint16_t)frame[tcp] << 8 | frame[tcp + 1]);
+    uint16_t destination = (uint16_t)((uint16_t)frame[tcp + 2] << 8 |
+        frame[tcp + 3]);
+    uint8_t flags = frame[tcp + 13];
+    if (port != expected_source_port || destination != expected_destination_port ||
+        !(flags & 0x02) || (flags & 0x10)) return false;
     *source_port = port;
     return true;
 }
@@ -339,7 +370,7 @@ static int receive_supervisor_owner_auth(struct fixture *fixture)
         record.type != KER_RX_OWNER_AUTH_OWNER || record.record_bytes != sizeof(record) ||
         record.supervisor_pid != fixture->supervisor_pid ||
         record.supervisor_start_ticks != fixture->supervisor_start ||
-        record.owner_role != 0 || record.flags || !record.owner_pid ||
+        record.owner_role != fixture->expected_owner_role || record.flags || !record.owner_pid ||
         !record.owner_tid || !record.owner_start_ticks || !record.slot_device ||
         !record.slot_inode || !record.cookie || record.worker_epoch != fixture->epoch ||
         memcmp(record.run_nonce, fixture->nonce, sizeof(record.run_nonce))) {
@@ -421,13 +452,29 @@ static int relay_decision(const struct ker_rx_decision_packet *packet, void *opa
     memcpy(fixture->pending_frame, packet->full_frame, packet->full_frame_bytes);
     uint16_t probe_port = 0;
     fixture->pending_probe = !fixture->probe_packet_id &&
-        frame_is_probe(packet->full_frame, packet->full_frame_bytes,
-            fixture->probe_token, &probe_port);
+        (fixture->source_revoke_test ?
+            frame_is_source_probe_syn(packet->full_frame, packet->full_frame_bytes,
+                fixture->expected_probe_source_port,
+                fixture->expected_probe_destination_port, &probe_port) :
+            frame_is_probe(packet->full_frame, packet->full_frame_bytes,
+                fixture->probe_token, fixture->expected_probe_destination_port,
+                &probe_port));
     if (!fixture->pending_probe && fixture->expected_probe_source_port &&
         !fixture->probe_packet_id)
         fixture->pending_probe = frame_is_source_probe_ack(packet->full_frame,
             packet->full_frame_bytes, fixture->expected_probe_source_port,
+            fixture->expected_probe_destination_port,
             &probe_port);
+    uint16_t peer_port = 0;
+    fixture->pending_peer_probe = fixture->expected_peer_source_port &&
+        !fixture->peer_packet_id && frame_is_source_probe_ack(packet->full_frame,
+            packet->full_frame_bytes, fixture->expected_peer_source_port,
+            fixture->expected_probe_destination_port, &peer_port);
+    if (fixture->pending_peer_probe) {
+        fixture->peer_witnesses++;
+        fixture->peer_packet_id = packet->packet_id;
+        fixture->peer_source_port = peer_port;
+    }
     if (fixture->pending_probe) {
         fixture->probe_witnesses++;
         fixture->probe_packet_id = packet->packet_id;
@@ -587,6 +634,10 @@ static int app_loop(void *opaque)
                 fixture->probe_frame_hash = reply.frame_hash32;
                 fixture->probe_dispatcher_result = reply.dispatcher_result;
             }
+            if (fixture->peer_packet_id == reply.packet_id) {
+                fixture->peer_frame_hash = reply.frame_hash32;
+                fixture->peer_dispatcher_result = reply.dispatcher_result;
+            }
             if (fixture->pending_probe) {
                 static const char digits[] = "0123456789abcdef";
                 char frame_hex[KER_RX_OWNER_RELAY_MAX_FRAME * 2 + 1];
@@ -595,12 +646,28 @@ static int app_loop(void *opaque)
                     frame_hex[i * 2 + 1] = digits[fixture->pending_frame[i] & 0xf];
                 }
                 frame_hex[fixture->frame_bytes * 2] = 0;
-                printf("RX_OWNER_RELAY_PROBE_FRAME packet_id=%llu bytes=%u frame_hex=%s\n",
-                    (unsigned long long)reply.packet_id, fixture->frame_bytes, frame_hex);
+                printf("RX_OWNER_RELAY_PROBE_FRAME packet_id=%llu bytes=%u monotonic_ns=%llu frame_hex=%s\n",
+                    (unsigned long long)reply.packet_id, fixture->frame_bytes,
+                    (unsigned long long)monotonic_ns(), frame_hex);
+                fflush(stdout);
+            }
+            if (fixture->pending_peer_probe) {
+                static const char digits[] = "0123456789abcdef";
+                char frame_hex[KER_RX_OWNER_RELAY_MAX_FRAME * 2 + 1];
+                for (size_t i = 0; i < fixture->frame_bytes; ++i) {
+                    frame_hex[i * 2] = digits[fixture->pending_frame[i] >> 4];
+                    frame_hex[i * 2 + 1] = digits[fixture->pending_frame[i] & 0xf];
+                }
+                frame_hex[fixture->frame_bytes * 2] = 0;
+                printf("RX_OWNER_RELAY_PEER_FRAME packet_id=%llu source_port=%u dispatcher_result=%d frame_hash=%u bytes=%u monotonic_ns=%llu frame_hex=%s\n",
+                    (unsigned long long)reply.packet_id, fixture->peer_source_port,
+                    reply.dispatcher_result, reply.frame_hash32,
+                    fixture->frame_bytes, (unsigned long long)monotonic_ns(), frame_hex);
                 fflush(stdout);
             }
             fixture->packet_id = 0;
             fixture->pending_probe = false;
+            fixture->pending_peer_probe = false;
         } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
             return -errno;
         }
@@ -637,8 +704,18 @@ int main(int argc, char **argv)
     if (!relay_fd_text || errno || end == relay_fd_text || *end || relay_fd < 3) return 2;
     struct fixture fixture = {.relay_fd = (int)relay_fd, .owner_pidfd = -1,
         .supervisor_pidfd = -1};
+    const char *source_admission_profile =
+        getenv("KER_RX_OWNER_RELAY_SOURCE_ADMISSION_TEST");
+    if (source_admission_profile && strcmp(source_admission_profile, "1") != 0)
+        return 2;
+    fixture.expected_owner_role = source_admission_profile ? 1 : 0;
+    const char *source_revoke_test = getenv("KER_RX_OWNER_RELAY_SOURCE_REVOKE_TEST");
+    if (source_revoke_test && strcmp(source_revoke_test, "1") != 0) return 2;
+    fixture.source_revoke_test = source_revoke_test != NULL;
+    if (fixture.source_revoke_test && !source_admission_profile) return 2;
     fixture.probe_token = getenv("KER_RX_OWNER_RELAY_PROBE_TOKEN");
     if (!fixture.probe_token || strlen(fixture.probe_token) != 24) return 2;
+    fixture.expected_probe_destination_port = source_admission_profile ? 4108 : 80;
     if (getenv("KER_RX_OWNER_RELAY_SOURCE_FLOWMAP_TEST")) {
         const char *port_text = getenv("KER_RX_OWNER_RELAY_SOURCE_FLOWMAP_PORT");
         char *end = NULL;
@@ -646,6 +723,14 @@ int main(int argc, char **argv)
         if (!port_text || end == port_text || *end || !port || port > UINT16_MAX)
             return 2;
         fixture.expected_probe_source_port = (uint16_t)port;
+    }
+    if (getenv("KER_RX_OWNER_RELAY_SOURCE_PEER_TEST")) {
+        const char *port_text = getenv("KER_RX_OWNER_RELAY_SOURCE_PEER_PORT");
+        char *end = NULL;
+        unsigned long port = port_text ? strtoul(port_text, &end, 10) : 0;
+        if (!port_text || end == port_text || *end || !port || port > UINT16_MAX)
+            return 2;
+        fixture.expected_peer_source_port = (uint16_t)port;
     }
     if (decode_hex(nonce_text, fixture.broker_nonce, sizeof(fixture.broker_nonce)) ||
         decode_hex(profile_text, fixture.profile_hash, sizeof(fixture.profile_hash))) return 2;
@@ -688,13 +773,16 @@ int main(int argc, char **argv)
     int run_result = broker_run(&fixture);
     int run_errno = errno;
     int broker_result = ker_socket_broker_server_destroy_checked(server);
-    printf("RX_OWNER_RELAY_RESULT callbacks=%llu deferred=%llu completed=%llu startup_drops=%llu probe_witnesses=%llu probe_packet_id=%llu probe_source_port=%u probe_frame_hash=%u probe_dispatcher_result=%d broker=%d run=%d\n",
+    printf("RX_OWNER_RELAY_RESULT callbacks=%llu deferred=%llu completed=%llu startup_drops=%llu probe_witnesses=%llu probe_packet_id=%llu probe_source_port=%u probe_frame_hash=%u probe_dispatcher_result=%d peer_witnesses=%llu peer_packet_id=%llu peer_source_port=%u peer_frame_hash=%u peer_dispatcher_result=%d broker=%d run=%d\n",
         (unsigned long long)fixture.callbacks, (unsigned long long)fixture.deferred,
         (unsigned long long)fixture.completed,
         (unsigned long long)fixture.startup_drops,
         (unsigned long long)fixture.probe_witnesses,
         (unsigned long long)fixture.probe_packet_id, fixture.probe_source_port,
         fixture.probe_frame_hash, fixture.probe_dispatcher_result,
+        (unsigned long long)fixture.peer_witnesses,
+        (unsigned long long)fixture.peer_packet_id, fixture.peer_source_port,
+        fixture.peer_frame_hash, fixture.peer_dispatcher_result,
         fixture.broker_status, run_result);
     fflush(stdout);
     if (!run_result && !fixture.broker_status && !broker_result &&

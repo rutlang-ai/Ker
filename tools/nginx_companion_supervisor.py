@@ -70,7 +70,8 @@ def _close_fds(fds):
 class NginxCompanion:
     """Own one helper and one exact pinned non-daemon Nginx master subtree."""
     def __init__(self, binary, config, prefix, nginx_env, cycle_control_fd=None,
-                 owner_ready_required=False, rx_owner_relay_fd=None):
+                 owner_ready_required=False, rx_owner_relay_fd=None,
+                 candidate_slot_transfer_fd=None):
         self.binary = Path(binary).resolve(strict=True)
         self.config = Path(config).resolve(strict=True)
         self.prefix = Path(prefix).resolve(strict=True)
@@ -78,6 +79,15 @@ class NginxCompanion:
         self.cycle_control_fd = cycle_control_fd
         self.owner_ready_required = bool(owner_ready_required)
         self.rx_owner_relay_fd = rx_owner_relay_fd
+        self.candidate_slot_transfer_fd = candidate_slot_transfer_fd
+        self.candidate_slot_stat = None
+        self.expected_owner_role = 1 if candidate_slot_transfer_fd is not None else 0
+        if ((candidate_slot_transfer_fd is None) !=
+                ('KER_NGINX_CANDIDATE_SLOT_FD' not in self.nginx_env)):
+            raise ValueError('candidate slot descriptor and Nginx profile must be supplied together')
+        if candidate_slot_transfer_fd is not None and int(
+                self.nginx_env['KER_NGINX_CANDIDATE_SLOT_FD'], 10) != candidate_slot_transfer_fd:
+            raise ValueError('candidate slot transfer descriptor differs from Nginx profile')
         self.owner_pidfd = -1
         self.owner_pid = 0
         self.owner_start = 0
@@ -198,7 +208,13 @@ class NginxCompanion:
                     raise PermissionError(f'helper credentials {credentials!r} did not match '
                         f'pinned Popen child {(self.helper.pid, os.getuid(), os.getgid())!r}')
                 if len(packet) not in expected_sizes or len(fds) != rights_count:
-                    raise ValueError('helper record length or descriptor count mismatch')
+                    kind = wire.unpack_header(packet)[0] if len(packet) >= wire.HEADER.size else None
+                    details = None
+                    if kind == wire.ERROR and len(packet) == wire.ERROR_BYTES:
+                        details = wire.ERROR_BODY.unpack_from(packet, wire.HEADER.size)
+                    raise ValueError('helper record length or descriptor count mismatch '
+                        f'kind={kind} bytes={len(packet)} expected={expected_sizes} '
+                        f'fds={len(fds)} expected_fds={rights_count} error={details!r}')
                 if time.monotonic() > deadline:
                     raise TimeoutError('Nginx helper record arrived after deadline')
                 return packet, fds
@@ -206,9 +222,75 @@ class NginxCompanion:
                 _close_fds(fds)
                 raise
 
+    def _receive_candidate_slot(self, timeout):
+        transfer_fd = self.candidate_slot_transfer_fd
+        expected_peer = os.getppid()
+        transfer = socket.socket(fileno=transfer_fd)
+        received_fds = []
+        detached = False
+        try:
+            if transfer.family != socket.AF_UNIX or transfer.getsockopt(
+                    socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET:
+                raise PermissionError('candidate-cap transfer is not a Unix seqpacket')
+            transfer.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            peer = transfer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, _UCRED.size)
+            peer_pid, peer_uid, peer_gid = _UCRED.unpack(peer)
+            if (peer_pid != expected_peer or peer_uid != os.getuid() or
+                    peer_gid != os.getgid()):
+                raise PermissionError('candidate-cap transfer peer is not the launching tap')
+            transfer.settimeout(timeout)
+            packet, ancillary, flags, _ = transfer.recvmsg(64,
+                socket.CMSG_SPACE(_UCRED.size) + socket.CMSG_SPACE(4 * 4),
+                getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
+            credentials = []
+            ancillary_error = False
+            for level, kind, payload in ancillary:
+                if level != socket.SOL_SOCKET:
+                    ancillary_error = True
+                    continue
+                if kind == socket.SCM_CREDENTIALS and len(payload) == _UCRED.size:
+                    credentials.append(_UCRED.unpack(payload))
+                elif kind == socket.SCM_RIGHTS and len(payload) % 4 == 0:
+                    values = array.array('i'); values.frombytes(payload)
+                    received_fds.extend(values)
+                else:
+                    ancillary_error = True
+            truncation = flags & (getattr(socket, 'MSG_TRUNC', 0) |
+                getattr(socket, 'MSG_CTRUNC', 0))
+            unexpected_flags = flags & ~(getattr(socket, 'MSG_TRUNC', 0) |
+                getattr(socket, 'MSG_CTRUNC', 0) |
+                getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
+            if (packet != b'KER_CANDIDATE_SLOT_V1' or truncation or unexpected_flags or ancillary_error or
+                    credentials != [(peer_pid, peer_uid, peer_gid)] or
+                    len(received_fds) != 1):
+                raise ValueError('candidate-cap transfer mismatch '
+                    f'packet={packet!r} flags={flags} ancillary_error={ancillary_error} '
+                    f'credentials={credentials!r} rights={len(received_fds)} '
+                    f'peer={(peer_pid, peer_uid, peer_gid)!r}')
+            self.candidate_slot_stat = os.fstat(received_fds[0])
+            os.dup2(received_fds[0], transfer_fd, inheritable=True)
+            transfer.detach()
+            detached = True
+            os.close(received_fds[0]); received_fds.clear()
+            # The inherited transfer descriptor now carries the delegated
+            # candidate capability. Keep ownership until Popen transfers it.
+        except BaseException:
+            for fd in received_fds:
+                try: os.close(fd)
+                except OSError: pass
+            if detached:
+                try: os.close(transfer_fd)
+                except OSError: pass
+            else:
+                transfer.close()
+            self.candidate_slot_transfer_fd = None
+            raise
+
     def start(self, timeout=15.0):
         if self.helper is not None:
             raise RuntimeError('Nginx companion is one-use')
+        if self.candidate_slot_transfer_fd is not None:
+            self._receive_candidate_slot(timeout)
         parent, child = socket.socketpair(socket.AF_UNIX,
             socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
         parent.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
@@ -227,6 +309,9 @@ class NginxCompanion:
         if self.rx_owner_relay_fd is not None:
             command += ['--rx-owner-relay-fd', str(self.rx_owner_relay_fd)]
             helper_pass_fds.append(self.rx_owner_relay_fd)
+        if self.candidate_slot_transfer_fd is not None:
+            command += ['--candidate-slot-fd', str(self.candidate_slot_transfer_fd)]
+            helper_pass_fds.append(self.candidate_slot_transfer_fd)
         for key, value in sorted(self.nginx_env.items()):
             command += ['--nginx-env', f'{key}={value}']
         env = {'PATH': '/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1'}
@@ -235,8 +320,17 @@ class NginxCompanion:
                 pass_fds=tuple(helper_pass_fds), close_fds=True,
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=None, start_new_session=True)
+        except BaseException:
+            if self.candidate_slot_transfer_fd is not None:
+                try: os.close(self.candidate_slot_transfer_fd)
+                except OSError: pass
+                self.candidate_slot_transfer_fd = None
+            raise
         finally:
             child.close()
+        if self.candidate_slot_transfer_fd is not None:
+            os.close(self.candidate_slot_transfer_fd)
+            self.candidate_slot_transfer_fd = None
         self.channel.setblocking(False)
         self.supervisor_pidfd = os.pidfd_open(self.supervisor_pid, 0)
         deadline = time.monotonic() + timeout
@@ -286,10 +380,14 @@ class NginxCompanion:
                     fields = wire.unpack_record(packet, wire.OWNER_READY,
                         self.nonce, self.epoch, 1, wire.OWNER_READY_BODY)
                     wire.validate_owner_ready(fields, expected_uid=os.getuid(),
-                        expected_gid=os.getgid(), expected_role=0)
+                        expected_gid=os.getgid(), expected_role=self.expected_owner_role)
                     (owner_pid, owner_uid, owner_gid, owner_role, owner_tid,
                      _reserved, owner_start, slot_device, slot_inode,
                      owner_cookie) = fields
+                    if self.candidate_slot_stat is not None and (
+                            slot_device != self.candidate_slot_stat.st_dev or
+                            slot_inode != self.candidate_slot_stat.st_ino):
+                        raise PermissionError('Nginx candidate READY does not identify the transferred slot capability')
                     worker_pidfd = fds.pop()
                     if (_pidfd_pid(worker_pidfd) != owner_pid or
                             not process_alive(worker_pidfd) or

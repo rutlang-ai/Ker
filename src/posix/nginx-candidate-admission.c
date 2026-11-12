@@ -19,6 +19,11 @@ extern volatile ngx_cycle_t *ngx_cycle;
 static struct ff_reload_state *candidate_state;
 struct ff_config ff_global_cfg;
 
+#ifdef KER_NGINX_SOURCE_ADMISSION_RELAY_TEST
+int ker_nginx_source_admission_prepare(struct ff_reload_state *state, int slot);
+void ker_nginx_source_admission_abort(void);
+#endif
+
 struct ff_reload_state *ker_nginx_source_flowmap_state(void)
 {
     return candidate_state;
@@ -57,6 +62,24 @@ int ker_nginx_candidate_master_prepare(ngx_cycle_t *cycle)
         ff_reload_master_begin(&epoch, &target);
         if (!epoch || target >= FF_RELOAD_GEN_MAX ||
             !ff_reload_state_attached() || !ff_reload_hw_locked()) {
+            errno = EPROTO;
+            return -1;
+        }
+    }
+#endif
+#ifdef KER_NGINX_SOURCE_ADMISSION_RELAY_TEST
+    const char *source_admission = getenv("KER_NGINX_SOURCE_ADMISSION_RELAY");
+    if (source_admission) {
+        if (strcmp(source_admission, "1") != 0) {
+            errno = EINVAL;
+            return -1;
+        }
+        uint32_t epoch = 0, target = 0;
+        ff_reload_master_begin(&epoch, &target);
+        if (epoch) ff_reload_set_epoch(epoch);
+        if (!epoch || target >= FF_RELOAD_GEN_MAX ||
+            !ff_reload_state_attached() || !ff_reload_hw_locked() ||
+            ff_reload_epoch() != epoch || ff_reload_target_gen() != (int)target) {
             errno = EPROTO;
             return -1;
         }
@@ -121,6 +144,20 @@ int ker_nginx_candidate_worker_commit(int slot)
         errno = EPROTO;
         return -1;
     }
+#ifdef KER_NGINX_SOURCE_ADMISSION_RELAY_TEST
+    const char *source_admission = getenv("KER_NGINX_SOURCE_ADMISSION_RELAY");
+    if (source_admission) {
+        if (strcmp(source_admission, "1") != 0) { errno = EINVAL; return -1; }
+        extern int ker_nginx_source_admission_prepare(struct ff_reload_state *, int);
+        int status = ker_nginx_source_admission_prepare(candidate_state, slot);
+        if (status) {
+            ker_nginx_source_admission_abort();
+            errno = status < 0 ? -status : EPROTO;
+            return -1;
+        }
+        return 0;
+    }
+#endif
     ff_reload_attach_state(candidate_state);
     ff_reload_set_epoch(candidate_state->epoch);
     ff_reload_set_gen(0);
