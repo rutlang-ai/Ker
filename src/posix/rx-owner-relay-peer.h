@@ -3,6 +3,7 @@
 
 #include "rx-owner-relay-wire.h"
 #include <sys/types.h>
+#include <stdbool.h>
 
 /* Private caller-owned, serialized old-owner binding. The supervisor must
  * authenticate this identity/slot and delegate the channel and pidfd first.
@@ -18,6 +19,8 @@ struct ker_rx_owner_relay_peer {
     gid_t gid;
     struct ker_rx_owner_relay_header identity;
     uint64_t last_packet_id;
+    struct ker_rx_owner_relay_header pending;
+    bool pending_active;
 };
 
 /* Relay exactly one already validated PEER reply's immutable frame to the
@@ -30,5 +33,14 @@ struct ker_rx_owner_relay_peer {
 int ker_rx_owner_relay_peer_forward(struct ker_rx_owner_relay_peer *peer,
     const struct ker_rx_owner_relay_header *source, const void *frame,
     size_t bytes, int *action);
+
+/* Reactor form: begin consumes the send attempt; poll returns -EAGAIN while
+ * the original deadline remains live. Never block the broker which services
+ * the old Nginx worker's owner-loop RPC. Frame storage remains caller-owned
+ * and immutable until poll settles (success or any error except EAGAIN). */
+int ker_rx_owner_relay_peer_begin(struct ker_rx_owner_relay_peer *peer,
+    const struct ker_rx_owner_relay_header *source, const void *frame, size_t bytes);
+int ker_rx_owner_relay_peer_poll(struct ker_rx_owner_relay_peer *peer,
+    const void *frame, size_t bytes, int *action);
 
 #endif

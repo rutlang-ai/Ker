@@ -29,6 +29,8 @@ struct fixture {
     struct ker_rx_owner_relay_peer peer;
     struct ker_rx_owner_peer_auth_record peer_record;
     bool peer_authenticated;
+    bool peer_forward_pending;
+    struct ker_rx_owner_relay_header peer_source_reply;
     bool peer_auth_enabled;
     uint64_t peer_auth_deadline_ns;
     atomic_bool broker_done;
@@ -619,7 +621,7 @@ static int relay_decision(const struct ker_rx_decision_packet *packet, void *opa
             &probe_port);
     uint16_t peer_port = 0;
     fixture->pending_peer_probe = fixture->expected_peer_source_port &&
-        !fixture->peer_packet_id && frame_is_source_probe_ack(packet->full_frame,
+        (!fixture->peer_packet_id || fixture->peer_auth_enabled) && frame_is_source_probe_ack(packet->full_frame,
             packet->full_frame_bytes, fixture->expected_peer_source_port,
             fixture->expected_probe_destination_port, &peer_port);
     if (fixture->pending_peer_probe) {
@@ -709,6 +711,11 @@ static int app_loop(void *opaque)
         struct iovec iov = {.iov_base = reply_buffer, .iov_len = sizeof(reply_buffer)};
         struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
             .msg_control = control, .msg_controllen = sizeof(control)};
+        int action = KER_RX_DECISION_DROP;
+        if (fixture->peer_forward_pending) {
+            reply = fixture->peer_source_reply;
+            goto poll_peer_reply;
+        }
         ssize_t received = recvmsg(fixture->relay_fd, &message,
             MSG_DONTWAIT | MSG_TRUNC | MSG_CMSG_CLOEXEC);
         if (received >= 0) {
@@ -781,16 +788,36 @@ static int app_loop(void *opaque)
                 }
                 if (access(release, F_OK) != 0) return -ETIMEDOUT;
             }
-            int action = reply.dispatcher_result == fixture->queue_id &&
+            action = reply.dispatcher_result == fixture->queue_id &&
                 reply.frame_unchanged == 1 ? KER_RX_DECISION_LOCAL : KER_RX_DECISION_DROP;
             if (reply.dispatcher_result == -3 && reply.frame_unchanged == 1 && peer_authority_live(fixture)) {
-                int peer_action = KER_RX_DECISION_DROP;
-                /* Both process/slot identities and the finite supervisor
-                 * authority must remain live on each side of the hop. */
-                int peer_status = ker_rx_owner_relay_peer_forward(&fixture->peer,
-                    &reply, fixture->pending_frame, fixture->frame_bytes, &peer_action);
-                if (!peer_status && peer_authority_live(fixture)) action = peer_action;
+                int status = ker_rx_owner_relay_peer_begin(&fixture->peer,
+                    &reply, fixture->pending_frame, fixture->frame_bytes);
+                if (!status) {
+                    fixture->peer_source_reply = reply;
+                    fixture->peer_forward_pending = true;
+                    /* Let the broker service the old worker's pending RPC
+                     * before polling its relay. Do not renew the C31 lease. */
+                    return 0;
+                }
             }
+            goto complete_reply;
+poll_peer_reply:;
+            int peer_action = KER_RX_DECISION_DROP;
+            int peer_status = peer_authority_live(fixture) ?
+                ker_rx_owner_relay_peer_poll(&fixture->peer, fixture->pending_frame,
+                    fixture->frame_bytes, &peer_action) : -ESTALE;
+            if (peer_status == -EAGAIN) return 0;
+            fixture->peer_forward_pending = false;
+            if (!peer_status && peer_authority_live(fixture)) {
+                action = peer_action;
+                printf("RX_OWNER_PEER_HANDOFF packet=%llu primary_pid=%u primary_tid=%u old_pid=%u old_tid=%u action=%d hash=%u bytes=%u\n",
+                    (unsigned long long)reply.packet_id, reply.owner_pid, reply.owner_tid,
+                    fixture->peer.identity.owner_pid, fixture->peer.identity.owner_tid,
+                    action, reply.frame_hash32, fixture->frame_bytes);
+                fflush(stdout);
+            }
+complete_reply:
             if (monotonic_ns() >= fixture->deadline_ns ||
                 ker_posix_rx_decision_complete(fixture->packet_id, action)) return -EPROTO;
             fixture->completed++;

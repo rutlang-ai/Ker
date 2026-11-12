@@ -49,6 +49,23 @@ int ker_nginx_candidate_master_prepare(ngx_cycle_t *cycle)
     }
     candidate_state = *block;
 #ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
+    const char *old_source = getenv("KER_NGINX_SOURCE_PEER_OLD");
+    if (old_source) {
+        if (strcmp(old_source, "1") || !getenv("KER_NGINX_SOURCE_PEER_PAIR")) {
+            errno = EINVAL; return -1;
+        }
+        uint32_t epoch = 0, target = 0;
+        /* Prime a completed 0->1 round, then prepare the original 1->0
+         * window in which this worker's original callback will be armed.
+         * No source structure fields or protocol state are manufactured. */
+        ff_reload_master_begin(&epoch, &target);
+        if (target != 1 || !epoch) { errno = EPROTO; return -1; }
+        ff_reload_set_epoch(epoch);
+        ff_reload_master_complete();
+        ff_reload_master_begin(&epoch, &target);
+        ff_reload_set_epoch(epoch);
+        if (epoch != 2 || target != 0 || !ff_reload_hw_locked()) { errno = EPROTO; return -1; }
+    }
     const char *source_test = getenv("KER_NGINX_SOURCE_FLOWMAP_TEST");
     if (source_test && strcmp(source_test, "1") != 0) {
         errno = EINVAL;
@@ -75,6 +92,14 @@ int ker_nginx_candidate_master_prepare(ngx_cycle_t *cycle)
             return -1;
         }
         uint32_t epoch = 0, target = 0;
+        if (getenv("KER_NGINX_SOURCE_PEER_PAIR")) {
+            for (unsigned round = 0; round < 2; ++round) {
+                ff_reload_master_begin(&epoch, &target);
+                if (!epoch || target != (round ^ 1u)) { errno = EPROTO; return -1; }
+                ff_reload_set_epoch(epoch);
+                ff_reload_master_complete();
+            }
+        }
         ff_reload_master_begin(&epoch, &target);
         if (epoch) ff_reload_set_epoch(epoch);
         if (!epoch || target >= FF_RELOAD_GEN_MAX ||

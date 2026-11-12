@@ -80,7 +80,7 @@ static int owner_live(const struct ker_rx_owner_relay_peer *peer)
 
 static int receive_reply(struct ker_rx_owner_relay_peer *peer,
     const struct ker_rx_owner_relay_header *request, const unsigned char *frame,
-    size_t bytes, int *action)
+    size_t bytes, int *action, bool blocking)
 {
     unsigned char packet[sizeof(*request) + KER_RX_OWNER_RELAY_MAX_FRAME];
     unsigned char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(4 * sizeof(int))];
@@ -92,18 +92,21 @@ static int receive_reply(struct ker_rx_owner_relay_peer *peer,
         struct pollfd fds[] = {{.fd = peer->fd, .events = POLLIN},
             {.fd = peer->pidfd, .events = POLLIN}};
         int timeout = (int)((request->deadline_ns - now + 999999) / 1000000);
-        long ready = syscall(SYS_poll, fds, 2, timeout);
+        long ready = syscall(SYS_poll, fds, 2, blocking ? timeout : 0);
         if (ready < 0 && errno == EINTR) continue;
         if (ready < 0) return -errno;
         if (fds[1].revents) return -ESRCH;
         if (fds[0].revents & (POLLHUP | POLLERR | POLLNVAL)) return -ENOTCONN;
-        if (!ready) continue;
+        if (!ready) { if (!blocking) return -EAGAIN; continue; }
         struct iovec iov = {.iov_base = packet, .iov_len = sizeof(packet)};
         struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
             .msg_control = control, .msg_controllen = sizeof(control)};
         long count = syscall(SYS_recvmsg, peer->fd, &message,
             MSG_DONTWAIT | MSG_TRUNC | MSG_CMSG_CLOEXEC);
-        if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (!blocking) return -EAGAIN;
+            continue;
+        }
         if (count < 0) return -errno;
         unsigned credentials = 0;
         bool malformed = false;
@@ -147,12 +150,13 @@ static int receive_reply(struct ker_rx_owner_relay_peer *peer,
     }
 }
 
-int ker_rx_owner_relay_peer_forward(struct ker_rx_owner_relay_peer *peer,
+int ker_rx_owner_relay_peer_begin(struct ker_rx_owner_relay_peer *peer,
     const struct ker_rx_owner_relay_header *source, const void *frame,
-    size_t bytes, int *action)
+    size_t bytes)
 {
     if (!peer || peer->fd < 0 || peer->pidfd < 0) return -ENOTCONN;
-    if (!source || !frame || !action || bytes < 14 || bytes > KER_RX_OWNER_RELAY_MAX_FRAME ||
+    if (peer->pending_active) return -EBUSY;
+    if (!source || !frame || bytes < 14 || bytes > KER_RX_OWNER_RELAY_MAX_FRAME ||
         source->magic != KER_RX_OWNER_RELAY_MAGIC || source->version != KER_RX_OWNER_RELAY_VERSION ||
         source->type != KER_RX_OWNER_RELAY_REPLY || source->dispatcher_result != -3 ||
         !source->packet_id || !source->queue_count || source->queue_id >= source->queue_count ||
@@ -193,5 +197,29 @@ int ker_rx_owner_relay_peer_forward(struct ker_rx_owner_relay_peer *peer,
     peer->last_packet_id = source->packet_id;
     long sent = syscall(SYS_sendmsg, peer->fd, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
     if (sent != (long)(sizeof(request) + bytes)) return sent < 0 ? -errno : -EIO;
-    return receive_reply(peer, &request, frame, bytes, action);
+    peer->pending = request;
+    peer->pending_active = true;
+    return 0;
+}
+
+int ker_rx_owner_relay_peer_poll(struct ker_rx_owner_relay_peer *peer,
+    const void *frame, size_t bytes, int *action)
+{
+    if (!peer || !peer->pending_active || !frame || !action ||
+        bytes != peer->pending.frame_bytes) return -EINVAL;
+    int status = receive_reply(peer, &peer->pending, frame, bytes, action, false);
+    if (status != -EAGAIN) peer->pending_active = false;
+    return status;
+}
+
+int ker_rx_owner_relay_peer_forward(struct ker_rx_owner_relay_peer *peer,
+    const struct ker_rx_owner_relay_header *source, const void *frame,
+    size_t bytes, int *action)
+{
+    if (!action) return -EINVAL;
+    int status = ker_rx_owner_relay_peer_begin(peer, source, frame, bytes);
+    if (status) return status;
+    status = receive_reply(peer, &peer->pending, frame, bytes, action, true);
+    peer->pending_active = false;
+    return status;
 }
