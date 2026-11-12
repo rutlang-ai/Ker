@@ -983,7 +983,8 @@ if(BUILD_TESTING)
         KER_SOCKET_BROKER_READINESS_TESTING=1
         KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING=1)
     add_executable(ker-socket-broker-rx-owner-relay-fixture
-        tests/posix/socket-broker-rx-owner-relay-fixture.c)
+        tests/posix/socket-broker-rx-owner-relay-fixture.c
+        src/posix/rx-owner-relay-peer.c)
     target_include_directories(ker-socket-broker-rx-owner-relay-fixture PRIVATE
         "${PROJECT_SOURCE_DIR}/src/posix")
     target_compile_features(ker-socket-broker-rx-owner-relay-fixture PRIVATE c_std_11)
