@@ -93,6 +93,10 @@ class CorruptAck:
 
 
 class PeerAuthority(unittest.TestCase):
+    def setUp(self):
+        if RECEIVER is None:
+            self.skipTest('receiver path is supplied by the native CTest invocation')
+
     def run_case(self, mode):
         control, app_control = pair()
         primary_channel, primary_worker = pair()
