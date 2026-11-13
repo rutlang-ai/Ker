@@ -26,11 +26,14 @@ static int unsupported(void)
 #ifdef KER_FSTACK_NGINX_RUNTIME
 extern void ker_fstack_runtime_trace_leaf(const char *name, int fd, long result);
 extern int ker_fstack_runtime_application_io_allowed(void);
+extern void ker_fstack_runtime_relay_checkpoint(void);
+#define FF_PROGRESS() ker_fstack_runtime_relay_checkpoint()
 #define FF_TRACE(fd, result) ker_fstack_runtime_trace_leaf(__func__, (fd), (long)(result))
 #define FF_IO_ALLOWED() ker_fstack_runtime_application_io_allowed()
 #else
 #define FF_TRACE(fd, result) ((void)0)
 #define FF_IO_ALLOWED() 1
+#define FF_PROGRESS() ((void)0)
 #endif
 
 #define FF_DISPATCH_RETURN(type, expression) do { \
@@ -40,6 +43,7 @@ extern int ker_fstack_runtime_application_io_allowed(void);
     int saved_errno = errno; \
     FF_TRACE(fd, result); \
     ker_sb_preload_ff_dispatch_end(); \
+    FF_PROGRESS(); \
     errno = saved_errno; \
     return result; \
 } while (0)
@@ -55,7 +59,10 @@ int ff_socket(int domain, int type, int protocol)
     int fd = ker_sb_preload_ff_owner_managed() ?
         ker_sb_preload_ff_owner_socket(family, type, protocol) :
         ker_sb_posix_socket(family, type, protocol);
+    int saved_errno = errno;
     FF_TRACE(-1, fd);
+    FF_PROGRESS();
+    errno = saved_errno;
     return fd;
 }
 
@@ -74,6 +81,7 @@ int ff_listen(int fd, int backlog)
     if (!result) ker_sb_preload_trace_initial_listener(fd);
     FF_TRACE(fd, result);
     ker_sb_preload_ff_dispatch_end();
+    FF_PROGRESS();
     errno = saved_errno;
     return result;
 }
@@ -90,6 +98,7 @@ int ff_close(int fd)
 int ff_socket_drain_count(void)
 {
     if (!FF_IO_ALLOWED()) return -1;
+    FF_TRACE(-1, 0);
     int count = ker_sb_preload_socket_drain_count();
     if (count < 0) {
         char message[128];
@@ -100,12 +109,15 @@ int ff_socket_drain_count(void)
                 (size_t)length < sizeof(message) ? (size_t)length : sizeof(message));
         abort();
     }
+    FF_PROGRESS();
+    FF_TRACE(0, count);
     return count;
 }
 
 int ff_socket_snd_pending(void)
 {
     if (!FF_IO_ALLOWED()) return -1;
+    FF_TRACE(-1, 0);
     struct ker_socket_member_payload_snapshot snapshot = {0};
     if (ker_sb_preload_ff_owner_payload(&snapshot) < 0) {
         char message[160];
@@ -116,6 +128,8 @@ int ff_socket_snd_pending(void)
                 (size_t)length < sizeof(message) ? (size_t)length : sizeof(message));
         abort();
     }
+    FF_PROGRESS();
+    FF_TRACE(0, snapshot.payload_bytes > INT_MAX ? INT_MAX : (int)snapshot.payload_bytes);
     return snapshot.payload_bytes > INT_MAX ? INT_MAX : (int)snapshot.payload_bytes;
 }
 

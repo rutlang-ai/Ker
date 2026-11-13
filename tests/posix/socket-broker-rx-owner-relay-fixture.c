@@ -32,15 +32,29 @@ struct fixture {
     int source_route_candidate_pidfd;
     int source_route_candidate_channel;
     int source_route_master_pidfd;
+    int source_route_aborted_candidate_pidfd;
+    int source_route_aborted_master_pidfd;
+    struct ker_rx_owner_source_route_record source_route_first_record;
     uint64_t source_route_last_sequence;
     uint64_t source_route_last_operation_id;
     uint64_t source_route_rejected_operation_id;
     uint16_t source_route_last_type;
     bool source_route_pending;
     bool source_route_candidate_authenticated;
+    bool source_route_aborted;
+    bool source_route_retry_used;
     bool source_route_active;
     bool source_route_quarantined;
     bool source_route_enabled;
+    bool source_route_cut_pending;
+    bool source_route_cut_progress_traced;
+    bool source_route_cut_reply_poll_traced;
+    struct ker_rx_owner_source_route_record source_route_cut_record;
+    uint64_t source_route_cut_packet_id;
+    uint64_t source_route_cut_frame_deadline_ns;
+    uint32_t source_route_cut_frame_hash;
+    uint64_t source_route_cut_completed_id;
+    uint64_t source_route_cut_completed_ns;
     pthread_mutex_t source_route_lock;
     bool peer_authenticated;
     bool peer_forward_pending;
@@ -619,6 +633,21 @@ static void close_source_route_pending(struct fixture *fixture)
     fixture->source_route_candidate_authenticated = false;
 }
 
+static void abort_source_route_pending(struct fixture *fixture)
+{
+    if (fixture->source_route_candidate_channel >= 0)
+        close(fixture->source_route_candidate_channel);
+    fixture->source_route_candidate_channel = -1;
+    fixture->source_route_aborted_candidate_pidfd = fixture->source_route_candidate_pidfd;
+    fixture->source_route_aborted_master_pidfd = fixture->source_route_master_pidfd;
+    fixture->source_route_candidate_pidfd = -1;
+    fixture->source_route_master_pidfd = -1;
+    fixture->source_route_first_record = fixture->source_route_record;
+    fixture->source_route_pending = false;
+    fixture->source_route_candidate_authenticated = false;
+    fixture->source_route_aborted = true;
+}
+
 static int source_route_reply_record(const struct ker_rx_owner_source_route_record *base,
     uint16_t type,
     uint64_t sequence, int status)
@@ -644,8 +673,254 @@ static int source_route_reply(struct fixture *fixture, uint16_t type, int status
         fixture->source_route_last_sequence, status);
 }
 
+static bool source_route_commit_context_live(struct fixture *fixture,
+    const struct ker_rx_owner_source_route_record *record)
+{
+    struct ker_rx_owner_peer_auth_record pair = record->pair;
+    pair.owner.type = fixture->source_route_record.pair.owner.type;
+    return supervisor_authority_live(fixture) && current_owner_live(fixture) &&
+        fixture->source_route_pending && fixture->source_route_candidate_authenticated &&
+        !fixture->source_route_active &&
+        record->operation_id == fixture->source_route_record.operation_id &&
+        record->command_sequence == fixture->source_route_last_sequence &&
+        record->source_epoch == fixture->source_route_record.source_epoch &&
+        record->source_master_pid == fixture->source_route_record.source_master_pid &&
+        record->source_master_start_ticks == fixture->source_route_record.source_master_start_ticks &&
+        !memcmp(&pair, &fixture->source_route_record.pair, sizeof(pair));
+}
+
+static bool source_route_commit_actors_live(struct fixture *fixture,
+    const struct ker_rx_owner_source_route_record *record, pid_t *candidate_out)
+{
+    pid_t candidate = 0, master = 0;
+    uint64_t candidate_start = 0, master_start = 0;
+    pid_t parent = 0, current_parent = 0;
+    struct pollfd pids[2] = {{.fd = fixture->source_route_candidate_pidfd, .events = POLLIN},
+        {.fd = fixture->source_route_master_pidfd, .events = POLLIN}};
+    if (pidfd_pid(fixture->source_route_master_pidfd, &master) ||
+        master != (pid_t)record->source_master_pid ||
+        pidfd_pid(fixture->source_route_candidate_pidfd, &candidate) ||
+        candidate != (pid_t)record->pair.owner.owner_pid ||
+        read_start_ticks(candidate, &candidate_start) ||
+        candidate_start != record->pair.owner.owner_start_ticks ||
+        read_parent_pid(candidate, &parent) || parent != master ||
+        !process_thread_exists(candidate, record->pair.owner.owner_tid) ||
+        read_parent_pid(fixture->owner_pid, &current_parent) || current_parent != master ||
+        read_start_ticks(master, &master_start) || master_start != record->source_master_start_ticks ||
+        poll(pids, 2, 0) != 0 || monotonic_ns() >= record->pair.authority_deadline_ns) return false;
+    if (candidate_out) *candidate_out = candidate;
+    return true;
+}
+
+static int source_route_cut_control_live(uint64_t deadline_ns)
+{
+    const char *text = getenv("KER_RX_OWNER_AUTH_FD");
+    char *end = NULL;
+    errno = 0;
+    long fd = text ? strtol(text, &end, 10) : -1;
+    if (!text || errno || end == text || *end || fd < 3 || fd > INT32_MAX) return -EINVAL;
+    struct pollfd control = {.fd = (int)fd, .events = POLLIN | POLLHUP | POLLERR};
+    int result;
+    do { result = poll(&control, 1, 0); }
+    while (result < 0 && errno == EINTR && monotonic_ns() < deadline_ns);
+    if (result < 0) return errno == EINTR ? -ETIMEDOUT : -errno;
+    if (control.revents & (POLLHUP | POLLERR | POLLNVAL)) return -ENOTCONN;
+    /* A terminal command already owns this slot. Never consume a second one
+     * or let it replace/renew the authenticated immutable first command. */
+    return control.revents & POLLIN ? -EALREADY : 0;
+}
+
+static void source_route_cut_trace(const struct fixture *fixture, const char *event,
+    uint64_t command_deadline_ns, int status)
+{
+    int saved_errno = errno;
+    char text[384];
+    int bytes = snprintf(text, sizeof(text),
+        "SOURCE_ROUTE_CUT_STAGE event=%s now_ns=%llu packet=%llu frame_deadline=%llu hash=%u command_deadline=%llu pending=%u completed_id=%llu completed_ns=%llu status=%d\n",
+        event, (unsigned long long)monotonic_ns(),
+        (unsigned long long)fixture->packet_id,
+        (unsigned long long)fixture->deadline_ns, fixture->current_frame_hash,
+        (unsigned long long)command_deadline_ns,
+        (unsigned)fixture->source_route_cut_pending,
+        (unsigned long long)fixture->source_route_cut_completed_id,
+        (unsigned long long)fixture->source_route_cut_completed_ns, status);
+    if (bytes > 0 && (size_t)bytes < sizeof(text))
+        (void)syscall(SYS_write, STDERR_FILENO, text, (size_t)bytes);
+    errno = saved_errno;
+}
+
+static int apply_source_route_commit(struct fixture *fixture,
+    const struct ker_rx_owner_source_route_record *request, bool may_defer)
+{
+    struct ker_rx_owner_source_route_record record = *request;
+    struct ker_rx_owner_peer_auth_record *pair = &record.pair;
+    bool after_frame = pair->owner.type == KER_RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME;
+    uint16_t reply_type = after_frame ? KER_RX_OWNER_SOURCE_ROUTE_COMMITTED_AFTER_FRAME :
+        KER_RX_OWNER_SOURCE_ROUTE_COMMITTED;
+    if (after_frame) source_route_cut_trace(fixture, "apply-enter", record.command_deadline_ns, 0);
+    pthread_mutex_lock(&fixture->source_route_lock);
+    if (after_frame) source_route_cut_trace(fixture, "apply-locked", record.command_deadline_ns, 0);
+    if (!after_frame && (fixture->packet_id || fixture->peer_forward_pending)) {
+        pthread_mutex_unlock(&fixture->source_route_lock);
+        return source_route_reply_record(&record, KER_RX_OWNER_SOURCE_ROUTE_COMMITTED,
+            record.command_sequence, -EBUSY);
+    }
+    if (!source_route_commit_context_live(fixture, &record)) {
+        pthread_mutex_unlock(&fixture->source_route_lock);
+        return source_route_reply_record(&record, reply_type, record.command_sequence, -ESTALE);
+    }
+    if (after_frame) source_route_cut_trace(fixture, "context-live", record.command_deadline_ns, 0);
+    pid_t candidate = 0;
+    if (!source_route_commit_actors_live(fixture, &record, &candidate)) {
+        close_source_route_pending(fixture);
+        pthread_mutex_unlock(&fixture->source_route_lock);
+        return source_route_reply_record(&record, reply_type,
+            record.command_sequence, -ESTALE);
+    }
+    if (after_frame) source_route_cut_trace(fixture, "actors-live", record.command_deadline_ns, 0);
+    /* A live master and finite grant do not extend an individual source
+     * handover call. Check its absolute budget under the swap mutex. */
+    if (!record.command_deadline_ns || monotonic_ns() >= record.command_deadline_ns ||
+            record.command_deadline_ns > pair->authority_deadline_ns) {
+        pthread_mutex_unlock(&fixture->source_route_lock);
+        return source_route_reply_record(&record, reply_type,
+            record.command_sequence, record.command_deadline_ns ? -ETIMEDOUT : -EINVAL);
+    }
+    if (after_frame) {
+        int live = source_route_cut_control_live(record.command_deadline_ns);
+        if (live) {
+            fixture->source_route_quarantined = true;
+            pthread_mutex_unlock(&fixture->source_route_lock);
+            (void)source_route_reply_record(&record, reply_type, record.command_sequence, live);
+            return live;
+        }
+        if (fixture->packet_id || fixture->peer_forward_pending) {
+            if (!may_defer || fixture->source_route_cut_pending) {
+                pthread_mutex_unlock(&fixture->source_route_lock);
+                return -EPROTO;
+            }
+            fixture->source_route_cut_record = record;
+            fixture->source_route_cut_packet_id = fixture->packet_id;
+            fixture->source_route_cut_frame_deadline_ns = fixture->deadline_ns;
+            fixture->source_route_cut_frame_hash = fixture->current_frame_hash;
+            fixture->source_route_cut_completed_id = 0;
+            fixture->source_route_cut_completed_ns = 0;
+            fixture->source_route_cut_pending = true;
+            fixture->source_route_cut_progress_traced = false;
+            fixture->source_route_cut_reply_poll_traced = false;
+            pthread_mutex_unlock(&fixture->source_route_lock);
+            source_route_cut_trace(fixture, "wait-old-frame", record.command_deadline_ns, 0);
+            return 0; /* ACK waits for the old frame's actual completion. */
+        }
+    }
+#ifdef KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING
+    if (getenv("KER_TEST_SOURCE_ROUTE_DELAY_SWAP")) {
+        struct timespec delay = {.tv_nsec = 200000000};
+        while (nanosleep(&delay, &delay) && errno == EINTR) { }
+    }
+#endif
+    fixture->peer = (struct ker_rx_owner_relay_peer){.fd = fixture->relay_fd,
+        .pidfd = fixture->owner_pidfd, .uid = getuid(), .gid = getgid(),
+        .identity = {.magic = KER_RX_OWNER_RELAY_MAGIC,
+            .version = KER_RX_OWNER_RELAY_VERSION, .type = KER_RX_OWNER_RELAY_APP_AUTH,
+            .worker_epoch = fixture->epoch, .app_start_ticks = fixture->app_start,
+            .owner_start_ticks = fixture->owner_start,
+            .supervisor_start_ticks = fixture->supervisor_start,
+            .app_pid = (uint32_t)getpid(), .owner_pid = (uint32_t)fixture->owner_pid,
+            .owner_tid = fixture->owner_tid, .supervisor_pid = fixture->supervisor_pid}};
+    memcpy(fixture->peer.identity.run_nonce, fixture->nonce, sizeof(fixture->nonce));
+    fixture->peer_record = fixture->source_route_record.pair;
+    fixture->peer_authenticated = true;
+    fixture->peer_auth_deadline_ns = 0;
+    fixture->relay_fd = fixture->source_route_candidate_channel;
+    fixture->owner_pidfd = fixture->source_route_candidate_pidfd;
+    fixture->owner_pid = candidate;
+    fixture->owner_tid = pair->owner.owner_tid;
+    fixture->owner_start = pair->owner.owner_start_ticks;
+    fixture->expected_owner_role = pair->owner.owner_role;
+    fixture->expected_owner_slot_device = pair->owner.slot_device;
+    fixture->expected_owner_slot_inode = pair->owner.slot_inode;
+    fixture->expected_owner_cookie = pair->owner.cookie;
+    fixture->owner_expected = true;
+    fixture->owner_authenticated = true;
+    fixture->source_master_pidfd = fixture->source_route_master_pidfd;
+    fixture->source_route_candidate_channel = -1;
+    fixture->source_route_candidate_pidfd = -1;
+    fixture->source_route_master_pidfd = -1;
+    fixture->source_route_pending = false;
+    fixture->source_route_active = true;
+    /* A scheduler pause can cross the budget after the pre-swap check. No
+     * packet callback can enter under this mutex. Revoke both routes before
+     * unlocking rather than certify a late successful handover. */
+    if (monotonic_ns() >= record.command_deadline_ns) {
+        fixture->source_route_quarantined = true;
+        pthread_mutex_unlock(&fixture->source_route_lock);
+        return source_route_reply_record(&record, reply_type,
+            record.command_sequence, -ETIMEDOUT);
+    }
+    uint64_t swapped_ns = monotonic_ns();
+    pthread_mutex_unlock(&fixture->source_route_lock);
+    if (after_frame) {
+        printf("SOURCE_ROUTE_AFTER_FRAME old_packet=%llu packet_deadline=%llu hash=%u completed_ns=%llu swap_ns=%llu command_deadline=%llu\n",
+            (unsigned long long)fixture->source_route_cut_packet_id,
+            (unsigned long long)fixture->source_route_cut_frame_deadline_ns,
+            fixture->source_route_cut_frame_hash,
+            (unsigned long long)fixture->source_route_cut_completed_ns,
+            (unsigned long long)swapped_ns,
+            (unsigned long long)record.command_deadline_ns);
+        fflush(stdout);
+    }
+    return source_route_reply_record(&record, reply_type,
+        record.command_sequence, 0);
+}
+
+static int progress_source_route_cut(struct fixture *fixture)
+{
+    if (!fixture->source_route_cut_pending) return 0;
+    const struct ker_rx_owner_source_route_record record = fixture->source_route_cut_record;
+    bool trace_progress = !fixture->source_route_cut_progress_traced;
+    fixture->source_route_cut_progress_traced = true;
+    if (trace_progress) source_route_cut_trace(fixture, "progress-enter", record.command_deadline_ns, 0);
+    if (!fixture->packet_id && !fixture->peer_forward_pending)
+        source_route_cut_trace(fixture, "progress-after-complete", record.command_deadline_ns, 0);
+    int failure = source_route_cut_control_live(record.command_deadline_ns);
+    if (trace_progress) source_route_cut_trace(fixture, "progress-control", record.command_deadline_ns, failure);
+    uint64_t now = monotonic_ns();
+    if (!failure && !source_route_commit_context_live(fixture, &record)) failure = -ESTALE;
+    if (trace_progress) source_route_cut_trace(fixture, "progress-context", record.command_deadline_ns, failure);
+    if (!failure && !source_route_commit_actors_live(fixture, &record, NULL)) failure = -ESTALE;
+    if (trace_progress) source_route_cut_trace(fixture, "progress-actors", record.command_deadline_ns, failure);
+    if (!failure && (!now || now >= record.command_deadline_ns ||
+            now >= record.pair.authority_deadline_ns)) failure = -ETIMEDOUT;
+    if (!failure && fixture->packet_id && now >= fixture->deadline_ns) failure = -ETIMEDOUT;
+    if (!failure && (fixture->packet_id || fixture->peer_forward_pending)) return 0;
+    if (!failure && (!fixture->source_route_cut_packet_id ||
+            fixture->source_route_cut_completed_id != fixture->source_route_cut_packet_id ||
+            !fixture->source_route_cut_completed_ns ||
+            fixture->source_route_cut_completed_ns >= fixture->source_route_cut_frame_deadline_ns ||
+            fixture->source_route_cut_completed_ns >= record.command_deadline_ns ||
+            fixture->deadline_ns != fixture->source_route_cut_frame_deadline_ns ||
+            fixture->current_frame_hash != fixture->source_route_cut_frame_hash ||
+            frame_hash32(fixture->pending_frame, fixture->frame_bytes) != fixture->source_route_cut_frame_hash))
+        failure = -EPROTO;
+    fixture->source_route_cut_pending = false;
+    if (failure) {
+        source_route_cut_trace(fixture, "cancel", record.command_deadline_ns, failure);
+        fixture->source_route_quarantined = true;
+        (void)source_route_reply_record(&record, KER_RX_OWNER_SOURCE_ROUTE_COMMITTED_AFTER_FRAME,
+            record.command_sequence, failure);
+        return failure;
+    }
+    /* ker_posix_run invokes its next consumer pump only after this owner
+     * callback returns. Thus no new frame can enter between this successful
+     * old-frame completion and the locked route swap. Broker RPC servicing
+     * continued normally while that frame was deferred. */
+    return apply_source_route_commit(fixture, &record, false);
+}
+
 static int receive_source_route_command(struct fixture *fixture)
 {
+    if (fixture->source_route_cut_pending) return progress_source_route_cut(fixture);
     const char *text = getenv("KER_RX_OWNER_AUTH_FD");
     char *end = NULL;
     errno = 0;
@@ -697,7 +972,9 @@ static int receive_source_route_command(struct fixture *fixture)
         pair->owner.supervisor_start_ticks != fixture->supervisor_start ||
         pair->owner.worker_epoch != fixture->epoch || pair->owner.owner_role != 1 ||
         memcmp(pair->owner.run_nonce, fixture->nonce, sizeof(fixture->nonce)) ||
-        record.reserved || record.status || record.source_epoch != KER_RX_OWNER_SOURCE_ROUTE_EPOCH ||
+        record.reserved || record.status ||
+        (record.source_epoch != KER_RX_OWNER_SOURCE_ROUTE_EPOCH &&
+            record.source_epoch != KER_RX_OWNER_SOURCE_ROUTE_RETRY_EPOCH) ||
         !record.operation_id || !record.command_sequence || !record.source_master_pid ||
         !record.source_master_start_ticks || !pair->primary_pid || !pair->primary_tid ||
         !pair->primary_start_ticks || !pair->primary_slot_device || !pair->primary_slot_inode ||
@@ -706,6 +983,13 @@ static int receive_source_route_command(struct fixture *fixture)
         !pair->owner.cookie || !pair->authority_deadline_ns) goto reject;
     status = -ESTALE;
     fixture->source_route_last_type = pair->owner.type;
+    bool invalid_prepare = prepare && (rights_count != 3 || fixture->source_route_pending ||
+        pair->owner.owner_role != 1 ||
+        record.operation_id <= fixture->source_route_last_operation_id ||
+        (record.source_epoch == KER_RX_OWNER_SOURCE_ROUTE_EPOCH &&
+            (fixture->source_route_aborted || fixture->source_route_retry_used)) ||
+        (record.source_epoch == KER_RX_OWNER_SOURCE_ROUTE_RETRY_EPOCH &&
+            (!fixture->source_route_aborted || fixture->source_route_retry_used)));
     if (!supervisor_authority_live(fixture) || !current_owner_live(fixture) ||
         !fixture->source_route_enabled || fixture->source_route_active ||
         fixture->expected_owner_role != 0 ||
@@ -721,9 +1005,7 @@ static int receive_source_route_command(struct fixture *fixture)
         pair->authority_deadline_ns <= now ||
         pair->authority_deadline_ns - now > KER_RX_OWNER_PEER_MAX_AUTHORITY_NS ||
         record.command_sequence <= fixture->source_route_last_sequence ||
-        (prepare && (rights_count != 3 || fixture->source_route_pending ||
-            pair->owner.owner_role != 1 ||
-            record.operation_id <= fixture->source_route_last_operation_id))) goto reject;
+        invalid_prepare) goto reject;
     if (prepare) {
         if (record.command_deadline_ns) { status = -EPROTO; goto reject; }
         pid_t candidate = 0, master = 0;
@@ -733,6 +1015,52 @@ static int receive_source_route_command(struct fixture *fixture)
             {.fd = rights[2], .events = POLLIN}};
         int type = 0, domain = 0, enabled = 1;
         socklen_t size = sizeof(type);
+        if (record.source_epoch == KER_RX_OWNER_SOURCE_ROUTE_RETRY_EPOCH) {
+            struct pollfd aborted = {.fd = fixture->source_route_aborted_candidate_pidfd,
+                .events = POLLIN};
+            pid_t aborted_master = 0;
+            uint64_t aborted_master_start = 0;
+            if (fixture->source_route_aborted_candidate_pidfd < 0 ||
+                fixture->source_route_aborted_master_pidfd < 0 ||
+                poll(&aborted, 1, 0) != 1 || !(aborted.revents & POLLIN) ||
+                pidfd_pid(fixture->source_route_aborted_master_pidfd, &aborted_master) ||
+                aborted_master != (pid_t)fixture->source_route_first_record.source_master_pid ||
+                read_start_ticks(aborted_master, &aborted_master_start) ||
+                aborted_master_start != fixture->source_route_first_record.source_master_start_ticks ||
+                record.source_master_pid != fixture->source_route_first_record.source_master_pid ||
+                record.source_master_start_ticks != fixture->source_route_first_record.source_master_start_ticks ||
+                pair->primary_pid != fixture->source_route_first_record.pair.primary_pid ||
+                pair->primary_tid != fixture->source_route_first_record.pair.primary_tid ||
+                pair->primary_start_ticks !=
+                    fixture->source_route_first_record.pair.primary_start_ticks ||
+                pair->primary_slot_device !=
+                    fixture->source_route_first_record.pair.primary_slot_device ||
+                pair->primary_slot_inode !=
+                    fixture->source_route_first_record.pair.primary_slot_inode ||
+                pair->primary_cookie !=
+                    fixture->source_route_first_record.pair.primary_cookie ||
+                pair->authority_deadline_ns >
+                    fixture->source_route_first_record.pair.authority_deadline_ns ||
+                pair->owner.owner_pid ==
+                    fixture->source_route_first_record.pair.owner.owner_pid ||
+                pair->owner.owner_pid ==
+                    fixture->source_route_first_record.pair.primary_pid ||
+                pair->owner.owner_start_ticks ==
+                    fixture->source_route_first_record.pair.owner.owner_start_ticks ||
+                pair->owner.owner_start_ticks ==
+                    fixture->source_route_first_record.pair.primary_start_ticks ||
+                pair->owner.cookie == fixture->source_route_first_record.pair.owner.cookie ||
+                pair->owner.cookie == fixture->source_route_first_record.pair.primary_cookie ||
+                (pair->owner.slot_device == fixture->source_route_first_record.pair.owner.slot_device &&
+                 pair->owner.slot_inode == fixture->source_route_first_record.pair.owner.slot_inode) ||
+                (pair->owner.slot_device == fixture->source_route_first_record.pair.primary_slot_device &&
+                 pair->owner.slot_inode == fixture->source_route_first_record.pair.primary_slot_inode) ||
+                pidfd_pid(fixture->source_route_aborted_master_pidfd, &aborted_master) ||
+                poll(&(struct pollfd){.fd = fixture->source_route_aborted_master_pidfd,
+                    .events = POLLIN}, 1, 0) != 0) {
+                status = -ESTALE; goto reject;
+            }
+        }
         if (pidfd_pid(rights[2], &master) || master != (pid_t)record.source_master_pid ||
             pidfd_pid(rights[0], &candidate) || candidate != (pid_t)pair->owner.owner_pid ||
             read_start_ticks(candidate, &candidate_start) ||
@@ -751,6 +1079,8 @@ static int receive_source_route_command(struct fixture *fixture)
         fixture->source_route_master_pidfd = rights[2];
         rights[0] = rights[1] = rights[2] = -1;
         fixture->source_route_record = record;
+        if (record.source_epoch == KER_RX_OWNER_SOURCE_ROUTE_RETRY_EPOCH)
+            fixture->source_route_retry_used = true;
         fixture->source_route_last_sequence = record.command_sequence;
         fixture->source_route_last_operation_id = record.operation_id;
         fixture->source_route_pending = true;
@@ -762,6 +1092,7 @@ static int receive_source_route_command(struct fixture *fixture)
     original_pair.owner.type = fixture->source_route_record.pair.owner.type;
     if (!fixture->source_route_pending || !fixture->source_route_candidate_authenticated ||
         record.operation_id != fixture->source_route_record.operation_id ||
+        record.source_epoch != fixture->source_route_record.source_epoch ||
         record.source_master_pid != fixture->source_route_record.source_master_pid ||
         record.source_master_start_ticks != fixture->source_route_record.source_master_start_ticks ||
         memcmp(&original_pair, &fixture->source_route_record.pair, sizeof(record.pair))) {
@@ -769,94 +1100,16 @@ static int receive_source_route_command(struct fixture *fixture)
     }
     fixture->source_route_last_sequence = record.command_sequence;
     if (pair->owner.type == KER_RX_OWNER_SOURCE_ROUTE_ABORT) {
-        close_source_route_pending(fixture);
+        if (record.source_epoch == KER_RX_OWNER_SOURCE_ROUTE_EPOCH)
+            abort_source_route_pending(fixture);
+        else
+            close_source_route_pending(fixture);
         return source_route_reply_record(&record, KER_RX_OWNER_SOURCE_ROUTE_ABORTED,
             record.command_sequence, 0);
     }
-    if (pair->owner.type != KER_RX_OWNER_SOURCE_ROUTE_COMMIT) goto reject;
-    pthread_mutex_lock(&fixture->source_route_lock);
-    if (fixture->packet_id || fixture->peer_forward_pending) {
-        pthread_mutex_unlock(&fixture->source_route_lock);
-        return source_route_reply_record(&record, KER_RX_OWNER_SOURCE_ROUTE_COMMITTED,
-            record.command_sequence, -EBUSY);
-    }
-    pid_t candidate = 0, master = 0;
-    uint64_t candidate_start = 0, master_start = 0;
-    pid_t parent = 0, current_parent = 0;
-    struct pollfd pids[2] = {{.fd = fixture->source_route_candidate_pidfd, .events = POLLIN},
-        {.fd = fixture->source_route_master_pidfd, .events = POLLIN}};
-    if (pidfd_pid(fixture->source_route_master_pidfd, &master) ||
-        master != (pid_t)record.source_master_pid ||
-        pidfd_pid(fixture->source_route_candidate_pidfd, &candidate) ||
-        candidate != (pid_t)pair->owner.owner_pid ||
-        read_start_ticks(candidate, &candidate_start) ||
-        candidate_start != pair->owner.owner_start_ticks ||
-        read_parent_pid(candidate, &parent) || parent != master ||
-        !process_thread_exists(candidate, pair->owner.owner_tid) ||
-        read_parent_pid(fixture->owner_pid, &current_parent) || current_parent != master ||
-        read_start_ticks(master, &master_start) || master_start != record.source_master_start_ticks ||
-        poll(pids, 2, 0) != 0 || monotonic_ns() >= pair->authority_deadline_ns) {
-        close_source_route_pending(fixture);
-        pthread_mutex_unlock(&fixture->source_route_lock);
-        return source_route_reply_record(&record, KER_RX_OWNER_SOURCE_ROUTE_COMMITTED,
-            record.command_sequence, -ESTALE);
-    }
-    /* A live master and finite grant do not extend an individual source
-     * handover call. Check its absolute budget under the swap mutex. */
-    if (!record.command_deadline_ns || monotonic_ns() >= record.command_deadline_ns ||
-            record.command_deadline_ns > pair->authority_deadline_ns) {
-        pthread_mutex_unlock(&fixture->source_route_lock);
-        return source_route_reply_record(&record, KER_RX_OWNER_SOURCE_ROUTE_COMMITTED,
-            record.command_sequence, record.command_deadline_ns ? -ETIMEDOUT : -EINVAL);
-    }
-#ifdef KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING
-    if (getenv("KER_TEST_SOURCE_ROUTE_DELAY_SWAP")) {
-        struct timespec delay = {.tv_nsec = 200000000};
-        while (nanosleep(&delay, &delay) && errno == EINTR) { }
-    }
-#endif
-    fixture->peer = (struct ker_rx_owner_relay_peer){.fd = fixture->relay_fd,
-        .pidfd = fixture->owner_pidfd, .uid = getuid(), .gid = getgid(),
-        .identity = {.magic = KER_RX_OWNER_RELAY_MAGIC,
-            .version = KER_RX_OWNER_RELAY_VERSION, .type = KER_RX_OWNER_RELAY_APP_AUTH,
-            .worker_epoch = fixture->epoch, .app_start_ticks = fixture->app_start,
-            .owner_start_ticks = fixture->owner_start,
-            .supervisor_start_ticks = fixture->supervisor_start,
-            .app_pid = (uint32_t)getpid(), .owner_pid = (uint32_t)fixture->owner_pid,
-            .owner_tid = fixture->owner_tid, .supervisor_pid = fixture->supervisor_pid}};
-    memcpy(fixture->peer.identity.run_nonce, fixture->nonce, sizeof(fixture->nonce));
-    fixture->peer_record = fixture->source_route_record.pair;
-    fixture->peer_authenticated = true;
-    fixture->peer_auth_deadline_ns = 0;
-    fixture->relay_fd = fixture->source_route_candidate_channel;
-    fixture->owner_pidfd = fixture->source_route_candidate_pidfd;
-    fixture->owner_pid = candidate;
-    fixture->owner_tid = pair->owner.owner_tid;
-    fixture->owner_start = pair->owner.owner_start_ticks;
-    fixture->expected_owner_role = pair->owner.owner_role;
-    fixture->expected_owner_slot_device = pair->owner.slot_device;
-    fixture->expected_owner_slot_inode = pair->owner.slot_inode;
-    fixture->expected_owner_cookie = pair->owner.cookie;
-    fixture->owner_expected = true;
-    fixture->owner_authenticated = true;
-    fixture->source_master_pidfd = fixture->source_route_master_pidfd;
-    fixture->source_route_candidate_channel = -1;
-    fixture->source_route_candidate_pidfd = -1;
-    fixture->source_route_master_pidfd = -1;
-    fixture->source_route_pending = false;
-    fixture->source_route_active = true;
-    /* A scheduler pause can cross the budget after the pre-swap check. No
-     * packet callback can enter under this mutex. Revoke both routes before
-     * unlocking rather than certify a late successful handover. */
-    if (monotonic_ns() >= record.command_deadline_ns) {
-        fixture->source_route_quarantined = true;
-        pthread_mutex_unlock(&fixture->source_route_lock);
-        return source_route_reply_record(&record, KER_RX_OWNER_SOURCE_ROUTE_COMMITTED,
-            record.command_sequence, -ETIMEDOUT);
-    }
-    pthread_mutex_unlock(&fixture->source_route_lock);
-    return source_route_reply_record(&record, KER_RX_OWNER_SOURCE_ROUTE_COMMITTED,
-        record.command_sequence, 0);
+    if (pair->owner.type != KER_RX_OWNER_SOURCE_ROUTE_COMMIT &&
+            pair->owner.type != KER_RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME) goto reject;
+    return apply_source_route_commit(fixture, &record, true);
 reject:
     for (size_t i = 0; i < rights_count; ++i) if (rights[i] >= 0) close(rights[i]);
     if (prepare) {
@@ -866,8 +1119,6 @@ reject:
             fixture->source_route_last_operation_id = record.operation_id;
             fixture->source_route_last_sequence = record.command_sequence;
             fixture->source_route_rejected_operation_id = record.operation_id;
-            if (!fixture->source_route_pending && !fixture->source_route_active)
-                fixture->source_route_record = record;
         }
         return source_route_reply_record(&record,
             KER_RX_OWNER_SOURCE_ROUTE_PREPARED, record.command_sequence, status);
@@ -1051,6 +1302,9 @@ static int poll_owner_control(struct fixture *fixture,
     if (fixture->owner_authenticated && fixture->source_route_enabled) {
         int status = receive_source_route_command(fixture);
         if (status) return status;
+        if (fixture->source_route_cut_pending && !fixture->source_route_cut_reply_poll_traced)
+            source_route_cut_trace(fixture, "app-control-complete",
+                fixture->source_route_cut_record.command_deadline_ns, 0);
         status = authenticate_pending_source_candidate(fixture);
         if (status) return status;
         if (after_source_route_poll) {
@@ -1108,8 +1362,16 @@ static int app_loop(void *opaque)
             reply = fixture->peer_source_reply;
             goto poll_peer_reply;
         }
+        bool trace_reply_poll = fixture->source_route_cut_pending && !fixture->source_route_cut_reply_poll_traced;
+        if (trace_reply_poll) {
+            fixture->source_route_cut_reply_poll_traced = true;
+            source_route_cut_trace(fixture, "old-poll-enter", fixture->source_route_cut_record.command_deadline_ns, 0);
+        }
         ssize_t received = recvmsg(fixture->relay_fd, &message,
             MSG_DONTWAIT | MSG_TRUNC | MSG_CMSG_CLOEXEC);
+        if (trace_reply_poll)
+            source_route_cut_trace(fixture, "old-poll-return", fixture->source_route_cut_record.command_deadline_ns,
+                received < 0 ? -errno : (int)received);
         if (received >= 0) {
             if ((size_t)received >= sizeof(reply))
                 memcpy(&reply, reply_buffer, sizeof(reply));
@@ -1210,9 +1472,21 @@ poll_peer_reply:;
                 fflush(stdout);
             }
 complete_reply:
-            if (monotonic_ns() >= fixture->deadline_ns || !current_owner_live(fixture) ||
-                ker_posix_rx_decision_complete(fixture->packet_id, action)) return -EPROTO;
+            if (fixture->source_route_cut_pending)
+                source_route_cut_trace(fixture, "old-reply", fixture->source_route_cut_record.command_deadline_ns, action);
+            if (monotonic_ns() >= fixture->deadline_ns || !current_owner_live(fixture)) return -EPROTO;
+            if (fixture->source_route_cut_pending)
+                source_route_cut_trace(fixture, "native-complete-enter", fixture->source_route_cut_record.command_deadline_ns, action);
+            int complete_status = ker_posix_rx_decision_complete(fixture->packet_id, action);
+            uint64_t complete_ns = monotonic_ns();
+            if (fixture->source_route_cut_pending)
+                source_route_cut_trace(fixture, "native-complete-return", fixture->source_route_cut_record.command_deadline_ns, complete_status);
+            if (complete_status) return -EPROTO;
             fixture->completed++;
+            if (fixture->source_route_cut_pending) {
+                fixture->source_route_cut_completed_id = fixture->packet_id;
+                fixture->source_route_cut_completed_ns = complete_ns;
+            }
             if (fixture->probe_packet_id == reply.packet_id) {
                 fixture->probe_frame_hash = reply.frame_hash32;
                 fixture->probe_dispatcher_result = reply.dispatcher_result;
@@ -1251,6 +1525,8 @@ complete_reply:
             fixture->packet_id = 0;
             fixture->pending_probe = false;
             fixture->pending_peer_probe = false;
+            int cut_status = progress_source_route_cut(fixture);
+            if (cut_status) return cut_status;
         } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
             return -errno;
         }
@@ -1288,7 +1564,9 @@ int main(int argc, char **argv)
     struct fixture fixture = {.relay_fd = (int)relay_fd, .owner_pidfd = -1,
         .supervisor_pidfd = -1, .source_master_pidfd = -1,
         .source_route_candidate_pidfd = -1, .source_route_candidate_channel = -1,
-        .source_route_master_pidfd = -1, .peer = {.fd = -1, .pidfd = -1}};
+        .source_route_master_pidfd = -1, .source_route_aborted_candidate_pidfd = -1,
+        .source_route_aborted_master_pidfd = -1,
+        .peer = {.fd = -1, .pidfd = -1}};
     if (pthread_mutex_init(&fixture.source_route_lock, NULL)) return 2;
     const char *peer_auth_enabled = getenv("KER_RX_OWNER_PEER_AUTH_ENABLE");
     if (peer_auth_enabled && strcmp(peer_auth_enabled, "1")) return 2;
@@ -1383,6 +1661,10 @@ int main(int argc, char **argv)
     fflush(stdout);
     if (fixture.owner_pidfd >= 0) close(fixture.owner_pidfd);
     if (fixture.supervisor_pidfd >= 0) close(fixture.supervisor_pidfd);
+    if (fixture.source_route_aborted_candidate_pidfd >= 0)
+        close(fixture.source_route_aborted_candidate_pidfd);
+    if (fixture.source_route_aborted_master_pidfd >= 0)
+        close(fixture.source_route_aborted_master_pidfd);
     if (fixture.peer.fd >= 0) close(fixture.peer.fd);
     if (fixture.peer.pidfd >= 0) close(fixture.peer.pidfd);
     if (run_result) errno = run_errno;

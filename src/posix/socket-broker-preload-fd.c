@@ -43,6 +43,7 @@ static struct ker_socket_client preload_client = {.session_fd = -1};
 static bool client_open;
 static pid_t preload_origin_pid;
 static struct network_entry network_fds[PRELOAD_FD_SLOTS];
+static uint64_t network_registry_generation;
 static struct epoll_entry epoll_fds[PRELOAD_FD_SLOTS];
 static int private_fds[PRELOAD_PRIVATE_SLOTS];
 static struct wait_pin_entry wait_pins[PRELOAD_WAIT_SLOTS];
@@ -101,7 +102,14 @@ static void fork_child(void)
 {
     close_vanished_wait_pins_locked(preload_fork_owner_tid);
     preload_fork_owner_tid = 0;
+    ker_sb_preload_owner_loop_fork_cleanup();
     ker_sb_preload_unlock();
+}
+
+static void network_registry_changed_locked(void)
+{
+    ++network_registry_generation;
+    if (!network_registry_generation) ++network_registry_generation;
 }
 
 static int ensure_client_locked(void)
@@ -137,6 +145,10 @@ void ker_sb_preload_unlock(void)
     if (restore_signals(&preload_saved_signal_mask))
         preload_lock_fatal("ker socket preload: cannot restore signal mask\n");
 }
+
+bool ker_sb_preload_lock_held_by_current_thread(void)
+{ return preload_lock_depth != 0; }
+
 struct ker_socket_client *ker_sb_preload_client_locked(void)
 {
     return ensure_client_locked() ? NULL : &preload_client;
@@ -270,6 +282,7 @@ void ker_sb_preload_remove_network_locked(int app_fd)
         (void)syscall(SYS_close, network_fds[slot].private_fd);
     }
     network_fds[slot] = (struct network_entry){.app_fd = -1, .private_fd = -1};
+    network_registry_changed_locked();
 }
 
 int ker_sb_preload_register_network_locked(int app_fd)
@@ -297,6 +310,7 @@ int ker_sb_preload_register_network_locked(int app_fd)
     }
     network_fds[slot] = (struct network_entry){.app_fd = app_fd,
         .private_fd = private_fd, .identity = identity};
+    network_registry_changed_locked();
     bool owned = false;
     if (ker_sb_preload_ff_owner_active_locked()) {
         struct ker_socket_client *client = ker_sb_preload_client_locked();
@@ -315,6 +329,62 @@ int ker_sb_preload_register_network_locked(int app_fd)
         ker_sb_preload_note_unowned_network_locked();
     return 0;
 }
+
+#ifdef KER_SOCKET_BROKER_PRELOAD_TESTING
+int ker_sb_preload_test_runtime_init(void)
+{
+    for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
+        network_fds[i] = (struct network_entry){.app_fd = -1, .private_fd = -1};
+        epoll_fds[i] = (struct epoll_entry){.app_fd = -1, .broker_fd = -1};
+    }
+    for (size_t i = 0; i < PRELOAD_PRIVATE_SLOTS; ++i) private_fds[i] = -1;
+    for (size_t i = 0; i < PRELOAD_WAIT_SLOTS; ++i)
+        wait_pins[i] = (struct wait_pin_entry){.host_fd = -1, .broker_fd = -1};
+    preload_client = (struct ker_socket_client){.session_fd = -1,
+        .owner_pid = getpid()};
+    client_open = true;
+    atomic_store_explicit(&preload_runtime_initialized, true,
+        memory_order_release);
+    network_registry_generation = 1;
+    return pthread_atfork(fork_prepare, fork_parent, fork_child);
+}
+
+int ker_sb_preload_test_registry_add(int app_fd, int private_fd)
+{
+    struct fd_identity identity;
+    if (descriptor_identity(app_fd, &identity)) return -1;
+    ker_sb_preload_lock();
+    size_t slot = free_network_slot();
+    if (slot == PRELOAD_FD_SLOTS) {
+        ker_sb_preload_unlock(); errno = EMFILE; return -1;
+    }
+    network_fds[slot] = (struct network_entry){.app_fd = app_fd,
+        .private_fd = private_fd, .identity = identity};
+    network_registry_changed_locked();
+    ker_sb_preload_unlock();
+    return 0;
+}
+
+int ker_sb_preload_test_registry_remove(int app_fd)
+{
+    ker_sb_preload_lock();
+    size_t slot = find_network_slot(app_fd);
+    if (slot == PRELOAD_FD_SLOTS) {
+        ker_sb_preload_unlock(); errno = ENOENT; return -1;
+    }
+    network_fds[slot].private_fd = -1;
+    ker_sb_preload_remove_network_locked(app_fd);
+    ker_sb_preload_unlock();
+    return 0;
+}
+
+int ker_sb_preload_test_lock_available(void)
+{
+    int error = pthread_mutex_trylock(&preload_lock);
+    if (!error) (void)pthread_mutex_unlock(&preload_lock);
+    return error == 0;
+}
+#endif
 
 int ker_sb_preload_network_registry_empty_locked(void)
 {
@@ -396,30 +466,31 @@ int ker_sb_preload_socket_drain_count(void)
 
     int count = 0;
     for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
-        int app_fd = network_fds[i].app_fd;
+        struct network_entry entry = network_fds[i];
+        int app_fd = entry.app_fd;
         if (app_fd < 0) continue;
 
         struct fd_identity current;
         if (descriptor_identity(app_fd, &current)) {
             if (errno == EBADF) {
                 ker_sb_preload_remove_network_locked(app_fd);
-                continue;
+                goto checkpoint;
             }
             goto error;
         }
-        if (current.device != network_fds[i].identity.device ||
-            current.inode != network_fds[i].identity.inode) {
+        if (current.device != entry.identity.device ||
+            current.inode != entry.identity.inode) {
             ker_sb_preload_remove_network_locked(app_fd);
-            continue;
+            goto checkpoint;
         }
-        int broker_fd = network_fds[i].private_fd;
+        int broker_fd = entry.private_fd;
 
         int domain = -1;
         socklen_t length = sizeof(domain);
         if (ker_socket_client_getsockopt(client, broker_fd, SOL_SOCKET, SO_DOMAIN,
                 &domain, &length) < 0) goto error;
         if (length != sizeof(domain)) { errno = EPROTO; goto error; }
-        if (domain != AF_INET && domain != AF_INET6) continue;
+        if (domain != AF_INET && domain != AF_INET6) goto checkpoint;
 
         int accepting = 0;
         length = sizeof(accepting);
@@ -427,6 +498,28 @@ int ker_sb_preload_socket_drain_count(void)
                 SO_ACCEPTCONN, &accepting, &length) < 0) goto error;
         if (length != sizeof(accepting)) { errno = EPROTO; goto error; }
         if (!accepting) ++count;
+
+checkpoint:
+        ;
+        /* The relay callback may mutate descriptor bookkeeping, so no entry
+         * pointer survives this unlocked interval. A changed generation
+         * invalidates the in-progress census rather than returning a partial
+         * count. */
+        uint64_t generation = network_registry_generation;
+        ker_sb_preload_unlock();
+        int checkpoint_status = ker_sb_preload_rx_relay_checkpoint();
+        ker_sb_preload_lock();
+        if (network_registry_generation != generation) {
+            errno = EAGAIN;
+            goto error;
+        }
+        if (checkpoint_status) {
+            errno = checkpoint_status < 0 && checkpoint_status >= -4095 ?
+                -checkpoint_status : EPROTO;
+            goto error;
+        }
+        client = ker_sb_preload_client_locked();
+        if (!client) goto error;
     }
     ker_sb_preload_unlock();
     return count;
@@ -451,7 +544,9 @@ int ker_sb_preload_source_detach_forget(void)
         getpid() == preload_origin_pid || getppid() == preload_origin_pid ||
         ker_sb_preload_ff_owner_is_current()) { errno = EOPNOTSUPP; return -1; }
     ker_sb_preload_lock();
+    bool registry_changed = false;
     for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
+        registry_changed = registry_changed || network_fds[i].app_fd >= 0;
         network_fds[i] = (struct network_entry){.app_fd = -1, .private_fd = -1};
         epoll_fds[i] = (struct epoll_entry){.app_fd = -1, .broker_fd = -1};
     }
@@ -460,6 +555,7 @@ int ker_sb_preload_source_detach_forget(void)
         wait_pins[i] = (struct wait_pin_entry){.host_fd = -1, .broker_fd = -1};
     preload_client = (struct ker_socket_client){.session_fd = -1};
     client_open = false;
+    if (registry_changed) network_registry_changed_locked();
     ker_sb_preload_unlock();
     return 0;
 }
@@ -827,6 +923,7 @@ bool ker_sb_preload_has_exec_unsafe_epoll_locked(void)
     return false;
 }
 
+#ifndef KER_SOCKET_BROKER_PRELOAD_TESTING
 static int initialize_inherited_capabilities(void)
 {
     const char *path = getenv("KER_SOCKET_BROKER_PATH");
@@ -937,3 +1034,4 @@ __attribute__((constructor)) static void socket_broker_preload_initialize(void)
     }
     atomic_store_explicit(&preload_runtime_initialized, true, memory_order_release);
 }
+#endif

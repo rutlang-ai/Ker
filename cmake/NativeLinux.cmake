@@ -354,6 +354,8 @@ add_library(ker::fstack-socket-bridge ALIAS ker-fstack-socket-bridge)
 
 option(KER_BUILD_FSTACK_NGINX_RUNTIME
     "Build the bounded libfstack compatibility runtime for the pinned nginx caller profile" OFF)
+option(KER_BUILD_FSTACK_NGINX_FAULT_TEST_RUNTIME
+    "Build a noninstalled fault-injection runtime for isolated original-source tests" OFF)
 
 function(ker_add_fstack_nginx_runtime target output_name)
     add_library(${target} SHARED
@@ -414,6 +416,21 @@ if(KER_BUILD_FSTACK_NGINX_RUNTIME)
         add_test(NAME fstack-nginx-runtime-profile-boundaries
             COMMAND ker-fstack-nginx-runtime-profile-test)
     endif()
+endif()
+
+# Build this only in a dedicated test build directory: the output deliberately
+# has SONAME libfstack.so so the pinned nginx executable resolves this DSO for
+# its existing DT_NEEDED entry. The production runtime target remains fault-free.
+if(KER_BUILD_FSTACK_NGINX_FAULT_TEST_RUNTIME)
+    if(NOT BUILD_TESTING)
+        message(FATAL_ERROR "KER_BUILD_FSTACK_NGINX_FAULT_TEST_RUNTIME requires BUILD_TESTING")
+    endif()
+    if(KER_BUILD_FSTACK_NGINX_RUNTIME)
+        message(FATAL_ERROR "Build the fault-test runtime in a separate build directory")
+    endif()
+    ker_add_fstack_nginx_runtime(ker-fstack-nginx-fault-test-runtime fstack)
+    target_compile_definitions(ker-fstack-nginx-fault-test-runtime PRIVATE
+        FF_RELOAD_FAULT_INJECTION=1 KER_FSTACK_NGINX_TEST_FAULT_RUNTIME=1)
 endif()
 
 # Native admission integration fixtures need the same bounded FF API shim,
@@ -618,6 +635,29 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
         add_test(NAME rx-owner-relay-pump COMMAND ker-rx-owner-relay-pump-test)
         set_tests_properties(rx-owner-relay-pump PROPERTIES
             LABELS "rx-decision;owner-relay;authentication;pidfd"
+            TIMEOUT 10)
+        add_executable(ker-socket-broker-preload-relay-checkpoint-test
+            tests/unit/socket-broker-preload-relay-checkpoint-test.c
+            src/posix/socket-broker-client.c
+            src/posix/socket-broker-preload.c
+            src/posix/socket-broker-preload-fd.c)
+        target_include_directories(ker-socket-broker-preload-relay-checkpoint-test PRIVATE
+            "${PROJECT_SOURCE_DIR}/include"
+            "${PROJECT_SOURCE_DIR}/src/posix"
+            "${PROJECT_SOURCE_DIR}/src/posix/lkl-overlay/arch/lkl/include")
+        target_compile_features(ker-socket-broker-preload-relay-checkpoint-test PRIVATE c_std_11)
+        target_compile_definitions(ker-socket-broker-preload-relay-checkpoint-test PRIVATE
+            KER_SOCKET_BROKER_PRELOAD_TESTING=1)
+        target_compile_options(ker-socket-broker-preload-relay-checkpoint-test PRIVATE
+            -ffunction-sections -fdata-sections -Wall -Wextra -Werror)
+        target_link_options(ker-socket-broker-preload-relay-checkpoint-test PRIVATE
+            -Wl,--gc-sections -Wl,--wrap=ker_socket_client_getsockopt)
+        target_link_libraries(ker-socket-broker-preload-relay-checkpoint-test PRIVATE
+            Threads::Threads OpenSSL::Crypto ${CMAKE_DL_LIBS})
+        add_test(NAME socket-broker-preload-relay-checkpoint
+            COMMAND ker-socket-broker-preload-relay-checkpoint-test)
+        set_tests_properties(socket-broker-preload-relay-checkpoint PROPERTIES
+            LABELS "socket-broker;preload;rx-owner-relay;checkpoint;unit-model"
             TIMEOUT 10)
         add_executable(ker-rx-owner-relay-app-loop-test
             tests/unit/rx-owner-relay-app-loop-test.c)
