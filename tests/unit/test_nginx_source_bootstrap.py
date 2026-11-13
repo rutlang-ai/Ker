@@ -9,6 +9,9 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
+from types import SimpleNamespace
+import struct
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('source_bootstrap_under_test',
@@ -102,6 +105,107 @@ class ExecutableObservationTests(unittest.TestCase):
                 original[3] + 1000000000))
             self.assertEqual(os.fstat(held).st_ino, original[1])
             self.assertFalse(observer._executable_live(child.pid))
+
+
+@unittest.skipUnless(hasattr(os, 'pidfd_open'), 'Linux pidfds required')
+class AbortedRetryAuthorityTests(unittest.TestCase):
+    """Reject invalid retry provenance before transferring the retry slot.
+
+    Real pidfds/FIFOs exercise the identity guards; memory below models only
+    the original source block. This is not a Nginx or native selector proof.
+    """
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix='ker-retry-authority-')
+        self.addCleanup(self.directory.cleanup)
+        self.old = subprocess.Popen(['sleep', '30'])
+        self.dead = subprocess.Popen(['sleep', '30'])
+        def stop(child):
+            if child.poll() is None:
+                child.terminate()
+            child.wait(timeout=3)
+        self.addCleanup(stop, self.old)
+        self.addCleanup(stop, self.dead)
+        self.oldfd = os.pidfd_open(self.old.pid)
+        self.deadfd = os.pidfd_open(self.dead.pid)
+        self.addCleanup(os.close, self.oldfd)
+        self.addCleanup(os.close, self.deadfd)
+        self.oldstart = boot.identity._start_ticks(self.old.pid)
+        self.dead.terminate(); self.dead.wait(timeout=3)
+        def fifo(name):
+            path = Path(self.directory.name) / name
+            os.mkfifo(path)
+            reader = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            self.addCleanup(os.close, reader)
+            return path
+        self.paths = [fifo(name) for name in ('old', 'aborted', 'fresh')]
+        def record(pid, start, path):
+            r = [0] * 29
+            r[5], r[11] = pid, start
+            value = path.stat();r[24:26] = value.st_dev, value.st_ino
+            return tuple(r)
+        self.observer = boot.SourceBootstrapSupervisor.__new__(boot.SourceBootstrapSupervisor)
+        self.observer.live = lambda: None  # Actor/executable live() has separate controls.
+        self.observer.allow_abort_retry = True
+        self.observer.master = SimpleNamespace(pid=os.getpid())
+        self.observer.slim_reply = [0] * 29; self.observer.slim_reply[13] = 4096
+        self.observer.workers = {(0, 0): (self.oldfd, record(self.old.pid,self.oldstart,self.paths[0])),
+            (1, 1): (self.deadfd, record(self.dead.pid,0,self.paths[1]))}
+        self.observer._completed_master_barriers = {(1, 5), (1, 9)}
+        self.observer._native_retry_cookie = 7001
+        self.prefix = (0x46524c4d,1,2160,1,0,1,0,0)
+        self.markers = (0,0,0)
+        def memory(pid,address,length):
+            return struct.pack('=8I',*self.prefix) if length==32 else struct.pack('=3I',*self.markers)
+        self.patch = mock.patch.object(boot,'memory',side_effect=memory)
+        self.patch.start();self.addCleanup(self.patch.stop)
+        self.calls = 0
+
+    def acquire(self, index=2):
+        self.calls += 1
+        return os.open(self.paths[index],os.O_WRONLY|os.O_NONBLOCK)
+
+    def test_missing_or_unknown_abort_receipt_never_issues_retry_slot(self):
+        self.observer._completed_master_barriers = {(1,5)}
+        with self.assertRaises(PermissionError):self.observer.prepare_aborted_retry(self.acquire)
+        self.assertEqual(self.calls,0)
+
+    def test_unknown_native_adoption_never_issues_retry_slot(self):
+        self.observer._native_retry_cookie = 0
+        with self.assertRaises(PermissionError):self.observer.prepare_aborted_retry(self.acquire)
+        self.assertEqual(self.calls,0)
+
+    def test_dead_old_owner_never_issues_retry_slot(self):
+        self.old.terminate();self.old.wait(timeout=3)
+        with self.assertRaises(PermissionError):self.observer.prepare_aborted_retry(self.acquire)
+        self.assertEqual(self.calls,0)
+
+    def test_original_epoch2_or_nonidle_block_cannot_authorize_retry(self):
+        self.prefix = (0x46524c4d,1,2160,2,0,1,1,0)
+        with self.assertRaises(PermissionError):self.observer.prepare_aborted_retry(self.acquire)
+        self.assertEqual(self.calls,0)
+
+    def test_reused_aborted_fifo_is_rejected_and_attempt_stays_consumed(self):
+        with self.assertRaises(PermissionError):
+            self.observer.prepare_aborted_retry(lambda:self.acquire(1))
+        with self.assertRaises(PermissionError):self.observer.prepare_aborted_retry(self.acquire)
+        self.assertEqual(self.calls,1)
+
+    def test_failed_slot_transfer_cannot_be_replayed(self):
+        def failed():
+            self.calls += 1
+            raise OSError('native slot transfer unconfirmed')
+        with self.assertRaises(OSError):self.observer.prepare_aborted_retry(failed)
+        with self.assertRaises(PermissionError):self.observer.prepare_aborted_retry(self.acquire)
+        self.assertEqual(self.calls,1)
+
+    def test_fresh_fifo_consumed_once_and_original_tombstone_retained(self):
+        fd = self.observer.prepare_aborted_retry(self.acquire)
+        try:
+            self.assertEqual(self.observer._retry_slot,(os.fstat(fd).st_dev,os.fstat(fd).st_ino))
+            self.assertEqual(self.observer.workers[(1,1)][0],self.deadfd)
+            with self.assertRaises(PermissionError):self.observer.prepare_aborted_retry(self.acquire)
+            self.assertEqual(self.calls,1)
+        finally:os.close(fd)
 
 
 if __name__ == '__main__':

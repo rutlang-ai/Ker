@@ -43,6 +43,7 @@ ENV_KEYS = frozenset(('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
     'KER_NGINX_RX_OWNER_RELAY_NONCE', 'KER_NGINX_RX_OWNER_RELAY_EPOCH',
     'KER_NGINX_SOURCE_FLOWMAP_TEST', 'KER_NGINX_SOURCE_ADMISSION_RELAY',
     'KER_NGINX_SOURCE_FIRST_HUP_ENABLE',
+    'KER_NGINX_SOURCE_ABORT_RETRY_ENABLE', 'FF_FAULT',
     'KER_NGINX_CANDIDATE_SLOT_FD',
     'KER_NGINX_INITIAL_SLOT_FD', 'KER_NGINX_SOURCE_PEER_OLD', 'KER_NGINX_SOURCE_PEER_PAIR',
     'KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US',
@@ -1005,6 +1006,8 @@ def run(args):
     request_sequence = 2
     source_candidate = None
     source_candidate_attempted = False
+    source_aborted_candidate = None
+    source_retry_attempted = False
     while True:
         if master.poll() is not None:
             # Reap only children adopted by this dedicated subreaper. Report
@@ -1071,11 +1074,38 @@ def run(args):
             record_type, nonce, epoch, sequence = wire.unpack_header(data)
             if nonce != args.nonce or epoch != args.epoch or sequence != request_sequence:
                 raise ValueError('invalid companion request correlation')
-            if record_type == wire.SOURCE_CANDIDATE_WATCH:
+            if record_type == wire.SOURCE_ABORT_RETIRE:
+                if (not args.source_bootstrap_required or source_candidate is None or
+                        source_aborted_candidate is not None or source_retry_attempted or
+                        nginx_env.get('KER_NGINX_SOURCE_ABORT_RETRY_ENABLE') != '1' or
+                        nginx_env.get('FF_FAULT') != 'flip_fail_once'):
+                    raise ValueError('source aborted candidate retirement is not available')
+                wanted = wire.unpack_record(data, wire.SOURCE_ABORT_RETIRE,
+                    args.nonce, args.epoch, sequence, wire.OWNER_READY_BODY)
+                dead_identity, dead_pidfd = source_candidate
+                if (wanted != dead_identity or process_alive(dead_pidfd) or
+                        not process_alive(owner_ready_pidfd)):
+                    raise PermissionError('source aborted candidate is not the exact dead successor')
+                # Retain the original pidfd and identity as a lifetime tombstone.
+                # This changes no active owner or source/native reload state.
+                source_aborted_candidate = source_candidate
+                source_candidate = None
+                send_record(channel, wire.pack_record(wire.SOURCE_ABORT_RETIRED,
+                    wire.OWNER_READY_BODY.pack(*dead_identity), args.nonce,
+                    args.epoch, sequence), deadline=time.monotonic() + 5)
+                request_sequence += 1
+                if request_sequence > wire.MAX_SEQUENCE:
+                    raise OverflowError('companion request sequence exhausted')
+                continue
+            if record_type in (wire.SOURCE_CANDIDATE_WATCH, wire.SOURCE_RETRY_WATCH):
+                retry_watch = record_type == wire.SOURCE_RETRY_WATCH
                 if (not args.source_bootstrap_required or not args.owner_ready_required or
-                        source_candidate_attempted or len(fds) != 2):
+                        len(fds) != 2 or source_candidate is not None or
+                        (not retry_watch and source_candidate_attempted) or
+                        (retry_watch and (source_aborted_candidate is None or
+                            source_retry_attempted or process_alive(source_aborted_candidate[1])))):
                     raise ValueError('source candidate watch is not available')
-                fields = wire.unpack_record(data, wire.SOURCE_CANDIDATE_WATCH,
+                fields = wire.unpack_record(data, record_type,
                     args.nonce, args.epoch, sequence, wire.SOURCE_WATCH_BODY)
                 pid, tid, role, reserved, ticks, dev, inode, cookie = fields
                 old_pid, _, _, old_role, _, _, _, old_dev, old_inode, old_cookie = identity
@@ -1083,6 +1113,12 @@ def run(args):
                         not ticks or not dev or not inode or not cookie or pid == old_pid or
                         cookie == old_cookie or (dev, inode) == (old_dev, old_inode)):
                     raise PermissionError('source candidate watch is not a distinct successor')
+                if retry_watch:
+                    previous = source_aborted_candidate[0]
+                    if (pid == previous[0] or cookie == previous[9] or
+                            (dev, inode) == previous[7:9]):
+                        raise PermissionError('source retry reuses the aborted candidate identity')
+                    source_retry_attempted = True
                 source_candidate_attempted = True
                 receiver = socket.socket(fileno=fds.pop(0))
                 try:
@@ -1254,6 +1290,12 @@ def main(argv=None):
             parser.error('invalid/duplicate Nginx environment entry')
         values[key] = item
     source_keys = SOURCE_BOOTSTRAP_KEYS.intersection(values)
+    if ('FF_FAULT' in values or 'KER_NGINX_SOURCE_ABORT_RETRY_ENABLE' in values):
+        if (not args.source_bootstrap_required or
+                values.get('KER_NGINX_SOURCE_ABORT_RETRY_ENABLE') != '1' or
+                values.get('KER_NGINX_SOURCE_FIRST_HUP_ENABLE') != '1' or
+                values.get('FF_FAULT') != 'flip_fail_once'):
+            parser.error('fault test requires the explicit authenticated source abort/retry profile')
     if ('KER_NGINX_SOURCE_FIRST_HUP_ENABLE' in values and
             (not args.source_bootstrap_required or
              values['KER_NGINX_SOURCE_FIRST_HUP_ENABLE'] != '1')):

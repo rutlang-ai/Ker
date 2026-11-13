@@ -526,20 +526,70 @@ class NginxCompanion:
         self._request(wire.SOURCE_HUP, (wire.SOURCE_HUP_DELIVERED,),
             (wire.RELOAD_RESULT_BYTES, wire.ERROR_BYTES), timeout, validate)
 
+    def retire_aborted_source_candidate(self, timeout=5.0):
+        """Acknowledge an exact dead candidate while retaining the old owner.
+
+        The source/native supervisor must first prove the original T0 and
+        acknowledged native/C31 abort. This helper certifies containment only.
+        """
+        candidate = self.source_candidate
+        if (candidate is None or getattr(self, 'source_aborted_candidate', None) is not None or
+                not self.source_bootstrap_required or self.unresolved or self.settled or
+                self.nginx_env.get('KER_NGINX_SOURCE_ABORT_RETRY_ENABLE') != '1' or
+                self.nginx_env.get('FF_FAULT') != 'flip_fail_once' or
+                process_alive(candidate.owner_pidfd) or not process_alive(self.owner_pidfd)):
+            raise RuntimeError('source aborted candidate retirement is not available')
+        fields = (candidate.owner_pid, os.getuid(), os.getgid(), 1,
+            candidate.owner_tid, 0, candidate.owner_start, candidate.owner_slot_device,
+            candidate.owner_slot_inode, candidate.owner_cookie)
+        deadline = time.monotonic() + timeout
+        fds = []
+        try:
+            self._send(wire.pack_record(wire.SOURCE_ABORT_RETIRE,
+                wire.OWNER_READY_BODY.pack(*fields), self.nonce, self.epoch,
+                self.sequence), (), deadline)
+            packet, fds = self._receive(wire.OWNER_READY_BYTES, deadline, 0)
+            got = wire.unpack_record(packet, wire.SOURCE_ABORT_RETIRED, self.nonce,
+                self.epoch, self.sequence, wire.OWNER_READY_BODY)
+            if got != fields or process_alive(candidate.owner_pidfd):
+                raise PermissionError('source abort retirement changed candidate identity')
+            self.sequence += 1
+            if self.sequence > wire.MAX_SEQUENCE:
+                raise OverflowError('companion request sequence exhausted')
+            self.source_aborted_candidate = candidate
+            self.source_candidate = None
+        except BaseException:
+            self.unresolved = True
+            raise
+        finally:
+            _close_fds(fds)
+
     def watch_source_candidate(self, watch, receiver, timeout=20.0):
         """Authenticate successor READY, retaining the current owner's watch."""
+        retry_watch = watch['source_epoch'] == 2
+        previous = getattr(self, 'source_aborted_candidate', None)
         if (not self.source_bootstrap_required or not self.started or self.unresolved or
-                self.settled or self.source_candidate_attempted or self.owner_role != 0 or
-                watch['role'] != 1 or watch['source_epoch'] != 1 or watch['generation'] != 1):
+                self.settled or self.owner_role != 0 or self.source_candidate is not None or
+                (not retry_watch and self.source_candidate_attempted) or
+                (retry_watch and (previous is None or
+                    getattr(self, 'source_retry_attempted', False) or
+                    process_alive(previous.owner_pidfd) or watch['pid'] == previous.owner_pid or
+                    watch['cookie'] == previous.owner_cookie or
+                    (watch['slot_device'], watch['slot_inode']) ==
+                        (previous.owner_slot_device, previous.owner_slot_inode))) or
+                watch['role'] != 1 or watch['source_epoch'] not in (1, 2) or watch['generation'] != 1):
             raise RuntimeError('source candidate watch is not available')
         self.source_candidate_attempted = True
+        if retry_watch:
+            self.source_retry_attempted = True
         deadline = time.monotonic() + timeout
         body = wire.SOURCE_WATCH_BODY.pack(watch['pid'], watch['tid'], 1, 0,
             watch['start'], watch['slot_device'], watch['slot_inode'], watch['cookie'])
         fds = []
         failed = None
         try:
-            self._send(wire.pack_record(wire.SOURCE_CANDIDATE_WATCH, body,
+            self._send(wire.pack_record(
+                wire.SOURCE_RETRY_WATCH if retry_watch else wire.SOURCE_CANDIDATE_WATCH, body,
                 self.nonce, self.epoch, self.sequence),
                 (receiver.fileno(), watch['pidfd']), deadline)
             packet, fds = self._receive((wire.OWNER_READY_BYTES, wire.ERROR_BYTES),
@@ -712,6 +762,10 @@ class NginxCompanion:
         if self.owner_pidfd >= 0:
             os.close(self.owner_pidfd)
             self.owner_pidfd = -1
+        aborted = getattr(self, 'source_aborted_candidate', None)
+        if aborted is not None:
+            os.close(aborted.owner_pidfd)
+            self.source_aborted_candidate = None
         if self.source_candidate is not None:
             os.close(self.source_candidate.owner_pidfd)
             self.source_candidate = None
