@@ -126,9 +126,22 @@ def validate_evidence(report):
                 # relearning between the flush and read-only dump. The next
                 # unchanged static-use command must still restore count zero.
                 dynamic = [r for r in state['fdb'] if r.get('master') == 'br0' and r.get('state') == '']
-                require((count == 0 and not dynamic) or (count == 1 and dynamic == [dict(
-                    mac=DEFAULT_MAC, ifname='veth1', flags=[], master='br0', state='')]),
-                    'initial native FDB flush retained unexpected learned entries')
+                default_entries = [r for r in state['fdb'] if r.get('mac') == DEFAULT_MAC]
+                expected_default = [dict(
+                    mac=DEFAULT_MAC, ifname='veth1', flags=[], master='br0', state='')]
+                # The link count is sampled before the separate FDB dump. A
+                # packet can relearn the default source MAC between those
+                # queries, so count zero plus this exact VID0 entry is a torn
+                # observation, not evidence that flush retained the entry.
+                # Reject any other entry for that MAC, including non-dynamic,
+                # wrong-port, or VLAN variants.
+                require((count == 0 and
+                         ((not dynamic and not default_entries) or
+                          (dynamic == expected_default and default_entries == expected_default))) or
+                        (count == 1 and dynamic == expected_default and default_entries == expected_default),
+                    'initial native FDB flush sample inconsistent: '
+                    f'fdb_n_learned={count}, dynamic_entries={dynamic!r}, '
+                    f'default_entries={default_entries!r}')
                 following = rows[rows.index(row)+1]
                 require(following['arguments'] == ['fdb','add',DEFAULT_MAC,'dev','veth1','master','static','use'] and
                         following['returncode'] == 0 and not following['stderr'] and
