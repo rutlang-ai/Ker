@@ -1040,6 +1040,36 @@ static int relay_decision(const struct ker_rx_decision_packet *packet, void *opa
     return KER_RX_DECISION_DEFER;
 }
 
+typedef int (*owner_control_poll_hook)(void *context);
+
+/* Source-route mode owns the shared supervisor control socket. Keep its
+ * receiver and the legacy PEER_AUTH receiver in one handler so the unit
+ * receiver exercises the same dispatch order as the live app loop. */
+static int poll_owner_control(struct fixture *fixture,
+    owner_control_poll_hook after_source_route_poll, void *context)
+{
+    if (fixture->owner_authenticated && fixture->source_route_enabled) {
+        int status = receive_source_route_command(fixture);
+        if (status) return status;
+        status = authenticate_pending_source_candidate(fixture);
+        if (status) return status;
+        if (after_source_route_poll) {
+            status = after_source_route_poll(context);
+            if (status) return status;
+        }
+    }
+    /* In source-route mode PREPARE/COMMIT and peer binding share AUTH_FD.
+     * A second legacy recvmsg can consume a command queued after its empty
+     * source-route poll. The source-route commit installs the peer binding. */
+    if (fixture->owner_authenticated && fixture->peer_auth_enabled &&
+        !fixture->source_route_enabled) {
+        int status = receive_supervisor_peer_auth(fixture);
+        if (!status) status = receive_peer_owner_auth(fixture);
+        if (status) return status;
+    }
+    return 0;
+}
+
 static int app_loop(void *opaque)
 {
     struct fixture *fixture = opaque;
@@ -1064,17 +1094,8 @@ static int app_loop(void *opaque)
         int auth = receive_owner_auth(fixture);
         if (auth) return auth;
     }
-    if (fixture->owner_authenticated && fixture->source_route_enabled) {
-        int route = receive_source_route_command(fixture);
-        if (route) return route;
-        route = authenticate_pending_source_candidate(fixture);
-        if (route) return route;
-    }
-    if (fixture->owner_authenticated && fixture->peer_auth_enabled) {
-        int auth = receive_supervisor_peer_auth(fixture);
-        if (!auth) auth = receive_peer_owner_auth(fixture);
-        if (auth) return auth;
-    }
+    int control_status = poll_owner_control(fixture, NULL, NULL);
+    if (control_status) return control_status;
     if (fixture->packet_id) {
         struct ker_rx_owner_relay_header reply = {0};
         uint8_t reply_buffer[sizeof(reply) + KER_RX_OWNER_RELAY_MAX_FRAME];

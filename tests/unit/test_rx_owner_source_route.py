@@ -106,7 +106,7 @@ class SourceRoute(unittest.TestCase):
     def run_case(self, abort=False, inflight=False, candidate_mode='valid',
                  short_deadline=False, kill_after_stage=False,
                  expire_after_commit=False, master_death_after_commit=False,
-                 expired_commit=False, late_swap=False):
+                 expired_commit=False, late_swap=False, late_route_arrival=False):
         control, app_control = pair()
         old_channel, old_worker_channel = pair()
         candidate_channel, candidate_worker_channel = pair()
@@ -118,6 +118,13 @@ class SourceRoute(unittest.TestCase):
             candidate_channel, candidate_worker_channel, old_slot, candidate_slot]
         release_read, release_write = os.pipe()
         handles = [release_read, release_write]
+        late_ready_read = late_ready_write = -1
+        late_release_read = late_release_write = -1
+        if late_route_arrival:
+            late_ready_read, late_ready_write = os.pipe()
+            late_release_read, late_release_write = os.pipe()
+            handles.extend((late_ready_read, late_ready_write,
+                late_release_read, late_release_write))
         try:
             if master_death_after_commit:
                 report_read, report_write = os.pipe()
@@ -147,9 +154,9 @@ class SourceRoute(unittest.TestCase):
             proofs.extend((current, candidate))
             supervisor = os.getpid()
             supervisor_start = ker_run.process_start_ticks(supervisor)
-            app = subprocess.Popen([RECEIVER], pass_fds=(app_control.fileno(),
-                old_channel.fileno(), marker_write, release_read), stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, env={**os.environ,
+            app_pass_fds = [app_control.fileno(), old_channel.fileno(), marker_write,
+                release_read]
+            app_env = {
                     'KER_RX_OWNER_AUTH_FD': str(app_control.fileno()),
                     'KER_RX_OWNER_RELAY_FD': str(old_channel.fileno()),
                     'KER_TEST_SOURCE_SUPERVISOR_PID': str(supervisor),
@@ -165,10 +172,26 @@ class SourceRoute(unittest.TestCase):
                     **({'KER_TEST_SOURCE_WAIT_AUTHORITY_EXPIRY': '1'}
                         if expire_after_commit else {}),
                     **({'KER_TEST_SOURCE_EXPIRED_COMMIT': '1'} if expired_commit else {}),
-                    **({'KER_TEST_SOURCE_ROUTE_DELAY_SWAP': '1'} if late_swap else {}),
-                    **({'KER_TEST_SOURCE_INFLIGHT': '1'} if inflight else {})})
+                    **({'KER_TEST_SOURCE_ROUTE_DELAY_SWAP': '1'}
+                        if late_swap else {}),
+                    **({'KER_TEST_SOURCE_INFLIGHT': '1'} if inflight else {})}
+            if late_route_arrival:
+                app_pass_fds.extend((late_ready_write, late_release_read))
+                app_env.update({
+                    'KER_TEST_SOURCE_LATE_ROUTE_AFTER_EMPTY': '1',
+                    'KER_TEST_SOURCE_ROUTE_EMPTY_READY_FD': str(late_ready_write),
+                    'KER_TEST_SOURCE_ROUTE_EMPTY_RELEASE_FD': str(late_release_read)})
+            app = subprocess.Popen([RECEIVER], pass_fds=tuple(app_pass_fds), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, env={**os.environ,
+                    **app_env})
             os.close(marker_write); marker_write = -1
             app_control.close(); old_channel.close()
+            if late_route_arrival:
+                for fd in (late_ready_write, late_release_read):
+                    os.close(fd)
+                    handles.remove(fd)
+                late_ready_write = -1
+                late_release_read = -1
             app_pidfd = os.pidfd_open(app.pid)
             supervisor_pidfd = os.pidfd_open(supervisor)
             master_pid = source_master_process.pid if source_master_process else supervisor
@@ -199,7 +222,23 @@ class SourceRoute(unittest.TestCase):
                 stdout, stderr = app.communicate(timeout=2)
                 self.assertEqual(app.returncode, 0, (stdout, stderr))
                 return
-            prepared = ker_run.rx_owner_source_route_prepare(control,
+            route_endpoint = control
+            if late_route_arrival:
+                self.assertEqual(os.read(late_ready_read, 1), b'E',
+                    'receiver did not reach the common handler after an empty source-route read')
+
+                class ReleaseAfterSend:
+                    def sendmsg(self, *args):
+                        sent = control.sendmsg(*args)
+                        if sent > 0:
+                            os.write(late_release_write, b'R')
+                        return sent
+
+                    def __getattr__(self, name):
+                        return getattr(control, name)
+
+                route_endpoint = ReleaseAfterSend()
+            prepared = ker_run.rx_owner_source_route_prepare(route_endpoint,
                 candidate_channel, app, app_pidfd, supervisor_pidfd,
                 current, candidate, source_master, NONCE, 77, deadline,
                 operation_id=1234)
@@ -333,6 +372,9 @@ class SourceRoute(unittest.TestCase):
 
     def test_stage_then_atomic_commit_preserves_old_route_as_peer(self):
         self.run_case()
+
+    def test_late_prepare_after_empty_source_poll_is_not_consumed_by_legacy_peer_reader(self):
+        self.run_case(late_route_arrival=True)
 
     def test_abort_and_inflight_commit_keep_old_route(self):
         self.run_case(abort=True)
