@@ -864,6 +864,7 @@ cmake --build build-fault-runtime --target ker-fstack-nginx-fault-test-runtime
 
 cmake -S . -B build-native-tcp \
   -DKER_WITH_DPDK=ON -DKER_WITH_NATIVE_TCP=ON -DBUILD_TESTING=ON \
+  -DKER_BUILD_FSTACK_NGINX_RUNTIME=ON \
   -DKER_NATIVE_LINUX_BUILD=/path/to/native-linux-build \
   -DKER_DPDK_PKGCONFIG_DIR=/path/to/dpdk/lib64/pkgconfig \
   -DKER_FSTACK_NGINX_BINARY=/path/to/pinned/nginx \
