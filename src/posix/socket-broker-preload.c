@@ -103,6 +103,7 @@ struct ff_owner_admission_client_state {
     struct ker_ff_admission_channel *channel;
     struct ker_ff_admission_map_ops ops;
     int fd;
+    int detached;
 };
 static _Thread_local struct ff_owner_admission_client_state owner_admission_state;
 
@@ -128,6 +129,14 @@ static int ff_owner_admission_pump(void *context)
     }
 #endif
     int result = ker_ff_admission_channel_owner_step(state->channel, &state->ops);
+    if (result == KER_FF_ADMISSION_OWNER_SEALED) {
+        /* A successful, correlated SEAL ACK makes only this callback
+         * terminal. Keep its endpoint object alive until process teardown;
+         * the independent RX relay and owner capability remain active. */
+        state->detached = 1;
+        ker_sb_preload_owner_pump_unregister();
+        return 0;
+    }
 #ifdef KER_C16_ADMISSION_TEST_TRACE
     static _Thread_local bool test_failure_consumed;
     const char *fail_after_step = getenv("KER_C16_TEST_PUMP_FAIL_AFTER_STEP");
@@ -696,6 +705,27 @@ void ker_sb_preload_test_owner_setup(void)
     owner_pump_context = NULL;
     rx_relay_pump_callback = NULL;
     rx_relay_pump_context = NULL;
+    memset(&owner_admission_state, 0, sizeof(owner_admission_state));
+    owner_admission_state.fd = -1;
+}
+
+int ker_sb_preload_test_owner_admission_register(
+    struct ker_ff_admission_channel *channel, int fd,
+    const struct ker_ff_admission_map_ops *ops)
+{
+    if (!channel || fd < 0 || !ops || owner_admission_state.channel ||
+        owner_pump_callback) { errno = EINVAL; return -1; }
+    owner_admission_state.channel = channel;
+    owner_admission_state.fd = fd;
+    owner_admission_state.ops = *ops;
+    owner_admission_state.detached = 0;
+    if (ker_sb_preload_owner_pump_register(ff_owner_admission_pump,
+            &owner_admission_state)) {
+        memset(&owner_admission_state, 0, sizeof(owner_admission_state));
+        owner_admission_state.fd = -1;
+        return -1;
+    }
+    return 0;
 }
 #endif
 

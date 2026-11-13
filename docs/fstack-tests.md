@@ -843,6 +843,53 @@ TCP response is verified on the same socket after COMMIT. If completion or a
 required proof misses its deadline, the route remains fail-closed and the test
 does not report a successful handover.
 
+## Two successful reloads under one original master
+
+`native-nginx-source-master-two-successful-hups` qualifies one committed
+successor: the unchanged original master completes generation `0→1→0` across
+two successful HUPs. It uses the original rv9 fresh-only probe parameters with
+two rounds: zero persistent probe connections, a 0.2-second fresh interval,
+2-second timeout, 15-second HUP spacing, and a 120-second probe duration.
+Separate original-Linux TCP sockets each carry a 1 MiB response across their
+respective generation change. The second socket belongs to generation 1
+before HUP and must deliver the same complete body after generation 0 commits.
+
+The authenticated successor stage requires the exact first committed route,
+the same live master and finite grant, the surviving owner identity/channel,
+and the confirmed-dead initial owner's retained pidfd. Native successor
+adoption preserves the surviving listener cookie; a fresh FIFO slot, READY
+receiver and candidate channel authorize the next worker. The original source
+generation is distinct from the immutable transport role. Neither actor
+relabeling nor an aborted-retry record can authorize this successful lineage.
+Each original PARK/COMMIT pair retains its shared 100 ms deadline, and packet
+handoffs retain their original packet ID, bytes and deadline.
+
+Retiring admission does not itself terminate its control channel: a retired
+window can still be rearmed. Before native adoption succeeds, the backend now
+seals that exact retired task through a version-2 SEAL/SEALED exchange bound to
+its authenticated channel, epoch, lease and increasing command ID. Adoption
+returns `EAGAIN` until the correlated ACK arrives. Only after the worker sends
+that ACK does it detach its admission callback, retaining the endpoint and RX
+relay for old TCP traffic. Unauthenticated, stale, premature or missing seals
+do not turn channel EOF into success. Channel and actual preload controls cover
+wrong lease/epoch, replay, pending admission, interrupted ACK sends and fatal
+pre-seal EOF; the preload control checks continued RX progress after detach.
+
+**Qualification status: full CTest pass in 120.98 seconds.** The original probe
+reported 600 fresh connections, zero failures and zero worker errors. Both
+original reloads completed and returned from `T5` to `T0`, draining in 2,030 ms
+and 2,031 ms. The two same-socket bodies matched their expected hash. Actual
+handoff packets 91 and 820 had correlated original candidate PEER and old LOCAL
+callbacks before their native selector commits. All three worker PIDs exited
+with code 0, including the final worker after master STOP. Native RX settled
+3,719 decisions with zero drops or outstanding decisions, and shutdown balanced
+native buffers. The receipt is retained under
+`build/Testing/Temporary/native-nginx-source-master-successor/run-1794534622746237503-1196317/receipt.json`.
+
+This is a two-round rv9 parity slice. It does not qualify the full 100-round
+resource-trend test or the original `test_graceful_reload.sh` entrypoint/matrix.
+The 362/0/1 inventory remains unchanged.
+
 The relay checkpoint is a Ker scheduling adapter. It invokes only the already
 registered RX relay callback on the exact owner PID/TID inside the owner loop.
 It does not re-enter the original Nginx application loop or admission callbacks.

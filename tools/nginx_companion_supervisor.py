@@ -152,6 +152,9 @@ class NginxCompanion:
         self.source_watch = None
         self.source_candidate = None
         self.source_candidate_attempted = False
+        self.source_retired_owners = []
+        self.source_promotions = 0
+        self.source_successor_attempted = False
 
     def watch_source_worker(self, watch, receiver, timeout=5.0):
         if (not self.source_bootstrap_required or self.master_pidfd < 0 or
@@ -566,22 +569,42 @@ class NginxCompanion:
 
     def watch_source_candidate(self, watch, receiver, timeout=20.0):
         """Authenticate successor READY, retaining the current owner's watch."""
-        retry_watch = watch['source_epoch'] == 2
+        successor_watch = watch['source_epoch'] == 2 and watch['generation'] == 0
+        retry_watch = watch['source_epoch'] == 2 and watch['generation'] == 1
         previous = getattr(self, 'source_aborted_candidate', None)
+        if successor_watch:
+            if (self.nginx_env.get('KER_NGINX_SOURCE_SUCCESSOR_ENABLE') != '1' or
+                    self.nginx_env.get('KER_NGINX_SOURCE_FIRST_HUP_ENABLE') != '1' or
+                    'FF_FAULT' in self.nginx_env or
+                    'KER_NGINX_SOURCE_ABORT_RETRY_ENABLE' in self.nginx_env or
+                    self.source_promotions != 1 or self.owner_role != 1 or
+                    self.source_successor_attempted or len(self.source_retired_owners) != 1 or
+                    process_alive(self.source_retired_owners[0].owner_pidfd)):
+                raise RuntimeError('source successor lacks the exact committed/dead-predecessor lineage')
+            retired = self.source_retired_owners[0]
+            if (watch['pid'] == retired.owner_pid or watch['cookie'] == retired.owner_cookie or
+                    (watch['slot_device'], watch['slot_inode']) ==
+                        (retired.owner_slot_device, retired.owner_slot_inode)):
+                raise PermissionError('source successor reuses the retired actor or slot')
         if (not self.source_bootstrap_required or not self.started or self.unresolved or
-                self.settled or self.owner_role != 0 or self.source_candidate is not None or
-                (not retry_watch and self.source_candidate_attempted) or
+                self.settled or (self.owner_role != 0 and not successor_watch) or
+                self.source_candidate is not None or
+                (not retry_watch and not successor_watch and self.source_candidate_attempted) or
                 (retry_watch and (previous is None or
                     getattr(self, 'source_retry_attempted', False) or
                     process_alive(previous.owner_pidfd) or watch['pid'] == previous.owner_pid or
                     watch['cookie'] == previous.owner_cookie or
                     (watch['slot_device'], watch['slot_inode']) ==
                         (previous.owner_slot_device, previous.owner_slot_inode))) or
-                watch['role'] != 1 or watch['source_epoch'] not in (1, 2) or watch['generation'] != 1):
+                watch['role'] != 1 or
+                (not successor_watch and (watch['source_epoch'] not in (1, 2) or
+                    watch['generation'] != 1))):
             raise RuntimeError('source candidate watch is not available')
         self.source_candidate_attempted = True
         if retry_watch:
             self.source_retry_attempted = True
+        if successor_watch:
+            self.source_successor_attempted = True
         deadline = time.monotonic() + timeout
         body = wire.SOURCE_WATCH_BODY.pack(watch['pid'], watch['tid'], 1, 0,
             watch['start'], watch['slot_device'], watch['slot_inode'], watch['cookie'])
@@ -589,7 +612,8 @@ class NginxCompanion:
         failed = None
         try:
             self._send(wire.pack_record(
-                wire.SOURCE_RETRY_WATCH if retry_watch else wire.SOURCE_CANDIDATE_WATCH, body,
+                wire.SOURCE_SUCCESSOR_WATCH if successor_watch else
+                    wire.SOURCE_RETRY_WATCH if retry_watch else wire.SOURCE_CANDIDATE_WATCH, body,
                 self.nonce, self.epoch, self.sequence),
                 (receiver.fileno(), watch['pidfd']), deadline)
             packet, fds = self._receive((wire.OWNER_READY_BYTES, wire.ERROR_BYTES),
@@ -663,10 +687,17 @@ class NginxCompanion:
             self.sequence += 1
             if self.sequence > wire.MAX_SEQUENCE:
                 raise OverflowError('companion request sequence exhausted')
-            os.close(self.owner_pidfd)
+            if self.nginx_env.get('KER_NGINX_SOURCE_SUCCESSOR_ENABLE') == '1':
+                self.source_retired_owners.append(SimpleNamespace(**{
+                    name: getattr(self, name) for name in (
+                        'owner_pid', 'owner_tid', 'owner_start', 'owner_role',
+                        'owner_slot_device', 'owner_slot_inode', 'owner_cookie', 'owner_pidfd')}))
+            else:
+                os.close(self.owner_pidfd)
             for name, value in vars(candidate).items():
                 setattr(self, name, value)
             self.source_candidate = None
+            self.source_promotions += 1
         except BaseException:
             self.unresolved = True
             raise
@@ -766,6 +797,9 @@ class NginxCompanion:
         if aborted is not None:
             os.close(aborted.owner_pidfd)
             self.source_aborted_candidate = None
+        for retired in getattr(self, 'source_retired_owners', ()):
+            os.close(retired.owner_pidfd)
+        self.source_retired_owners = []
         if self.source_candidate is not None:
             os.close(self.source_candidate.owner_pidfd)
             self.source_candidate = None

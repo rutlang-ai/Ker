@@ -31,6 +31,7 @@ struct ker_ff_admission_wire {
 	uint32_t flags;
 	uint64_t lease;
 	uint64_t command_id;
+	uint64_t epoch;
 	uint64_t deadline_ns;
 	uint32_t packet_id;
 	struct ker_ff_admission_key key;
@@ -40,7 +41,7 @@ struct ker_ff_admission_wire {
 	uint32_t reserved;
 } __attribute__((packed));
 
-_Static_assert(sizeof(struct ker_ff_admission_wire) == 100,
+_Static_assert(sizeof(struct ker_ff_admission_wire) == 108,
 	"C15 admission channel wire ABI");
 
 /* C15-only opt-in diagnosis trace; this translation unit is also built into
@@ -104,8 +105,12 @@ struct ker_ff_admission_channel {
 	int controller_state;
 	uint32_t controller_allowed;
 	uint32_t controller_created;
-	int owner_window_state; /* 1 active, 2 retired, 3 failed */
-	int controller_window_state; /* 1 active, 2 retired, 3 failed */
+	int owner_window_state; /* 1 active, 2 retired, 3 failed, 4 sealed */
+	int controller_window_state; /* 1 active, 2 retired, 3 terminal/failed */
+	int owner_seal_ack_sent;
+	uint64_t owner_window_epoch;
+	uint64_t controller_window_epoch;
+	uint64_t controller_command_epoch;
 };
 
 static int process_start_time(pid_t pid, uint64_t *start_time)
@@ -246,7 +251,8 @@ static int receive_wire(struct ker_ff_admission_channel *channel,
 	    (wire->command <= KER_FF_ADMISSION_CANCEL_UNSENT &&
 	     (wire->status || wire->allowed || wire->created)) ||
 	    ((wire->command == KER_FF_ADMISSION_RETIRE ||
-	      wire->command == KER_FF_ADMISSION_REARM) &&
+	      wire->command == KER_FF_ADMISSION_REARM ||
+	      wire->command == KER_FF_ADMISSION_SEAL) &&
 	     (wire->status || wire->allowed || wire->created)))
 		return -EPROTO;
     int identity = peer_identity(channel);
@@ -394,6 +400,9 @@ static int send_pending_response(struct ker_ff_admission_channel *channel)
 #endif
 	result = send_wire(channel, &channel->response);
 	if (result == 0) {
+		if (channel->response.command == KER_FF_ADMISSION_SEALED &&
+		    channel->response.status == 0)
+			channel->owner_seal_ack_sent = 1;
 		channel->response_pending = 0;
 		channel->test_prepared_delay_until_ns = 0;
 		channel->test_prepared_delay_announced = 0;
@@ -462,6 +471,8 @@ int ker_ff_admission_channel_open(int fd, pid_t expected_peer,
 	channel->lease = lease;
 	channel->owner_window_state = 1;
 	channel->controller_window_state = 1;
+	channel->owner_window_epoch = 1;
+	channel->controller_window_epoch = 1;
 	*output = channel;
 	return 0;
 }
@@ -500,6 +511,7 @@ int ker_ff_admission_channel_send_admit(struct ker_ff_admission_channel *channel
 	if (!result) {
 		channel->controller_last_command_id = request->command_id;
 		channel->controller_command_id = request->command_id;
+		channel->controller_command_epoch = 0;
 		channel->controller_packet_id = request->packet_id;
 		channel->controller_state = 1;
 	}
@@ -545,30 +557,40 @@ int ker_ff_admission_channel_send_control(struct ker_ff_admission_channel *chann
 }
 
 static int send_window_command(struct ker_ff_admission_channel *channel,
-	uint16_t command, uint64_t lease, uint64_t command_id)
+	uint16_t command, uint64_t lease, uint64_t epoch, uint64_t command_id)
 {
 	struct ker_ff_admission_wire wire = {0};
 	if (!channel || !command_id || channel->controller_state != 0 ||
 	    command_id <= channel->controller_last_command_id || !lease)
 		return -EINVAL;
 	if ((command == KER_FF_ADMISSION_RETIRE &&
-	     (channel->controller_window_state != 1 || lease != channel->lease)) ||
+	     (channel->controller_window_state != 1 || lease != channel->lease ||
+	      epoch != channel->controller_window_epoch)) ||
 	    (command == KER_FF_ADMISSION_REARM &&
-	     (channel->controller_window_state != 2 || lease <= channel->lease)) ||
+	     (channel->controller_window_state != 2 || lease <= channel->lease ||
+	      channel->controller_window_epoch == UINT64_MAX ||
+	      epoch != channel->controller_window_epoch + 1)) ||
+	    (command == KER_FF_ADMISSION_SEAL &&
+	     (channel->controller_window_state != 2 || lease != channel->lease ||
+	      epoch != channel->controller_window_epoch)) ||
 	    (command != KER_FF_ADMISSION_RETIRE &&
-	     command != KER_FF_ADMISSION_REARM)) return -EINVAL;
+	     command != KER_FF_ADMISSION_REARM &&
+	     command != KER_FF_ADMISSION_SEAL)) return -EINVAL;
 	wire.magic = KER_FF_ADMISSION_CHANNEL_MAGIC;
 	wire.version = KER_FF_ADMISSION_CHANNEL_VERSION;
 	wire.command = command;
 	wire.length = sizeof(wire);
 	wire.lease = lease;
 	wire.command_id = command_id;
+	wire.epoch = epoch;
 	int status = send_wire(channel, &wire);
 	if (status) return status;
 	channel->controller_last_command_id = command_id;
 	channel->controller_command_id = command_id;
+	channel->controller_command_epoch = epoch;
 	channel->controller_packet_id = 0;
-	channel->controller_state = command == KER_FF_ADMISSION_RETIRE ? 6 : 7;
+	channel->controller_state = command == KER_FF_ADMISSION_RETIRE ? 6 :
+		command == KER_FF_ADMISSION_REARM ? 7 : 8;
 	if (command == KER_FF_ADMISSION_REARM) channel->lease = lease;
 	return 0;
 }
@@ -577,15 +599,25 @@ int ker_ff_admission_channel_send_retire(
 	struct ker_ff_admission_channel *channel, uint64_t command_id)
 {
 	return channel ? send_window_command(channel, KER_FF_ADMISSION_RETIRE,
-		channel->lease, command_id) : -EINVAL;
+		channel->lease, channel->controller_window_epoch, command_id) : -EINVAL;
 }
 
 int ker_ff_admission_channel_send_rearm(
 	struct ker_ff_admission_channel *channel, uint64_t new_lease,
 	uint64_t command_id)
 {
+	if (!channel) return -EINVAL;
+	if (channel->controller_window_epoch == UINT64_MAX) return -EOVERFLOW;
 	return send_window_command(channel, KER_FF_ADMISSION_REARM,
-		new_lease, command_id);
+		new_lease, channel->controller_window_epoch + 1,
+		command_id);
+}
+
+int ker_ff_admission_channel_send_seal(
+	struct ker_ff_admission_channel *channel, uint64_t command_id)
+{
+	return channel ? send_window_command(channel, KER_FF_ADMISSION_SEAL,
+		channel->lease, channel->controller_window_epoch, command_id) : -EINVAL;
 }
 
 int ker_ff_admission_channel_receive(struct ker_ff_admission_channel *channel,
@@ -600,7 +632,7 @@ int ker_ff_admission_channel_receive(struct ker_ff_admission_channel *channel,
 		break;
 	}
 	if (wire.command < KER_FF_ADMISSION_RESULT ||
-	    wire.command > KER_FF_ADMISSION_REARMED || wire.deadline_ns ||
+	    wire.command > KER_FF_ADMISSION_SEALED || wire.deadline_ns ||
 	    wire.allowed > 1 || wire.created > 1 || (wire.created && !wire.allowed) ||
 	    (wire.command != KER_FF_ADMISSION_RESULT &&
 	     (wire.allowed || wire.created)) ||
@@ -608,25 +640,38 @@ int ker_ff_admission_channel_receive(struct ker_ff_admission_channel *channel,
 	    (wire.status && (wire.allowed || wire.created)) ||
 	    memcmp(&wire.key, &(struct ker_ff_admission_key){0}, sizeof(wire.key)) ||
 	    !channel->controller_state || wire.command_id != channel->controller_command_id ||
-	    wire.packet_id != channel->controller_packet_id)
+	    wire.packet_id != channel->controller_packet_id ||
+	    wire.epoch != channel->controller_command_epoch)
 		return -EPROTO;
 	if (wire.command == KER_FF_ADMISSION_RETIRED) {
-		if (channel->controller_state != 6 || wire.lease != channel->lease)
+		if (channel->controller_state != 6 || wire.lease != channel->lease ||
+		    wire.epoch != channel->controller_command_epoch)
 			return -EPROTO;
 		channel->controller_state = 0;
 		channel->controller_window_state = wire.status ? 3 : 2;
 	} else if (wire.command == KER_FF_ADMISSION_REARMED) {
-		if (channel->controller_state != 7 || wire.lease != channel->lease)
+		if (channel->controller_state != 7 || wire.lease != channel->lease ||
+		    wire.epoch != channel->controller_command_epoch)
 			return -EPROTO;
 		channel->controller_state = 0;
 		channel->controller_window_state = wire.status ? 3 : 1;
-	} else if (channel->controller_state == 6 || channel->controller_state == 7) {
+		if (!wire.status) channel->controller_window_epoch = wire.epoch;
+	} else if (wire.command == KER_FF_ADMISSION_SEALED) {
+		if (channel->controller_state != 8 || wire.lease != channel->lease ||
+		    wire.epoch != channel->controller_command_epoch)
+			return -EPROTO;
+		channel->controller_state = 0;
+		channel->controller_window_state = 3;
+	} else if (channel->controller_state == 6 || channel->controller_state == 7 ||
+	    channel->controller_state == 8) {
 		return -EPROTO;
 	}
 	if (wire.command == KER_FF_ADMISSION_RETIRED ||
-	    wire.command == KER_FF_ADMISSION_REARMED) {
+	    wire.command == KER_FF_ADMISSION_REARMED ||
+	    wire.command == KER_FF_ADMISSION_SEALED) {
 		*result = (struct ker_ff_admission_result){
 			.lease = wire.lease, .command_id = wire.command_id,
+			.epoch = wire.epoch,
 			.packet_id = wire.packet_id, .status = wire.status};
 		return wire.command;
 	}
@@ -711,6 +756,10 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 			int cleanup = owner_cleanup_unprepared(channel, ops);
 			return cleanup ? cleanup : response;
 		}
+		if (!response && channel->owner_seal_ack_sent) {
+			channel->owner_seal_ack_sent = 0;
+			return KER_FF_ADMISSION_OWNER_SEALED;
+		}
 		return response;
 	}
 	received = receive_wire(channel, &command);
@@ -724,12 +773,19 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 	if (command.command == KER_FF_ADMISSION_ADMIT)
 		c15_stage_trace("owner-admit-received", &command, 0);
 	if (command.command == KER_FF_ADMISSION_RETIRE ||
-	    command.command == KER_FF_ADMISSION_REARM) {
+	    command.command == KER_FF_ADMISSION_REARM ||
+	    command.command == KER_FF_ADMISSION_SEAL) {
 		int is_retire = command.command == KER_FF_ADMISSION_RETIRE;
+		int is_seal = command.command == KER_FF_ADMISSION_SEAL;
+		int is_rearm = command.command == KER_FF_ADMISSION_REARM;
 		int status = 0;
 		if (channel->owner_state || channel->owner_prepared ||
 		    command.command_id <= channel->owner_last_command_id ||
 		    command.packet_id || command.deadline_ns ||
+		    (is_retire && command.epoch != channel->owner_window_epoch) ||
+		    (is_seal && command.epoch != channel->owner_window_epoch) ||
+		    (is_rearm && (channel->owner_window_epoch == UINT64_MAX ||
+		     command.epoch != channel->owner_window_epoch + 1)) ||
 		    memcmp(&command.key, &(struct ker_ff_admission_key){0},
 			   sizeof(command.key))) {
 			status = -EPROTO;
@@ -740,6 +796,11 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 			else
 				status = ops->retire(ops->context);
 			if (!status) channel->owner_window_state = 2;
+		} else if (is_seal) {
+			if (channel->owner_window_state != 2)
+				status = -ESTALE;
+			else
+				channel->owner_window_state = 4;
 		} else {
 			if (channel->owner_window_state != 2 ||
 			    !command.lease || command.lease <= channel->lease || !ops->rearm)
@@ -750,13 +811,20 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 				channel->lease = command.lease;
 				status = ops->rearm(ops->context);
 				channel->owner_window_state = status ? 3 : 1;
+				if (!status) channel->owner_window_epoch = command.epoch;
 			}
 		}
 		if (!status) channel->owner_last_command_id = command.command_id;
 		response_for_command(channel, &command,
-			is_retire ? KER_FF_ADMISSION_RETIRED : KER_FF_ADMISSION_REARMED,
+			is_retire ? KER_FF_ADMISSION_RETIRED : is_seal ?
+			KER_FF_ADMISSION_SEALED : KER_FF_ADMISSION_REARMED,
 			status);
-		return send_pending_response(channel);
+		int sent = send_pending_response(channel);
+		if (!sent && channel->owner_seal_ack_sent) {
+			channel->owner_seal_ack_sent = 0;
+			return KER_FF_ADMISSION_OWNER_SEALED;
+		}
+		return sent;
 	}
 	if (command.command == KER_FF_ADMISSION_ADMIT) {
 		int created = 0, allowed = 0, status = 0;

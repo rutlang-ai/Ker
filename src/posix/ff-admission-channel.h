@@ -4,7 +4,10 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-#define KER_FF_ADMISSION_CHANNEL_VERSION 1U
+#define KER_FF_ADMISSION_CHANNEL_VERSION 2U
+/* Owner-step terminal result: the authenticated SEALED ACK was fully sent.
+ * Ordinary success remains zero; negative values are failures/deferred I/O. */
+#define KER_FF_ADMISSION_OWNER_SEALED 1
 
 struct ker_ff_admission_key {
 	uint8_t family;
@@ -27,6 +30,7 @@ struct ker_ff_admission_request {
 struct ker_ff_admission_result {
 	uint64_t lease;
 	uint64_t command_id;
+	uint64_t epoch;
 	uint32_t packet_id;
 	int32_t status;
 	uint32_t allowed;
@@ -57,12 +61,14 @@ enum ker_ff_admission_channel_command {
 	KER_FF_ADMISSION_CANCEL_UNSENT = 5,
 	KER_FF_ADMISSION_RETIRE = 6,
 	KER_FF_ADMISSION_REARM = 7,
+	KER_FF_ADMISSION_SEAL = 8,
 	KER_FF_ADMISSION_RESULT = 0x8001,
 	KER_FF_ADMISSION_CANCELLED = 0x8002,
 	KER_FF_ADMISSION_PREPARED = 0x8003,
 	KER_FF_ADMISSION_FINALIZED = 0x8004,
 	KER_FF_ADMISSION_RETIRED = 0x8005,
 	KER_FF_ADMISSION_REARMED = 0x8006,
+	KER_FF_ADMISSION_SEALED = 0x8007,
 };
 
 /* Create before starting LKL, then fork/exec the map-owner with one endpoint. */
@@ -89,11 +95,14 @@ int ker_ff_admission_channel_send_retire(
 int ker_ff_admission_channel_send_rearm(
 	struct ker_ff_admission_channel *channel, uint64_t new_lease,
 	uint64_t command_id);
+int ker_ff_admission_channel_send_seal(
+	struct ker_ff_admission_channel *channel, uint64_t command_id);
 int ker_ff_admission_channel_receive(struct ker_ff_admission_channel *channel,
 				     struct ker_ff_admission_result *result);
 
 /* Call only from the original FF owner execution loop. Map callbacks run here
- * and nowhere on the LKL/controller thread. */
+ * and nowhere on the LKL/controller thread. Returns OWNER_SEALED only after
+ * the correlated terminal ACK has actually been sent. */
 int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel,
 					const struct ker_ff_admission_map_ops *ops);
 

@@ -426,6 +426,7 @@ struct test_admission_wire {
 	uint32_t flags;
 	uint64_t lease;
 	uint64_t command_id;
+	uint64_t epoch;
 	uint64_t deadline_ns;
 	uint32_t packet_id;
 	struct ker_ff_admission_key key;
@@ -435,17 +436,17 @@ struct test_admission_wire {
 	uint32_t reserved;
 } __attribute__((packed));
 
-_Static_assert(sizeof(struct test_admission_wire) == 100,
+_Static_assert(sizeof(struct test_admission_wire) == 108,
 	"private test wire ABI");
 
 static void inject_window_command(int fd, uint16_t command, uint64_t lease,
-	uint64_t command_id)
+	uint64_t command_id, uint64_t epoch)
 {
 	struct test_admission_wire wire = {
 		.magic = UINT32_C(0x4b464151),
 		.version = KER_FF_ADMISSION_CHANNEL_VERSION,
 		.command = command, .length = sizeof(wire),
-		.lease = lease, .command_id = command_id};
+		.lease = lease, .command_id = command_id, .epoch = epoch};
 	CHECK(syscall(SYS_sendto, fd, &wire, sizeof(wire), MSG_NOSIGNAL, NULL, 0) ==
 		(ssize_t)sizeof(wire));
 }
@@ -635,11 +636,12 @@ static void window_command_validation_case(void)
 	CHECK(!ker_ff_admission_channel_send_retire(channel, 1));
 	struct ker_ff_admission_result result = receive_result(channel,
 		KER_FF_ADMISSION_RETIRED);
-	CHECK(result.status == 0 && result.lease == lease && result.command_id == 1);
+	CHECK(result.status == 0 && result.lease == lease && result.command_id == 1 &&
+		result.epoch == 1);
 	/* Authenticated but stale owner commands must be rejected without changing
 	 * the retired map/lease; the valid next command remains usable afterward. */
 	inject_window_command(endpoints[0], KER_FF_ADMISSION_REARM,
-		lease + 1, 1);
+		lease + 1, 1, 2);
 	struct test_admission_wire rejected = receive_window_reply(endpoints[0], owner);
 	CHECK(rejected.magic == UINT32_C(0x4b464151) &&
 		rejected.command == KER_FF_ADMISSION_REARMED &&
@@ -649,11 +651,13 @@ static void window_command_validation_case(void)
 	CHECK(ker_ff_admission_channel_send_rearm(channel, lease + 1, 1) == -EINVAL);
 	CHECK(!ker_ff_admission_channel_send_rearm(channel, lease + 1, 2));
 	result = receive_result(channel, KER_FF_ADMISSION_REARMED);
-	CHECK(result.status == 0 && result.lease == lease + 1 && result.command_id == 2);
+	CHECK(result.status == 0 && result.lease == lease + 1 && result.command_id == 2 &&
+		result.epoch == 2);
 	CHECK(!ker_ff_admission_channel_send_retire(channel, 3));
 	result = receive_result(channel, KER_FF_ADMISSION_RETIRED);
-	CHECK(result.status == 0 && result.lease == lease + 1 && result.command_id == 3);
-	inject_window_command(endpoints[0], KER_FF_ADMISSION_REARM, lease, 4);
+	CHECK(result.status == 0 && result.lease == lease + 1 && result.command_id == 3 &&
+		result.epoch == 2);
+	inject_window_command(endpoints[0], KER_FF_ADMISSION_REARM, lease, 4, 3);
 	rejected = receive_window_reply(endpoints[0], owner);
 	CHECK(rejected.command == KER_FF_ADMISSION_REARMED &&
 		rejected.lease == lease && rejected.command_id == 4 &&
@@ -661,10 +665,12 @@ static void window_command_validation_case(void)
 	CHECK(ker_ff_admission_channel_send_rearm(channel, lease + 2, 3) == -EINVAL);
 	CHECK(!ker_ff_admission_channel_send_rearm(channel, lease + 2, 4));
 	result = receive_result(channel, KER_FF_ADMISSION_REARMED);
-	CHECK(result.status == 0 && result.lease == lease + 2 && result.command_id == 4);
+	CHECK(result.status == 0 && result.lease == lease + 2 && result.command_id == 4 &&
+		result.epoch == 3);
 	CHECK(!ker_ff_admission_channel_send_retire(channel, 5));
 	result = receive_result(channel, KER_FF_ADMISSION_RETIRED);
-	CHECK(result.status == 0 && result.lease == lease + 2 && result.command_id == 5);
+	CHECK(result.status == 0 && result.lease == lease + 2 && result.command_id == 5 &&
+		result.epoch == 3);
 	ker_ff_admission_channel_close(channel);
 	int child_status = 0;
 	CHECK(waitpid(owner, &child_status, 0) == owner && WIFEXITED(child_status) &&
