@@ -13,9 +13,13 @@ contract = importlib.util.module_from_spec(spec); spec.loader.exec_module(contra
 class BridgeLearningContractTests(unittest.TestCase):
     def test_initial_default_source_observation_is_bounded(self):
         fixture = json.loads(Path(__file__).with_name('bridge-learning-transcript.json').read_text())
-        cases = ('complete', 'target-mac', 'other-mac', 'extra-row', 'wrong-port', 'wrong-master',
-                 'wrong-vlan', 'wrong-state', 'wrong-flags', 'wrong-count', 'zero-count',
-                 'later-flush', 'baseline-not-zero', 'baseline-command-changed')
+        cases = ('complete', 'split-zero-default', 'target-mac', 'other-mac', 'extra-row', 'wrong-port',
+                 'wrong-master', 'wrong-vlan', 'wrong-state', 'wrong-flags', 'wrong-count', 'zero-count',
+                 'later-flush', 'baseline-not-zero', 'baseline-command-changed', 'split-zero-foreign',
+                 'split-zero-target', 'split-zero-extra', 'split-zero-wrong-port', 'split-zero-wrong-master',
+                 'split-zero-vlan', 'split-zero-wrong-state', 'split-zero-wrong-flags',
+                 'split-zero-higher-count', 'split-zero-baseline-not-zero')
+        accepted = ('complete', 'split-zero-default', 'zero-count')
         for case in cases:
             with self.subTest(case=case):
                 r=copy.deepcopy(fixture); rows=r['commands']
@@ -24,21 +28,33 @@ class BridgeLearningContractTests(unittest.TestCase):
                 entry=dict(mac=contract.DEFAULT_MAC,ifname='veth1',flags=[],master='br0',state='')
                 state['fdb'].append(entry); contract.data(state)['fdb_n_learned']=1
                 baseline=rows[rows.index(flushes[0])+1]
-                if case=='target-mac':entry['mac']=contract.MAC
-                elif case=='other-mac':entry['mac']='de:ad:be:ef:42:99'
-                elif case=='extra-row':state['fdb'].append(copy.deepcopy(entry))
-                elif case=='wrong-port':entry['ifname']='veth3'
-                elif case=='wrong-master':entry['master']='other'
-                elif case=='wrong-vlan':entry['vlan']=1
-                elif case=='wrong-state':entry['state']='static'
-                elif case=='wrong-flags':entry['flags']=['extern_learn']
-                elif case=='wrong-count':contract.data(state)['fdb_n_learned']=2
-                elif case=='zero-count':contract.data(state)['fdb_n_learned']=0
-                elif case=='baseline-not-zero':contract.data(baseline['learning_after'])['fdb_n_learned']=1
-                elif case=='baseline-command-changed':baseline['arguments'][-1]='extern_learn'
-                if case=='complete':contract.validate_evidence(r)
+                if case.startswith('split-zero-'):
+                    contract.data(state)['fdb_n_learned']=0
+                if case in ('target-mac', 'split-zero-target'):entry['mac']=contract.MAC
+                elif case in ('other-mac', 'split-zero-foreign'):entry['mac']='de:ad:be:ef:42:99'
+                elif case in ('extra-row', 'split-zero-extra'):state['fdb'].append(copy.deepcopy(entry))
+                elif case in ('wrong-port', 'split-zero-wrong-port'):entry['ifname']='veth3'
+                elif case == 'wrong-master':entry['master']='other'
+                elif case == 'wrong-vlan':entry['vlan']=1
+                elif case == 'wrong-state':entry['state']='static'
+                elif case == 'wrong-flags':entry['flags']=['extern_learn']
+                elif case == 'wrong-count':contract.data(state)['fdb_n_learned']=2
+                elif case == 'zero-count':contract.data(state)['fdb_n_learned']=0
+                elif case == 'split-zero-wrong-master':entry['master']='other'
+                elif case == 'split-zero-vlan':entry['vlan']=1
+                elif case == 'split-zero-wrong-state':entry['state']='static'
+                elif case == 'split-zero-wrong-flags':entry['flags']=['extern_learn']
+                elif case == 'split-zero-higher-count':contract.data(state)['fdb_n_learned']=2
+                elif case in ('baseline-not-zero', 'split-zero-baseline-not-zero'):
+                    contract.data(baseline['learning_after'])['fdb_n_learned']=1
+                elif case == 'baseline-command-changed':baseline['arguments'][-1]='extern_learn'
+                if case in accepted:contract.validate_evidence(r)
                 else:
-                    with self.assertRaises(RuntimeError):contract.validate_evidence(r)
+                    with self.assertRaises(RuntimeError) as raised:
+                        contract.validate_evidence(r)
+                    if case == 'split-zero-higher-count':
+                        self.assertIn('fdb_n_learned=2', str(raised.exception))
+                        self.assertIn('dynamic_entries=', str(raised.exception))
 
     def test_native_five_type_accounting_and_limit(self):
         original = json.loads(Path(__file__).with_name('bridge-learning-transcript.json').read_text())

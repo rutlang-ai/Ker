@@ -559,3 +559,14 @@ See [scope and reproduction](fstack-nginx-runtime.md#original-cps-probe-across-e
 This is the rt30 traffic prerequisite, not its same-master FSM, performance
 comparison, source drain/forward counter contract or complete shell case.
 The source entrypoint remains blocked and the migration counts do not change.
+
+### Old-owner relay transport prerequisite
+
+A private bounded [old-owner transport](fstack-peer-relay-transport.md) now
+preserves the original C31 packet id, deadline and immutable snapshot through
+one peer hop, checks real process credentials/pidfd/start identity, and rejects
+repeated forwarding. Its process tests do not execute a protocol implementation.
+The single-owner Nginx profile still lacks delegation of an authenticated old
+slot and channel and remains PEER-to-DROP. Two-owner authority integration,
+real old-stream continuity and the original same-master FSM remain open; this
+does not change the blocked migration entry.

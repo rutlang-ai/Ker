@@ -9,10 +9,40 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import signal
 import subprocess
 import sys
+from time import monotonic, sleep
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Keep network fetches bounded by a generous parent-side timeout. The hard
+# total includes all attempts, backoff and local checks, but never changes the
+# pinned URL or requested revision.
+FETCH_ATTEMPTS = 3
+FETCH_ATTEMPT_TIMEOUT_SECONDS = 180
+FETCH_CLEANUP_TIMEOUT_SECONDS = 1
+FETCH_LOCAL_TIMEOUT_SECONDS = 5
+FETCH_BACKOFF_SECONDS = (5, 10)
+FETCH_TOTAL_BUDGET_SECONDS = (FETCH_ATTEMPTS * FETCH_ATTEMPT_TIMEOUT_SECONDS +
+    FETCH_ATTEMPTS * 2 * FETCH_CLEANUP_TIMEOUT_SECONDS +
+    sum(FETCH_BACKOFF_SECONDS) + 4 * FETCH_LOCAL_TIMEOUT_SECONDS)
+
+_FETCH_PERMANENT_ERRORS = (
+    'authentication failed', 'could not read username', 'could not read password',
+    'permission denied (publickey)', 'certificate', 'ssl certificate',
+    'tls alert', 'tls handshake', 'gnutls_handshake', 'couldn\'t find remote ref',
+    'could not find remote ref', 'not our ref', 'not a valid object name',
+    'bad object', 'repository not found', 'requested url returned error: 401',
+    'requested url returned error: 403', 'requested url returned error: 404',
+)
+_FETCH_TRANSIENT_ERRORS = (
+    'couldn\'t connect to server', 'failed to connect to', 'connection reset',
+    'connection timed out', 'operation timed out', 'recv failure',
+    'unexpected disconnect', 'early eof', 'remote end hung up',
+    'requested url returned error: 502', 'requested url returned error: 503',
+    'requested url returned error: 504',
+)
 
 
 def tracked_config_fragment(root, config_fragment):
@@ -132,12 +162,133 @@ def repository_lock(repo):
 def fetch(repo, url, revision):
     with repository_lock(repo):
         # Disable detached maintenance before inspecting or fetching this cache.
-        git(repo, 'config', 'gc.auto', '0')
-        git(repo, 'config', 'maintenance.auto', 'false')
+        git(repo, 'config', 'gc.auto', '0', timeout=FETCH_LOCAL_TIMEOUT_SECONDS)
+        git(repo, 'config', 'maintenance.auto', 'false', timeout=FETCH_LOCAL_TIMEOUT_SECONDS)
         present = subprocess.run(['git', '-C', str(repo), 'cat-file', '-e', revision + '^{commit}'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=FETCH_LOCAL_TIMEOUT_SECONDS)
         if present.returncode:
-            git(repo, 'fetch', '--depth=1', '--no-tags', url, revision)
+            command = ['git', '-C', str(repo), 'fetch', '--depth=1', '--no-tags', url, revision]
+            print(f'native fetch budget attempts={FETCH_ATTEMPTS} '
+                f'attempt_timeout_s={FETCH_ATTEMPT_TIMEOUT_SECONDS} '
+                f'backoff_s={FETCH_BACKOFF_SECONDS} total_subprocess_budget_s='
+                f'{FETCH_TOTAL_BUDGET_SECONDS}', flush=True)
+            last_error = None
+            for attempt in range(1, FETCH_ATTEMPTS + 1):
+                started = monotonic()
+                print(f'native fetch attempt={attempt}/{FETCH_ATTEMPTS} '
+                    f'revision={revision} timeout_s={FETCH_ATTEMPT_TIMEOUT_SECONDS}',
+                    flush=True)
+                try:
+                    result = _run_fetch_attempt(command, FETCH_ATTEMPT_TIMEOUT_SECONDS)
+                    elapsed = monotonic() - started
+                    diagnostic = ((result.stdout or '') + '\n' + (result.stderr or '')).strip()
+                    if result.returncode == 0:
+                        print(f'native fetch attempt={attempt}/{FETCH_ATTEMPTS} '
+                            f'result=success elapsed_s={elapsed:.3f}', flush=True)
+                        last_error = None
+                        break
+                    classification = _classify_fetch_error(diagnostic)
+                    excerpt = ' '.join(diagnostic.split())[:1000]
+                    print(f'native fetch attempt={attempt}/{FETCH_ATTEMPTS} '
+                        f'result=failed class={classification} rc={result.returncode} '
+                        f'elapsed_s={elapsed:.3f} diagnostic={excerpt}', flush=True)
+                    last_error = subprocess.CalledProcessError(result.returncode,
+                        command, output=result.stdout, stderr=result.stderr)
+                    if classification != 'transient' or attempt == FETCH_ATTEMPTS:
+                        raise last_error
+                except subprocess.TimeoutExpired as error:
+                    elapsed = monotonic() - started
+                    output = error.output or ''
+                    stderr = error.stderr or ''
+                    if isinstance(output, bytes): output = output.decode(errors='replace')
+                    if isinstance(stderr, bytes): stderr = stderr.decode(errors='replace')
+                    diagnostic = (str(output) + '\n' + str(stderr)).strip()
+                    excerpt = ' '.join(diagnostic.split())[:1000]
+                    classification = _classify_fetch_error(diagnostic)
+                    print(f'native fetch attempt={attempt}/{FETCH_ATTEMPTS} '
+                        f'result=timeout class={classification} elapsed_s={elapsed:.3f} '
+                        f'diagnostic={excerpt}', flush=True)
+                    last_error = error
+                    if classification == 'permanent':
+                        raise
+                    if attempt == FETCH_ATTEMPTS:
+                        raise
+                if last_error is not None:
+                    delay = FETCH_BACKOFF_SECONDS[attempt - 1]
+                    print(f'native fetch retry revision={revision} '
+                        f'backoff_s={delay:.3f}', flush=True)
+                    sleep(delay)
+            if last_error is None:
+                verified = subprocess.run(['git', '-C', str(repo), 'cat-file', '-e',
+                    revision + '^{commit}'], stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=FETCH_LOCAL_TIMEOUT_SECONDS)
+                if verified.returncode:
+                    raise RuntimeError('git fetch reported success but requested commit is absent: ' +
+                        revision)
+
+
+def _run_fetch_attempt(command, timeout):
+    """Run one fetch in an owned process group and reap it on deadline.
+
+    Git may leave a transport helper holding the pipes when only the git
+    parent is killed. The fresh session lets timeout cleanup target this
+    command tree without signalling unrelated processes.
+    """
+    process = subprocess.Popen(command, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        stdout, stderr = _stop_fetch_process_group(process, error.output, error.stderr)
+        raise subprocess.TimeoutExpired(command, timeout, output=stdout,
+            stderr=stderr or error.stderr) from error
+    except BaseException:
+        # Signals/cancellation must not leave a network operation running
+        # after its owner unwinds.
+        _stop_fetch_process_group(process)
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _stop_fetch_process_group(process, output=None, stderr=None):
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    # The helper is expected to share the group's pipes. Keep cleanup bounded
+    # even if a detached descendant unexpectedly retained a pipe: close local
+    # readers and wait for the owned git parent directly.
+    try:
+        return process.communicate(timeout=FETCH_CLEANUP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        output = error.output or output
+        stderr = error.stderr or stderr
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        if process.poll() is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        try:
+            process.wait(timeout=FETCH_CLEANUP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as wait_error:
+            raise RuntimeError('could not reap bounded native fetch process') from wait_error
+        return output, stderr
+
+
+def _classify_fetch_error(diagnostic):
+    lowered = diagnostic.lower()
+    if any(marker in lowered for marker in _FETCH_PERMANENT_ERRORS):
+        return 'permanent'
+    if any(marker in lowered for marker in _FETCH_TRANSIENT_ERRORS):
+        return 'transient'
+    return 'unclassified'
 
 
 @contextmanager

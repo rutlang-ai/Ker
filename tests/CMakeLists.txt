@@ -2,6 +2,15 @@ add_executable(ker-checksum-test checksum.c)
 target_link_libraries(ker-checksum-test PRIVATE ker::ker ker_port_headers ker_linux_port)
 add_test(NAME checksum COMMAND ker-checksum-test)
 
+add_executable(ker-rx-owner-relay-peer-test
+    unit/rx-owner-relay-peer-test.c ../src/posix/rx-owner-relay-peer.c)
+target_include_directories(ker-rx-owner-relay-peer-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+target_compile_features(ker-rx-owner-relay-peer-test PRIVATE c_std_11)
+target_compile_options(ker-rx-owner-relay-peer-test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME native-rx-owner-relay-peer-transport COMMAND ker-rx-owner-relay-peer-test)
+set_tests_properties(native-rx-owner-relay-peer-transport PROPERTIES
+    TIMEOUT 10 LABELS "native;socket-broker;rx-owner-relay;transport")
+
 add_executable(ker-timer-test timer.c)
 target_link_libraries(ker-timer-test PRIVATE ker_port_headers ker_linux_port)
 add_test(NAME timer COMMAND ker-timer-test)
