@@ -176,6 +176,17 @@ consume_nginx_secondary_authorization(unsigned int proc_id)
 void
 ker_fstack_runtime_trace_leaf(const char *name, int fd, long result)
 {
+    if (source_worker_mode && (!strcmp(name, "ff_socket_drain_count") ||
+            !strcmp(name, "ff_socket_snd_pending") || !strcmp(name, "ff_syncache_count"))) {
+        int saved = errno;
+        struct timespec now;
+        if (!clock_gettime(CLOCK_MONOTONIC, &now))
+            runtime_trace("ADAPTER_CENSUS pid=%ld name=%s phase=%s now_ns=%llu result=%ld\n",
+                (long)getpid(), name, fd < 0 ? "enter" : "return",
+                (unsigned long long)((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec), result);
+        errno = saved;
+        return;
+    }
     static const char *const traced[] = {
         "ff_socket", "ff_bind", "ff_listen", "ff_accept", "ff_read",
         "ff_readv", "ff_write", "ff_writev", "ff_recv", "ff_send",
@@ -192,6 +203,22 @@ ker_fstack_runtime_trace_leaf(const char *name, int fd, long result)
                 (long)getpid(), name, fd, result, result < 0 ? "error" : "success");
         return;
     }
+}
+
+/* Original source APIs can make several synchronous native queries in one
+ * application-loop pass. At completed API boundaries, service only the
+ * already-authenticated RX relay on this same owner thread. This never runs
+ * the Nginx application callback or renews a frame's original deadline. */
+void ker_fstack_runtime_relay_checkpoint(void)
+{
+    if (!source_worker_mode) return;
+    int saved = errno;
+    int status = ker_sb_preload_rx_relay_checkpoint();
+    if (status) {
+        runtime_trace("ff_source_relay_checkpoint failed pid=%ld status=%d\n", (long)getpid(), status);
+        abort();
+    }
+    errno = saved;
 }
 
 static int
@@ -381,6 +408,24 @@ runtime_fail(int error, const char *message)
     return -1;
 }
 
+/* Only the dedicated test runtime compiles the unchanged upstream fault
+ * hooks. Environment alone cannot enable them in the product DSO. Source
+ * identity/bootstrap and graceful configuration are checked before claiming
+ * any native owner below. */
+int ker_fstack_nginx_source_fault_profile(void)
+{
+#if defined(FF_RELOAD_FAULT_INJECTION) && defined(KER_FSTACK_NGINX_TEST_FAULT_RUNTIME)
+    const char *fault = getenv("FF_FAULT");
+    const char *enabled = getenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE");
+    const char *first = getenv("KER_NGINX_SOURCE_FIRST_HUP_ENABLE");
+    return fault && !strcmp(fault, "flip_fail_once") && enabled &&
+        !strcmp(enabled, "1") && first && !strcmp(first, "1") &&
+        getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH") != NULL;
+#else
+    return 0;
+#endif
+}
+
 static int
 parse_uint_arg(const char *arg, const char *prefix, unsigned *result)
 {
@@ -427,7 +472,7 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
 
     if (runtime_initialized || pending_init_plan_ready)
         return runtime_fail(EALREADY, "ker fstack runtime: duplicate ff_init\n");
-    if (getenv("FF_FAULT") != NULL)
+    if (getenv("FF_FAULT") != NULL && !ker_fstack_nginx_source_fault_profile())
         return runtime_fail(ENOTSUP,
             "ker fstack runtime: FF_FAULT is unsupported in the broker profile\n");
     if (argc != 4 || argv == NULL || argv[0] == NULL ||
@@ -464,6 +509,9 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
         return runtime_fail(EINVAL,
             "ker fstack runtime: config requires broker version/path and a valid graceful_reload value\n");
 
+    if (getenv("FF_FAULT") && !plan.config.graceful_reload)
+        return runtime_fail(ENOTSUP,
+            "ker fstack runtime: source fault test requires authenticated graceful startup\n");
     if (plan.config.graceful_reload) {
         if (!plan.config.saw_lcore_mask)
             return runtime_fail(EINVAL,
@@ -504,7 +552,8 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
                  * can stage admission; original READY additionally waits for
                  * authenticated C31 PREPARED and supervisor ACTIVATE. */
                 if (enabled && !strcmp(enabled, "1") &&
-                        plan.worker_generation == 1 && plan.source_round_epoch == 1) {
+                        plan.worker_generation == 1 && (plan.source_round_epoch == 1 ||
+                            (plan.source_round_epoch == 2 && ker_fstack_nginx_source_fault_profile()))) {
                     source_worker_mode = 1;
                     source_worker_binding = binding;
                     goto open_worker_context;
@@ -941,6 +990,7 @@ int ker_fstack_rx_owner_relay_dispatch(void *data, uint16_t *length,
 }
 int ff_syncache_count(void)
 {
+    ker_fstack_runtime_trace_leaf(__func__, -1, 0);
     uint64_t count = 0;
     if (ker_sb_preload_ff_owner_requests(&count) < 0 || count > INT_MAX) {
         int error = count > INT_MAX ? EOVERFLOW : errno;
@@ -952,5 +1002,7 @@ int ff_syncache_count(void)
                 (size_t)length < sizeof(message) ? (size_t)length : sizeof(message));
         abort();
     }
+    ker_fstack_runtime_relay_checkpoint();
+    ker_fstack_runtime_trace_leaf(__func__, 0, (long)count);
     return (int)count;
 }

@@ -2,6 +2,8 @@
 #include "../posix/socket-broker-rx-owner-relay-fixture.c"
 #undef main
 
+#include <signal.h>
+
 static long env_long(const char *name)
 {
     const char *text = getenv(name);
@@ -55,10 +57,14 @@ int main(void)
     if (control < 3 || relay < 3 || supervisor <= 0 || owner <= 0 ||
         owner_start <= 0 || owner_cookie <= 0 || owner_device <= 0 ||
         owner_inode <= 0 || marker < 0) return 2;
+    bool deferred_commit = getenv("KER_TEST_SOURCE_DEFERRED_COMMIT") != NULL;
+    bool inflight = getenv("KER_TEST_SOURCE_INFLIGHT") != NULL;
+    if (deferred_commit && !inflight) return 2;
     struct fixture fixture = {.relay_fd = (int)relay, .owner_pidfd = -1,
         .supervisor_pidfd = -1, .source_master_pidfd = -1,
         .source_route_candidate_pidfd = -1, .source_route_candidate_channel = -1,
-        .source_route_master_pidfd = -1, .expected_owner_role = 0,
+        .source_route_master_pidfd = -1, .source_route_aborted_candidate_pidfd = -1,
+        .source_route_aborted_master_pidfd = -1, .expected_owner_role = 0,
         .owner_pid = (pid_t)owner, .owner_tid = (uint32_t)owner,
         .owner_start = (uint64_t)owner_start, .expected_owner_cookie = (uint64_t)owner_cookie,
         .expected_owner_slot_device = (uint64_t)owner_device,
@@ -81,6 +87,8 @@ int main(void)
         fixture.deadline_ns = monotonic_ns() + UINT64_C(90000000);
         fixture.frame_bytes = 64;
         memset(fixture.pending_frame, 0x5a, fixture.frame_bytes);
+        fixture.current_frame_hash = frame_hash32(fixture.pending_frame,
+            fixture.frame_bytes);
     }
     for (unsigned i = 0; i < sizeof(fixture.nonce); ++i) fixture.nonce[i] = (uint8_t)i;
     fixture.owner_pidfd = (int)syscall(SYS_pidfd_open, fixture.owner_pid, 0);
@@ -94,13 +102,109 @@ int main(void)
             late_route_arrival ? release_after_empty_source_route_poll : NULL,
             &late_route_barrier);
         if (status) { fprintf(stderr, "SOURCE_ROUTE_COMMAND status=%d\n", status); return 3; }
+        uint16_t expected_commit = deferred_commit ?
+            KER_RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME :
+            KER_RX_OWNER_SOURCE_ROUTE_COMMIT;
         if (staged && fixture.packet_id && fixture.source_route_pending &&
-            fixture.source_route_last_type == KER_RX_OWNER_SOURCE_ROUTE_COMMIT) {
+            fixture.source_route_last_type == expected_commit) {
             uint64_t deadline_before = fixture.deadline_ns;
+            uint64_t packet_before = fixture.packet_id;
             if (fixture.owner_pid != (pid_t)owner || fixture.relay_fd != (int)relay ||
                 fixture.peer.fd >= 0 || write((int)marker, "B", 1) != 1 ||
                 fixture.deadline_ns != deadline_before) return 10;
-            fixture.packet_id = 0;
+            if (!deferred_commit) {
+                fixture.packet_id = 0;
+            } else {
+                if (!fixture.source_route_cut_pending ||
+                    fixture.source_route_cut_record.pair.owner.type !=
+                        KER_RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME ||
+                    fixture.source_route_cut_packet_id != packet_before ||
+                    fixture.source_route_cut_frame_deadline_ns != deadline_before ||
+                    fixture.source_route_cut_frame_hash != fixture.current_frame_hash ||
+                    fixture.owner_pid != (pid_t)owner || fixture.relay_fd != (int)relay ||
+                    fixture.peer.fd >= 0) return 20;
+                if (getenv("KER_TEST_SOURCE_DEFERRED_SECOND")) {
+                    struct pollfd command = {.fd = (int)control, .events = POLLIN};
+                    if (poll(&command, 1, 2000) != 1 || !(command.revents & POLLIN)) return 21;
+                    status = receive_source_route_command(&fixture);
+                    if (status >= 0 || fixture.source_route_cut_pending ||
+                        fixture.source_route_active || fixture.owner_pid != (pid_t)owner ||
+                        fixture.relay_fd != (int)relay || fixture.peer.fd >= 0 ||
+                        write((int)marker, "T", 1) != 1) return 22;
+                    return finish_success(&fixture);
+                }
+                if (getenv("KER_TEST_SOURCE_DEFERRED_EXPIRED")) {
+                    struct timespec pause = {.tv_sec = 0, .tv_nsec = 120000000};
+                    while (nanosleep(&pause, &pause) && errno == EINTR) { }
+                    fprintf(stderr, "DEFERRED_DIAG expired context=%d actors=%d now=%llu frame=%llu command=%llu\n",
+                        source_route_commit_context_live(&fixture,
+                            &fixture.source_route_cut_record),
+                        source_route_commit_actors_live(&fixture,
+                            &fixture.source_route_cut_record, NULL),
+                        (unsigned long long)monotonic_ns(),
+                        (unsigned long long)fixture.deadline_ns,
+                        (unsigned long long)fixture.source_route_cut_record.command_deadline_ns);
+                    status = progress_source_route_cut(&fixture);
+                    if (status >= 0 || fixture.source_route_cut_pending ||
+                        fixture.source_route_active || fixture.owner_pid != (pid_t)owner ||
+                        fixture.relay_fd != (int)relay || fixture.peer.fd >= 0 ||
+                        fixture.deadline_ns != deadline_before ||
+                        write((int)marker, "T", 1) != 1) return 23;
+                    return finish_success(&fixture);
+                }
+                if (getenv("KER_TEST_SOURCE_DEFERRED_LATE_COMPLETION")) {
+                    struct timespec pause = {.tv_sec = 0, .tv_nsec = 120000000};
+                    while (nanosleep(&pause, &pause) && errno == EINTR) { }
+                    fixture.source_route_cut_completed_id = packet_before;
+                    fixture.source_route_cut_completed_ns = monotonic_ns();
+                    fixture.packet_id = 0;
+                    fixture.completed++;
+                    fprintf(stderr, "DEFERRED_DIAG late context=%d actors=%d now=%llu frame=%llu command=%llu completed=%llu\n",
+                        source_route_commit_context_live(&fixture,
+                            &fixture.source_route_cut_record),
+                        source_route_commit_actors_live(&fixture,
+                            &fixture.source_route_cut_record, NULL),
+                        (unsigned long long)monotonic_ns(),
+                        (unsigned long long)fixture.deadline_ns,
+                        (unsigned long long)fixture.source_route_cut_record.command_deadline_ns,
+                        (unsigned long long)fixture.source_route_cut_completed_ns);
+                    if (fixture.deadline_ns != deadline_before ||
+                        write((int)marker, "F", 1) != 1) return 28;
+                    status = progress_source_route_cut(&fixture);
+                    if (status >= 0 || fixture.source_route_cut_pending ||
+                        fixture.source_route_active || fixture.owner_pid != (pid_t)owner ||
+                        fixture.relay_fd != (int)relay || fixture.peer.fd >= 0 ||
+                        fixture.deadline_ns != deadline_before ||
+                        write((int)marker, "T", 1) != 1) return 29;
+                    return finish_success(&fixture);
+                }
+                if (getenv("KER_TEST_SOURCE_DEFERRED_DEAD")) {
+                    if (syscall(SYS_pidfd_send_signal,
+                            fixture.source_route_candidate_pidfd, SIGKILL, NULL, 0)) return 24;
+                    struct pollfd dead = {.fd = fixture.source_route_candidate_pidfd,
+                        .events = POLLIN};
+                    if (poll(&dead, 1, 1000) != 1 || !(dead.revents & POLLIN)) return 30;
+                }
+                fixture.source_route_cut_completed_id = packet_before;
+                fixture.source_route_cut_completed_ns = monotonic_ns();
+                fixture.packet_id = 0;
+                fixture.completed++;
+                if (fixture.deadline_ns != deadline_before ||
+                    fixture.source_route_cut_completed_id != packet_before ||
+                    write((int)marker, "F", 1) != 1) return 25;
+                status = progress_source_route_cut(&fixture);
+                if (getenv("KER_TEST_SOURCE_DEFERRED_DEAD")) {
+                    if (status >= 0 || fixture.source_route_cut_pending ||
+                        fixture.source_route_active || fixture.owner_pid != (pid_t)owner ||
+                        fixture.relay_fd != (int)relay || fixture.peer.fd >= 0 ||
+                        fixture.deadline_ns != deadline_before ||
+                        write((int)marker, "T", 1) != 1) return 26;
+                    return finish_success(&fixture);
+                }
+                if (status || fixture.source_route_cut_pending || !fixture.source_route_active ||
+                    fixture.owner_pid == (pid_t)owner || fixture.completed != 1 ||
+                    fixture.deadline_ns != deadline_before) return 27;
+            }
         }
         if (staged && expired_seen_sequence != fixture.source_route_last_sequence &&
                 getenv("KER_TEST_SOURCE_EXPIRED_COMMIT") &&
@@ -112,7 +216,8 @@ int main(void)
         }
         if (!staged && (fixture.source_route_record.operation_id ||
             fixture.source_route_rejected_operation_id) &&
-            !fixture.source_route_pending && !fixture.source_route_candidate_authenticated) {
+            !fixture.source_route_pending && !fixture.source_route_candidate_authenticated &&
+            !(getenv("KER_TEST_SOURCE_ROUTE_RETRY") && fixture.source_route_aborted)) {
             if (fixture.owner_pid != (pid_t)owner || fixture.relay_fd != (int)relay ||
                 fixture.peer.fd >= 0 || write((int)marker, "N", 1) != 1) return 12;
             return finish_success(&fixture);
@@ -183,6 +288,13 @@ int main(void)
         if (staged && !fixture.source_route_pending) {
             if (fixture.owner_pid != (pid_t)owner || fixture.relay_fd != (int)relay ||
                 fixture.peer.fd >= 0 || write((int)marker, "A", 1) != 1) return 11;
+            if (getenv("KER_TEST_SOURCE_ROUTE_RETRY") &&
+                    fixture.source_route_aborted &&
+                    fixture.source_route_last_type == KER_RX_OWNER_SOURCE_ROUTE_ABORT &&
+                    fixture.source_route_record.source_epoch == KER_RX_OWNER_SOURCE_ROUTE_EPOCH) {
+                staged = false;
+                continue;
+            }
             return finish_success(&fixture);
         }
         usleep(1000);

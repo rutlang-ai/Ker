@@ -1,3 +1,6 @@
+set(KER_SOURCE_MASTER_ABORT_RETRY_FAULT_RUNTIME "" CACHE PATH
+    "Separate build directory containing the isolated original flip_fail_once libfstack.so")
+
 add_test(NAME native-nginx-companion-wire
     COMMAND "${CMAKE_COMMAND}" -E env
         "PYTHONPATH=${PROJECT_SOURCE_DIR}/tools"
@@ -169,6 +172,23 @@ if(KER_BUILD_FSTACK_NGINX_RUNTIME AND KER_FSTACK_NGINX_BINARY)
                 set_tests_properties(native-nginx-source-master-expired-commit PROPERTIES
                     TIMEOUT 180
                     LABELS "native-tcp;fstack;socket-broker;nginx-companion;source-bootstrap;source-master;expiry;containment")
+                if(KER_SOURCE_MASTER_ABORT_RETRY_FAULT_RUNTIME AND
+                   EXISTS "${KER_SOURCE_MASTER_ABORT_RETRY_FAULT_RUNTIME}/libfstack.so")
+                    add_test(NAME native-nginx-source-master-abort-retry
+                        COMMAND "${Python3_EXECUTABLE}"
+                            "${PROJECT_SOURCE_DIR}/tests/posix/native-nginx-source-master-abort-retry.py"
+                            --build "${CMAKE_BINARY_DIR}"
+                            --adapter-build "${CMAKE_BINARY_DIR}"
+                            --fault-runtime "${KER_SOURCE_MASTER_ABORT_RETRY_FAULT_RUNTIME}"
+                            --nginx "${KER_FSTACK_NGINX_BINARY}"
+                            --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                            --source-nginx-module-source
+                            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules/ngx_ff_module.c"
+                            --root "${CMAKE_BINARY_DIR}/Testing/Temporary/native-nginx-source-master-abort-retry")
+                    set_tests_properties(native-nginx-source-master-abort-retry PROPERTIES
+                        TIMEOUT 360
+                        LABELS "native-tcp;fstack;socket-broker;nginx-companion;source-bootstrap;source-master;abort;retry;rt24")
+                endif()
             endif()
             if(TARGET ker-socket-broker-reuseport-group-client)
                 add_test(NAME native-nginx-companion-rx-source-admission

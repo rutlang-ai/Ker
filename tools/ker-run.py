@@ -48,6 +48,8 @@ _RX_OWNER_SOURCE_ROUTE_COMMIT = 7
 _RX_OWNER_SOURCE_ROUTE_COMMITTED = 8
 _RX_OWNER_SOURCE_ROUTE_ABORT = 9
 _RX_OWNER_SOURCE_ROUTE_ABORTED = 10
+_RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME = 11
+_RX_OWNER_SOURCE_ROUTE_COMMITTED_AFTER_FRAME = 12
 _RX_DECISION_WIRE_SPEC = importlib.util.spec_from_file_location(
     '_ker_run_rx_decision_wire', _RX_DECISION_WIRE_PATH)
 if _RX_DECISION_WIRE_SPEC is None or _RX_DECISION_WIRE_SPEC.loader is None:
@@ -353,14 +355,55 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
                                   supervisor_pidfd, current, candidate,
                                   source_master, nonce, epoch,
                                   authority_deadline_ns, operation_id,
-                                  command_sequence=1):
+                                  command_sequence=None, source_epoch=1,
+                                  previous_aborted=None):
     """Stage a fresh same-master source candidate while retaining current route.
 
     The candidate ACK is consumed by C31 after this function sends supervisor
     APP_AUTH; this function waits only for C31's independently validated
     PREPARED response. The caller must send source-worker ACTIVATE afterward.
+    Epoch 2 is permitted only after the matching acknowledged epoch-1 ABORT.
+    `prepared.candidate_pidfd` is borrowed from the caller's READY proof; the
+    caller keeps it open through any retry decision and closes it in its normal
+    proof cleanup, including when PREPARE or COMMIT fails.
     """
     now = time.monotonic_ns()
+    if source_epoch not in (1, 2):
+        raise ValueError('unsupported source-route epoch')
+    if source_epoch == 1:
+        if previous_aborted is not None:
+            raise ValueError('epoch 1 cannot use retry lineage')
+        if command_sequence is None:
+            command_sequence = 1
+    else:
+        previous_fields = getattr(previous_aborted, 'fields', ())
+        previous_sequence = getattr(previous_aborted, 'command_sequence', 0)
+        if command_sequence is None:
+            command_sequence = previous_sequence + 1
+        if (previous_aborted is None or not getattr(previous_aborted, 'aborted', False) or
+                getattr(previous_aborted, 'source_epoch', 0) != 1 or
+                len(previous_fields) != 23 or
+                nginx_companion.process_alive(previous_aborted.candidate_pidfd) or
+                source_master.pid != previous_aborted.master_pid or
+                getattr(source_master, 'start_ticks', 0) != previous_aborted.master_start or
+                authority_deadline_ns > previous_fields[22] or
+                operation_id <= previous_aborted.operation_id or
+                command_sequence <= previous_sequence or epoch != previous_fields[9] or
+                nonce != previous_fields[15] or
+                (current.owner_pid, current.owner_tid, current.owner_start,
+                    current.owner_slot_device, current.owner_slot_inode, current.owner_cookie) !=
+                    tuple(previous_fields[16:22]) or
+                candidate.owner_pid == previous_fields[5] or
+                candidate.owner_pid == previous_fields[16] or
+                candidate.owner_start == previous_fields[11] or
+                candidate.owner_start == previous_fields[18] or
+                candidate.owner_cookie == previous_fields[14] or
+                candidate.owner_cookie == previous_fields[21] or
+                (candidate.owner_slot_device, candidate.owner_slot_inode) ==
+                    (previous_fields[12], previous_fields[13]) or
+                (candidate.owner_slot_device, candidate.owner_slot_inode) ==
+                    (previous_fields[19], previous_fields[20])):
+            raise ValueError('epoch 2 requires one fresh candidate after acknowledged abort')
     if (not nonce or len(nonce) != 16 or not epoch or
             authority_deadline_ns <= now or
             authority_deadline_ns - now > 300_000_000_000 or
@@ -403,7 +446,7 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
         authority_deadline_ns,
     ]
     payload = _RX_OWNER_SOURCE_ROUTE_RECORD.pack(*fields, operation_id,
-        command_sequence, master_start, source_master.pid, 1, 0, 0, 0)
+        command_sequence, master_start, source_master.pid, source_epoch, 0, 0, 0)
     if (candidate_channel.family != socket.AF_UNIX or
             candidate_channel.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) !=
                 socket.SOCK_SEQPACKET):
@@ -444,7 +487,7 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
         expected = fields.copy()
         expected[2] = _RX_OWNER_SOURCE_ROUTE_PREPARED
         expected_wire = _RX_OWNER_SOURCE_ROUTE_RECORD.pack(*expected, operation_id,
-            command_sequence, master_start, source_master.pid, 1, 0, 0, 0)
+            command_sequence, master_start, source_master.pid, source_epoch, 0, 0, 0)
         if (invalid or extra_fds or flags & (getattr(socket, 'MSG_TRUNC', 0) |
                 getattr(socket, 'MSG_CTRUNC', 0)) or
                 credentials != [(app.pid, os.stat(f'/proc/{app.pid}').st_uid,
@@ -471,9 +514,11 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
             sort_keys=True, separators=(',', ':')), flush=True)
         return SimpleNamespace(fields=fields, operation_id=operation_id,
             command_sequence=command_sequence, master_start=master_start,
-            master_pid=source_master.pid, source_epoch=1, app_pid=app.pid,
+            master_pid=source_master.pid, source_epoch=source_epoch, app_pid=app.pid,
             app_start=app_start, app_pidfd=app_pidfd,
-            supervisor_pid=supervisor, supervisor_start=supervisor_start)
+            supervisor_pid=supervisor, supervisor_start=supervisor_start,
+            candidate_pidfd=candidate.owner_pidfd, aborted=False,
+            last_command_type=None, last_status=None)
     finally:
         for fd in extra_fds:
             os.close(fd)
@@ -481,14 +526,18 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
 
 def send_source_route_command(endpoint, prepared, command_type, command_sequence,
                               operation_deadline_ns=None):
-    """Send a bounded monotonic COMMIT/ABORT for one prepared source route.
+    """Send a bounded monotonic source-route terminal command.
 
     A late or missing ACK can follow a completed swap. After sending COMMIT,
     an exception requires quarantine; it never proves the old route survived.
+    COMMIT_AFTER_FRAME may be accepted without an ACK while the receiver
+    completes its already-pending packet; it never extends either deadline.
     """
     transitions = {
         _RX_OWNER_SOURCE_ROUTE_COMMIT: _RX_OWNER_SOURCE_ROUTE_COMMITTED,
         _RX_OWNER_SOURCE_ROUTE_ABORT: _RX_OWNER_SOURCE_ROUTE_ABORTED,
+        _RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME:
+            _RX_OWNER_SOURCE_ROUTE_COMMITTED_AFTER_FRAME,
     }
     if (command_type not in transitions or command_sequence <= prepared.command_sequence):
         raise ValueError('invalid source-route command type or sequence')
@@ -496,6 +545,12 @@ def send_source_route_command(endpoint, prepared, command_type, command_sequence
     if operation_deadline_ns is not None:
         command_deadline_ns = min(command_deadline_ns, operation_deadline_ns)
     deadline = command_deadline_ns / 1e9
+    # Keep a bounded local observation of the last attempt, including unknown
+    # outcomes. Callers may record it; it conveys no authority or success.
+    observation = dict(command_type=command_type, command_sequence=command_sequence,
+        operation_id=prepared.operation_id, source_epoch=prepared.source_epoch,
+        deadline_ns=command_deadline_ns, started_ns=time.monotonic_ns())
+    prepared.last_command_observation = observation
     if (time.monotonic() >= deadline or
             nginx_companion._pidfd_pid(prepared.app_pidfd) != prepared.app_pid or
             not nginx_companion.process_alive(prepared.app_pidfd) or
@@ -506,9 +561,11 @@ def send_source_route_command(endpoint, prepared, command_type, command_sequence
     payload = _RX_OWNER_SOURCE_ROUTE_RECORD.pack(*fields,
         prepared.operation_id, command_sequence, prepared.master_start,
         prepared.master_pid, prepared.source_epoch, 0, 0, command_deadline_ns)
+    observation['send_started_ns'] = time.monotonic_ns()
     if endpoint.send(payload, getattr(socket, 'MSG_NOSIGNAL', 0) |
             getattr(socket, 'MSG_DONTWAIT', 0)) != len(payload):
         raise RuntimeError('short source-route COMMIT/ABORT send')
+    observation['sent_ns'] = time.monotonic_ns()
     with selectors.DefaultSelector() as selector:
         selector.register(endpoint, selectors.EVENT_READ)
         if not selector.select(max(0, deadline - time.monotonic())):
@@ -516,6 +573,7 @@ def send_source_route_command(endpoint, prepared, command_type, command_sequence
     packet, ancillary, flags, _ = endpoint.recvmsg(_RX_OWNER_SOURCE_ROUTE_RECORD.size + 1,
         socket.CMSG_SPACE(struct.calcsize('=3i')) + socket.CMSG_SPACE(4 * 4),
         getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
+    observation['received_ns'] = time.monotonic_ns()
     credentials = []
     invalid = False
     extra_fds = []
@@ -541,14 +599,23 @@ def send_source_route_command(endpoint, prepared, command_type, command_sequence
             raise PermissionError('source-route command ACK credentials or shape mismatch')
         actual = list(_RX_OWNER_SOURCE_ROUTE_RECORD.unpack(packet))
         status = actual[28]
+        observation['status'] = status
         actual[28] = 0
         if tuple(actual) != tuple(expected):
             raise PermissionError('source-route command ACK identity/context mismatch')
+        observation['correlated_ns'] = time.monotonic_ns()
         if (time.monotonic() >= deadline or
                 not nginx_companion.process_alive(prepared.app_pidfd) or
                 process_start_ticks(prepared.app_pid) != prepared.app_start):
             raise TimeoutError('source-route ACK arrived after authority/deadline')
+        observation['validated_ns'] = time.monotonic_ns()
+        if observation['validated_ns'] >= command_deadline_ns:
+            raise TimeoutError('source-route ACK proof completed after authority/deadline')
         prepared.command_sequence = command_sequence
+        prepared.last_command_type = command_type
+        prepared.last_status = status
+        if command_type == _RX_OWNER_SOURCE_ROUTE_ABORT and status == 0:
+            prepared.aborted = True
         return status
     finally:
         for fd in extra_fds:

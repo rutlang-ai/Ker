@@ -14,6 +14,7 @@
 #define KER_NGINX_SOURCE_BOOTSTRAP_ACTIVATE 4
 #define KER_NGINX_SOURCE_MASTER_PARK 5
 #define KER_NGINX_SOURCE_MASTER_COMMIT 6
+#define KER_NGINX_SOURCE_MASTER_ABORT 9
 #define KER_NGINX_SOURCE_SLIM_CONTROL_ONLY 1
 #define KER_NGINX_SOURCE_WORKER_INITIAL 2
 #define KER_NGINX_SOURCE_WORKER_CANDIDATE 4
@@ -84,6 +85,7 @@ int ker_nginx_source_bootstrap_poll_activate(const struct ker_nginx_source_boots
 void ker_nginx_source_bootstrap_close(struct ker_nginx_source_bootstrap *binding);
 int ker_nginx_source_is_master(void);
 int ker_nginx_source_master_barrier(uint16_t operation);
+int ker_fstack_nginx_source_fault_profile(void);
 
 int ker_nginx_source_bootstrap_from_environment(uint32_t role, uint32_t generation,
     uint32_t source_epoch, const void *source_block,

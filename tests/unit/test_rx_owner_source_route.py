@@ -6,13 +6,16 @@ import errno
 import importlib.util
 import os
 from pathlib import Path
+import select
 import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('ker_run_source_route_test', ROOT / 'tools/ker-run.py')
@@ -23,7 +26,7 @@ NONCE = bytes(range(16))
 
 ACTOR = r'''
 import array, os, socket, struct, sys, time
-s=socket.socket(fileno=int(sys.argv[1])); mode=sys.argv[2]
+s=socket.socket(fileno=int(sys.argv[1])); s.setblocking(True); mode=sys.argv[2]
 if mode=='dead': sys.exit(0)
 w=struct.Struct('=IHHQQ16sQQQQIIIIIHHHHIiHBB')
 p,anc,flags,_=s.recvmsg(w.size+1,socket.CMSG_SPACE(12)+socket.CMSG_SPACE(8))
@@ -106,13 +109,17 @@ class SourceRoute(unittest.TestCase):
     def run_case(self, abort=False, inflight=False, candidate_mode='valid',
                  short_deadline=False, kill_after_stage=False,
                  expire_after_commit=False, master_death_after_commit=False,
-                 expired_commit=False, late_swap=False, late_route_arrival=False):
+                 expired_commit=False, late_swap=False, late_route_arrival=False,
+                 abort_retry=False, late_observation=False, deferred_commit=False,
+                 deferred_expired=False, deferred_dead_candidate=False,
+                 deferred_second_command=False, deferred_late_completion=False):
         control, app_control = pair()
         old_channel, old_worker_channel = pair()
         candidate_channel, candidate_worker_channel = pair()
         old_slot, candidate_slot = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         marker_read, marker_write = os.pipe()
         app = old = candidate_process = source_master_process = None
+        processes = []
         proofs = []
         sockets = [control, app_control, old_channel, old_worker_channel,
             candidate_channel, candidate_worker_channel, old_slot, candidate_slot]
@@ -149,6 +156,8 @@ class SourceRoute(unittest.TestCase):
                 candidate_process = subprocess.Popen([sys.executable, '-c', ACTOR,
                     str(candidate_worker_channel.fileno()), candidate_mode], pass_fds=(candidate_worker_channel.fileno(),),
                     stderr=subprocess.PIPE)
+            processes.extend(process for process in (old, candidate_process)
+                if isinstance(process, subprocess.Popen))
             current = proof(old, old_slot, 0)
             candidate = proof(candidate_process, candidate_slot, 1)
             proofs.extend((current, candidate))
@@ -172,18 +181,24 @@ class SourceRoute(unittest.TestCase):
                     **({'KER_TEST_SOURCE_WAIT_AUTHORITY_EXPIRY': '1'}
                         if expire_after_commit else {}),
                     **({'KER_TEST_SOURCE_EXPIRED_COMMIT': '1'} if expired_commit else {}),
-                    **({'KER_TEST_SOURCE_ROUTE_DELAY_SWAP': '1'}
-                        if late_swap else {}),
-                    **({'KER_TEST_SOURCE_INFLIGHT': '1'} if inflight else {})}
+                    **({'KER_TEST_SOURCE_ROUTE_DELAY_SWAP': '1'} if late_swap else {}),
+                    **({'KER_TEST_SOURCE_INFLIGHT': '1'} if inflight else {}),
+                    **({'KER_TEST_SOURCE_ROUTE_RETRY': '1'} if abort_retry else {}),
+                    **({'KER_TEST_SOURCE_DEFERRED_COMMIT': '1'} if deferred_commit else {}),
+                    **({'KER_TEST_SOURCE_DEFERRED_EXPIRED': '1'} if deferred_expired else {}),
+                    **({'KER_TEST_SOURCE_DEFERRED_DEAD': '1'} if deferred_dead_candidate else {}),
+                    **({'KER_TEST_SOURCE_DEFERRED_SECOND': '1'} if deferred_second_command else {}),
+                    **({'KER_TEST_SOURCE_DEFERRED_LATE_COMPLETION': '1'}
+                        if deferred_late_completion else {})}
             if late_route_arrival:
                 app_pass_fds.extend((late_ready_write, late_release_read))
                 app_env.update({
                     'KER_TEST_SOURCE_LATE_ROUTE_AFTER_EMPTY': '1',
                     'KER_TEST_SOURCE_ROUTE_EMPTY_READY_FD': str(late_ready_write),
                     'KER_TEST_SOURCE_ROUTE_EMPTY_RELEASE_FD': str(late_release_read)})
-            app = subprocess.Popen([RECEIVER], pass_fds=tuple(app_pass_fds), stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, env={**os.environ,
-                    **app_env})
+            app = subprocess.Popen([RECEIVER], pass_fds=tuple(app_pass_fds),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env={**os.environ, **app_env})
             os.close(marker_write); marker_write = -1
             app_control.close(); old_channel.close()
             if late_route_arrival:
@@ -293,6 +308,71 @@ class SourceRoute(unittest.TestCase):
                         (ker_run._RX_OWNER_SOURCE_ROUTE_COMMITTED, sequence, wanted_status, expired))
                     self.assertEqual(os.read(marker_read, 1), b'T')
                     sequence += 1
+            if deferred_commit:
+                self.assertTrue(inflight, 'deferred COMMIT requires an in-flight frame')
+                if deferred_second_command:
+                    results = []
+                    errors = []
+                    def send_first_deferred():
+                        try:
+                            results.append(ker_run.send_source_route_command(control,
+                                prepared, ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME,
+                                sequence))
+                        except Exception as exc:
+                            errors.append(exc)
+                    sender = threading.Thread(target=send_first_deferred, daemon=True)
+                    sender.start()
+                    import selectors
+                    with selectors.DefaultSelector() as selector:
+                        selector.register(marker_read, selectors.EVENT_READ)
+                        self.assertTrue(selector.select(2), 'deferred command was not staged')
+                    self.assertEqual(os.read(marker_read, 1), b'B')
+                    fields = prepared.fields.copy()
+                    fields[2] = ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME
+                    payload = ker_run._RX_OWNER_SOURCE_ROUTE_RECORD.pack(*fields,
+                        prepared.operation_id, sequence + 1, prepared.master_start,
+                        prepared.master_pid, prepared.source_epoch, 0, 0,
+                        prepared.fields[22] - 1)
+                    control.send(payload)
+                    sender.join(timeout=2)
+                    self.assertFalse(sender.is_alive(), 'deferred first command was not cancelled')
+                    self.assertFalse(errors, errors)
+                    self.assertEqual(results, [-errno.EALREADY])
+                    self.assertEqual(os.read(marker_read, 1), b'T')
+                else:
+                    result = ker_run.send_source_route_command(control, prepared,
+                        ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME, sequence)
+                    expected = (-errno.ETIMEDOUT if deferred_expired else
+                        -errno.ESTALE if deferred_dead_candidate else
+                        -errno.EPROTO if deferred_late_completion else 0)
+                    if result != expected:
+                        markers = bytearray()
+                        while select.select([marker_read], [], [], .1)[0]:
+                            chunk = os.read(marker_read, 64)
+                            if not chunk: break
+                            markers.extend(chunk)
+                        os.write(release_write, b'R')
+                        stdout, stderr = app.communicate(timeout=2)
+                        raise AssertionError(f'deferred command status {result}, expected {expected}; '
+                            f'markers={bytes(markers)!r}, stdout={stdout!r}, stderr={stderr!r}')
+                    self.assertEqual(os.read(marker_read, 1), b'B')
+                    marker = os.read(marker_read, 1)
+                    if deferred_late_completion or deferred_dead_candidate:
+                        self.assertEqual(marker, b'F')
+                        marker = os.read(marker_read, 1)
+                    if deferred_expired or deferred_dead_candidate or deferred_late_completion:
+                        self.assertEqual(marker, b'T')
+                    else:
+                        self.assertEqual(marker, b'F')
+                        self.assertEqual(os.read(marker_read, 1), b'C')
+                        self.assertEqual(os.read(marker_read, 1), b'L')
+                        self.assertEqual(prepared.last_command_type,
+                            ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME)
+                        self.assertEqual(prepared.last_status, 0)
+                os.write(release_write, b'R')
+                stdout, stderr = app.communicate(timeout=2)
+                self.assertEqual(app.returncode, 0, (stdout, stderr))
+                return
             if kill_after_stage:
                 candidate_process.kill()
                 candidate_process.wait(timeout=2)
@@ -322,10 +402,97 @@ class SourceRoute(unittest.TestCase):
                 pass
             kind = (ker_run._RX_OWNER_SOURCE_ROUTE_ABORT if abort else
                 ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT)
+            if late_observation:
+                original_ticks = ker_run.process_start_ticks
+                observations = 0
+                def delayed_ticks(pid):
+                    nonlocal observations
+                    result = original_ticks(pid)
+                    if pid == app.pid:
+                        observations += 1
+                        if observations == 2:
+                            time.sleep(.08)
+                    return result
+                with mock.patch.object(ker_run, 'process_start_ticks', side_effect=delayed_ticks):
+                    with self.assertRaises(TimeoutError):
+                        ker_run.send_source_route_command(control, prepared, kind, sequence,
+                            operation_deadline_ns=time.monotonic_ns() + 50_000_000)
+                observation = prepared.last_command_observation
+                self.assertEqual(observation['status'], 0)
+                self.assertLess(observation['received_ns'], observation['deadline_ns'])
+                self.assertGreaterEqual(observation['validated_ns'], observation['deadline_ns'])
+                self.assertEqual(prepared.command_sequence, 1)
+                # A completed swap plus delayed host proof is UNKNOWN to the
+                # caller, never evidence of rejection or an old-route rollback.
+                self.assertEqual(os.read(marker_read, 1), b'C')
+                self.assertEqual(os.read(marker_read, 1), b'L')
+                os.write(release_write, b'R')
+                stdout, stderr = app.communicate(timeout=2)
+                self.assertEqual(app.returncode, 0, (stdout, stderr))
+                return
             result = ker_run.send_source_route_command(control, prepared, kind, sequence)
             if abort:
                 self.assertEqual(result, 0)
                 self.assertEqual(os.read(marker_read, 1), b'A')
+                if abort_retry:
+                    candidate_channel.close()
+                    candidate_worker_channel.close()
+                    candidate_process.wait(timeout=2)
+                    self.assertFalse(ker_run.nginx_companion.process_alive(
+                        candidate.owner_pidfd), 'aborted candidate pidfd did not become dead')
+                    retry_channel, retry_worker_channel = pair()
+                    retry_slot, retry_slot_peer = socket.socketpair(
+                        socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                    sockets.extend((retry_channel, retry_worker_channel,
+                        retry_slot, retry_slot_peer))
+                    retry_process = subprocess.Popen([sys.executable, '-c', ACTOR,
+                        str(retry_worker_channel.fileno()), 'valid'],
+                        pass_fds=(retry_worker_channel.fileno(),), stderr=subprocess.PIPE)
+                    processes.append(retry_process)
+                    retry_candidate = proof(retry_process, retry_slot, 1)
+                    proofs.append(retry_candidate)
+                    with self.assertRaises(ValueError):
+                        ker_run.rx_owner_source_route_prepare(control, retry_channel,
+                            app, app_pidfd, supervisor_pidfd, current, retry_candidate,
+                            source_master, NONCE, 77, deadline + 1,
+                            operation_id=prepared.operation_id + 1,
+                            command_sequence=prepared.command_sequence + 1,
+                            source_epoch=2, previous_aborted=prepared)
+                    for replay_operation, replay_sequence in (
+                            (prepared.operation_id, prepared.command_sequence + 1),
+                            (prepared.operation_id + 1, prepared.command_sequence)):
+                        with self.assertRaises(ValueError):
+                            ker_run.rx_owner_source_route_prepare(control, retry_channel,
+                                app, app_pidfd, supervisor_pidfd, current, retry_candidate,
+                                source_master, NONCE, 77, deadline,
+                                operation_id=replay_operation,
+                                command_sequence=replay_sequence,
+                                source_epoch=2, previous_aborted=prepared)
+                    try:
+                        retry_prepared = ker_run.rx_owner_source_route_prepare(control,
+                            retry_channel, app, app_pidfd, supervisor_pidfd, current,
+                            retry_candidate, source_master, NONCE, 77, deadline,
+                            operation_id=prepared.operation_id + 1,
+                            command_sequence=prepared.command_sequence + 1,
+                            source_epoch=2, previous_aborted=prepared)
+                    except Exception as exc:
+                        if app.poll() is not None:
+                            stdout, stderr = app.communicate(timeout=2)
+                            raise AssertionError(f'epoch-2 receiver exited: {app.returncode}, '
+                                f'{stdout!r}, {stderr!r}') from exc
+                        raise
+                    self.assertEqual(retry_prepared.source_epoch, 2)
+                    self.assertLessEqual(retry_prepared.fields[22], prepared.fields[22])
+                    self.assertEqual(os.read(marker_read, 1), b'P')
+                    self.assertEqual(ker_run.send_source_route_command(control,
+                        retry_prepared, ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT,
+                        retry_prepared.command_sequence + 1), 0)
+                    self.assertEqual(os.read(marker_read, 1), b'C')
+                    self.assertEqual(os.read(marker_read, 1), b'L')
+                    os.write(release_write, b'R')
+                    stdout, stderr = app.communicate(timeout=2)
+                    self.assertEqual(app.returncode, 0, (stdout, stderr))
+                    return
             else:
                 self.assertEqual(result, 0)
                 marker = os.read(marker_read, 1)
@@ -355,7 +522,11 @@ class SourceRoute(unittest.TestCase):
                 os.close(marker_write)
             for item in proofs:
                 os.close(item.owner_pidfd)
-            for process in (app, source_master_process, candidate_process, old):
+            cleanup_processes = []
+            for process in (app, source_master_process, *processes, candidate_process, old):
+                if process is not None and not any(process is prior for prior in cleanup_processes):
+                    cleanup_processes.append(process)
+            for process in cleanup_processes:
                 if process is None:
                     continue
                 if not isinstance(process, subprocess.Popen):
@@ -380,6 +551,22 @@ class SourceRoute(unittest.TestCase):
         self.run_case(abort=True)
         self.run_case(inflight=True)
 
+    def test_deferred_commit_waits_for_one_old_frame_then_commits_next_candidate(self):
+        self.run_case(inflight=True, deferred_commit=True)
+
+    def test_deferred_commit_expiry_or_dead_candidate_never_swaps(self):
+        self.run_case(inflight=True, deferred_commit=True, deferred_expired=True)
+        self.run_case(inflight=True, deferred_commit=True, deferred_dead_candidate=True)
+
+    def test_late_old_frame_completion_cannot_authorize_source_route_swap(self):
+        self.run_case(inflight=True, deferred_commit=True, deferred_late_completion=True)
+
+    def test_second_deferred_terminal_cancels_first_without_replacing_proof(self):
+        self.run_case(inflight=True, deferred_commit=True, deferred_second_command=True)
+
+    def test_one_epoch2_retry_requires_aborted_epoch1_candidate_to_be_dead(self):
+        self.run_case(abort=True, abort_retry=True)
+
     def test_missing_dead_and_expired_candidate_auth_preserve_old_route(self):
         self.run_case(candidate_mode='no-ack', short_deadline=True)
         self.run_case(candidate_mode='late-ack', short_deadline=True)
@@ -396,6 +583,9 @@ class SourceRoute(unittest.TestCase):
 
     def test_pause_across_commit_deadline_quarantines_both_routes(self):
         self.run_case(late_swap=True)
+
+    def test_host_proof_delay_after_ack_is_unknown_even_after_completed_swap(self):
+        self.run_case(late_observation=True)
 
 
 def main():

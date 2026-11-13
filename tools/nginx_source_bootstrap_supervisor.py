@@ -69,10 +69,16 @@ class SourceBootstrapSupervisor:
         master = SimpleNamespace(pid=companion.master_pid,
             pidfd=companion.master_pidfd, start_ticks=companion.master_start,
             executable_hash=companion.binary_hash)
+        fault_profile = companion.nginx_env.get('KER_NGINX_SOURCE_ABORT_RETRY_ENABLE')
+        require(fault_profile is None or (fault_profile == '1' and
+            companion.nginx_env.get('FF_FAULT') == 'flip_fail_once' and
+            companion.nginx_env.get('KER_NGINX_SOURCE_FIRST_HUP_ENABLE') == '1'),
+            'source abort test is not the exact companion launch profile')
         return cls(master, runtime, io, companion.binary, companion.binary_hash,
-            nonce, epoch, deadline_ns)
+            nonce, epoch, deadline_ns, allow_abort_retry=fault_profile == '1')
 
-    def __init__(self, master, runtime, io, binary, binary_hash, nonce, epoch, deadline_ns):
+    def __init__(self, master, runtime, io, binary, binary_hash, nonce, epoch, deadline_ns,
+            *, allow_abort_retry=False):
         self.master, self.runtime, self.io = master, runtime, io
         self.binary = Path(binary).resolve(strict=True)
         self.binary_hash = bytes(binary_hash)
@@ -85,6 +91,8 @@ class SourceBootstrapSupervisor:
         self.slim_channel = None
         self.slim_stop_sent = False
         self.workers = {}
+        require(type(allow_abort_retry) is bool, 'invalid abort profile selector')
+        self.allow_abort_retry = allow_abort_retry
         self._executable_files = {}
         require(len(self.nonce) == 16 and any(self.nonce) and epoch > 0 and
             time.monotonic_ns() < deadline_ns <= time.monotonic_ns() + 300_000_000_000,
@@ -266,6 +274,50 @@ class SourceBootstrapSupervisor:
         require(channel.send(data, getattr(socket, 'MSG_NOSIGNAL', 0)) == len(data),
             'short correlated source slim STOP')
 
+    def prepare_aborted_retry(self, acquire_native_slot):
+        """Adopt one acknowledged native retry plan after the original abort.
+
+        Native RETRY must already have been acknowledged inside the first
+        abort barrier while the original candidate was alive. The callback
+        transfers that plan's fresh candidate FIFO only after source T0/death.
+        It must not create a replacement plan or owner. No READY or selector
+        is changed here.
+        """
+        self.live()
+        require(self.allow_abort_retry and not hasattr(self, '_retry_slot') and
+            getattr(self, '_completed_master_barriers', set()) == {(1, 5), (1, 9)} and
+            getattr(self, '_native_retry_cookie', 0) > 0,
+            'retry requires the acknowledged first pre-flip abort')
+        old_pidfd, old = self.workers[(0, 0)]
+        dead_pidfd, dead = self.workers[(1, 1)]
+        require(identity.process_alive(old_pidfd) and
+            identity._start_ticks(old[5]) == old[11] and
+            not identity.process_alive(dead_pidfd),
+            'retry requires the same live old owner and exact dead aborted successor')
+        address = self.slim_reply[13]
+        def original_idle():
+            return (struct.unpack('=8I', memory(self.master.pid, address, 32))[3:7] ==
+                (1, 0, 1, 0) and struct.unpack('=3I', memory(self.master.pid,
+                    address + 48 + 128 * 8, 12)) == (0, 0, 0))
+        require(original_idle(), 'source did not return to original idle after abort')
+        # Consume before calling native code. Failure never enables another try.
+        self._retry_slot = None
+        fd = acquire_native_slot()
+        try:
+            value = os.fstat(fd)
+            require(stat.S_ISFIFO(value.st_mode) and
+                fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_WRONLY and
+                (value.st_dev, value.st_ino) not in (old[24:26], dead[24:26]),
+                'native retry did not transfer a fresh candidate FIFO')
+            self.live()
+            require(original_idle() and identity.process_alive(old_pidfd) and
+                not identity.process_alive(dead_pidfd), 'source/native retry identity changed')
+            self._retry_slot = (value.st_dev, value.st_ino)
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
     def reply_worker(self, channel, packet, credentials, slot_fd, relay):
         """Delegate an exact FIFO slot plus fresh relay/READY to a source child.
 
@@ -309,12 +361,16 @@ class SourceBootstrapSupervisor:
                 r[9] == values[3] and values[4] in (0, 1) and values[5] in (0, 1) and
                 values[6] in (0, 1) and r[8] == (values[5] if values[6] else values[4]),
                 'worker generation does not match original source selection')
-            # This batch admits only initial generation zero and its first
-            # source-controlled successor. Respawn/repeated rounds stay closed.
+            # Initial generation zero and its first successor stay distinct.
+            # One aborted first attempt may retry at epoch two only after the
+            # original T0, exact death, and native retry-plan proof above.
+            # General respawn and repeated successful rounds remain closed.
             role = 0 if values[3:] == (0, 0, 0, 0, 0) else 1
             require((role == 0 and r[8:10] == [0, 0]) or
-                (role == 1 and values[3] == 1 and values[4:7] == (0, 1, 1) and r[8] == 1),
-                'worker is outside the bounded original initial/first-HUP round')
+                (role == 1 and values[4:7] == (0, 1, 1) and r[8] == 1 and
+                    (values[3] == 1 or (values[3] == 2 and self.allow_abort_retry and
+                        getattr(self, '_retry_slot', None) is not None))),
+                'worker is outside the bounded original source rounds')
             key = (r[9], r[8])
             require(key not in self.workers, 'source worker generation already delegated')
             process_slot = self._scalar(r[5], 'ngx_process_slot', '=q')
@@ -323,6 +379,11 @@ class SourceBootstrapSupervisor:
             require(stat.S_ISFIFO(slot.st_mode) and
                 fcntl.fcntl(slot_fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_WRONLY,
                 'worker slot is not a write-only SDK FIFO capability')
+            if r[9] == 2:
+                dead_pidfd, dead = self.workers[(1, 1)]
+                require((slot.st_dev, slot.st_ino) == self._retry_slot and
+                    r[5] != dead[5] and not identity.process_alive(dead_pidfd),
+                    'retry candidate does not match fresh native slot/dead predecessor')
             require(relay.family == socket.AF_UNIX and relay.type & 15 == socket.SOCK_SEQPACKET,
                 'worker relay is not Unix seqpacket')
             require(struct.unpack('=3i', relay.getsockopt(socket.SOL_SOCKET,
@@ -377,7 +438,8 @@ class SourceBootstrapSupervisor:
         """
         self.live()
         key = (watch['source_epoch'], watch['generation'])
-        require(key == (1, 1) and key in self.workers,
+        require((key == (1, 1) or (key == (2, 1) and self.allow_abort_retry and
+            getattr(self, '_retry_slot', None) is not None)) and key in self.workers,
             'source activation is not an exact delegated first-HUP candidate')
         pidfd, granted = self.workers[key]
         record = list(granted)
@@ -389,7 +451,7 @@ class SourceBootstrapSupervisor:
                 socket.SO_PEERCRED, 12)) == (watch['pid'], os.getuid(), os.getgid()),
             'source activation candidate/channel changed identity')
         values = struct.unpack('=8I', memory(self.master.pid, record[13], 32))
-        require(values[3:7] == (1, 0, 1, 1),
+        require(values[3:7] == (key[0], 0, 1, 1),
             'original source round changed before candidate activation')
         activated.add(key)
         self._activated_workers = activated
@@ -399,7 +461,7 @@ class SourceBootstrapSupervisor:
             'short source activation send')
 
     def master_barrier(self, channel, packet, credentials, apply):
-        """Bind an original master park/commit call to native adapter work.
+        """Bind an original master park/commit/pre-flip-abort to native work.
 
         ``apply`` must validate its original-SYN queue/route/containment proofs
         before returning. An exception sends no success receipt; post-swap
@@ -409,9 +471,14 @@ class SourceBootstrapSupervisor:
         require(len(packet) == RECORD.size, 'invalid source master barrier size')
         record = list(RECORD.unpack(packet))
         operation = record[2]
-        require(operation in (5, 6) and record[:2] == [0x4b534247, 3] and
+        source_epoch = record[9]
+        require(source_epoch == 1 or (source_epoch == 2 and self.allow_abort_retry and
+            getattr(self, '_retry_slot', None) is not None and operation != 9),
+            'source master is outside the authorized abort/retry rounds')
+        require(operation in (5, 6, 9) and (operation != 9 or self.allow_abort_retry) and
+            record[:2] == [0x4b534247, 3] and
             record[3:11] == [RECORD.size, 2, self.master.pid, self.master.pid,
-                self.master.pid, 1, 1, 0] and
+                self.master.pid, 1, source_epoch, 0] and
             record[11:13] == [self.master.start_ticks, self.master.start_ticks] and
             record[14:17] == [self.epoch, self.deadline_ns, self.nonce] and
             not any(record[17:28]) and
@@ -423,33 +490,55 @@ class SourceBootstrapSupervisor:
             'source master barrier correlation/credentials mismatch')
         address = self._scalar(self.master.pid, 'ngx_ff_reload_shm', '=Q')
         require(address == record[13] == self.slim_reply[13] and
-            (1, 1) in getattr(self, '_activated_workers', set()),
+            (source_epoch, 1) in getattr(self, '_activated_workers', set()),
             'source master barrier lacks activated exact candidate')
         values = struct.unpack('=8I', memory(self.master.pid, address, 32))
         owner, stopped, fsm = struct.unpack('=3I',
             memory(self.master.pid, address + 48 + 128 * 8, 12))
-        require(values[3:7] == (1, 0, 1, 1) and fsm == 2 and stopped == 0 and
-            owner == (0 if operation == 5 else 1),
+        expected_markers = {5: (0, 0), 6: (1, 0), 9: (0, 1)}
+        require(values[3:7] == (source_epoch, 0, 1, 1) and fsm == 2 and
+            (owner, stopped) == expected_markers[operation],
             'source master barrier does not match original T2 park/release state')
+        if operation == 9:
+            candidate_pidfd, candidate = self.workers[(source_epoch, 1)]
+            require(identity.process_alive(candidate_pidfd) and
+                identity._pidfd_pid(candidate_pidfd) == candidate[5] and
+                identity._start_ticks(candidate[5]) == candidate[11],
+                'pre-flip abort successor already exited; quarantine required')
         barriers = getattr(self, '_master_barriers', set())
-        require(operation not in barriers and (operation == 5 or 5 in barriers),
+        key = (source_epoch, operation)
+        require(key not in barriers and (operation == 5 or
+            ((source_epoch, 5) in barriers and (source_epoch, 6) not in barriers and
+                (source_epoch, 9) not in barriers)),
             'source master barrier is repeated or out of order')
         if operation == 5:
-            self._master_control_deadline = record[28]
+            if not hasattr(self, '_master_control_deadlines'):
+                self._master_control_deadlines = {}
+            self._master_control_deadlines[source_epoch] = record[28]
         else:
-            require(record[28] == self._master_control_deadline,
+            require(record[28] == self._master_control_deadlines[source_epoch],
                 'source COMMIT attempted to renew the PARK deadline')
-        barriers.add(operation)
+        barriers.add(key)
         self._master_barriers = barriers
         control_deadline = record[28]
         require(time.monotonic_ns() < control_deadline,
             'source operation expired before native barrier work')
-        apply(operation, control_deadline)
+        outcome = apply(operation, control_deadline)
+        if operation == 9 and outcome is not None:
+            require(type(outcome) is dict and set(outcome) == {'native_retry_cookie'} and
+                type(outcome['native_retry_cookie']) is int and outcome['native_retry_cookie'] > 0,
+                'native retry adoption receipt is malformed')
         require(time.monotonic_ns() < control_deadline,
             'native barrier exceeded original operation deadline; quarantine required')
         self.live()
         require(struct.unpack('=8I', memory(self.master.pid, address, 32))[3:7] ==
-            (1, 0, 1, 1), 'source round changed during native barrier')
+            (source_epoch, 0, 1, 1), 'source round changed during native barrier')
+        if operation == 9:
+            require(identity.process_alive(candidate_pidfd) and
+                identity._start_ticks(candidate[5]) == candidate[11] and
+                struct.unpack('=3I', memory(self.master.pid,
+                    address + 48 + 128 * 8, 12)) == (0, 1, 2),
+                'pre-flip abort lost its live successor/parked source state')
         record[2] = operation + 2
         record[17], record[21] = os.getpid(), self.supervisor_start
         record[18], record[22] = self.runtime.pid, self.runtime.start_ticks
@@ -461,6 +550,14 @@ class SourceBootstrapSupervisor:
         require(channel.sendmsg([payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
             getattr(socket, 'MSG_NOSIGNAL', 0)) == len(payload),
             'short source master native barrier receipt')
+        if not hasattr(self, '_completed_master_barriers'):
+            self._completed_master_barriers = set()
+        self._completed_master_barriers.add(key)
+        if operation == 9 and outcome is not None:
+            # The native callback certifies an acknowledged adoption while
+            # the exact source candidate is still alive. After this receipt
+            # the unchanged source failure path may terminate that candidate.
+            self._native_retry_cookie = outcome['native_retry_cookie']
 
     def close(self):
         """Release observation handles; companion still owns subtree settlement."""

@@ -271,7 +271,9 @@ int ker_nginx_source_bootstrap_connect(const char *path,
     if (request->magic != KER_NGINX_SOURCE_BOOTSTRAP_MAGIC ||
         request->version != KER_NGINX_SOURCE_BOOTSTRAP_VERSION ||
         ((request->role == KER_NGINX_SOURCE_ROLE_MASTER) ?
-            (request->type != KER_NGINX_SOURCE_MASTER_PARK && request->type != KER_NGINX_SOURCE_MASTER_COMMIT) :
+            (request->type != KER_NGINX_SOURCE_MASTER_PARK &&
+             request->type != KER_NGINX_SOURCE_MASTER_COMMIT &&
+             request->type != KER_NGINX_SOURCE_MASTER_ABORT) :
             request->type != KER_NGINX_SOURCE_BOOTSTRAP_REQUEST) ||
         request->record_bytes != sizeof(*request) || request->role > KER_NGINX_SOURCE_ROLE_MASTER ||
         request->generation > 1 || request->reserved || !request->launch_epoch || !nonce ||
@@ -448,7 +450,7 @@ fail:
  * it is not an inherited FD and survives the slim primary's close loop. */
 static uint32_t source_master_pid;
 static uint64_t source_master_start;
-static uint64_t source_master_handover_deadline;
+static uint64_t source_master_handover_deadline[3];
 static int environment_consumed;
 static int source_intermediate;
 static int source_detached;
@@ -527,17 +529,19 @@ static int source_from_environment(uint32_t role, uint32_t generation,
         .launch_epoch = launch_epoch, .deadline_ns = lifetime,
     };
     if (role == KER_NGINX_SOURCE_ROLE_MASTER) {
+        if (source_epoch < 1 || source_epoch > 2) return -EPROTO;
+        uint64_t *handover_deadline = &source_master_handover_deadline[source_epoch];
         if (operation == KER_NGINX_SOURCE_MASTER_PARK) {
-            if (source_master_handover_deadline) return -EALREADY;
-            source_master_handover_deadline = now_ns() +
+            if (*handover_deadline) return -EALREADY;
+            *handover_deadline = now_ns() +
                 (uint64_t)FF_RELOAD_HANDOVER_TIMEOUT_MS_DEFAULT * UINT64_C(1000000);
-            if (source_master_handover_deadline > lifetime)
-                source_master_handover_deadline = lifetime;
+            if (*handover_deadline > lifetime)
+                *handover_deadline = lifetime;
         }
         /* COMMIT consumes the PARK budget; reconnecting never renews it. */
-        if (!source_master_handover_deadline || now_ns() >= source_master_handover_deadline)
+        if (!*handover_deadline || now_ns() >= *handover_deadline)
             return -ETIMEDOUT;
-        request.control_deadline_ns = source_master_handover_deadline;
+        request.control_deadline_ns = *handover_deadline;
     }
     if (start_ticks_until(request.actor_pid, &request.actor_start_ticks,
             role == KER_NGINX_SOURCE_ROLE_MASTER ? request.control_deadline_ns : lifetime)) return -ESTALE;
@@ -571,25 +575,35 @@ int ker_nginx_source_is_master(void)
 
 int ker_nginx_source_master_barrier(uint16_t operation)
 {
-    static unsigned consumed;
+    /* Retain every attempt and receipt. Round two is not a reset: only the
+     * original master's acknowledged pre-flip abort may precede that round. */
+    static unsigned consumed[3], completed[3];
     unsigned bit = operation == KER_NGINX_SOURCE_MASTER_PARK ? 1u :
-        operation == KER_NGINX_SOURCE_MASTER_COMMIT ? 2u : 0u;
+        operation == KER_NGINX_SOURCE_MASTER_COMMIT ? 2u :
+        operation == KER_NGINX_SOURCE_MASTER_ABORT ? 4u : 0u;
     struct ff_reload_state **source = dlsym(RTLD_DEFAULT, "ngx_ff_reload_shm");
     int *enabled = dlsym(RTLD_DEFAULT, "ngx_ff_graceful_reload");
     if (!bit || !ker_nginx_source_is_master() || !source || !*source ||
         !enabled || *enabled != 1 || !ff_reload_state_valid(*source, sizeof(**source)) ||
-        (*source)->epoch != 1 || (*source)->active_gen != 0 || (*source)->target_gen != 1 ||
-        (*source)->reload_active != 1 || (*source)->fsm_state != 2 ||
-        (consumed & bit) || (bit == 2 && !(consumed & 1))) return -EPROTO;
+        (*source)->active_gen != 0 || (*source)->target_gen != 1 ||
+        (*source)->reload_active != 1 || (*source)->fsm_state != 2) return -EPROTO;
+    uint32_t round = (*source)->epoch;
+    if ((round != 1 && (round != 2 || !ker_fstack_nginx_source_fault_profile() ||
+            completed[1] != (1u | 4u) || consumed[1] != (1u | 4u))) ||
+        (consumed[round] & bit) ||
+        (bit != 1 && (!(consumed[round] & 1) || (consumed[round] & 6))) ||
+        (bit == 4 && (round != 1 || !ker_fstack_nginx_source_fault_profile()))) return -EPROTO;
     if ((bit == 1 && ((*source)->rx_owner_gen != 0 || (*source)->rx_stopped)) ||
-        (bit == 2 && ((*source)->rx_owner_gen != 1 || (*source)->rx_stopped))) return -ESTALE;
-    consumed |= bit;
+        (bit == 2 && ((*source)->rx_owner_gen != 1 || (*source)->rx_stopped)) ||
+        (bit == 4 && ((*source)->rx_owner_gen != 0 || (*source)->rx_stopped != 1))) return -ESTALE;
+    consumed[round] |= bit;
     struct ker_nginx_source_bootstrap binding;
-    int status = source_from_environment(KER_NGINX_SOURCE_ROLE_MASTER, 1, 1,
+    int status = source_from_environment(KER_NGINX_SOURCE_ROLE_MASTER, 1, round,
         *source, operation, &binding);
     if (!status) {
         status = -(int)binding.record.flags;
         ker_nginx_source_bootstrap_close(&binding);
+        if (!status) completed[round] |= bit;
     }
     return status;
 }

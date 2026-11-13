@@ -394,8 +394,12 @@ validate_worker_cycle(int argc, char * const argv[], ngx_cycle_t **cycle_out,
     int primary, seen[2] = {0, 0};
     int source_worker = 0;
 
-    if (getenv("FF_FAULT") != NULL)
-        return unsupported("FF_FAULT is unsupported by this bounded profile");
+    if (getenv("FF_FAULT") != NULL) {
+        int (*fault_profile)(void) = dlsym(RTLD_DEFAULT,
+            "ker_fstack_nginx_source_fault_profile");
+        if (!fault_profile || !fault_profile())
+            return unsupported("FF_FAULT is unsupported by this bounded profile");
+    }
     core_module = dlsym(RTLD_DEFAULT, "ngx_core_module");
     cycle_slot = dlsym(RTLD_DEFAULT, "ngx_cycle");
     worker_slot = dlsym(RTLD_DEFAULT, "ngx_worker");
