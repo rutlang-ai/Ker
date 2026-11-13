@@ -15,7 +15,8 @@ int main(void)
     uint64_t now, end, checks = 0, start;
     if (fd < 0 || rx_owner_relay_monotonic_ns(&now)) return 2;
     end = now + UINT64_C(1000000000);
-    struct itimerval timer = {.it_interval = {.tv_usec = 10}, .it_value = {.tv_usec = 10}};
+    /* Match the source's 1ms timer_resolution without flooding the deadline loop. */
+    struct itimerval timer = {.it_interval = {.tv_usec = 1000}, .it_value = {.tv_usec = 1000}};
     if (setitimer(ITIMER_REAL, &timer, NULL)) return 3;
     for (;;) {
         pid_t pid = 0;
