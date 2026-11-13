@@ -567,15 +567,33 @@ preserves the original C31 packet id, deadline and immutable snapshot through
 one peer hop, checks real process credentials/pidfd/start identity, and rejects
 repeated forwarding. Its process tests do not execute a protocol implementation.
 The single-owner Nginx profile still lacks delegation of an authenticated old
-slot and channel and remains PEER-to-DROP. Two-owner authority integration,
-real old-stream continuity and the original same-master FSM remain open; this
-does not change the blocked migration entry.
+slot and channel and remains PEER-to-DROP. This transport alone does not qualify two-owner authority, old-stream
+continuity or the original same-master FSM; it does not change the blocked
+migration entry.
 
 The opt-in [paired owner authority](fstack-peer-owner-authority.md) protocol now
 accepts a supervisor-delegated old pidfd/channel only for the exact authenticated
 candidate slot. The consumer waits for the old process's own run-bound ACK and
 limits forwarding to the finite authorization. Independent-process controls
 exercise the actual receiver and transport. The legacy launcher still does not
-orchestrate two Nginx companions, and real source-classifier PEER-to-old LOCAL,
-old TCP continuity, binding retirement and the original FSM remain unqualified.
-The source entrypoint stays blocked.
+orchestrate two Nginx companions. The authority controls alone do not qualify
+source-classifier PEER-to-old LOCAL, old TCP continuity, binding retirement or
+the original FSM. The source entrypoint stays blocked.
+
+### Real original-classifier PEER handoff and old TCP continuity
+
+The dedicated [two-Nginx qualification](fstack-peer-nginx-continuity.md) now
+retains the AUTH endpoint, authenticates real initial/candidate slots and
+contains both actual pinned Nginx owners. It prepares private source windows
+through upstream APIs, uses the unchanged source classifier on both owners,
+and correlates old-tuple payload frames across candidate PEER and old-owner
+LOCAL. A queued-SYN selector COMMIT preserves an existing old HTTP stream while
+new connections identify the candidate. Native census barriers, companion
+settlement, normal native teardown and zero outstanding DPDK ownership are
+required. The reactor transport yields between send and reply so old-owner
+broker RPCs continue progressing within the original C31 deadline.
+
+These are private per-master qualification windows, not the original
+same-master reload FSM or its complete source shell matrix. The public runtime
+profile remains bounded, the source shell entrypoint stays blocked, and the
+inventory counts remain 362 adapted, zero partial and one blocked.

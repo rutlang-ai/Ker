@@ -201,7 +201,7 @@ class CompanionWireTest(unittest.TestCase):
         self._helper_owner_ready_rejects(expected_role=1,
             expected_slot=(11, 12), change=(6, 15))
 
-    def _candidate_slot_transfer_case(self, mode):
+    def _candidate_slot_transfer_case(self, mode, initial=False):
         receiver, sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         receiver.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         report_read, report_write = os.pipe()
@@ -214,6 +214,7 @@ class CompanionWireTest(unittest.TestCase):
                 companion = object.__new__(NginxCompanion)
                 companion.candidate_slot_transfer_fd = transfer_fd
                 companion.candidate_slot_stat = None
+                companion.initial_slot_mode = initial
                 before = len(os.listdir('/proc/self/fd'))
                 try:
                     companion._receive_candidate_slot(1.0)
@@ -241,11 +242,12 @@ class CompanionWireTest(unittest.TestCase):
         os.close(report_write)
         file_fd = os.open('/dev/null', os.O_RDONLY)
         try:
+            tag = b'KER_INITIAL_SLOT_V1' if initial else b'KER_CANDIDATE_SLOT_V1'
             if mode == 'zero-rights':
-                sender.sendmsg([b'KER_CANDIDATE_SLOT_V1'])
+                sender.sendmsg([tag])
             else:
                 packet = (b'WRONG_CANDIDATE_SLOT' if mode == 'wrong-packet'
-                    else b'KER_CANDIDATE_SLOT_V1')
+                    else tag)
                 count = 2 if mode == 'two-rights' else 1
                 sender.sendmsg([packet], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
                     struct.pack('i' * count, *([file_fd] * count)))])
@@ -260,8 +262,14 @@ class CompanionWireTest(unittest.TestCase):
         return result
 
     def test_candidate_slot_transfer_authenticates_one_fd_and_closes_rejections(self):
+        self._assert_slot_transfer(False)
+
+    def test_initial_slot_transfer_authenticates_one_fd_and_closes_rejections(self):
+        self._assert_slot_transfer(True)
+
+    def _assert_slot_transfer(self, initial):
         expected = os.stat('/dev/null')
-        valid = self._candidate_slot_transfer_case('valid')
+        valid = self._candidate_slot_transfer_case('valid', initial)
         self.assertEqual(valid['status'], 0, valid)
         self.assertEqual((valid['device'], valid['inode']),
             (expected.st_dev, expected.st_ino))
@@ -269,7 +277,7 @@ class CompanionWireTest(unittest.TestCase):
         self.assertEqual(valid['after'], valid['before'])
         for mode in ('zero-rights', 'two-rights', 'wrong-packet'):
             with self.subTest(mode=mode):
-                rejected = self._candidate_slot_transfer_case(mode)
+                rejected = self._candidate_slot_transfer_case(mode, initial)
                 self.assertEqual(rejected['status'], 1, rejected)
                 self.assertEqual(rejected['after'], rejected['before'] - 1,
                     f'rejected capability or transfer socket leaked: {rejected!r}')

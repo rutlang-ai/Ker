@@ -16,6 +16,8 @@
 #include <ker/socket-broker.h>
 #include <ff_api.h>
 
+struct ff_reload_state;
+
 #include <dlfcn.h>
 #include <openssl/evp.h>
 #include <arpa/inet.h>
@@ -300,6 +302,13 @@ static int rx_owner_relay_pump(void *context)
         memcmp(original, message + sizeof(header), header.frame_bytes) == 0;
     uint32_t frame_hash = rx_owner_relay_frame_hash32(original, header.frame_bytes);
     if (!unchanged) dispatcher_result = -1;
+#ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
+    if (getenv("KER_NGINX_SOURCE_PEER_PAIR")) {
+        dprintf(STDERR_FILENO, "SOURCE_PEER_CLASSIFIER packet=%llu pid=%ld tid=%ld result=%d unchanged=%u\n",
+            (unsigned long long)header.packet_id, (long)getpid(), (long)syscall(SYS_gettid),
+            dispatcher_result, unchanged ? 1u : 0u);
+    }
+#endif
     struct timespec after = {0};
     if (syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &after) || after.tv_sec < 0 ||
         after.tv_nsec < 0 || after.tv_nsec >= 1000000000L ||
@@ -334,6 +343,12 @@ static int rx_owner_relay_register(void)
     if (errno || end == value || *end || fd < 3 || fd > INT_MAX) return -EINVAL;
     if (rx_owner_relay_registered) return (int)fd == rx_owner_relay_fd ? 0 : -ESTALE;
 #ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
+    if (getenv("KER_NGINX_SOURCE_PEER_OLD")) {
+        extern struct ff_reload_state *ker_nginx_source_flowmap_state(void);
+        extern int ker_nginx_source_previous_owner_ready(struct ff_reload_state *);
+        int status = ker_nginx_source_previous_owner_ready(ker_nginx_source_flowmap_state());
+        if (status) return status;
+    }
     if (getenv("KER_NGINX_SOURCE_FLOWMAP_TEST")) {
         extern struct ff_reload_state *ker_nginx_source_flowmap_state(void);
         extern int ker_nginx_source_flowmap_owner_ready(struct ff_reload_state *);
@@ -383,6 +398,7 @@ static int rx_owner_relay_register(void)
     typedef int (*dispatch_ready_fn)(void);
 #ifdef KER_NGINX_RX_RELAY_TEST_CALLBACK
     if (!getenv("KER_NGINX_SOURCE_FLOWMAP_TEST") &&
+        !getenv("KER_NGINX_SOURCE_PEER_OLD") &&
         !getenv("KER_NGINX_SOURCE_ADMISSION_RELAY"))
         ff_regist_packet_dispatcher_context(test_rx_owner_dispatcher);
 #endif
@@ -1341,6 +1357,9 @@ module_init(ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 #ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
+    const char *source_old = getenv("KER_NGINX_SOURCE_PEER_OLD");
+    if (source_old && (strcmp(source_old, "1") ||
+            (!ngx_test_config && ker_nginx_candidate_master_prepare(cycle)))) return NGX_ERROR;
     const char *source_flowmap_test = getenv("KER_NGINX_SOURCE_FLOWMAP_TEST");
     if (source_flowmap_test) {
         if (strcmp(source_flowmap_test, "1") != 0 ||

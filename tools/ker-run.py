@@ -1393,7 +1393,7 @@ class AdditionalWorker:
         self.info = self.stats = None
         self.finished_result = None
 
-    def start(self, worker, args):
+    def start(self, worker, args, rx_decision_fd=None):
         item = self.interface
         self.app_packet, self.io_packet = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
         self.app_mtu, self.io_mtu = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -1424,8 +1424,11 @@ class AdditionalWorker:
                 options.append('--pcap-nsec')
         self.process = subprocess.Popen([str(worker), '--packet-fd', str(self.io_packet.fileno()),
             '--mtu-fd', str(self.io_mtu.fileno()), '--control-fd', str(self.stop_read),
-            '--port', item['port'], *options, '--', *shlex.split(item['eal'])],
-            pass_fds=(self.io_packet.fileno(), self.io_mtu.fileno(), self.stop_read),
+            '--port', item['port'], *options,
+            *(['--rx-decision-fd', str(rx_decision_fd)] if rx_decision_fd is not None else []),
+            '--', *shlex.split(item['eal'])],
+            pass_fds=(self.io_packet.fileno(), self.io_mtu.fileno(), self.stop_read,
+                *([rx_decision_fd] if rx_decision_fd is not None else [])),
             stdout=subprocess.PIPE, text=True)
         self.io_packet.close(); self.io_mtu.close(); os.close(self.stop_read); self.stop_read = -1
         line = read_worker_startup(self.process, 'additional DPDK worker ' + item['name'])
