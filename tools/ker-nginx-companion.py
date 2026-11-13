@@ -26,6 +26,11 @@ _WIRE_SPEC.loader.exec_module(wire)
 
 SO_PEERPIDFD = getattr(socket, 'SO_PEERPIDFD', 77)
 UCRED = struct.Struct('=3i')
+SOURCE_BOOTSTRAP_KEYS = frozenset((
+    'KER_NGINX_SOURCE_BOOTSTRAP_PATH', 'KER_NGINX_SOURCE_BOOTSTRAP_NONCE',
+    'KER_NGINX_SOURCE_BOOTSTRAP_EPOCH', 'KER_NGINX_SOURCE_BOOTSTRAP_DEADLINE_NS',
+    'KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_PID',
+    'KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_START'))
 ENV_KEYS = frozenset(('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
     'KER_FSTACK_NGINX_INI', 'KER_FSTACK_RUNTIME_TRACE',
     'KER_NGINX_OWNER_MODULE_PATH', 'KER_NGINX_OWNER_MODULE_SHA256',
@@ -37,10 +42,11 @@ ENV_KEYS = frozenset(('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
     'KER_NGINX_RX_OWNER_RELAY_SUPERVISOR_PID',
     'KER_NGINX_RX_OWNER_RELAY_NONCE', 'KER_NGINX_RX_OWNER_RELAY_EPOCH',
     'KER_NGINX_SOURCE_FLOWMAP_TEST', 'KER_NGINX_SOURCE_ADMISSION_RELAY',
+    'KER_NGINX_SOURCE_FIRST_HUP_ENABLE',
     'KER_NGINX_CANDIDATE_SLOT_FD',
     'KER_NGINX_INITIAL_SLOT_FD', 'KER_NGINX_SOURCE_PEER_OLD', 'KER_NGINX_SOURCE_PEER_PAIR',
     'KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US',
-    'KER_C16_TEST_PUMP_FAIL_AFTER_STEP'))
+    'KER_C16_TEST_PUMP_FAIL_AFTER_STEP')) | SOURCE_BOOTSTRAP_KEYS
 START_PHASE = 1
 RELOAD_PHASE = 2
 STOP_PHASE = 3
@@ -89,7 +95,7 @@ def process_parent(pid):
 def receive_owner_ready(endpoint, *, expected_cookie, binary_hash, master,
                          master_pidfd, master_start, supervisor_pidfd,
                          supervisor_pid, supervisor_start, expected_role=0,
-                         expected_slot=None, timeout=15.0):
+                         expected_slot=None, expected_worker_pidfd=None, timeout=15.0):
     deadline = time.monotonic() + timeout
     while True:
         remaining = deadline - time.monotonic()
@@ -100,16 +106,19 @@ def receive_owner_ready(endpoint, *, expected_cookie, binary_hash, master,
             select.POLLERR | select.POLLNVAL)
         poller.register(master_pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
         poller.register(supervisor_pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        if expected_worker_pidfd is not None:
+            poller.register(expected_worker_pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
         events = poller.poll(max(1, int(remaining * 1000)))
         if not events:
             continue
         ready_events = dict(events)
-        if master_pidfd in ready_events or supervisor_pidfd in ready_events:
+        if (master_pidfd in ready_events or supervisor_pidfd in ready_events or
+                expected_worker_pidfd in ready_events):
             raise PermissionError('pinned Nginx master or companion supervisor exited before worker READY')
         event = ready_events.get(endpoint.fileno(), 0)
-        if event & (select.POLLHUP | select.POLLERR | select.POLLNVAL):
-            raise ConnectionError('Nginx owner READY channel closed')
         if not event & select.POLLIN:
+            if event & (select.POLLHUP | select.POLLERR | select.POLLNVAL):
+                raise ConnectionError('Nginx owner READY channel closed')
             continue
         packet, ancillary, flags, _ = endpoint.recvmsg(OWNER_READY_RECORD.size + 1,
             socket.CMSG_SPACE(UCRED.size) + socket.CMSG_SPACE(16 * 4),
@@ -152,7 +161,10 @@ def receive_owner_ready(endpoint, *, expected_cookie, binary_hash, master,
                     not process_alive(supervisor_pidfd) or
                     start_ticks(supervisor_pid) != supervisor_start):
                 raise PermissionError('Nginx READY worker is stale or not a child of the pinned master')
-            worker_pidfd = os.pidfd_open(worker_pid, 0)
+            if expected_worker_pidfd is not None and pidfd_pid(expected_worker_pidfd) != worker_pid:
+                raise PermissionError('source worker READY changed the exact watched PIDFD')
+            worker_pidfd = (os.dup(expected_worker_pidfd) if expected_worker_pidfd is not None
+                else os.pidfd_open(worker_pid, 0))
             try:
                 if (pidfd_pid(worker_pidfd) != worker_pid or
                         not process_alive(worker_pidfd) or
@@ -439,8 +451,8 @@ def effective_fstack_ini(config_path, directives, environment_path):
     return selected_path, (selected_stat.st_dev, selected_stat.st_ino)
 
 
-def broker_ini_matches(path, expected_broker):
-    """Accept the exact broker path and one unambiguous graceful_reload=0."""
+def broker_ini_matches(path, expected_broker, *, graceful_reload='0'):
+    """Accept the exact broker path and one unambiguous pinned reload value."""
     section = None
     dpdk_sections = 0
     broker_sections = 0
@@ -470,7 +482,8 @@ def broker_ini_matches(path, expected_broker):
             if key in broker_values:
                 return False
             broker_values[key] = value
-    return (dpdk_sections == 1 and dpdk_values == ['0'] and
+    return (graceful_reload in ('0', '1') and
+        dpdk_sections == 1 and dpdk_values == [graceful_reload] and
         broker_sections == 1 and broker_values.get('version') == '1' and
         broker_values.get('path') == expected_broker and
         set(broker_values) == {'version', 'path'})
@@ -486,6 +499,7 @@ def _close_fds(fds):
 
 def recv_record(channel, expected_credential, deadline, rights_count,
                 watched_pidfds=()):
+    allowed_rights = (rights_count,) if isinstance(rights_count, int) else rights_count
     poller = select.poll()
     channel_fd = channel.fileno()
     poller.register(channel_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
@@ -520,7 +534,7 @@ def recv_record(channel, expected_credential, deadline, rights_count,
                 elif ancillary_error is None:
                     credentials = UCRED.unpack(payload)
             elif level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
-                if rights_seen or rights_count == 0:
+                if rights_seen or allowed_rights == (0,):
                     ancillary_error = 'unexpected companion descriptor ancillary data'
                 rights_seen = True
                 usable = len(payload) - len(payload) % 4
@@ -537,7 +551,7 @@ def recv_record(channel, expected_credential, deadline, rights_count,
                 raise ValueError(ancillary_error)
             if credentials != expected_credential:
                 raise PermissionError('wrong companion message sender')
-            if len(fds) != rights_count:
+            if len(fds) not in allowed_rights:
                 raise ValueError('wrong companion descriptor count')
             if deadline is not None and time.monotonic() > deadline:
                 raise TimeoutError('companion record arrived after deadline')
@@ -748,9 +762,10 @@ def run(args):
     actual_ini_hash = sha256_file(effective_ini_path)
     profile = wire.profile_hash(actual_binary_hash, actual_config_hash,
         actual_ini_hash, str(prefix), args.nginx_env)
+    reload_value = '1' if args.source_bootstrap_required else '0'
     if not broker_ini_matches(effective_ini_path,
-            args.nginx_env['KER_SOCKET_BROKER_PATH']):
-        raise ValueError('C34 requires graceful_reload=0 profile')
+            args.nginx_env['KER_SOCKET_BROKER_PATH'], graceful_reload=reload_value):
+        raise ValueError('Nginx INI does not match the pinned source/legacy profile')
     nginx_env = {'PATH': '/usr/bin:/bin', **args.nginx_env}
     cycle_env_keys = {key for key in args.nginx_env if key.startswith('KER_NGINX_CYCLE_')}
     required_cycle_keys = {'KER_NGINX_CYCLE_FD', 'KER_NGINX_CYCLE_NONCE',
@@ -782,7 +797,8 @@ def run(args):
     owner_ready_receiver = owner_ready_sender = None
     owner_ready_cookie = 0
     owner_ready_pidfd = -1
-    if args.owner_ready_required:
+    source_watch_pidfd = -1
+    if args.owner_ready_required and not args.source_bootstrap_required:
         owner_ready_receiver, owner_ready_sender = socket.socketpair(
             socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
         owner_ready_receiver.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
@@ -828,8 +844,8 @@ def run(args):
         if sha256_file(f'/proc/{master.pid}/exe') != actual_binary_hash:
             raise PermissionError('running Nginx executable differs from pinned profile')
         if not broker_ini_matches(current_effective_ini,
-                args.nginx_env['KER_SOCKET_BROKER_PATH']):
-            raise PermissionError('Nginx reload INI left the pinned graceful_reload=0 profile')
+                args.nginx_env['KER_SOCKET_BROKER_PATH'], graceful_reload=reload_value):
+            raise PermissionError('Nginx reload INI left the pinned source/legacy profile')
 
     master = None
     master_pidfd = -1
@@ -889,6 +905,32 @@ def run(args):
             args.nonce, args.epoch, 1), (master_pidfd,), time.monotonic() + 5.0)
         started_sent = True
         if args.owner_ready_required:
+            source_watch_fields = None
+            if args.source_bootstrap_required:
+                watch_packet, watch_fds = recv_record(channel,
+                    (expected_parent_pid, os.getuid(), os.getgid()),
+                    time.monotonic() + 15.0, 2,
+                    watched_pidfds=(master_pidfd, supervisor_pidfd))
+                try:
+                    fields = wire.unpack_record(watch_packet, wire.SOURCE_WATCH,
+                        args.nonce, args.epoch, 1, wire.SOURCE_WATCH_BODY)
+                    pid, tid, role, reserved, ticks, dev, inode, cookie = fields
+                    if (reserved or role != 0 or pid <= 0 or tid != pid or not ticks or
+                            not dev or not inode or not cookie or pidfd_pid(watch_fds[1]) != pid or
+                            not process_alive(watch_fds[1]) or start_ticks(pid) != ticks or
+                            process_parent(pid) != master.pid or
+                            sha256_file(f'/proc/{pid}/exe') != actual_binary_hash):
+                        raise PermissionError('source worker watch identity/capability mismatch')
+                    owner_ready_receiver = socket.socket(fileno=watch_fds.pop(0))
+                    if (owner_ready_receiver.family != socket.AF_UNIX or
+                            owner_ready_receiver.type & 15 != socket.SOCK_SEQPACKET or
+                            owner_ready_receiver.getsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED) != 1):
+                        raise PermissionError('source READY receiver lacks exact credential transport')
+                    source_watch_fields = fields
+                    owner_ready_cookie = cookie
+                    source_watch_pidfd = watch_fds.pop()
+                finally:
+                    _close_fds(watch_fds)
             identity, owner_ready_pidfd = receive_owner_ready(
                 owner_ready_receiver, expected_cookie=owner_ready_cookie,
                 binary_hash=actual_binary_hash, master=master,
@@ -899,7 +941,18 @@ def run(args):
                 expected_role=1 if args.candidate_slot_mode else 0,
                 expected_slot=((args.candidate_slot_stat.st_dev,
                     args.candidate_slot_stat.st_ino)
-                    if args.candidate_slot_stat is not None else None))
+                    if args.candidate_slot_stat is not None else None),
+                expected_worker_pidfd=source_watch_pidfd if source_watch_pidfd >= 0 else None)
+            if source_watch_pidfd >= 0:
+                os.close(source_watch_pidfd)
+                source_watch_pidfd = -1
+            if source_watch_fields is not None:
+                pid, tid, role, _, ticks, dev, inode, cookie = source_watch_fields
+                if identity != (pid, os.getuid(), os.getgid(), role, tid, 0,
+                        ticks, dev, inode, cookie):
+                    os.close(owner_ready_pidfd)
+                    owner_ready_pidfd = -1
+                    raise PermissionError('original worker READY does not match delegated source watch')
             owner_ready_receiver.close()
             owner_ready_receiver = None
             owner_ready_record = wire.pack_record(wire.OWNER_READY,
@@ -941,6 +994,8 @@ def run(args):
             os.close(master_pidfd)
         if owner_ready_pidfd >= 0:
             os.close(owner_ready_pidfd)
+        if source_watch_pidfd >= 0:
+            os.close(source_watch_pidfd)
         if owner_ready_receiver is not None:
             owner_ready_receiver.close()
         if owner_ready_sender is not None:
@@ -948,6 +1003,8 @@ def run(args):
         os.close(supervisor_pidfd)
         return 1
     request_sequence = 2
+    source_candidate = None
+    source_candidate_attempted = False
     while True:
         if master.poll() is not None:
             # Reap only children adopted by this dedicated subreaper. Report
@@ -983,7 +1040,8 @@ def run(args):
             watched_pidfds = (supervisor_pidfd, master_pidfd)
             if owner_ready_pidfd >= 0:
                 watched_pidfds += (owner_ready_pidfd,)
-            data, fds = recv_record(channel, parent_cred, None, 0,
+            data, fds = recv_record(channel, parent_cred, None,
+                (0, 2) if args.source_bootstrap_required else 0,
                 watched_pidfds)
         except BaseException as error:
             # A dead supervisor or lost control channel cannot leave its
@@ -1013,6 +1071,99 @@ def run(args):
             record_type, nonce, epoch, sequence = wire.unpack_header(data)
             if nonce != args.nonce or epoch != args.epoch or sequence != request_sequence:
                 raise ValueError('invalid companion request correlation')
+            if record_type == wire.SOURCE_CANDIDATE_WATCH:
+                if (not args.source_bootstrap_required or not args.owner_ready_required or
+                        source_candidate_attempted or len(fds) != 2):
+                    raise ValueError('source candidate watch is not available')
+                fields = wire.unpack_record(data, wire.SOURCE_CANDIDATE_WATCH,
+                    args.nonce, args.epoch, sequence, wire.SOURCE_WATCH_BODY)
+                pid, tid, role, reserved, ticks, dev, inode, cookie = fields
+                old_pid, _, _, old_role, _, _, _, old_dev, old_inode, old_cookie = identity
+                if (reserved or role != 1 or old_role != 0 or pid <= 0 or tid != pid or
+                        not ticks or not dev or not inode or not cookie or pid == old_pid or
+                        cookie == old_cookie or (dev, inode) == (old_dev, old_inode)):
+                    raise PermissionError('source candidate watch is not a distinct successor')
+                source_candidate_attempted = True
+                receiver = socket.socket(fileno=fds.pop(0))
+                try:
+                    if (receiver.family != socket.AF_UNIX or receiver.type & 15 != socket.SOCK_SEQPACKET or
+                            receiver.getsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED) != 1):
+                        raise PermissionError('source candidate watch identity/capability mismatch')
+                    try:
+                        if (not process_alive(fds[0]) or pidfd_pid(fds[0]) != pid or
+                                start_ticks(pid) != ticks or process_parent(pid) != master.pid or
+                                sha256_file(f'/proc/{pid}/exe') != actual_binary_hash):
+                            raise PermissionError('source candidate exited or changed identity')
+                        new_identity, new_pidfd = receive_owner_ready(receiver,
+                            expected_cookie=cookie, binary_hash=actual_binary_hash,
+                            master=master, master_pidfd=master_pidfd, master_start=master_ticks,
+                            supervisor_pidfd=supervisor_pidfd, supervisor_pid=expected_parent_pid,
+                            supervisor_start=expected_parent_start, expected_role=1,
+                            expected_slot=(dev, inode), expected_worker_pidfd=fds[0])
+                    except (TimeoutError, ConnectionError, PermissionError,
+                            ProcessLookupError, FileNotFoundError, ValueError):
+                        # A real candidate may fail before READY. Keep the old
+                        # owner's watch and let the original master abort it.
+                        body = wire.ERROR_BODY.pack(errno.ECHILD, RELOAD_PHASE,
+                            master.pid, 0, master_ticks, profile)
+                        send_record(channel, wire.pack_record(wire.SOURCE_CANDIDATE_FAILED,
+                            body, args.nonce, args.epoch, sequence), deadline=time.monotonic() + 5)
+                    else:
+                        if new_identity != (pid, os.getuid(), os.getgid(), role,
+                                tid, 0, ticks, dev, inode, cookie):
+                            os.close(new_pidfd)
+                            raise PermissionError('source candidate READY changed delegated watch')
+                        source_candidate = (new_identity, new_pidfd)
+                        send_record(channel, wire.pack_record(wire.SOURCE_CANDIDATE_READY,
+                            wire.OWNER_READY_BODY.pack(*new_identity), args.nonce,
+                            args.epoch, sequence), (new_pidfd,), time.monotonic() + 5)
+                finally:
+                    receiver.close()
+                request_sequence += 1
+                if request_sequence > wire.MAX_SEQUENCE:
+                    raise OverflowError('companion request sequence exhausted')
+                continue
+            if fds:
+                raise ValueError('unexpected descriptors outside source candidate watch')
+            if record_type == wire.SOURCE_PROMOTE:
+                if (not args.source_bootstrap_required or source_candidate is None or
+                        len(data) != wire.OWNER_READY_BYTES):
+                    raise ValueError('source candidate promotion is not available')
+                wanted = wire.unpack_record(data, wire.SOURCE_PROMOTE, args.nonce,
+                    args.epoch, sequence, wire.OWNER_READY_BODY)
+                new_identity, new_pidfd = source_candidate
+                if (wanted != new_identity or not process_alive(new_pidfd) or
+                        start_ticks(new_identity[0]) != new_identity[6] or
+                        process_parent(new_identity[0]) != master.pid):
+                    raise PermissionError('source promotion candidate changed identity')
+                # The authenticated supervisor owns the native selector
+                # transaction. This changes only the containment watch, after
+                # it has verified the native/source handover; it signals no FSM.
+                os.close(owner_ready_pidfd)
+                identity, owner_ready_pidfd = source_candidate
+                source_candidate = None
+                send_record(channel, wire.pack_record(wire.SOURCE_PROMOTED,
+                    wire.OWNER_READY_BODY.pack(*identity), args.nonce, args.epoch,
+                    sequence), deadline=time.monotonic() + 5)
+                request_sequence += 1
+                if request_sequence > wire.MAX_SEQUENCE:
+                    raise OverflowError('companion request sequence exhausted')
+                continue
+            if record_type == wire.SOURCE_HUP:
+                if (len(data) != wire.HEADER.size or not args.source_bootstrap_required or
+                        not args.owner_ready_required or owner_ready_pidfd < 0 or
+                        not process_alive(owner_ready_pidfd)):
+                    raise ValueError('source HUP requires a live authenticated source owner')
+                revalidate_reload_profile()
+                signal.pidfd_send_signal(master_pidfd, signal.SIGHUP)
+                body = wire.RELOAD_RESULT_BODY.pack(0, 0, master_ticks, profile)
+                send_record(channel, wire.pack_record(wire.SOURCE_HUP_DELIVERED,
+                    body, args.nonce, args.epoch, request_sequence),
+                    deadline=time.monotonic() + 5.0)
+                request_sequence += 1
+                if request_sequence > wire.MAX_SEQUENCE:
+                    raise OverflowError('companion request sequence exhausted')
+                continue
             if record_type == wire.RELOAD:
                 if len(data) != wire.RELOAD_BYTES:
                     raise ValueError('invalid RELOAD size')
@@ -1087,6 +1238,7 @@ def main(argv=None):
     parser.add_argument('--prefix', required=True)
     parser.add_argument('--helper-sha256', type=lambda value: bytes.fromhex(value), required=True)
     parser.add_argument('--owner-ready-required', action='store_true')
+    parser.add_argument('--source-bootstrap-required', action='store_true')
     parser.add_argument('--rx-owner-relay-fd', type=int)
     parser.add_argument('--candidate-slot-fd', type=int)
     parser.add_argument('--initial-slot-fd', type=int)
@@ -1101,6 +1253,31 @@ def main(argv=None):
         if not separator or key not in ENV_KEYS or key in values or not item:
             parser.error('invalid/duplicate Nginx environment entry')
         values[key] = item
+    source_keys = SOURCE_BOOTSTRAP_KEYS.intersection(values)
+    if ('KER_NGINX_SOURCE_FIRST_HUP_ENABLE' in values and
+            (not args.source_bootstrap_required or
+             values['KER_NGINX_SOURCE_FIRST_HUP_ENABLE'] != '1')):
+        parser.error('first source HUP requires the authenticated source profile')
+    if args.source_bootstrap_required:
+        if (not args.owner_ready_required or source_keys != SOURCE_BOOTSTRAP_KEYS or
+                args.cycle_control_fd is not None or args.candidate_slot_fd is not None or
+                args.initial_slot_fd is not None or args.rx_owner_relay_fd is not None):
+            parser.error('source bootstrap requires its complete profile and fresh worker delegation')
+        try:
+            nonce = bytes.fromhex(values['KER_NGINX_SOURCE_BOOTSTRAP_NONCE'])
+            deadline_ns = int(values['KER_NGINX_SOURCE_BOOTSTRAP_DEADLINE_NS'])
+            if (len(nonce) != 16 or not any(nonce) or nonce.hex() !=
+                    values['KER_NGINX_SOURCE_BOOTSTRAP_NONCE'] or
+                    int(values['KER_NGINX_SOURCE_BOOTSTRAP_EPOCH']) <= 0 or
+                    int(values['KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_PID']) != os.getppid() or
+                    int(values['KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_START']) !=
+                    start_ticks(os.getppid()) or not
+                    time.monotonic_ns() < deadline_ns <= time.monotonic_ns() + 300_000_000_000):
+                parser.error('source bootstrap launch authority does not match direct supervisor')
+        except ValueError:
+            parser.error('invalid source bootstrap launch context')
+    elif source_keys:
+        parser.error('source bootstrap environment requires explicit source profile')
     args.candidate_slot_mode = args.candidate_slot_fd is not None
     args.candidate_slot_stat = None
     if args.initial_slot_fd is not None:

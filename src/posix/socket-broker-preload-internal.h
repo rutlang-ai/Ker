@@ -27,6 +27,9 @@ int ker_sb_preload_register_network_locked(int app_fd);
 void ker_sb_preload_remove_network_locked(int app_fd);
 int ker_sb_preload_socket_drain_count(void);
 int ker_sb_preload_ff_owner_begin(void);
+/* Source slim-primary child only, before the original close-all-FDs loop.
+ * Forget inherited classifications without closing/skipping any descriptor. */
+int ker_sb_preload_source_detach_forget(void);
 int ker_sb_preload_ff_staged_group_claim(int slot_cap);
 int ker_sb_preload_ff_staged_group_member(int slot_cap);
 int ker_sb_preload_ff_owner_initial_listener_prepare(int slot_cap);

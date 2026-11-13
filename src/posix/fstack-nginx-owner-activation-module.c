@@ -15,6 +15,7 @@
 #include <ker/ini.h>
 #include <ker/socket-broker.h>
 #include <ff_api.h>
+#include "nginx-relay-observation.h"
 
 struct ff_reload_state;
 
@@ -41,6 +42,7 @@ struct ff_reload_state;
 
 #include "nginx-cycle-wire.h"
 #include "nginx-owner-ready.h"
+#include "nginx-source-bootstrap.h"
 #include "rx-owner-relay-wire.h"
 #include <time.h>
 #include <unistd.h>
@@ -62,6 +64,8 @@ static bool respawn_plan_pending;
 static bool worker_prepared;
 static bool candidate_mode;
 static bool delegated_initial_mode;
+static bool source_master_mode;
+static struct ker_nginx_source_bootstrap_record source_worker_record;
 static bool owner_ready_configured;
 static struct ker_nginx_owner_ready_sender owner_ready;
 static int rx_owner_relay_fd = -1;
@@ -78,6 +82,7 @@ static uint64_t rx_owner_relay_supervisor_start;
 static uint64_t rx_owner_relay_last_packet;
 static pid_t rx_owner_relay_supervisor_pid;
 static bool rx_owner_relay_authenticated;
+static void trace_line(const char *format, ...);
 #ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
 static bool rx_owner_source_flowmap_cycle_done;
 #endif
@@ -96,38 +101,24 @@ static uint32_t rx_owner_relay_frame_hash32(const void *data, size_t bytes)
     return hash;
 }
 static int cycle_read_start_ticks(pid_t pid, uint64_t *ticks);
+static int cycle_monotonic_ns(uint64_t *now_ns);
+
 #ifdef KER_NGINX_RX_RELAY_TEST_CALLBACK
 static int test_rx_owner_dispatcher(void *frame, uint16_t *length,
     uint16_t queue_id, uint16_t queue_count, struct ff_dispatcher_context context);
 #endif
 
-static int rx_owner_relay_pidfd_pid(int fd, pid_t *pid)
+static long rx_owner_relay_send_until(int fd, struct msghdr *message, uint64_t deadline)
 {
-    char path[64], text[256];
-    int length = snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd);
-    if (length <= 0 || (size_t)length >= sizeof(path)) return -EINVAL;
-    int info = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC, 0);
-    if (info < 0) return -errno;
-    ssize_t count = syscall(SYS_read, info, text, sizeof(text) - 1);
-    int saved = errno;
-    (void)syscall(SYS_close, info);
-    if (count <= 0) return count < 0 ? -saved : -EPROTO;
-    text[count] = 0;
-    char *line = strstr(text, "Pid:\t");
-    if (!line) return -EINVAL;
-    char *end = NULL;
-    errno = 0;
-    long value = strtol(line + 5, &end, 10);
-    if (errno || end == line + 5 || (*end != '\n' && *end != 0) || value <= 0 ||
-        value > INT_MAX) return -EINVAL;
-    *pid = (pid_t)value;
-    return 0;
-}
-
-static bool rx_owner_relay_pidfd_alive(int fd)
-{
-    struct pollfd pfd = {.fd = fd, .events = POLLIN | POLLHUP | POLLERR};
-    return fd >= 0 && syscall(SYS_poll, &pfd, 1, 0) == 0 && pfd.revents == 0;
+    long sent;
+    do {
+        if (!rx_owner_relay_before(deadline)) return -1;
+        /* SOCK_SEQPACKET is atomic. EINTR reports no transmitted record;
+         * retry the same unsent reply, never the classifier callback. */
+        sent = syscall(SYS_sendmsg, fd, message, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
+    if (sent >= 0 && !rx_owner_relay_before(deadline)) return -1;
+    return sent;
 }
 
 static int rx_owner_relay_pump(void *context)
@@ -141,7 +132,8 @@ static int rx_owner_relay_pump(void *context)
         .msg_control = control, .msg_controllen = sizeof(control)};
     long received = syscall(SYS_recvmsg, fd, &msg,
         MSG_DONTWAIT | MSG_TRUNC | MSG_CMSG_CLOEXEC);
-    if (received < 0) return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : -errno;
+    if (received < 0)
+        return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ? 0 : -errno;
     struct ucred credentials = {0};
     bool have_credentials = false, ancillary_error = false;
     int received_fds[2] = {-1, -1};
@@ -170,6 +162,14 @@ static int rx_owner_relay_pump(void *context)
     }
     struct ker_rx_owner_relay_header header;
     memcpy(&header, message, sizeof(header));
+    uint64_t auth_deadline;
+    if (cycle_monotonic_ns(&auth_deadline) || auth_deadline > UINT64_MAX - UINT64_C(5000000000)) {
+        for (size_t i = 0; i < fd_count; ++i) (void)syscall(SYS_close, received_fds[i]);
+        return -EIO;
+    }
+    auth_deadline += UINT64_C(5000000000);
+    if (source_master_mode && source_worker_record.deadline_ns < auth_deadline)
+        auth_deadline = source_worker_record.deadline_ns;
     if (header.magic == KER_RX_OWNER_RELAY_MAGIC &&
         header.version == KER_RX_OWNER_RELAY_VERSION &&
         header.type == KER_RX_OWNER_RELAY_APP_AUTH &&
@@ -192,17 +192,17 @@ static int rx_owner_relay_pump(void *context)
         int auth_status = 0;
         if (rx_owner_relay_authenticated || received_fds[0] < 0 ||
             received_fds[1] < 0 ||
-            rx_owner_relay_pidfd_pid(received_fds[0], &pid) ||
+            rx_owner_relay_pidfd_pid(received_fds[0], &pid, auth_deadline) ||
             pid != (pid_t)header.app_pid ||
-            cycle_read_start_ticks(pid, &start) || start != header.app_start_ticks ||
-            rx_owner_relay_pidfd_pid(received_fds[1], &supervisor_pid) ||
+            cycle_read_start_ticks_until(pid, &start, auth_deadline) || start != header.app_start_ticks ||
+            rx_owner_relay_pidfd_pid(received_fds[1], &supervisor_pid, auth_deadline) ||
             supervisor_pid != credentials.pid ||
-            cycle_read_start_ticks(supervisor_pid, &supervisor_start) ||
+            cycle_read_start_ticks_until(supervisor_pid, &supervisor_start, auth_deadline) ||
             supervisor_start != header.supervisor_start_ticks ||
-            cycle_read_start_ticks(getpid(), &owner_start) ||
+            cycle_read_start_ticks_until(getpid(), &owner_start, auth_deadline) ||
             owner_start != header.owner_start_ticks ||
-            !rx_owner_relay_pidfd_alive(received_fds[0]) ||
-            !rx_owner_relay_pidfd_alive(received_fds[1])) {
+            !rx_owner_relay_pidfd_alive(received_fds[0], auth_deadline) ||
+            !rx_owner_relay_pidfd_alive(received_fds[1], auth_deadline)) {
             auth_status = -EACCES;
         } else {
             rx_owner_relay_app_pid = pid;
@@ -221,7 +221,11 @@ static int rx_owner_relay_pump(void *context)
         if (auth_status) return auth_status;
         struct ker_rx_owner_relay_header ack = header;
         ack.type = KER_RX_OWNER_RELAY_AUTH_ACK;
-        int self_pidfd = (int)syscall(SYS_pidfd_open, getpid(), 0);
+        int self_pidfd;
+        do {
+            if (!rx_owner_relay_before(auth_deadline)) return -errno;
+            self_pidfd = (int)syscall(SYS_pidfd_open, getpid(), 0);
+        } while (self_pidfd < 0 && errno == EINTR);
         if (self_pidfd < 0) return -errno;
         char ack_control[CMSG_SPACE(sizeof(int))] = {0};
         struct iovec ack_iov = {.iov_base = &ack, .iov_len = sizeof(ack)};
@@ -232,9 +236,10 @@ static int rx_owner_relay_pump(void *context)
         ack_cmsg->cmsg_type = SCM_RIGHTS;
         ack_cmsg->cmsg_len = CMSG_LEN(sizeof(int));
         memcpy(CMSG_DATA(ack_cmsg), &self_pidfd, sizeof(self_pidfd));
-        long ack_sent = syscall(SYS_sendmsg, fd, &ack_msg, MSG_NOSIGNAL);
+        long ack_sent = rx_owner_relay_send_until(fd, &ack_msg, auth_deadline);
+        int ack_error = errno;
         (void)syscall(SYS_close, self_pidfd);
-        return ack_sent == (long)sizeof(ack) ? 0 : (ack_sent < 0 ? -errno : -EIO);
+        return ack_sent == (long)sizeof(ack) ? 0 : (ack_sent < 0 ? -ack_error : -EIO);
     }
     for (size_t i = 0; i < fd_count; ++i)
         if (received_fds[i] >= 0) (void)syscall(SYS_close, received_fds[i]);
@@ -267,8 +272,21 @@ static int rx_owner_relay_pump(void *context)
         header.supervisor_pid != (uint32_t)rx_owner_relay_supervisor_pid ||
         header.supervisor_start_ticks != rx_owner_relay_supervisor_start ||
         (uint32_t)syscall(SYS_gettid) != rx_owner_relay_owner_tid ||
-        !rx_owner_relay_pidfd_alive(rx_owner_relay_app_pidfd) ||
-        !rx_owner_relay_pidfd_alive(rx_owner_relay_supervisor_pidfd)) return -EPROTO;
+        !rx_owner_relay_pidfd_alive(rx_owner_relay_app_pidfd, header.deadline_ns) ||
+        !rx_owner_relay_pidfd_alive(rx_owner_relay_supervisor_pidfd, header.deadline_ns)) {
+        int saved = errno;
+        dprintf(STDERR_FILENO, "ker RX relay request rejected packet=%llu last=%llu pid=%ld tid=%ld sender=%ld expected_sender=%ld type=%u bytes=%ld frame_bytes=%u rights=%zu authenticated=%u now_ns=%llu deadline_ns=%llu late_ns=%llu epoch=%llu expected_epoch=%llu owner=%u/%u expected_owner=%ld/%u\n",
+            (unsigned long long)header.packet_id, (unsigned long long)rx_owner_relay_last_packet,
+            (long)getpid(), (long)syscall(SYS_gettid), (long)credentials.pid,
+            (long)rx_owner_relay_app_pid, (unsigned)header.type, received,
+            header.frame_bytes, fd_count, rx_owner_relay_authenticated ? 1u : 0u,
+            (unsigned long long)now, (unsigned long long)header.deadline_ns,
+            (unsigned long long)(now > header.deadline_ns ? now - header.deadline_ns : 0),
+            (unsigned long long)header.worker_epoch, (unsigned long long)rx_owner_relay_epoch,
+            header.owner_pid, header.owner_tid, (long)getpid(), rx_owner_relay_owner_tid);
+        errno = saved;
+        return -EPROTO;
+    }
     if (!rx_owner_relay_dispatch) return -ENOSYS;
 #ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
     if (!rx_owner_source_flowmap_cycle_done &&
@@ -297,6 +315,10 @@ static int rx_owner_relay_pump(void *context)
     int decision = rx_owner_relay_dispatch(message + sizeof(header),
         &frame_length, header.queue_id, header.queue_count, header.vlan_tci,
         header.vlan_stripped, &dispatcher_result);
+    if (source_master_mode)
+        trace_line("SOURCE_OWNER_RELAY packet=%llu pid=%ld tid=%ld status=%d result=%d\n",
+            (unsigned long long)header.packet_id, (long)getpid(),
+            (long)syscall(SYS_gettid), decision, dispatcher_result);
     if (decision) return decision;
     bool unchanged = frame_length == header.frame_bytes &&
         memcmp(original, message + sizeof(header), header.frame_bytes) == 0;
@@ -314,8 +336,8 @@ static int rx_owner_relay_pump(void *context)
         after.tv_nsec < 0 || after.tv_nsec >= 1000000000L ||
         (uint64_t)after.tv_sec * UINT64_C(1000000000) +
             (uint64_t)after.tv_nsec >= header.deadline_ns ||
-        !rx_owner_relay_pidfd_alive(rx_owner_relay_app_pidfd) ||
-        !rx_owner_relay_pidfd_alive(rx_owner_relay_supervisor_pidfd)) return -ESTALE;
+        !rx_owner_relay_pidfd_alive(rx_owner_relay_app_pidfd, header.deadline_ns) ||
+        !rx_owner_relay_pidfd_alive(rx_owner_relay_supervisor_pidfd, header.deadline_ns)) return -ESTALE;
     header.type = KER_RX_OWNER_RELAY_REPLY;
     header.dispatcher_result = dispatcher_result;
     header.frame_hash32 = frame_hash;
@@ -327,7 +349,7 @@ static int rx_owner_relay_pump(void *context)
         {.iov_base = message + sizeof(header), .iov_len = header.frame_bytes},
     };
     struct msghdr reply_msg = {.msg_iov = reply_iov, .msg_iovlen = 2};
-    long sent = syscall(SYS_sendmsg, fd, &reply_msg, MSG_NOSIGNAL);
+    long sent = rx_owner_relay_send_until(fd, &reply_msg, header.deadline_ns);
     long expected = (long)sizeof(header) + header.frame_bytes;
     if (sent == expected) rx_owner_relay_last_packet = header.packet_id;
     return sent == expected ? 0 : (sent < 0 ? -errno : -EIO);
@@ -573,48 +595,11 @@ static struct ker_nginx_cycle_runtime cycle_runtime;
 static int cycle_monotonic_ns(uint64_t *now_ns);
 static void cycle_close_fd(int fd);
 
-static int
-cycle_read_start_ticks(pid_t pid, uint64_t *ticks)
+static int cycle_read_start_ticks(pid_t pid, uint64_t *ticks)
 {
-    char path[64], buffer[4096], *cursor, *end;
-    int length, fd;
-    ssize_t got;
-    unsigned field;
-    if (pid <= 0 || !ticks) { errno = EINVAL; return -1; }
-    length = snprintf(path, sizeof(path), "/proc/%ld/stat", (long)pid);
-    if (length <= 0 || (size_t)length >= sizeof(path)) { errno = EOVERFLOW; return -1; }
-    fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC, 0);
-    if (fd < 0) return -1;
-    got = syscall(SYS_read, fd, buffer, sizeof(buffer) - 1);
-    int saved = errno;
-    (void)syscall(SYS_close, fd);
-    errno = saved;
-    if (got <= 0 || (size_t)got >= sizeof(buffer) - 1) { errno = EPROTO; return -1; }
-    buffer[got] = '\0';
-    cursor = strrchr(buffer, ')');
-    if (!cursor || cursor[1] != ' ') { errno = EPROTO; return -1; }
-    cursor += 2;
-    /* Field 3 starts after comm; starttime is field 22. */
-    for (field = 3; field <= 22; ++field) {
-        while (*cursor == ' ') ++cursor;
-        if (!*cursor) { errno = EPROTO; return -1; }
-        end = cursor;
-        while (*end && *end != ' ') ++end;
-        if (field == 22) {
-            char saved_char = *end;
-            *end = '\0';
-            errno = 0;
-            unsigned long long value = strtoull(cursor, &end, 10);
-            int parse_error = errno;
-            *end = saved_char;
-            if (parse_error || end == cursor || value == 0) { errno = EPROTO; return -1; }
-            *ticks = (uint64_t)value;
-            return 0;
-        }
-        cursor = end;
-    }
-    errno = EPROTO;
-    return -1;
+    /* Preserve legacy cycle observations; only relay AUTH explicitly supplies
+     * its existing handshake deadline to enable bounded EINTR retries. */
+    return cycle_read_start_ticks_until(pid, ticks, 0);
 }
 
 static void
@@ -1030,6 +1015,8 @@ struct module_config {
     bool version;
     bool path;
     bool graceful_reload;
+    bool source_profile;
+    bool lcore_mask;
 };
 
 static int
@@ -1052,8 +1039,13 @@ parse_ini(void *opaque, const char *section, const char *name,
         return 0;
     }
     if (!strcmp(section, "dpdk") && !strcmp(name, "graceful_reload") &&
-        !config->graceful_reload && !strcmp(value, "0")) {
+        !config->graceful_reload && !strcmp(value, config->source_profile ? "1" : "0")) {
         config->graceful_reload = true;
+        return 1;
+    }
+    if (config->source_profile && !strcmp(section, "dpdk") &&
+        !strcmp(name, "lcore_mask") && !config->lcore_mask && !strcmp(value, "0x3")) {
+        config->lcore_mask = true;
         return 1;
     }
     return 0;
@@ -1076,7 +1068,8 @@ validate_profile(ngx_cycle_t *cycle, struct sockaddr_in *address,
         "ker_fstack_nginx_worker_consume_authorization");
     const char *ini_path = getenv("KER_FSTACK_NGINX_INI");
     char configured_ini[KER_SOCKET_BROKER_PATH_MAX + 1];
-    struct module_config config = {0};
+    struct module_config config = {
+        .source_profile = getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH") != NULL};
     FILE *file;
     int parsed, close_status;
 
@@ -1139,7 +1132,7 @@ validate_profile(ngx_cycle_t *cycle, struct sockaddr_in *address,
     close_status = fclose(file);
     const char *broker_path = getenv("KER_SOCKET_BROKER_PATH");
     if (parsed || close_status || !config.version || !config.path ||
-        !config.graceful_reload || !broker_path ||
+        !config.graceful_reload || (config.source_profile && !config.lcore_mask) || !broker_path ||
         strcmp(broker_path, config.broker_path)) PROFILE_REJECT("runtime ini contents");
 #undef PROFILE_REJECT
     return NGX_OK;
@@ -1356,6 +1349,16 @@ module_init(ngx_cycle_t *cycle)
             "C22 owner-activation module refuses unsupported Nginx profile");
         return NGX_ERROR;
     }
+    if (getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH")) {
+        /* The original master creates its own shared block after module init.
+         * No private window, staged plan or inherited worker capability here.
+         * Each original worker must obtain a fresh supervisor grant at ff_init. */
+        if (current_plan >= 0 || current_slot >= 0 || broker_open ||
+            getenv("KER_NGINX_CANDIDATE_SLOT_FD") || getenv("KER_NGINX_INITIAL_SLOT_FD") ||
+            getenv("KER_NGINX_CYCLE_FD") || getenv("KER_NGINX_OWNER_READY_FD")) return NGX_ERROR;
+        source_master_mode = true;
+        return NGX_OK;
+    }
 #ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
     const char *source_old = getenv("KER_NGINX_SOURCE_PEER_OLD");
     if (source_old && (strcmp(source_old, "1") ||
@@ -1444,6 +1447,44 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
     prepare_fn prepare;
     ngx_uint_t *process = dlsym(RTLD_DEFAULT, "ngx_process");
     ngx_uint_t *worker = dlsym(RTLD_DEFAULT, "ngx_worker");
+    if (source_master_mode && !worker_prepared) {
+        typedef int (*take_fn)(struct ker_nginx_source_bootstrap *);
+        take_fn take = (take_fn)dlsym(RTLD_DEFAULT, "ker_fstack_nginx_source_worker_take");
+        struct ker_nginx_source_bootstrap grant;
+        if (!take || !process || *process != NGX_PROCESS_WORKER ||
+            !worker || *worker != 0 || ngx_cycle != cycle) { errno = EPERM; return -1; }
+        int status = take(&grant);
+        if (status) { errno = -status; return -1; }
+        source_worker_record = grant.record;
+        current_slot = grant.slot_fd;
+        candidate_mode = grant.record.flags == KER_NGINX_SOURCE_WORKER_CANDIDATE;
+        delegated_initial_mode = !candidate_mode;
+        if (grant.record.flags != KER_NGINX_SOURCE_WORKER_INITIAL && !candidate_mode) {
+            ker_nginx_source_bootstrap_close(&grant);
+            current_slot = -1;
+            errno = EPROTO; return -1;
+        }
+        status = ker_nginx_owner_ready_sender_init_worker(&owner_ready, grant.ready_fd,
+            (pid_t)grant.record.supervisor_pid, (pid_t)grant.record.master_pid);
+        if (status) {
+            /* Only slot/relay/READY ownership was transferred to this module. */
+            (void)syscall(SYS_close, grant.slot_fd);
+            (void)syscall(SYS_close, grant.relay_fd);
+            (void)syscall(SYS_close, grant.ready_fd);
+            current_slot = -1;
+            errno = -status; return -1;
+        }
+        owner_ready_configured = true;
+        char fd_text[32], pid_text[32], epoch_text[32], nonce[33];
+        snprintf(fd_text, sizeof(fd_text), "%d", grant.relay_fd);
+        snprintf(pid_text, sizeof(pid_text), "%u", grant.record.supervisor_pid);
+        snprintf(epoch_text, sizeof(epoch_text), "%llu", (unsigned long long)grant.record.launch_epoch);
+        for (unsigned i = 0; i < 16; ++i) snprintf(nonce + i * 2, 3, "%02x", grant.record.run_nonce[i]);
+        if (setenv("KER_NGINX_RX_OWNER_RELAY_FD", fd_text, 1) ||
+            setenv("KER_NGINX_RX_OWNER_RELAY_SUPERVISOR_PID", pid_text, 1) ||
+            setenv("KER_NGINX_RX_OWNER_RELAY_EPOCH", epoch_text, 1) ||
+            setenv("KER_NGINX_RX_OWNER_RELAY_NONCE", nonce, 1)) return -1;
+    }
     if (worker_prepared || !process || !worker ||
         *process != NGX_PROCESS_WORKER || *worker != 0 ||
         ngx_cycle != cycle ||
@@ -1499,6 +1540,20 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
 
 int ker_fstack_nginx_owner_activation_worker_commit(void)
 {
+    if (source_master_mode) {
+        if (!worker_prepared) { errno = EPROTO; return -1; }
+        if (candidate_mode) {
+            int ker_nginx_source_owner_admission_prepare(
+                const struct ker_nginx_source_bootstrap_record *, int);
+            int status = ker_nginx_source_owner_admission_prepare(
+                &source_worker_record, current_slot);
+            int error = status < 0 ? -status : EPROTO;
+            if (current_slot >= 0) (void)syscall(SYS_close, current_slot);
+            current_slot = -1;
+            if (status) { errno = error; return -1; }
+        }
+        return 0;
+    }
 #ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
     const char *source_flowmap_test = getenv("KER_NGINX_SOURCE_FLOWMAP_TEST");
     if (source_flowmap_test && strcmp(source_flowmap_test, "1") == 0)
@@ -1517,6 +1572,13 @@ int ker_fstack_nginx_owner_activation_worker_commit(void)
     if (!result) trace_line("NGINX_CANDIDATE_TASK_READY pid=%ld\n", (long)getpid());
     errno = error;
     return result;
+}
+
+int ker_fstack_nginx_source_worker_authenticated(void)
+{
+    return source_master_mode && worker_prepared && owner_ready.sent &&
+        rx_owner_relay_registered && rx_owner_relay_authenticated &&
+        ngx_process == NGX_PROCESS_WORKER;
 }
 
 static void

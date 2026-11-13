@@ -41,8 +41,7 @@ int main(void)
     }
     deadline = monotonic_ns() + UINT64_C(5000000000);
     while (!status && !fixture.peer_authenticated && monotonic_ns() < deadline) {
-        status = receive_supervisor_peer_auth(&fixture);
-        if (!status) status = receive_peer_owner_auth(&fixture);
+        status = poll_owner_control(&fixture, NULL, NULL);
         usleep(1000);
     }
     if (!status && !fixture.peer_authenticated) status = -ETIMEDOUT;
@@ -50,7 +49,7 @@ int main(void)
     if (!status && getenv("KER_TEST_PEER_DUPLICATE")) {
         struct pollfd wait = {.fd = atoi(control), .events = POLLIN};
         if (poll(&wait, 1, 2000) != 1) status = -ETIMEDOUT;
-        else status = receive_supervisor_peer_auth(&fixture);
+        else status = poll_owner_control(&fixture, NULL, NULL);
     }
     if (!status) {
         /* Let the supervisor validate the ACK while this exact receiver is

@@ -337,6 +337,10 @@ int ker_socket_client_owner_group_cutover_begin(
     struct ker_socket_client *client, int plan_cap);
 int ker_socket_client_owner_group_cutover_commit(
     struct ker_socket_client *client, int cutover_cap);
+/* Add an immutable absolute host-monotonic decision deadline. Expiry is
+ * quarantine, including after an uncertain selector or packet acceptance. */
+int ker_socket_client_owner_group_cutover_commit_before(
+    struct ker_socket_client *client, int cutover_cap, uint64_t deadline_ns);
 int ker_socket_client_owner_group_cutover_abort(
     struct ker_socket_client *client, int cutover_cap);
 int ker_socket_client_owner_group_cutover_poll(

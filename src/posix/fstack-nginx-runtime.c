@@ -2,9 +2,11 @@
 #include <ff_api.h>
 #include <ff_config.h>
 #include <ff_reload.h>
+#include "ff_flow_map.h"
 #include <ker/ini.h>
 #include <ker/socket-broker.h>
 #include "socket-broker-preload-internal.h"
+#include "nginx-source-bootstrap.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -21,6 +23,7 @@
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include <time.h>
 
 struct ff_config ff_global_cfg;
 
@@ -29,6 +32,7 @@ struct runtime_config {
     unsigned version;
     int graceful_reload;
     int saw_lcore_mask;
+    unsigned source_process_count;
     int saw_version;
     int saw_path;
     int saw_graceful_reload;
@@ -57,8 +61,103 @@ static pid_t rx_owner_dispatch_tid;
 static pid_t rx_owner_dispatch_pid;
 static int rx_owner_dispatch_run_consumed;
 static _Atomic uint64_t ff_leaf_epoll_ctl_calls;
+static int source_control_only;
+static struct ker_nginx_source_bootstrap source_control_binding;
+static int source_worker_mode, source_worker_taken;
+static struct ker_nginx_source_bootstrap source_worker_binding;
+
+int ker_fstack_nginx_source_worker_binding_live(
+    const struct ker_nginx_source_bootstrap_record *binding)
+{
+    if (!binding || !source_worker_mode || !source_worker_taken ||
+        !runtime_initialized || !ker_sb_preload_ff_owner_is_current() ||
+        memcmp(binding, &source_worker_binding.record, sizeof(*binding)))
+        return -ESTALE;
+    return ker_nginx_source_bootstrap_live(&source_worker_binding);
+}
+static int source_ready_pending, source_ready_published;
+static int source_candidate_activated;
+static unsigned source_ready_slot;
+static uint32_t source_ready_pid;
+static uint64_t source_housekeeping_next_ns;
+void ker_nginx_source_original_publish_ready(unsigned, uint32_t);
+int ff_socket_drain_count(void);
+int ff_socket_snd_pending(void);
+int ff_syncache_count(void);
+static void runtime_trace(const char *format, ...);
+
+static void source_drain_housekeeping(void)
+{
+    struct timespec now;
+    if (!source_worker_mode || clock_gettime(CLOCK_MONOTONIC, &now)) return;
+    uint64_t ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+    if (ns < source_housekeeping_next_ns) return;
+    /* Original ff_dpdk_if secondary housekeeping runs at one Hz. Its drain
+     * report uses real native member census, payload, and request-sock counts
+     * through the compatibility API; never infer empty from missing reports. */
+    source_housekeeping_next_ns = ns + UINT64_C(1000000000);
+    if (ff_reload_hw_locked() && ff_is_drain_generation() &&
+            ff_reload_state_attached() && ff_reload_slot() >= 0)
+        ff_reload_drain_publish((unsigned)ff_reload_slot(), ff_reload_shared_epoch(),
+            (uint32_t)ff_socket_drain_count(), (uint64_t)ff_socket_snd_pending(),
+            (uint64_t)ff_syncache_count());
+    if (source_worker_binding.record.flags == KER_NGINX_SOURCE_WORKER_CANDIDATE &&
+            !ff_reload_hw_locked() && !ff_reload_peer_draining() &&
+            ff_reload_active_gen() == ff_reload_gen() && !ff_no_hw_mode_nosync() &&
+            ff_flow_map_active()) {
+        typedef int (*retire_fn)(void);
+        retire_fn retire = dlsym(RTLD_DEFAULT, "ker_nginx_source_owner_admission_steady");
+        int status = retire ? retire() : -ENOTCONN;
+        if (status < 0) {
+            runtime_trace("ff_source_retire failed pid=%ld status=%d\n", (long)getpid(), status);
+            abort();
+        }
+        if (status == 1) {
+            ff_unregist_packet_dispatcher_context();
+            ff_flow_map_close();
+            runtime_trace("ff_source_plane_retired pid=%ld generation=%d native_admission_drained=1\n",
+                (long)getpid(), ff_reload_gen());
+        }
+    }
+}
 static void runtime_trace(const char *format, ...);
 static int runtime_fail(int error, const char *message);
+
+int ker_fstack_runtime_application_io_allowed(void)
+{
+    if (source_control_only || (getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH") && !runtime_initialized)) {
+        errno = EACCES;
+        return 0;
+    }
+    return 1;
+}
+
+int ker_fstack_nginx_source_worker_take(struct ker_nginx_source_bootstrap *out)
+{
+    if (!out || !source_worker_mode || source_worker_taken ||
+        !ker_sb_preload_ff_owner_is_current()) return -EPERM;
+    int status = ker_nginx_source_bootstrap_live(&source_worker_binding);
+    if (status) return status;
+    *out = source_worker_binding;
+    out->channel = out->supervisor_pidfd = out->runtime_pidfd = out->io_pidfd = -1;
+    source_worker_binding.slot_fd = source_worker_binding.relay_fd = source_worker_binding.ready_fd = -1;
+    source_worker_taken = 1;
+    return 0;
+}
+
+void ff_reload_publish_ready(unsigned slot, uint32_t pid)
+{
+    if (!source_worker_mode) {
+        ker_nginx_source_original_publish_ready(slot, pid);
+        return;
+    }
+    if (!runtime_initialized || pid != (uint32_t)getpid() ||
+        slot >= FF_RELOAD_MAX_PROCS || ff_reload_slot() != (int)slot || (source_ready_pending &&
+        (source_ready_slot != slot || source_ready_pid != pid))) abort();
+    source_ready_slot = slot;
+    source_ready_pid = pid;
+    source_ready_pending = 1;
+}
 
 typedef int (*nginx_worker_authorization_fn)(unsigned int proc_id);
 
@@ -155,6 +254,7 @@ runtime_ini(void *opaque, const char *section, const char *name, const char *val
         }
         if (bits != 2)
             return 0;
+        config->source_process_count = bits;
         config->saw_lcore_mask = 1;
         return 1;
     }
@@ -371,6 +471,60 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
         if (validate_source_reload_binding(proc_id, proc_type, &plan) != 0)
             return -1;
 
+        if (getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH")) {
+            struct ff_reload_state **source = dlsym(RTLD_DEFAULT, "ngx_ff_reload_shm");
+            struct ker_nginx_source_bootstrap binding;
+            int status = ker_nginx_source_bootstrap_from_environment(
+                proc_id == 0 ? KER_NGINX_SOURCE_ROLE_SLIM : KER_NGINX_SOURCE_ROLE_WORKER,
+                (uint32_t)plan.worker_generation, plan.source_round_epoch, *source, &binding);
+            runtime_trace("ff_init_stage stage=graceful_bootstrap_transport pid=%ld role=%u status=%d\n",
+                (long)getpid(), proc_id, status);
+            if (status) return runtime_fail(-status,
+                "ker fstack runtime: source bootstrap transport rejected\n");
+            if (proc_id == 0 && binding.record.flags == KER_NGINX_SOURCE_SLIM_CONTROL_ONLY) {
+                size_t length = strlen(argv[1] + 7);
+                if (length >= sizeof(plan.config_path)) {
+                    ker_nginx_source_bootstrap_close(&binding);
+                    return runtime_fail(ENAMETOOLONG, "ker fstack runtime: source config path too long\n");
+                }
+                memcpy(plan.config_path, argv[1] + 7, length + 1);
+                plan.proc_id = proc_id;
+                plan.proc_type = proc_type;
+                source_control_binding = binding;
+                source_control_only = 1;
+                pending_init_plan = plan;
+                pending_init_plan_ready = 1;
+                return 0;
+            }
+            if (proc_id == 1 && binding.record.flags == KER_NGINX_SOURCE_WORKER_CANDIDATE) {
+                const char *enabled = getenv("KER_NGINX_SOURCE_FIRST_HUP_ENABLE");
+                /* The opt-in alone conveys no authority: the live bootstrap
+                 * grant already binds the exact source master, round, FIFO,
+                 * relay, and fresh READY channel. Only its first successor
+                 * can stage admission; original READY additionally waits for
+                 * authenticated C31 PREPARED and supervisor ACTIVATE. */
+                if (enabled && !strcmp(enabled, "1") &&
+                        plan.worker_generation == 1 && plan.source_round_epoch == 1) {
+                    source_worker_mode = 1;
+                    source_worker_binding = binding;
+                    goto open_worker_context;
+                }
+                ker_nginx_source_bootstrap_close(&binding);
+                return runtime_fail(ENOTSUP,
+                    "ker fstack runtime: source candidate needs native selector/park binding before owner claim\n");
+            }
+            if (proc_id == 1 && binding.record.flags == KER_NGINX_SOURCE_WORKER_INITIAL &&
+                    plan.worker_generation == 0 && plan.source_round_epoch == 0) {
+                source_worker_mode = 1;
+                source_worker_binding = binding;
+                goto open_worker_context;
+            }
+            /* A transport proof alone is never generation I/O authority.
+             * Keep the existing unsupported gate until the actual slot,
+             * original dispatcher and native selector are bound below. */
+            ker_nginx_source_bootstrap_close(&binding);
+        }
+
         /* The broker runtime currently has no native generation packet
          * dispatcher or EAL owner binding. Reject after validating the real
          * source block, but before opening a broker owner capability. A
@@ -386,6 +540,7 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
         return runtime_fail(EINVAL,
             "ker fstack runtime: dpdk.lcore_mask is accepted only for source graceful-startup validation\n");
 
+open_worker_context:
     broker_environment = getenv("KER_SOCKET_BROKER_PATH");
     if (broker_environment == NULL || strcmp(broker_environment, plan.config.broker_path) != 0)
         return runtime_fail(EINVAL,
@@ -436,6 +591,33 @@ ker_fstack_nginx_runtime_commit(void)
     if (!pending_init_plan_ready || runtime_initialized)
         return runtime_fail(EINVAL, "ker fstack runtime: no prepared ff_init plan to commit\n");
 
+    if (source_control_only) {
+        int status = ker_nginx_source_bootstrap_live(&source_control_binding);
+        if (status) {
+            ker_nginx_source_bootstrap_close(&source_control_binding);
+            pending_init_plan_ready = 0;
+            return runtime_fail(-status, "ker fstack runtime: source control authority expired before commit\n");
+        }
+        memcpy(runtime_config_path, pending_init_plan.config_path, sizeof(runtime_config_path));
+        memset(&ff_global_cfg, 0, sizeof(ff_global_cfg));
+        ff_global_cfg.filename = runtime_config_path;
+        ff_global_cfg.dpdk.proc_id = 0;
+        ff_global_cfg.dpdk.proc_type = (char *)"primary";
+        ff_global_cfg.dpdk.graceful_reload = 1;
+        ff_global_cfg.dpdk.primary_slim = 1;
+        /* The pinned source master checks worker_processes+1 against this
+         * mask before creating the shared block or forking the slim primary.
+         * Preflight accepts exactly two lcores, hence one source worker. */
+        ff_global_cfg.dpdk.nb_procs = (int)pending_init_plan.config.source_process_count;
+        /* Preserve the source-inherited state. The native I/O actor owns EAL;
+         * this process has no packet queues or application socket authority. */
+        runtime_initialized = 1;
+        pending_init_plan_ready = 0;
+        runtime_trace("ff_source_slim_control_init pid=%ld native_io=%u packet_owner=0 application_io=0\n",
+            (long)getpid(), source_control_binding.record.io_pid);
+        return 0;
+    }
+
     memcpy(runtime_config_path, pending_init_plan.config_path,
         sizeof(runtime_config_path));
     nginx_max_sockets = pending_init_plan.nginx_max_sockets;
@@ -445,16 +627,23 @@ ker_fstack_nginx_runtime_commit(void)
     ff_global_cfg.filename = runtime_config_path;
     ff_global_cfg.dpdk.proc_id = (int)pending_init_plan.proc_id;
     ff_global_cfg.dpdk.proc_type = (char *)pending_init_plan.proc_type;
-    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_global_cfg.dpdk.graceful_reload = source_worker_mode ? 1 : 0;
+    if (source_worker_mode) {
+        if (!source_worker_taken || ker_nginx_source_bootstrap_live(&source_worker_binding))
+            return runtime_fail(ESTALE, "ker fstack runtime: incomplete source worker delegation\n");
+        ff_global_cfg.dpdk.primary_slim = 1;
+        ff_global_cfg.dpdk.nb_procs = (int)pending_init_plan.config.source_process_count;
+    }
 
-    /* This runtime commits only the bounded graceful-off profile. Source
-     * graceful=1 is checked in preflight and remains fail-closed until the
-     * native generation dispatcher and EAL ownership path are bound. */
-    ff_reload_attach_state(NULL);
-    ff_reload_set_epoch(0);
-    ff_reload_set_gen(0);
-    (void)ff_reload_gendir_install(NULL, 0);
-    ff_reload_dir_sync_enable(0);
+    /* Legacy workers use the bounded graceful-off projection. Authenticated
+     * source workers retain the actual inherited block and generation. */
+    if (!source_worker_mode) {
+        ff_reload_attach_state(NULL);
+        ff_reload_set_epoch(0);
+        ff_reload_set_gen(0);
+        (void)ff_reload_gendir_install(NULL, 0);
+        ff_reload_dir_sync_enable(0);
+    }
     runtime_initialized = 1;
     pending_init_plan_ready = 0;
     runtime_trace("ff_init pid=%ld proc_id=%u proc_type=%s graceful_reload=%d attached=%d active=%d target=%d selected=%d\n",
@@ -481,6 +670,26 @@ ff_run(loop_func_t loop, void *arg)
         (void)syscall(SYS_write, STDERR_FILENO, message, sizeof(message) - 1);
         abort();
     }
+    if (source_control_only) {
+        runtime_stop = 0;
+        for (;;) {
+            if ((uint32_t)getpid() != source_control_binding.record.actor_pid ||
+                (uint32_t)syscall(SYS_gettid) != source_control_binding.record.actor_tid)
+                _exit(2);
+            int status = ker_nginx_source_bootstrap_poll_stop(&source_control_binding);
+            if (status || runtime_stop) {
+                runtime_trace("ff_source_slim_control_stop pid=%ld status=%d\n", (long)getpid(), status);
+                ker_nginx_source_bootstrap_close(&source_control_binding);
+                if (status < 0) _exit(2);
+                return;
+            }
+            /* The original slim loop is control-only. In particular, it must
+             * never publish a secondary RX owner's reload heartbeat. */
+            (void)loop(arg);
+            struct timespec idle = {.tv_nsec = 1000000};
+            (void)syscall(SYS_nanosleep, &idle, NULL);
+        }
+    }
     if (getenv("KER_NGINX_RX_OWNER_RELAY_FD")) {
         if (!ker_sb_preload_ff_owner_is_current() ||
             rx_owner_dispatch_run_consumed) {
@@ -500,18 +709,71 @@ ff_run(loop_func_t loop, void *arg)
     if (!notify_ready && getenv("KER_NGINX_OWNER_READY_FD")) abort();
     int ready_sent = notify_ready == NULL;
     while (!runtime_stop) {
+        if (source_worker_mode &&
+                source_worker_binding.record.flags == KER_NGINX_SOURCE_WORKER_CANDIDATE &&
+                !source_candidate_activated) {
+            int status = ker_nginx_source_bootstrap_poll_activate(&source_worker_binding);
+            if (status < 0) {
+                runtime_trace("ff_source_candidate activation failed pid=%ld status=%d\n",
+                    (long)getpid(), status);
+                abort();
+            }
+            source_candidate_activated = status == 1;
+        } else if (source_worker_mode) {
+            /* No further command is authorized after activation (nor for
+             * the initial worker). Consume/reject unsolicited input rather
+             * than confusing channel readability with failed liveness. */
+            int status = ker_nginx_source_bootstrap_poll_stop(&source_worker_binding);
+            if (status) {
+                runtime_trace("ff_source_worker unexpected command pid=%ld status=%d\n",
+                    (long)getpid(), status);
+                abort();
+            }
+        }
+        int source_authority_status = source_worker_mode ?
+            ker_nginx_source_bootstrap_live(&source_worker_binding) : 0;
+        if (source_authority_status) {
+            runtime_trace("ff_source_worker authority lost pid=%ld status=%d\n",
+                (long)getpid(), source_authority_status);
+            abort();
+        }
+        /* The unchanged original loop ticks only secondaries. The resident
+         * source primary never owns RX and must not mask a dead candidate. */
+        if (source_worker_mode) ff_reload_heartbeat_tick();
         int pump_status = ker_sb_preload_owner_pump();
         if (pump_status) {
             runtime_trace("ff_owner_pump failure stage=before-loop errno=%d\n",
                 pump_status < 0 ? -pump_status : EPROTO);
             abort();
         }
+        if (source_worker_mode && ff_no_hw_mode() && ff_reload_rx_stopped() &&
+                ff_reload_rx_owner_gen() == ff_reload_gen())
+            /* The master publishes stopped only after the authenticated
+             * native SYN barrier. This completed owner-loop pass is parked;
+             * C31's route transition separately waits for no deferred frame. */
+            ff_reload_handover_ack();
         if (!ready_sent) {
             int status = notify_ready();
             if (!status) ready_sent = 1;
             else if (status != -EAGAIN) {
                 runtime_trace("ff_owner_ready failure errno=%d\n", -status);
                 abort();
+            }
+        }
+        if (source_worker_mode && source_ready_pending && !source_ready_published) {
+            typedef int (*authenticated_fn)(void);
+            authenticated_fn authenticated = (authenticated_fn)dlsym(RTLD_DEFAULT,
+                "ker_fstack_nginx_source_worker_authenticated");
+            if (!authenticated) abort();
+            if (authenticated() &&
+                    (source_worker_binding.record.flags != KER_NGINX_SOURCE_WORKER_CANDIDATE ||
+                        source_candidate_activated)) {
+                if (ff_reload_shared_epoch() != source_worker_binding.record.source_epoch)
+                    abort();
+                ker_nginx_source_original_publish_ready(source_ready_slot, source_ready_pid);
+                source_ready_published = 1;
+                runtime_trace("ff_source_original_ready pid=%ld slot=%u epoch=%u\n",
+                    (long)getpid(), source_ready_slot, ff_reload_shared_epoch());
             }
         }
         (void)loop(arg);
@@ -521,6 +783,7 @@ ff_run(loop_func_t loop, void *arg)
                 pump_status < 0 ? -pump_status : EPROTO);
             abort();
         }
+        source_drain_housekeeping();
     }
     ker_sb_preload_owner_loop_leave();
 }
@@ -646,15 +909,29 @@ void ff_unregist_packet_dispatcher_context(void)
 }
 
 int ker_fstack_rx_owner_relay_dispatch_ready(void)
-{ return rx_owner_dispatcher != NULL && rx_owner_dispatch_pid == getpid(); }
+{
+    if (rx_owner_dispatcher) return rx_owner_dispatch_pid == getpid();
+    /* Original ff_dpdk_if invokes a dispatcher only when registered. The
+     * initial/old source worker legitimately has none: the source arm guard
+     * leaves it unregistered outside the target's reload window. */
+    return source_worker_mode && runtime_initialized && source_worker_taken &&
+        !ker_nginx_source_bootstrap_live(&source_worker_binding) &&
+        (!ff_reload_hw_locked() || ff_reload_gen() != ff_reload_target_gen());
+}
 
 int ker_fstack_rx_owner_relay_dispatch(void *data, uint16_t *length,
     uint16_t queue_id, uint16_t queue_count, uint16_t vlan_tci,
     uint8_t vlan_stripped, int32_t *result)
 {
-    if (!rx_owner_dispatcher || !data || !length || !*length || !queue_count ||
+    if (!data || !length || !*length || !queue_count ||
         queue_id >= queue_count || !result || !ker_sb_preload_owner_loop_active() ||
-        rx_owner_dispatch_pid != getpid() ||
+        !ker_sb_preload_ff_owner_is_current()) return -ENOTCONN;
+    if (!rx_owner_dispatcher) {
+        if (!ker_fstack_rx_owner_relay_dispatch_ready()) return -ENOTCONN;
+        *result = queue_id;
+        return 0;
+    }
+    if (rx_owner_dispatch_pid != getpid() ||
         rx_owner_dispatch_tid != (pid_t)syscall(SYS_gettid)) return -ENOTCONN;
     struct ff_dispatcher_context context = {0};
     context.vlan.stripped = vlan_stripped;

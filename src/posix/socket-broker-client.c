@@ -917,6 +917,14 @@ int ker_socket_client_owner_group_cutover_commit(
         KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT);
 }
 
+int ker_socket_client_owner_group_cutover_commit_before(
+    struct ker_socket_client *client, int cutover_cap, uint64_t deadline_ns)
+{
+    if (!client || cutover_cap < 0 || !deadline_ns) return fail(EINVAL);
+    return socket_call(client, cutover_cap, KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT,
+        &deadline_ns, sizeof(deadline_ns), NULL, 0, NULL, NULL);
+}
+
 int ker_socket_client_owner_group_cutover_abort(
     struct ker_socket_client *client, int cutover_cap)
 {

@@ -35,6 +35,10 @@ struct ker_nginx_owner_ready_sender {
 };
 int ker_nginx_owner_ready_sender_init(struct ker_nginx_owner_ready_sender *sender,
     int fd, pid_t expected_peer);
+/* Source worker receives a fresh endpoint after fork. Its exact parent is
+ * independently pinned by source bootstrap and the companion's READY audit. */
+int ker_nginx_owner_ready_sender_init_worker(struct ker_nginx_owner_ready_sender *sender,
+    int fd, pid_t expected_peer, pid_t expected_master);
 int ker_nginx_owner_ready_sender_bind(struct ker_nginx_owner_ready_sender *sender,
     int slot_fd, unsigned role);
 int ker_nginx_owner_ready_sender_send(struct ker_nginx_owner_ready_sender *sender);

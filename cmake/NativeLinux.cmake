@@ -358,8 +358,9 @@ option(KER_BUILD_FSTACK_NGINX_RUNTIME
 function(ker_add_fstack_nginx_runtime target output_name)
     add_library(${target} SHARED
         src/posix/fstack-nginx-runtime.c
+        src/posix/nginx-source-bootstrap.c
         src/posix/fstack-socket-bridge.c
-        third_party/fstack-reload/ff_reload.c
+        src/posix/nginx-source-reload.c
         third_party/fstack-flow-map/ff_flow_map.c)
     set_target_properties(${target} PROPERTIES
         OUTPUT_NAME "${output_name}"
@@ -537,6 +538,7 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
     set_target_properties(ker-socket-client ker-ini PROPERTIES POSITION_INDEPENDENT_CODE ON)
     add_library(ker-fstack-nginx-owner-activation MODULE
         src/posix/fstack-nginx-owner-activation-module.c
+        src/posix/nginx-source-owner-admission.c
         src/posix/nginx-candidate-admission.c
         src/posix/nginx-owner-ready.c
         src/posix/nginx-candidate-map.c)
@@ -560,6 +562,7 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
     if(BUILD_TESTING)
         add_library(ker-fstack-nginx-owner-activation-alias-test MODULE
             src/posix/fstack-nginx-owner-activation-module.c
+            src/posix/nginx-source-owner-admission.c
             src/posix/nginx-candidate-admission.c
             src/posix/nginx-source-map-admission.c
             src/posix/nginx-original-flowmap-source.c
@@ -1023,6 +1026,33 @@ if(BUILD_TESTING)
     set_tests_properties(rx-owner-peer-authority-python PROPERTIES
         TIMEOUT 30 LABELS "rx-decision;owner-relay;peer;authentication"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_executable(ker-rx-owner-source-route-receiver-test
+        tests/unit/rx-owner-source-route-receiver-test.c src/posix/rx-owner-relay-peer.c)
+    target_include_directories(ker-rx-owner-source-route-receiver-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_features(ker-rx-owner-source-route-receiver-test PRIVATE c_std_11)
+    target_compile_options(ker-rx-owner-source-route-receiver-test PRIVATE
+        -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+    target_link_options(ker-rx-owner-source-route-receiver-test PRIVATE -Wl,--gc-sections)
+    target_compile_definitions(ker-rx-owner-source-route-receiver-test PRIVATE
+        KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING=1)
+    add_test(NAME rx-owner-source-route-python
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/unit/test_rx_owner_source_route.py"
+            --receiver "$<TARGET_FILE:ker-rx-owner-source-route-receiver-test>")
+    set_tests_properties(rx-owner-source-route-python PROPERTIES
+        TIMEOUT 30 LABELS "rx-decision;owner-relay;source-route;authentication"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    if(TARGET ker-fstack-nginx-owner-activation)
+        add_executable(ker-nginx-source-relay-liveness-test
+            tests/unit/nginx-source-relay-liveness-test.c)
+        target_compile_options(ker-nginx-source-relay-liveness-test PRIVATE
+            -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+        target_link_options(ker-nginx-source-relay-liveness-test PRIVATE -Wl,--gc-sections)
+        add_test(NAME nginx-source-relay-liveness
+            COMMAND ker-nginx-source-relay-liveness-test)
+        set_tests_properties(nginx-source-relay-liveness PROPERTIES
+            TIMEOUT 10 LABELS "fstack;rx-owner-relay;authentication;signal")
+    endif()
     add_executable(ker-socket-broker-generation-watch-actor
         tests/posix/socket-broker-generation-watch-actor.c)
     target_link_libraries(ker-socket-broker-generation-watch-actor PRIVATE
