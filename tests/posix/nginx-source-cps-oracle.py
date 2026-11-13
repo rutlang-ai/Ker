@@ -65,6 +65,16 @@ class SourceCpsOracle(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             profile.validate_source_cps(checker, PROGRESS + summary, 0, 4)
 
+    def test_retry_requires_new_requests_past_recovery_interval(self):
+        self.assertIsNone(profile.retry_cps_progress(PROGRESS, 8, 600))
+        self.assertIsNone(profile.retry_cps_progress(PROGRESS, 7, 700))
+        self.assertIn('n=700', profile.retry_cps_progress(PROGRESS, 7, 600))
+
+    def test_retry_rejects_failures_anywhere_in_old_service_interval(self):
+        text = PROGRESS.replace('n=200 fail=0', 'n=200 fail=1')
+        with self.assertRaises(RuntimeError):
+            profile.retry_cps_progress(text, 7, 600)
+
 
 if __name__ == '__main__':
     unittest.main()

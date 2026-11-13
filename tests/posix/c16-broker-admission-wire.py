@@ -1794,8 +1794,8 @@ def main():
     if args.nginx_overlap_source_cps and (not args.nginx_overlap_controller or
             args.nginx_overlap_source_lc or args.nginx_overlap_source_streams or
             args.nginx_overlap_alias_regression or args.nginx_overlap_successor or
-            args.nginx_overlap_retry or args.nginx_overlap_owner_death):
-        parser.error('source CPS requires a plain commit/abort overlap profile without other probes')
+            args.nginx_overlap_abandon or args.nginx_overlap_owner_death):
+        parser.error('source CPS requires a commit/abort/retry overlap profile without other probes')
     if args.nginx_overlap_source_lc and (not args.nginx_overlap_controller or
             args.nginx_overlap_source_streams or args.nginx_overlap_alias_regression):
         parser.error('source LC requires the ordinary overlap profile without a stream/alias probe')

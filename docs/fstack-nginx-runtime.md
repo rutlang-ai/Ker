@@ -1003,3 +1003,41 @@ independent controller connections. These are correctness samples, not a
 throughput comparison. The existing 180-second source LC commit profile and
 the ordinary commit/abort profiles also passed; the LC oracle retained its
 original bounded old-connection closure policy.
+
+### CPS traffic through an aborted candidate and successful retry
+
+`native-nginx-abort-retry-source-cps-tap` extends the same unchanged 180-second
+rt30 CPS workload across three real Nginx callers. An actual queued SYN is
+replayed to the old owner on ABORT. The rejected candidate must exit, and the
+source probe must then complete additional failure-free requests at least five
+seconds after that exit before a new candidate starts. This interval uses a
+fresh request-count baseline, not the earlier startup anchor. The old listener
+identity is preserved and rejected capabilities cannot redirect the retry.
+
+The replacement receives its own authenticated slot/READY, commits a second
+queued SYN, and serves fresh HTTP. The held old keepalive survives both
+decisions. Only then does the old Nginx owner retire; the final CPS oracle
+requires increasing request counts after this retirement, rather than after
+the earlier rejected candidate's exit. All 180 seconds retain the strict
+zero-failure source summary policy. Evidence is written to
+`nginx-abort-retry-source-cps-evidence.json`.
+
+```sh
+ctest --test-dir <build> --output-on-failure \
+  -R '^native-nginx-(source-cps-oracle|abort-retry-source-cps-tap)$'
+```
+
+This qualifies recovery traffic on the explicit broker abort/retry path. It
+does not implement the original Nginx same-master retry FSM or its injected
+fault policy, and it does not complete rt24, rt30, cross-generation PEER
+forwarding or the original graceful-reload shell entrypoint. Inventory counts
+remain unchanged.
+
+Local Debug qualification completed the full 180-second recovery probe with
+11,112 successful short connections, zero failures/worker errors and zero
+outstanding packet objects. Native Linux counted 11,120 passive opens including
+the independent controller traffic. Source progress advanced from 237 requests
+at three seconds to 702 at nine seconds before replacement startup, and to 884
+at twelve seconds after the old owner retired at about 9.23 seconds. The rt24
+LC abort/retry regression, all 17 CPS/LC negative controls, and the inventory
+audit/guards also passed. These measurements qualify correctness, not performance.

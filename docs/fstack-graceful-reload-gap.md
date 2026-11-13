@@ -559,3 +559,11 @@ See [scope and reproduction](fstack-nginx-runtime.md#original-cps-probe-across-e
 This is the rt30 traffic prerequisite, not its same-master FSM, performance
 comparison, source drain/forward counter contract or complete shell case.
 The source entrypoint remains blocked and the migration counts do not change.
+
+The separate `native-nginx-abort-retry-source-cps-tap` qualification now keeps
+that original short-connection probe active across an aborted candidate, a
+measured five-second interval of restored old service after candidate exit,
+and a new candidate's successful commit. Final progress is measured after the
+initial old owner retires. This extends caller recovery evidence, not the
+original source FSM or fault-injection case. See
+[scope and reproduction](fstack-nginx-runtime.md#cps-traffic-through-an-aborted-candidate-and-successful-retry).
