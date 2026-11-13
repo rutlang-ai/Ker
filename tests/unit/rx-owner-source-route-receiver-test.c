@@ -24,6 +24,23 @@ static int finish_success(struct fixture *fixture)
     return 0;
 }
 
+struct late_route_poll_barrier {
+    int ready_fd;
+    int release_fd;
+    bool released;
+};
+
+static int release_after_empty_source_route_poll(void *opaque)
+{
+    struct late_route_poll_barrier *barrier = opaque;
+    if (!barrier || barrier->released) return 0;
+    char byte = 0;
+    if (write(barrier->ready_fd, "E", 1) != 1 ||
+        read(barrier->release_fd, &byte, 1) != 1 || byte != 'R') return -EIO;
+    barrier->released = true;
+    return 0;
+}
+
 int main(void)
 {
     long control = env_long("KER_RX_OWNER_AUTH_FD");
@@ -48,6 +65,13 @@ int main(void)
         .expected_owner_slot_inode = (uint64_t)owner_inode, .owner_expected = true,
         .owner_authenticated = true, .source_route_enabled = true,
         .supervisor_pid = (uint32_t)supervisor, .peer = {.fd = -1, .pidfd = -1}};
+    bool late_route_arrival = getenv("KER_TEST_SOURCE_LATE_ROUTE_AFTER_EMPTY") != NULL;
+    fixture.peer_auth_enabled = late_route_arrival;
+    struct late_route_poll_barrier late_route_barrier = {
+        .ready_fd = (int)env_long("KER_TEST_SOURCE_ROUTE_EMPTY_READY_FD"),
+        .release_fd = (int)env_long("KER_TEST_SOURCE_ROUTE_EMPTY_RELEASE_FD")};
+    if (late_route_arrival &&
+        (late_route_barrier.ready_fd < 0 || late_route_barrier.release_fd < 0)) return 2;
     if (read_start_ticks(getpid(), &fixture.app_start) ||
         read_start_ticks((pid_t)supervisor, &fixture.supervisor_start) ||
         pthread_mutex_init(&fixture.source_route_lock, NULL)) return 2;
@@ -66,7 +90,9 @@ int main(void)
     bool staged = false;
     uint64_t expired_seen_sequence = 0;
     while (monotonic_ns() < deadline) {
-        int status = receive_source_route_command(&fixture);
+        int status = poll_owner_control(&fixture,
+            late_route_arrival ? release_after_empty_source_route_poll : NULL,
+            &late_route_barrier);
         if (status) { fprintf(stderr, "SOURCE_ROUTE_COMMAND status=%d\n", status); return 3; }
         if (staged && fixture.packet_id && fixture.source_route_pending &&
             fixture.source_route_last_type == KER_RX_OWNER_SOURCE_ROUTE_COMMIT) {
@@ -84,8 +110,6 @@ int main(void)
                 fixture.peer.fd >= 0 || write((int)marker, "T", 1) != 1) return 17;
             expired_seen_sequence = fixture.source_route_last_sequence;
         }
-        status = authenticate_pending_source_candidate(&fixture);
-        if (status) { fprintf(stderr, "SOURCE_ROUTE_AUTH status=%d\n", status); return 4; }
         if (!staged && (fixture.source_route_record.operation_id ||
             fixture.source_route_rejected_operation_id) &&
             !fixture.source_route_pending && !fixture.source_route_candidate_authenticated) {
