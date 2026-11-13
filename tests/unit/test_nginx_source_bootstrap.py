@@ -208,5 +208,91 @@ class AbortedRetryAuthorityTests(unittest.TestCase):
         finally:os.close(fd)
 
 
+@unittest.skipUnless(hasattr(os, 'pidfd_open'), 'Linux pidfds required')
+class SuccessfulSuccessorAuthorityTests(unittest.TestCase):
+    """Real pidfd/FIFO lineage controls; source memory is a model only."""
+    acquire = AbortedRetryAuthorityTests.acquire
+
+    def setUp(self):
+        AbortedRetryAuthorityTests.setUp(self)
+        prior = self.observer.workers
+        self.observer.workers = {(0, 0): prior[(1, 1)], (1, 1): prior[(0, 0)]}
+        self.observer.allow_abort_retry = False
+        self.observer.allow_successor = True
+        self.observer._completed_master_barriers = {(1, 5), (1, 6)}
+        self.observer._native_committed_cookie = 7002
+        self.prefix = (0x46524c4d, 1, 2160, 1, 1, 1, 0, 0)
+        self.markers = (1, 0, 0)
+
+    def adopt(self, index=2, cookie=7002):
+        return self.acquire(index), cookie
+
+    def test_committed_actor_and_dead_predecessor_are_retained(self):
+        before = dict(self.observer.workers)
+        fd = self.observer.prepare_successful_successor(self.adopt)
+        try:
+            self.assertEqual(self.observer.workers, before)
+            self.assertEqual(self.observer._source_round(2), (1, 0))
+            self.assertEqual(self.observer._successor_slot,
+                (os.fstat(fd).st_dev, os.fstat(fd).st_ino))
+            with self.assertRaises(PermissionError):
+                self.observer.prepare_successful_successor(self.adopt)
+            self.assertEqual(self.calls, 1)
+        finally:
+            os.close(fd)
+
+    def test_aborted_round_is_not_a_successful_successor(self):
+        self.observer._completed_master_barriers = {(1, 5), (1, 9)}
+        with self.assertRaises(PermissionError):
+            self.observer.prepare_successful_successor(self.adopt)
+        self.assertEqual(self.calls, 0)
+
+    def test_live_previous_peer_blocks_adoption(self):
+        _, record = self.observer.workers[(0, 0)]
+        self.observer.workers[(0, 0)] = (self.oldfd, record)
+        with self.assertRaises(PermissionError):
+            self.observer.prepare_successful_successor(self.adopt)
+        self.assertEqual(self.calls, 0)
+
+    def test_dead_current_actor_blocks_adoption(self):
+        self.old.terminate(); self.old.wait(timeout=3)
+        with self.assertRaises(PermissionError):
+            self.observer.prepare_successful_successor(self.adopt)
+        self.assertEqual(self.calls, 0)
+
+    def test_wrong_listener_cookie_consumes_attempt_and_closes_fifo(self):
+        received = []
+        def wrong():
+            fd, _ = self.adopt()
+            received.append(fd)
+            return fd, 7003
+        with self.assertRaises(PermissionError):
+            self.observer.prepare_successful_successor(wrong)
+        with self.assertRaises(OSError):
+            os.fstat(received[0])
+        with self.assertRaises(PermissionError):
+            self.observer.prepare_successful_successor(self.adopt)
+        self.assertEqual(self.calls, 1)
+
+    def test_reused_current_fifo_is_not_a_fresh_candidate(self):
+        with self.assertRaises(PermissionError):
+            self.observer.prepare_successful_successor(lambda: self.adopt(index=0))
+        self.assertEqual(self.calls, 1)
+
+    def test_changed_source_round_blocks_native_adoption(self):
+        self.prefix = (0x46524c4d, 1, 2160, 2, 1, 0, 1, 1)
+        with self.assertRaises(PermissionError):
+            self.observer.prepare_successful_successor(self.adopt)
+        self.assertEqual(self.calls, 0)
+
+    def test_expired_authority_never_calls_native_adoption(self):
+        def expired():
+            raise PermissionError('finite grant expired')
+        self.observer.live = expired
+        with self.assertRaises(PermissionError):
+            self.observer.prepare_successful_successor(self.adopt)
+        self.assertEqual(self.calls, 0)
+
+
 if __name__ == '__main__':
     unittest.main()

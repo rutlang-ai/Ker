@@ -43,7 +43,7 @@ ENV_KEYS = frozenset(('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
     'KER_NGINX_RX_OWNER_RELAY_NONCE', 'KER_NGINX_RX_OWNER_RELAY_EPOCH',
     'KER_NGINX_SOURCE_FLOWMAP_TEST', 'KER_NGINX_SOURCE_ADMISSION_RELAY',
     'KER_NGINX_SOURCE_FIRST_HUP_ENABLE',
-    'KER_NGINX_SOURCE_ABORT_RETRY_ENABLE', 'FF_FAULT',
+    'KER_NGINX_SOURCE_ABORT_RETRY_ENABLE', 'KER_NGINX_SOURCE_SUCCESSOR_ENABLE', 'FF_FAULT',
     'KER_NGINX_CANDIDATE_SLOT_FD',
     'KER_NGINX_INITIAL_SLOT_FD', 'KER_NGINX_SOURCE_PEER_OLD', 'KER_NGINX_SOURCE_PEER_PAIR',
     'KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US',
@@ -768,6 +768,12 @@ def run(args):
             args.nginx_env['KER_SOCKET_BROKER_PATH'], graceful_reload=reload_value):
         raise ValueError('Nginx INI does not match the pinned source/legacy profile')
     nginx_env = {'PATH': '/usr/bin:/bin', **args.nginx_env}
+    source_successor_enabled = nginx_env.get('KER_NGINX_SOURCE_SUCCESSOR_ENABLE') == '1'
+    if ('KER_NGINX_SOURCE_SUCCESSOR_ENABLE' in nginx_env and
+            (not source_successor_enabled or not args.source_bootstrap_required or
+             nginx_env.get('KER_NGINX_SOURCE_FIRST_HUP_ENABLE') != '1' or
+             'FF_FAULT' in nginx_env or 'KER_NGINX_SOURCE_ABORT_RETRY_ENABLE' in nginx_env)):
+        raise ValueError('source successor requires the exact fault-free source profile')
     cycle_env_keys = {key for key in args.nginx_env if key.startswith('KER_NGINX_CYCLE_')}
     required_cycle_keys = {'KER_NGINX_CYCLE_FD', 'KER_NGINX_CYCLE_NONCE',
         'KER_NGINX_CYCLE_RUNTIME_NONCE', 'KER_NGINX_CYCLE_RUNTIME_EPOCH',
@@ -1008,6 +1014,9 @@ def run(args):
     source_candidate_attempted = False
     source_aborted_candidate = None
     source_retry_attempted = False
+    source_retired_owners = []
+    source_promotions = 0
+    source_successor_attempted = False
     while True:
         if master.poll() is not None:
             # Reap only children adopted by this dedicated subreaper. Report
@@ -1097,19 +1106,26 @@ def run(args):
                 if request_sequence > wire.MAX_SEQUENCE:
                     raise OverflowError('companion request sequence exhausted')
                 continue
-            if record_type in (wire.SOURCE_CANDIDATE_WATCH, wire.SOURCE_RETRY_WATCH):
+            if record_type in (wire.SOURCE_CANDIDATE_WATCH, wire.SOURCE_RETRY_WATCH,
+                    wire.SOURCE_SUCCESSOR_WATCH):
                 retry_watch = record_type == wire.SOURCE_RETRY_WATCH
+                successor_watch = record_type == wire.SOURCE_SUCCESSOR_WATCH
                 if (not args.source_bootstrap_required or not args.owner_ready_required or
                         len(fds) != 2 or source_candidate is not None or
-                        (not retry_watch and source_candidate_attempted) or
+                        (not retry_watch and not successor_watch and source_candidate_attempted) or
                         (retry_watch and (source_aborted_candidate is None or
-                            source_retry_attempted or process_alive(source_aborted_candidate[1])))):
+                            source_retry_attempted or process_alive(source_aborted_candidate[1]))) or
+                        (successor_watch and (not source_successor_enabled or
+                            source_successor_attempted or source_promotions != 1 or
+                            len(source_retired_owners) != 1 or
+                            process_alive(source_retired_owners[0][1])))):
                     raise ValueError('source candidate watch is not available')
                 fields = wire.unpack_record(data, record_type,
                     args.nonce, args.epoch, sequence, wire.SOURCE_WATCH_BODY)
                 pid, tid, role, reserved, ticks, dev, inode, cookie = fields
                 old_pid, _, _, old_role, _, _, _, old_dev, old_inode, old_cookie = identity
-                if (reserved or role != 1 or old_role != 0 or pid <= 0 or tid != pid or
+                if (reserved or role != 1 or old_role != (1 if successor_watch else 0) or
+                        pid <= 0 or tid != pid or
                         not ticks or not dev or not inode or not cookie or pid == old_pid or
                         cookie == old_cookie or (dev, inode) == (old_dev, old_inode)):
                     raise PermissionError('source candidate watch is not a distinct successor')
@@ -1119,6 +1135,12 @@ def run(args):
                             (dev, inode) == previous[7:9]):
                         raise PermissionError('source retry reuses the aborted candidate identity')
                     source_retry_attempted = True
+                if successor_watch:
+                    previous = source_retired_owners[0][0]
+                    if (pid == previous[0] or cookie == previous[9] or
+                            (dev, inode) == previous[7:9]):
+                        raise PermissionError('source successor reuses its retired predecessor identity')
+                    source_successor_attempted = True
                 source_candidate_attempted = True
                 receiver = socket.socket(fileno=fds.pop(0))
                 try:
@@ -1175,9 +1197,15 @@ def run(args):
                 # The authenticated supervisor owns the native selector
                 # transaction. This changes only the containment watch, after
                 # it has verified the native/source handover; it signals no FSM.
-                os.close(owner_ready_pidfd)
+                if source_successor_enabled:
+                    if source_promotions >= 2:
+                        raise PermissionError('bounded source successor promotion exhausted')
+                    source_retired_owners.append((identity, owner_ready_pidfd))
+                else:
+                    os.close(owner_ready_pidfd)
                 identity, owner_ready_pidfd = source_candidate
                 source_candidate = None
+                source_promotions += 1
                 send_record(channel, wire.pack_record(wire.SOURCE_PROMOTED,
                     wire.OWNER_READY_BODY.pack(*identity), args.nonce, args.epoch,
                     sequence), deadline=time.monotonic() + 5)

@@ -638,6 +638,7 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
             TIMEOUT 10)
         add_executable(ker-socket-broker-preload-relay-checkpoint-test
             tests/unit/socket-broker-preload-relay-checkpoint-test.c
+            src/posix/ff-admission-channel.c
             src/posix/socket-broker-client.c
             src/posix/socket-broker-preload.c
             src/posix/socket-broker-preload-fd.c)

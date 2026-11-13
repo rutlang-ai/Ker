@@ -36,6 +36,7 @@ static int interrupt_io(long number)
 
 static unsigned admits, revokes;
 static int active(void *context) { (void)context; return 1; }
+static int retire(void *context) { (void)context; return 0; }
 static int map_admit(const struct ker_ff_admission_key *key, int *created, void *context)
 {
     (void)context;
@@ -97,6 +98,23 @@ static void cached_peer_exit(const struct ker_ff_admission_map_ops *ops,
     close(ready[0]);
 }
 
+static void preseal_eof_is_fatal(const struct ker_ff_admission_map_ops *ops)
+{
+    int endpoints[2];
+    CHECK(!ker_ff_admission_channel_pair(endpoints));
+    struct ker_ff_admission_channel *controller = NULL, *owner = NULL;
+    CHECK(!ker_ff_admission_channel_open(endpoints[0], getpid(), getuid(), getgid(), 9, &controller));
+    CHECK(!ker_ff_admission_channel_open(endpoints[1], getpid(), getuid(), getgid(), 9, &owner));
+    CHECK(!ker_ff_admission_channel_send_retire(controller, 1));
+    CHECK(!ker_ff_admission_channel_owner_step(owner, ops));
+    struct ker_ff_admission_result result;
+    CHECK(ker_ff_admission_channel_receive(controller, &result) == KER_FF_ADMISSION_RETIRED);
+    CHECK(!result.status && result.lease == 9);
+    ker_ff_admission_channel_close(controller);
+    CHECK(ker_ff_admission_channel_owner_step(owner, ops) == -ECONNRESET);
+    ker_ff_admission_channel_close(owner);
+}
+
 int main(void)
 {
     int endpoints[2];
@@ -104,7 +122,8 @@ int main(void)
     struct ker_ff_admission_channel *controller = NULL, *owner = NULL;
     CHECK(!ker_ff_admission_channel_open(endpoints[0], getpid(), getuid(), getgid(), 1, &controller));
     CHECK(!ker_ff_admission_channel_open(endpoints[1], getpid(), getuid(), getgid(), 1, &owner));
-    const struct ker_ff_admission_map_ops ops = {.active = active, .admit = map_admit, .revoke = map_revoke};
+    const struct ker_ff_admission_map_ops ops = {.active = active, .admit = map_admit,
+        .revoke = map_revoke, .retire = retire};
     struct ker_ff_admission_result result;
     struct timespec now;
     CHECK(!clock_gettime(CLOCK_MONOTONIC, &now));
@@ -122,6 +141,7 @@ int main(void)
     CHECK(ker_ff_admission_channel_send_admit(controller, &request) == -EAGAIN);
     CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == -EAGAIN && !admits);
     CHECK(!ker_ff_admission_channel_send_admit(controller, &request));
+    CHECK(ker_ff_admission_channel_send_seal(controller, 99) == -EINVAL);
     interrupt_next(SYS_recvmsg, 1);
     CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == -EAGAIN && !admits);
     interrupt_next(SYS_poll, 2);
@@ -187,10 +207,47 @@ int main(void)
     CHECK(!ker_ff_admission_channel_owner_step(owner, &ops));
     CHECK(ker_ff_admission_channel_receive(controller, &result) == KER_FF_ADMISSION_CANCELLED);
     CHECK(!result.status && revokes == 1);
+
+    /* A seal is unavailable before RETIRED, and wrong-lease/replay records
+     * cannot detach the owner. A valid correlated ACK is the only detach. */
+    CHECK(ker_ff_admission_channel_send_seal(controller, 4) == -EINVAL);
+    CHECK(!ker_ff_admission_channel_send_retire(controller, 4));
+    CHECK(!ker_ff_admission_channel_owner_step(owner, &ops));
+    CHECK(ker_ff_admission_channel_receive(controller, &result) == KER_FF_ADMISSION_RETIRED);
+    CHECK(!result.status && result.lease == 1 && result.command_id == 4 && result.epoch == 1);
+    struct ker_ff_admission_wire forged = {0};
+    forged.magic = KER_FF_ADMISSION_CHANNEL_MAGIC;
+    forged.version = KER_FF_ADMISSION_CHANNEL_VERSION;
+    forged.command = KER_FF_ADMISSION_SEAL;
+    forged.length = sizeof(forged);
+    forged.lease = 2;
+    forged.command_id = 5;
+    forged.epoch = 1;
+    CHECK(!send_wire(controller, &forged));
+    CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == -EPROTO);
+    forged.lease = 1;
+    forged.epoch = 2;
+    CHECK(!send_wire(controller, &forged));
+    CHECK(!ker_ff_admission_channel_owner_step(owner, &ops));
+    CHECK(ker_ff_admission_channel_receive(controller, &result) == -EPROTO);
+    CHECK(!ker_ff_admission_channel_send_seal(controller, 5));
+    interrupt_next(SYS_sendmsg, 1);
+    CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == -EAGAIN);
+    CHECK(!owner->owner_seal_ack_sent && owner->response_pending);
+    CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == KER_FF_ADMISSION_OWNER_SEALED);
+    CHECK(ker_ff_admission_channel_receive(controller, &result) == KER_FF_ADMISSION_SEALED);
+    CHECK(!result.status && result.lease == 1 && result.command_id == 5 && result.epoch == 1);
+    forged.lease = 1;
+    forged.epoch = 1;
+    CHECK(!send_wire(controller, &forged));
+    CHECK(!ker_ff_admission_channel_owner_step(owner, &ops));
+    CHECK(ker_ff_admission_channel_receive(controller, &result) == -EPROTO);
+
     ker_ff_admission_channel_close(controller);
     ker_ff_admission_channel_close(owner);
+    preseal_eof_is_fatal(&ops);
     cached_peer_exit(&ops, request);
-    CHECK(interrupt_count == 18 && !interrupt_budget && admits == 2 && revokes == 1);
-    puts("ADMISSION_EINTR_PASS interrupts=18 admits=2 revokes=1 expired=1 dead_peer=1");
+    CHECK(interrupt_count == 19 && !interrupt_budget && admits == 2 && revokes == 1);
+    puts("ADMISSION_EINTR_PASS interrupts=19 admits=2 revokes=1 expired=1 dead_peer=1 seal=1 preseal_eof=fatal");
     return 0;
 }

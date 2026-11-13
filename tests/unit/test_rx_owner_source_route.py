@@ -2,6 +2,7 @@
 """Real-process controls for C31's pending same-master source route."""
 import argparse
 import array
+import copy
 import errno
 import importlib.util
 import os
@@ -51,6 +52,15 @@ me=os.pidfd_open(os.getpid())
 try: s.sendmsg([w.pack(*h)],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',[me]))])
 except OSError: pass
 os.close(me)
+if mode=='peer':
+ p,anc,flags,_=s.recvmsg(w.size+9022,socket.CMSG_SPACE(12))
+ h=list(w.unpack(p[:w.size])); frame=p[w.size:]
+ assert h[2]==1 and len(frame)==64 and not flags & (socket.MSG_TRUNC|socket.MSG_CTRUNC)
+ v=2166136261
+ for b in frame: v=((v^b)*16777619)&0xffffffff
+ h[2]=2; h[19]=v; h[20]=h[15]; h[23]=1
+ s.sendmsg([w.pack(*h),frame])
+ sys.exit(0)
 try: s.recv(1)
 except ConnectionResetError: pass
 for f in fds: os.close(f)
@@ -112,7 +122,12 @@ class SourceRoute(unittest.TestCase):
                  expired_commit=False, late_swap=False, late_route_arrival=False,
                  abort_retry=False, late_observation=False, deferred_commit=False,
                  deferred_expired=False, deferred_dead_candidate=False,
-                 deferred_second_command=False, deferred_late_completion=False):
+                 deferred_second_command=False, deferred_late_completion=False,
+                 successor=False, successor_dead_current=False,
+                 successor_second=False, successor_replay=False,
+                 successor_inflight=False):
+        successor = (successor or successor_dead_current or successor_second or
+            successor_replay or successor_inflight)
         control, app_control = pair()
         old_channel, old_worker_channel = pair()
         candidate_channel, candidate_worker_channel = pair()
@@ -184,6 +199,15 @@ class SourceRoute(unittest.TestCase):
                     **({'KER_TEST_SOURCE_ROUTE_DELAY_SWAP': '1'} if late_swap else {}),
                     **({'KER_TEST_SOURCE_INFLIGHT': '1'} if inflight else {}),
                     **({'KER_TEST_SOURCE_ROUTE_RETRY': '1'} if abort_retry else {}),
+                    **({'KER_TEST_SOURCE_ROUTE_SUCCESSOR': '1'} if successor else {}),
+                    **({'KER_TEST_SOURCE_ROUTE_DEAD_CURRENT': '1'}
+                        if successor_dead_current else {}),
+                    **({'KER_TEST_SOURCE_ROUTE_SECOND_SUCCESSOR': '1'}
+                        if successor_second else {}),
+                    **({'KER_TEST_SOURCE_ROUTE_REPLAY': '1'}
+                        if successor_replay else {}),
+                    **({'KER_TEST_SOURCE_ROUTE_SUCCESSOR_INFLIGHT': '1'}
+                        if successor_inflight else {}),
                     **({'KER_TEST_SOURCE_DEFERRED_COMMIT': '1'} if deferred_commit else {}),
                     **({'KER_TEST_SOURCE_DEFERRED_EXPIRED': '1'} if deferred_expired else {}),
                     **({'KER_TEST_SOURCE_DEFERRED_DEAD': '1'} if deferred_dead_candidate else {}),
@@ -216,7 +240,7 @@ class SourceRoute(unittest.TestCase):
                 start_ticks=ker_run.process_start_ticks(master_pid))
             deadline = time.monotonic_ns() + (150_000_000 if short_deadline else
                 500_000_000 if expire_after_commit else 10_000_000_000)
-            if candidate_mode != 'valid':
+            if candidate_mode not in ('valid', 'peer'):
                 try:
                     with self.assertRaises((PermissionError, BrokenPipeError,
                             ConnectionResetError, TimeoutError)):
@@ -503,6 +527,265 @@ class SourceRoute(unittest.TestCase):
                         f'marker={marker!r}, return={app.returncode}, stdout={stdout!r}, '
                         f'stderr={stderr!r}')
                 self.assertEqual(os.read(marker_read, 1), b'L')
+                if successor:
+                    next_channel, next_worker_channel = pair()
+                    next_slot, next_slot_peer = socket.socketpair(
+                        socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                    sockets.extend((next_channel, next_worker_channel, next_slot, next_slot_peer))
+                    next_process = subprocess.Popen([sys.executable, '-c', ACTOR,
+                        str(next_worker_channel.fileno()), 'valid'],
+                        pass_fds=(next_worker_channel.fileno(),), stderr=subprocess.PIPE)
+                    processes.append(next_process)
+                    next_candidate = proof(next_process, next_slot, 1)
+                    proofs.append(next_candidate)
+                    uncommitted = copy.copy(prepared)
+                    uncommitted.committed = False
+                    with self.assertRaises(ValueError):
+                        ker_run.rx_owner_source_route_prepare(control, next_channel, app,
+                            app_pidfd, supervisor_pidfd, candidate, next_candidate,
+                            source_master, NONCE, 77, deadline,
+                            operation_id=prepared.operation_id + 2,
+                            command_sequence=prepared.command_sequence + 2,
+                            source_epoch=2, previous_committed=uncommitted)
+                    with self.assertRaises(ValueError):
+                        ker_run.rx_owner_source_route_prepare(control, next_channel, app,
+                            app_pidfd, supervisor_pidfd, current, next_candidate,
+                            source_master, NONCE, 77, deadline,
+                            operation_id=prepared.operation_id + 2,
+                            command_sequence=prepared.command_sequence + 2,
+                            source_epoch=2, previous_committed=prepared)
+                    wrong_master = SimpleNamespace(pid=source_master.pid + 1,
+                        pidfd=source_master.pidfd, start_ticks=source_master.start_ticks)
+                    with self.assertRaises(ValueError):
+                        ker_run.rx_owner_source_route_prepare(control, next_channel, app,
+                            app_pidfd, supervisor_pidfd, candidate, next_candidate,
+                            wrong_master, NONCE, 77, deadline,
+                            operation_id=prepared.operation_id + 2,
+                            command_sequence=prepared.command_sequence + 2,
+                            source_epoch=2, previous_committed=prepared)
+                    with self.assertRaises(ValueError):
+                        ker_run.rx_owner_source_route_prepare(control, next_channel, app,
+                            app_pidfd, supervisor_pidfd, candidate, next_candidate,
+                            source_master, NONCE, 77, time.monotonic_ns() - 1,
+                            operation_id=prepared.operation_id + 2,
+                            command_sequence=prepared.command_sequence + 2,
+                            source_epoch=2, previous_committed=prepared)
+                    reused = copy.copy(next_candidate)
+                    reused.owner_cookie = candidate.owner_cookie
+                    with self.assertRaises(ValueError):
+                        ker_run.rx_owner_source_route_prepare(control, next_channel, app,
+                            app_pidfd, supervisor_pidfd, candidate, reused,
+                            source_master, NONCE, 77, deadline,
+                            operation_id=prepared.operation_id + 2,
+                            command_sequence=prepared.command_sequence + 2,
+                            source_epoch=2, previous_committed=prepared)
+                    # The receiver rejects a correctly bound successor while
+                    # the original peer is still live, then accepts one after
+                    # that peer's pidfd settles.
+                    def successor_fields():
+                        fields = prepared.fields.copy()
+                        fields[2] = ker_run._RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARE
+                        fields[5:15] = [next_candidate.owner_pid, next_candidate.owner_tid,
+                            next_candidate.owner_role, 0, prepared.fields[9],
+                            prepared.fields[10], next_candidate.owner_start,
+                            next_candidate.owner_slot_device, next_candidate.owner_slot_inode,
+                            next_candidate.owner_cookie]
+                        fields[16:22] = [candidate.owner_pid, candidate.owner_tid,
+                            candidate.owner_start, candidate.owner_slot_device,
+                            candidate.owner_slot_inode, candidate.owner_cookie]
+                        fields[22] = prepared.fields[22]
+                        return fields
+                    operation = prepared.operation_id + 1
+                    command_sequence = prepared.command_sequence + 1
+                    def reject_successor(fields, wire_master=source_master.pid):
+                        nonlocal operation, command_sequence
+                        packet = ker_run._RX_OWNER_SOURCE_ROUTE_RECORD.pack(*fields,
+                            operation, command_sequence, prepared.master_start,
+                            wire_master, 2, 0, 0, 0)
+                        rights = array.array('i', (next_candidate.owner_pidfd,
+                            next_channel.fileno(), source_master.pidfd))
+                        control.sendmsg([packet], [(socket.SOL_SOCKET,
+                            socket.SCM_RIGHTS, rights)])
+                        import selectors
+                        with selectors.DefaultSelector() as selector:
+                            selector.register(control, selectors.EVENT_READ)
+                            if not selector.select(2):
+                                if app.poll() is not None:
+                                    stdout, stderr = app.communicate(timeout=2)
+                                    raise AssertionError(f'invalid successor receiver exited '
+                                        f'{app.returncode}: {stdout!r} {stderr!r}')
+                                self.fail('invalid successor PREPARE did not receive rejection')
+                        response, _, _, _ = control.recvmsg(
+                            ker_run._RX_OWNER_SOURCE_ROUTE_RECORD.size + 1,
+                            socket.CMSG_SPACE(12))
+                        rejected = ker_run._RX_OWNER_SOURCE_ROUTE_RECORD.unpack(response)
+                        self.assertEqual((rejected[2], rejected[23], rejected[24]),
+                            (ker_run._RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARED,
+                             operation, command_sequence))
+                        self.assertLess(rejected[28], 0)
+                        operation += 1
+                        command_sequence += 1
+                    if app.poll() is not None:
+                        stdout, stderr = app.communicate(timeout=2)
+                        raise AssertionError(f'receiver exited before live-peer control: '
+                            f'{app.returncode} {stdout!r} {stderr!r}')
+                    reject_successor(successor_fields())
+                    old.kill(); old.wait(timeout=2)
+                    self.assertEqual(os.read(marker_read, 1), b'D')
+                    if successor_dead_current:
+                        candidate_process.kill(); candidate_process.wait(timeout=2)
+                        reject_successor(successor_fields())
+                        self.assertEqual(os.read(marker_read, 1), b'R')
+                        os.write(release_write, b'R')
+                        stdout, stderr = app.communicate(timeout=2)
+                        self.assertEqual(app.returncode, 0, (stdout, stderr))
+                        return
+                    fields = successor_fields(); fields[16:22] = [
+                        current.owner_pid, current.owner_tid, current.owner_start,
+                        current.owner_slot_device, current.owner_slot_inode,
+                        current.owner_cookie]
+                    reject_successor(fields)
+                    fields = successor_fields(); fields[5:15] = [
+                        current.owner_pid, current.owner_tid, current.owner_role, 0,
+                        prepared.fields[9], prepared.fields[10], current.owner_start,
+                        current.owner_slot_device, current.owner_slot_inode,
+                        current.owner_cookie]
+                    reject_successor(fields)
+                    fields = successor_fields(); fields[5] = candidate.owner_pid
+                    fields[6] = candidate.owner_tid
+                    fields[11] = candidate.owner_start
+                    fields[12] = candidate.owner_slot_device
+                    fields[13] = candidate.owner_slot_inode
+                    fields[14] = candidate.owner_cookie
+                    reject_successor(fields)
+                    fields = successor_fields(); fields[12:15] = prepared.fields[12:15]
+                    reject_successor(fields)
+                    fields = successor_fields(); fields[22] = time.monotonic_ns() - 1
+                    reject_successor(fields)
+                    reject_successor(successor_fields(), source_master.pid + 1)
+                    with self.assertRaises(ValueError):
+                        ker_run.rx_owner_source_route_prepare(control, next_channel, app,
+                            app_pidfd, supervisor_pidfd, current, next_candidate,
+                            source_master, NONCE, 77, deadline + 1,
+                            operation_id=operation,
+                            command_sequence=command_sequence,
+                            source_epoch=2, previous_committed=prepared)
+                    try:
+                        successor_prepared = ker_run.rx_owner_source_route_successor_prepare(
+                            control, next_channel, app, app_pidfd, supervisor_pidfd,
+                            candidate, next_candidate, source_master, NONCE, 77,
+                            deadline, operation, command_sequence, prepared)
+                    except Exception as exc:
+                        if app.poll() is not None:
+                            stdout, stderr = app.communicate(timeout=2)
+                            raise AssertionError(f'successor receiver exited {app.returncode}: '
+                                f'{stdout!r} {stderr!r}') from exc
+                        raise
+                    self.assertEqual(successor_prepared.source_epoch, 2)
+                    if successor_inflight:
+                        # The shared app-loop handler authenticates the pending
+                        # candidate before reporting that the old frame remains
+                        # parked; both events precede the PREPARE marker here.
+                        self.assertEqual(os.read(marker_read, 1), b'B')
+                        self.assertEqual(os.read(marker_read, 1), b'P')
+                    else:
+                        self.assertEqual(os.read(marker_read, 1), b'P')
+                    if successor_inflight:
+                        self.assertEqual(ker_run.send_source_route_command(control,
+                            successor_prepared, ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT,
+                            successor_prepared.command_sequence + 1), -errno.EBUSY)
+                        self.assertEqual(ker_run.send_source_route_command(control,
+                            successor_prepared,
+                            ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME,
+                            successor_prepared.command_sequence + 1), 0)
+                        self.assertEqual(os.read(marker_read, 1), b'F')
+                        self.assertEqual(os.read(marker_read, 1), b'C')
+                        self.assertEqual(os.read(marker_read, 1), b'L')
+                        os.write(release_write, b'R')
+                        stdout, stderr = app.communicate(timeout=2)
+                        self.assertEqual(app.returncode, 0, (stdout, stderr))
+                        return
+                    try:
+                        successor_result = ker_run.send_source_route_command(control,
+                            successor_prepared, ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT,
+                            successor_prepared.command_sequence + 1)
+                    except Exception as exc:
+                        if app.poll() is not None:
+                            stdout, stderr = app.communicate(timeout=2)
+                            raise AssertionError(f'successor COMMIT receiver exited '
+                                f'{app.returncode}: {stdout!r} {stderr!r}') from exc
+                        raise
+                    self.assertEqual(successor_result, 0)
+                    self.assertEqual(os.read(marker_read, 1), b'C')
+                    self.assertEqual(os.read(marker_read, 1), b'L')
+                    if successor_replay:
+                        fields = successor_prepared.fields.copy()
+                        fields[2] = ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT
+                        replay = ker_run._RX_OWNER_SOURCE_ROUTE_RECORD.pack(*fields,
+                            successor_prepared.operation_id,
+                            successor_prepared.command_sequence + 2,
+                            successor_prepared.master_start, successor_prepared.master_pid,
+                            2, 0, 0, time.monotonic_ns() + 1_000_000_000)
+                        control.send(replay)
+                        self.assertEqual(os.read(marker_read, 1), b'R')
+                        import select
+                        self.assertFalse(select.select([control], [], [], .05)[0],
+                            'replayed COMMIT received a success response')
+                        os.write(release_write, b'R')
+                        stdout, stderr = app.communicate(timeout=2)
+                        self.assertEqual(app.returncode, 0, (stdout, stderr))
+                        return
+                    if successor_second:
+                        third_channel, third_worker_channel = pair()
+                        third_slot, third_slot_peer = socket.socketpair(
+                            socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                        sockets.extend((third_channel, third_worker_channel,
+                            third_slot, third_slot_peer))
+                        third_process = subprocess.Popen([sys.executable, '-c', ACTOR,
+                            str(third_worker_channel.fileno()), 'valid'],
+                            pass_fds=(third_worker_channel.fileno(),), stderr=subprocess.PIPE)
+                        processes.append(third_process)
+                        third_candidate = proof(third_process, third_slot, 1)
+                        proofs.append(third_candidate)
+                        fields = successor_prepared.fields.copy()
+                        fields[2] = ker_run._RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARE
+                        fields[5:15] = [third_candidate.owner_pid, third_candidate.owner_tid,
+                            1, 0, fields[9], fields[10], third_candidate.owner_start,
+                            third_candidate.owner_slot_device, third_candidate.owner_slot_inode,
+                            third_candidate.owner_cookie]
+                        fields[16:22] = [next_candidate.owner_pid, next_candidate.owner_tid,
+                            next_candidate.owner_start, next_candidate.owner_slot_device,
+                            next_candidate.owner_slot_inode, next_candidate.owner_cookie]
+                        packet = ker_run._RX_OWNER_SOURCE_ROUTE_RECORD.pack(*fields,
+                            successor_prepared.operation_id + 1,
+                            successor_prepared.command_sequence + 1,
+                            successor_prepared.master_start, successor_prepared.master_pid,
+                            2, 0, 0, 0)
+                        rights = array.array('i', (third_candidate.owner_pidfd,
+                            third_channel.fileno(), source_master.pidfd))
+                        control.sendmsg([packet], [(socket.SOL_SOCKET,
+                            socket.SCM_RIGHTS, rights)])
+                        import selectors
+                        with selectors.DefaultSelector() as selector:
+                            selector.register(control, selectors.EVENT_READ)
+                            self.assertTrue(selector.select(2),
+                                'second epoch-2 successor was not rejected')
+                        response, _, _, _ = control.recvmsg(
+                            ker_run._RX_OWNER_SOURCE_ROUTE_RECORD.size + 1,
+                            socket.CMSG_SPACE(12))
+                        rejected = ker_run._RX_OWNER_SOURCE_ROUTE_RECORD.unpack(response)
+                        self.assertEqual(rejected[2],
+                            ker_run._RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARED)
+                        self.assertLess(rejected[28], 0)
+                        self.assertEqual(os.read(marker_read, 1), b'R')
+                        os.write(release_write, b'R')
+                        stdout, stderr = app.communicate(timeout=2)
+                        self.assertEqual(app.returncode, 0, (stdout, stderr))
+                        return
+                    os.write(release_write, b'R')
+                    stdout, stderr = app.communicate(timeout=2)
+                    self.assertEqual(app.returncode, 0, (stdout, stderr))
+                    return
                 if master_death_after_commit:
                     source_master_process.terminate()
                     source_master_process.wait(timeout=2)
@@ -566,6 +849,21 @@ class SourceRoute(unittest.TestCase):
 
     def test_one_epoch2_retry_requires_aborted_epoch1_candidate_to_be_dead(self):
         self.run_case(abort=True, abort_retry=True)
+
+    def test_one_epoch2_successor_requires_committed_lineage_and_dead_prior_peer(self):
+        self.run_case(successor=True, candidate_mode='peer')
+
+    def test_successor_prepare_preserves_inflight_frame_until_after_frame_commit(self):
+        self.run_case(successor_inflight=True, candidate_mode='peer')
+
+    def test_successor_prepare_rejects_dead_current_route(self):
+        self.run_case(successor_dead_current=True, candidate_mode='peer')
+
+    def test_second_successor_after_epoch2_commit_is_rejected(self):
+        self.run_case(successor_second=True, candidate_mode='peer')
+
+    def test_replayed_successor_commit_gets_no_ack_and_does_not_change_route(self):
+        self.run_case(successor_replay=True, candidate_mode='peer')
 
     def test_missing_dead_and_expired_candidate_auth_preserve_old_route(self):
         self.run_case(candidate_mode='no-ack', short_deadline=True)

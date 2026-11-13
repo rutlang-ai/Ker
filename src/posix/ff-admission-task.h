@@ -50,7 +50,8 @@ int ker_posix_ff_admission_task_poll_window(
 	uint64_t *queue_lease, uint64_t *epoch, int *task_status);
 int ker_posix_ff_admission_task_window_action(
 	struct ker_ff_admission_task *task, uint32_t action, int listener_fd);
-/* Permanently reject REARM for a confirmed retired predecessor window. */
+/* Permanently reject REARM and complete the authenticated owner detach ACK.
+ * Returns -EAGAIN while the owner loop has not acknowledged the seal. */
 int ker_posix_ff_admission_task_seal_retired(struct ker_ff_admission_task *task);
 int ker_posix_ff_admission_task_set_listener(
 	struct ker_ff_admission_task *task, int listener_fd);

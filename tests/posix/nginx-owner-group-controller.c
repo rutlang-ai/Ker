@@ -88,6 +88,7 @@ int main(int argc, char **argv)
     int group = -1, census[2] = {-1, -1}, cutover = -1;
     uint64_t held_lease = 0;
     uint32_t held_phase = 0, held_received = 0, held_accepted = 0;
+    uint64_t observed_listener_cookie = 0;
     char command[128];
     while (fgets(command, sizeof(command), stdin)) {
         if (!strcmp(command, "CONTROL\n")) {
@@ -101,6 +102,13 @@ int main(int argc, char **argv)
             struct ker_socket_member_census_snapshot state;
             CHECK(census[index] >= 0 && !ker_socket_client_member_census_snapshot(&client, census[index], &state));
             CHECK(state.listener_cookie && state.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1);
+        } else if (!strcmp(command, "COOKIE0\n") || !strcmp(command, "COOKIE1\n")) {
+            unsigned index = command[6] - '0';
+            struct ker_socket_member_census_snapshot state;
+            CHECK(census[index] >= 0 && !ker_socket_client_member_census_snapshot(
+                &client, census[index], &state));
+            CHECK(state.listener_cookie && state.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1);
+            observed_listener_cookie = state.listener_cookie;
         } else if (!strcmp(command, "EARLY_NEXT\n")) {
             CHECK(ker_socket_client_owner_group_successor_plan(&client, plan) == -1 && errno == EAGAIN);
         } else if (!strcmp(command, "ABORT_NEXT\n")) {
@@ -500,6 +508,9 @@ int main(int argc, char **argv)
         if (!strcmp(command, "HELD\n")) {
             printf("OWNER_GROUP_OK HELD lease=%llu phase=%u received=%u accepted=%u\n",
                 (unsigned long long)held_lease, held_phase, held_received, held_accepted);
+        } else if (!strcmp(command, "COOKIE0\n") || !strcmp(command, "COOKIE1\n")) {
+            printf("OWNER_GROUP_OK %.*s cookie=%llu\n", 7, command,
+                (unsigned long long)observed_listener_cookie);
         } else {
             printf("OWNER_GROUP_OK %s", command);
         }

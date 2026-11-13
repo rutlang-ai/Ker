@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <ker/socket-broker.h>
+#include "ff-admission-channel.h"
 #include "socket-broker-preload-internal.h"
 
 void ker_sb_preload_test_owner_setup(void);
@@ -20,6 +21,9 @@ int ker_sb_preload_test_runtime_init(void);
 int ker_sb_preload_test_registry_add(int app_fd, int private_fd);
 int ker_sb_preload_test_registry_remove(int app_fd);
 int ker_sb_preload_test_lock_available(void);
+int ker_sb_preload_test_owner_admission_register(
+    struct ker_ff_admission_channel *channel, int fd,
+    const struct ker_ff_admission_map_ops *ops);
 
 #define CHECK(test) do { if (!(test)) { \
     fprintf(stderr, "preload relay checkpoint:%d: %s errno=%d\n", \
@@ -52,6 +56,54 @@ static int relay_callback(void *opaque)
     }
     if (state->mode == 4) return -EAGAIN;
     errno = EINTR;
+    return 0;
+}
+
+static int admission_active(void *context) { (void)context; return 1; }
+static int admission_unused(const struct ker_ff_admission_key *key, int *created,
+    void *context)
+{
+    (void)key; (void)created; (void)context; return -EIO;
+}
+static int admission_unused_revoke(const struct ker_ff_admission_key *key,
+    void *context)
+{
+    (void)key; (void)context; return -EIO;
+}
+static int admission_retire(void *context) { (void)context; return 0; }
+
+static int admission_detach_control(struct callback_state *relay)
+{
+    int endpoints[2];
+    CHECK(ker_ff_admission_channel_pair(endpoints) == 0);
+    struct ker_ff_admission_channel *controller = NULL, *owner = NULL;
+    CHECK(ker_ff_admission_channel_open(endpoints[0], getpid(), getuid(), getgid(),
+        1, &controller) == 0);
+    CHECK(ker_ff_admission_channel_open(endpoints[1], getpid(), getuid(), getgid(),
+        1, &owner) == 0);
+    const struct ker_ff_admission_map_ops ops = {
+        .active = admission_active, .admit = admission_unused,
+        .revoke = admission_unused_revoke, .retire = admission_retire};
+    CHECK(ker_sb_preload_test_owner_admission_register(owner, endpoints[1], &ops) == 0);
+    CHECK(ker_sb_preload_owner_pump_registered());
+    CHECK(ker_ff_admission_channel_send_retire(controller, 1) == 0);
+    int relay_calls = relay->calls;
+    CHECK(ker_sb_preload_owner_pump() == 0);
+    CHECK(relay->calls == relay_calls + 1);
+    struct ker_ff_admission_result result;
+    CHECK(ker_ff_admission_channel_receive(controller, &result) ==
+        KER_FF_ADMISSION_RETIRED && result.status == 0 && result.epoch == 1);
+    CHECK(ker_ff_admission_channel_send_seal(controller, 2) == 0);
+    relay_calls = relay->calls;
+    CHECK(ker_sb_preload_owner_pump() == 0);
+    CHECK(!ker_sb_preload_owner_pump_registered());
+    CHECK(relay->calls == relay_calls + 1);
+    CHECK(ker_ff_admission_channel_receive(controller, &result) ==
+        KER_FF_ADMISSION_SEALED && result.status == 0 && result.epoch == 1);
+    ker_ff_admission_channel_close(controller);
+    relay_calls = relay->calls;
+    CHECK(ker_sb_preload_owner_pump() == 0 && relay->calls == relay_calls + 1);
+    ker_ff_admission_channel_close(owner);
     return 0;
 }
 
@@ -183,6 +235,9 @@ int main(void)
     errno = EBUSY;
     CHECK(ker_sb_preload_socket_drain_count() == 1 && errno == EBUSY);
     CHECK(state.calls == 3 && state.lock_free);
+
+    state.mode = 0;
+    CHECK(admission_detach_control(&state) == 0);
 
     state.mode = 2;
     state.calls = 0;

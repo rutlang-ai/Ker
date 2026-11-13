@@ -50,6 +50,8 @@ _RX_OWNER_SOURCE_ROUTE_ABORT = 9
 _RX_OWNER_SOURCE_ROUTE_ABORTED = 10
 _RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME = 11
 _RX_OWNER_SOURCE_ROUTE_COMMITTED_AFTER_FRAME = 12
+_RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARE = 13
+_RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARED = 14
 _RX_DECISION_WIRE_SPEC = importlib.util.spec_from_file_location(
     '_ker_run_rx_decision_wire', _RX_DECISION_WIRE_PATH)
 if _RX_DECISION_WIRE_SPEC is None or _RX_DECISION_WIRE_SPEC.loader is None:
@@ -356,7 +358,7 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
                                   source_master, nonce, epoch,
                                   authority_deadline_ns, operation_id,
                                   command_sequence=None, source_epoch=1,
-                                  previous_aborted=None):
+                                  previous_aborted=None, previous_committed=None):
     """Stage a fresh same-master source candidate while retaining current route.
 
     The candidate ACK is consumed by C31 after this function sends supervisor
@@ -367,15 +369,47 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
     caller keeps it open through any retry decision and closes it in its normal
     proof cleanup, including when PREPARE or COMMIT fails.
     """
+    successor = previous_committed is not None
     now = time.monotonic_ns()
+    if successor:
+        previous_fields = getattr(previous_committed, 'fields', ())
+        previous_sequence = getattr(previous_committed, 'command_sequence', 0)
+        if command_sequence is None:
+            command_sequence = previous_sequence + 1
+        if (previous_aborted is not None or source_epoch != 2 or
+                not getattr(previous_committed, 'committed', False) or
+                getattr(previous_committed, 'source_epoch', 0) != 1 or
+                previous_committed.last_command_type not in
+                    (_RX_OWNER_SOURCE_ROUTE_COMMIT, _RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME) or
+                previous_committed.last_status != 0 or len(previous_fields) != 23 or
+                source_master.pid != previous_committed.master_pid or
+                getattr(source_master, 'start_ticks', 0) != previous_committed.master_start or
+                authority_deadline_ns > previous_fields[22] or
+                operation_id <= previous_committed.operation_id or
+                command_sequence <= previous_sequence or epoch != previous_fields[9] or
+                nonce != previous_fields[15] or current.owner_role != 1 or
+                (current.owner_pid, current.owner_tid, current.owner_start,
+                    current.owner_slot_device, current.owner_slot_inode, current.owner_cookie) !=
+                    (previous_fields[5], previous_fields[6], previous_fields[11],
+                     previous_fields[12], previous_fields[13], previous_fields[14]) or
+                candidate.owner_pid in (current.owner_pid, previous_fields[16],
+                    previous_fields[5]) or
+                candidate.owner_start in (previous_fields[11], previous_fields[18]) or
+                candidate.owner_cookie in (current.owner_cookie, previous_fields[14],
+                    previous_fields[21]) or
+                (candidate.owner_slot_device, candidate.owner_slot_inode) in
+                    ((current.owner_slot_device, current.owner_slot_inode),
+                     (previous_fields[12], previous_fields[13]),
+                     (previous_fields[19], previous_fields[20]))):
+            raise ValueError('successor requires committed lineage and a fresh same-master candidate')
     if source_epoch not in (1, 2):
         raise ValueError('unsupported source-route epoch')
     if source_epoch == 1:
-        if previous_aborted is not None:
+        if previous_aborted is not None or successor:
             raise ValueError('epoch 1 cannot use retry lineage')
         if command_sequence is None:
             command_sequence = 1
-    else:
+    elif not successor:
         previous_fields = getattr(previous_aborted, 'fields', ())
         previous_sequence = getattr(previous_aborted, 'command_sequence', 0)
         if command_sequence is None:
@@ -407,7 +441,7 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
     if (not nonce or len(nonce) != 16 or not epoch or
             authority_deadline_ns <= now or
             authority_deadline_ns - now > 300_000_000_000 or
-            current.owner_role != 0 or candidate.owner_role != 1 or
+            current.owner_role != (1 if successor else 0) or candidate.owner_role != 1 or
             current.owner_pid == candidate.owner_pid or
             current.owner_cookie == candidate.owner_cookie or
             (current.owner_slot_device, current.owner_slot_inode) ==
@@ -436,7 +470,8 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
             not nginx_companion.process_alive(source_master.pidfd)):
         raise ProcessLookupError('source-route app, supervisor, or master is stale')
     fields = [
-        _RX_OWNER_AUTH_MAGIC, _RX_OWNER_AUTH_VERSION, _RX_OWNER_SOURCE_ROUTE_PREPARE,
+        _RX_OWNER_AUTH_MAGIC, _RX_OWNER_AUTH_VERSION,
+        _RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARE if successor else _RX_OWNER_SOURCE_ROUTE_PREPARE,
         _RX_OWNER_SOURCE_ROUTE_RECORD.size, supervisor, candidate.owner_pid,
         candidate.owner_tid, candidate.owner_role, 0, epoch, supervisor_start,
         candidate.owner_start, candidate.owner_slot_device,
@@ -485,7 +520,8 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
             else:
                 invalid = True
         expected = fields.copy()
-        expected[2] = _RX_OWNER_SOURCE_ROUTE_PREPARED
+        expected[2] = (_RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARED if successor else
+            _RX_OWNER_SOURCE_ROUTE_PREPARED)
         expected_wire = _RX_OWNER_SOURCE_ROUTE_RECORD.pack(*expected, operation_id,
             command_sequence, master_start, source_master.pid, source_epoch, 0, 0, 0)
         if (invalid or extra_fds or flags & (getattr(socket, 'MSG_TRUNC', 0) |
@@ -518,10 +554,22 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
             app_start=app_start, app_pidfd=app_pidfd,
             supervisor_pid=supervisor, supervisor_start=supervisor_start,
             candidate_pidfd=candidate.owner_pidfd, aborted=False,
-            last_command_type=None, last_status=None)
+            committed=False, last_command_type=None, last_status=None)
     finally:
         for fd in extra_fds:
             os.close(fd)
+
+
+def rx_owner_source_route_successor_prepare(endpoint, candidate_channel, app,
+                                            app_pidfd, supervisor_pidfd, current,
+                                            candidate, source_master, nonce, epoch,
+                                            authority_deadline_ns, operation_id,
+                                            command_sequence, previous_committed):
+    """Stage the one epoch-2 candidate after an acknowledged epoch-1 commit."""
+    return rx_owner_source_route_prepare(endpoint, candidate_channel, app,
+        app_pidfd, supervisor_pidfd, current, candidate, source_master, nonce,
+        epoch, authority_deadline_ns, operation_id, command_sequence,
+        source_epoch=2, previous_committed=previous_committed)
 
 
 def send_source_route_command(endpoint, prepared, command_type, command_sequence,
@@ -596,7 +644,8 @@ def send_source_route_command(endpoint, prepared, command_type, command_sequence
                 getattr(socket, 'MSG_CTRUNC', 0)) or
                 len(packet) != _RX_OWNER_SOURCE_ROUTE_RECORD.size or
                 credentials != [(prepared.app_pid, os.getuid(), os.getgid())]):
-            raise PermissionError('source-route command ACK credentials or shape mismatch')
+            raise PermissionError(f'source-route command ACK credentials or shape mismatch: '
+                f'invalid={invalid} flags={flags} bytes={len(packet)} credentials={credentials}')
         actual = list(_RX_OWNER_SOURCE_ROUTE_RECORD.unpack(packet))
         status = actual[28]
         observation['status'] = status
@@ -616,6 +665,9 @@ def send_source_route_command(endpoint, prepared, command_type, command_sequence
         prepared.last_status = status
         if command_type == _RX_OWNER_SOURCE_ROUTE_ABORT and status == 0:
             prepared.aborted = True
+        if command_type in (_RX_OWNER_SOURCE_ROUTE_COMMIT,
+                _RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME) and status == 0:
+            prepared.committed = True
         return status
     finally:
         for fd in extra_fds:
