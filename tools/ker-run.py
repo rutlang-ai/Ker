@@ -38,6 +38,9 @@ _RX_OWNER_AUTH_MAGIC = 0x4b524f41
 _RX_OWNER_AUTH_VERSION = 1
 _RX_OWNER_AUTH_OWNER = 1
 _RX_OWNER_AUTH_ACK = 2
+_RX_OWNER_AUTH_PEER = 3
+_RX_OWNER_AUTH_PEER_ACK = 4
+_RX_OWNER_PEER_AUTH_RECORD = struct.Struct('=IHHIIIIIIQQQQQQ16sIIQQQQQ')
 _RX_DECISION_WIRE_SPEC = importlib.util.spec_from_file_location(
     '_ker_run_rx_decision_wire', _RX_DECISION_WIRE_PATH)
 if _RX_DECISION_WIRE_SPEC is None or _RX_DECISION_WIRE_SPEC.loader is None:
@@ -232,6 +235,110 @@ def rx_owner_expected_auth(endpoint, app, app_pidfd, supervisor_pidfd,
         }, sort_keys=True, separators=(',', ':')), flush=True)
     finally:
         for fd in unexpected_fds:
+            os.close(fd)
+
+
+def rx_owner_peer_auth(endpoint, peer_channel, app, app_pidfd, supervisor_pidfd,
+                       primary, old, nonce, epoch, authority_deadline_ns):
+    """Delegate one finite old-owner binding after both real READY proofs.
+
+    The caller retains reload-window control and must not begin traffic
+    handoff before this ACK. It must keep the window authorized through the
+    supplied deadline. Successful delegation consumes peer_channel; a failed
+    call never permits forwarding or promises rollback to healthy service.
+    The legacy single-owner launch path does not enable this opt-in protocol.
+    """
+    now = time.monotonic_ns()
+    if (not nonce or len(nonce) != 16 or not epoch or
+            authority_deadline_ns <= now or authority_deadline_ns - now > 300_000_000_000 or
+            primary.owner_role != 1 or old.owner_role != 0 or
+            primary.owner_pid == old.owner_pid or primary.owner_cookie == old.owner_cookie or
+            (primary.owner_slot_device, primary.owner_slot_inode) ==
+                (old.owner_slot_device, old.owner_slot_inode)):
+        raise ValueError('invalid finite current/old owner authority')
+    supervisor = os.getpid()
+    supervisor_start = process_start_ticks(supervisor)
+    app_start = process_start_ticks(app.pid)
+    if (nginx_companion._pidfd_pid(app_pidfd) != app.pid or
+            nginx_companion._pidfd_pid(supervisor_pidfd) != supervisor):
+        raise PermissionError('peer authorization app/supervisor pidfd mismatch')
+    for owner in (primary, old):
+        if (not all(value > 0 for value in (owner.owner_pid, owner.owner_tid,
+                owner.owner_start, owner.owner_slot_device, owner.owner_slot_inode, owner.owner_cookie)) or
+                nginx_companion._pidfd_pid(owner.owner_pidfd) != owner.owner_pid or
+                process_start_ticks(owner.owner_pid) != owner.owner_start or
+                not Path(f'/proc/{owner.owner_pid}/task/{owner.owner_tid}').is_dir() or
+                not nginx_companion.process_alive(owner.owner_pidfd)):
+            raise ProcessLookupError('peer authorization owner READY is stale')
+    fields = [
+        _RX_OWNER_AUTH_MAGIC, _RX_OWNER_AUTH_VERSION, _RX_OWNER_AUTH_PEER,
+        _RX_OWNER_PEER_AUTH_RECORD.size, supervisor, old.owner_pid, old.owner_tid,
+        old.owner_role, 0, epoch, supervisor_start, old.owner_start,
+        old.owner_slot_device, old.owner_slot_inode, old.owner_cookie, nonce,
+        primary.owner_pid, primary.owner_tid, primary.owner_start,
+        primary.owner_slot_device, primary.owner_slot_inode, primary.owner_cookie,
+        authority_deadline_ns]
+    payload = _RX_OWNER_PEER_AUTH_RECORD.pack(*fields)
+    if (peer_channel.family != socket.AF_UNIX or
+            peer_channel.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET):
+        raise ValueError('old-owner relay requires a Unix packet channel')
+    # Enable credentials before the old worker can enqueue its AUTH_ACK.
+    # Setting this only after SCM_RIGHTS reception races an already queued ACK.
+    peer_channel.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+    peer_channel.setblocking(False)
+    if not (nginx_companion.process_alive(app_pidfd) and
+            nginx_companion.process_alive(supervisor_pidfd)):
+        raise ProcessLookupError('peer authorization actor died before send')
+    rights = array.array('i', (old.owner_pidfd, peer_channel.fileno()))
+    sent = endpoint.sendmsg([payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
+        getattr(socket, 'MSG_NOSIGNAL', 0) | getattr(socket, 'MSG_DONTWAIT', 0))
+    if sent != len(payload):
+        raise RuntimeError('short supervisor-to-app peer AUTH send')
+    # The old module only accepts this bootstrap from the pinned supervisor.
+    # The C31 app receives the ACK on its newly delegated duplicate channel.
+    rx_owner_relay_auth(peer_channel, app, app_pidfd, supervisor_pidfd, old, nonce, epoch)
+    deadline = min(time.monotonic() + 5, authority_deadline_ns / 1e9)
+    with selectors.DefaultSelector() as selector:
+        selector.register(endpoint, selectors.EVENT_READ)
+        if not selector.select(max(0, deadline - time.monotonic())):
+            raise TimeoutError('old-owner peer AUTH did not complete')
+    packet, ancillary, flags, _ = endpoint.recvmsg(_RX_OWNER_PEER_AUTH_RECORD.size + 1,
+        socket.CMSG_SPACE(struct.calcsize('=3i')) + socket.CMSG_SPACE(4 * 4),
+        getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
+    credentials = []
+    extra_fds = []
+    invalid = False
+    try:
+        for level, kind, value in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS and len(value) == 12:
+                credentials.append(struct.unpack('=3i', value))
+            elif level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                values = array.array('i')
+                values.frombytes(value[:len(value) - len(value) % values.itemsize])
+                extra_fds.extend(values)
+                invalid = True
+            else:
+                invalid = True
+        expected = fields.copy()
+        expected[2] = _RX_OWNER_AUTH_PEER_ACK
+        if (invalid or len(packet) != _RX_OWNER_PEER_AUTH_RECORD.size or
+                flags & (getattr(socket, 'MSG_TRUNC', 0) | getattr(socket, 'MSG_CTRUNC', 0)) or
+                credentials != [(app.pid, os.stat(f'/proc/{app.pid}').st_uid,
+                    os.stat(f'/proc/{app.pid}').st_gid)] or
+                _RX_OWNER_PEER_AUTH_RECORD.unpack(packet) != tuple(expected)):
+            raise PermissionError('peer AUTH ACK credentials/context mismatch')
+        if (time.monotonic() >= deadline or process_start_ticks(app.pid) != app_start or
+                process_start_ticks(supervisor) != supervisor_start or
+                not all(nginx_companion.process_alive(fd) for fd in
+                    (app_pidfd, supervisor_pidfd, primary.owner_pidfd, old.owner_pidfd))):
+            raise ProcessLookupError('peer authority expired or actor died before ACK')
+        peer_channel.close()
+        print('KER_RX_OWNER_PEER_AUTHORIZED ' + json.dumps({
+            'old_pid': old.owner_pid, 'old_cookie': old.owner_cookie,
+            'primary_pid': primary.owner_pid, 'primary_cookie': primary.owner_cookie,
+            'authority_deadline_ns': authority_deadline_ns}, sort_keys=True), flush=True)
+    finally:
+        for fd in extra_fds:
             os.close(fd)
 
 

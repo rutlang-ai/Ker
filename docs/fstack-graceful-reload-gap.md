@@ -570,3 +570,12 @@ The single-owner Nginx profile still lacks delegation of an authenticated old
 slot and channel and remains PEER-to-DROP. Two-owner authority integration,
 real old-stream continuity and the original same-master FSM remain open; this
 does not change the blocked migration entry.
+
+The opt-in [paired owner authority](fstack-peer-owner-authority.md) protocol now
+accepts a supervisor-delegated old pidfd/channel only for the exact authenticated
+candidate slot. The consumer waits for the old process's own run-bound ACK and
+limits forwarding to the finite authorization. Independent-process controls
+exercise the actual receiver and transport. The legacy launcher still does not
+orchestrate two Nginx companions, and real source-classifier PEER-to-old LOCAL,
+old TCP continuity, binding retirement and the original FSM remain unqualified.
+The source entrypoint stays blocked.

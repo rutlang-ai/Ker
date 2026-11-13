@@ -1007,6 +1007,22 @@ if(BUILD_TESTING)
         KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING=1)
     set_tests_properties(rx-owner-relay-auth-python PROPERTIES
         ENVIRONMENT "KER_RX_OWNER_RELAY_FIXTURE=$<TARGET_FILE:ker-rx-owner-auth-receiver-test>")
+    add_executable(ker-rx-owner-peer-auth-receiver-test
+        tests/unit/rx-owner-peer-auth-receiver-test.c src/posix/rx-owner-relay-peer.c)
+    target_include_directories(ker-rx-owner-peer-auth-receiver-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_features(ker-rx-owner-peer-auth-receiver-test PRIVATE c_std_11)
+    target_compile_options(ker-rx-owner-peer-auth-receiver-test PRIVATE
+        -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+    target_link_options(ker-rx-owner-peer-auth-receiver-test PRIVATE -Wl,--gc-sections)
+    target_compile_definitions(ker-rx-owner-peer-auth-receiver-test PRIVATE
+        KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING=1)
+    add_test(NAME rx-owner-peer-authority-python
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/unit/test_rx_owner_peer_authority.py"
+            --receiver "$<TARGET_FILE:ker-rx-owner-peer-auth-receiver-test>")
+    set_tests_properties(rx-owner-peer-authority-python PROPERTIES
+        TIMEOUT 30 LABELS "rx-decision;owner-relay;peer;authentication"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_executable(ker-socket-broker-generation-watch-actor
         tests/posix/socket-broker-generation-watch-actor.c)
     target_link_libraries(ker-socket-broker-generation-watch-actor PRIVATE
