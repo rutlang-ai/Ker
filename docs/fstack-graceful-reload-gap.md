@@ -547,3 +547,15 @@ profiles and a selection-history rejection profile qualify this path; see
 This does not recover started/quarantined ingress transactions or candidates
 that had been selected, and it does not implement the original master FSM.
 The source shell entrypoint remains blocked; migration counts are unchanged.
+
+### Original rt30 short-connection traffic over commit and abort
+
+The unchanged original CPS probe now has separate real-Nginx commit and abort
+qualifications, preserving one thread, 180 seconds, the two-second timeout and
+the three-second/200-request progress anchor. The strict source summary and
+additional post-retirement progress evidence require uninterrupted successful
+new TCP connections through the explicit selector decision and owner teardown.
+See [scope and reproduction](fstack-nginx-runtime.md#original-cps-probe-across-explicit-commit-and-abort).
+This is the rt30 traffic prerequisite, not its same-master FSM, performance
+comparison, source drain/forward counter contract or complete shell case.
+The source entrypoint remains blocked and the migration counts do not change.

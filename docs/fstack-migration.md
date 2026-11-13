@@ -2493,3 +2493,14 @@ foreign-epoch caller test exercises the original drain TX path through a real
 `net_ring` PMD. See [source scope and reproduction](fstack-drain-rx15.md). Current catalog:
 362 scenario-adapted,0 partial,1 blocked; the graceful-reload shell entrypoint
 remains incomplete.
+
+## Original rt30 CPS traffic on real Nginx owners
+
+The unchanged source CPS probe and summary oracle now run against the original
+Linux TCP broker through separate explicit Nginx commit/abort qualifications.
+Source defaults and the progress anchor are preserved, and completed fresh
+connections must continue after the retiring owner exits. Negative evidence
+controls prevent clean aggregate summaries from hiding stopped traffic or
+failed workers. See [scope and reproduction](fstack-nginx-runtime.md#original-cps-probe-across-explicit-commit-and-abort).
+This does not complete `case_rt30` or the original reload shell entrypoint;
+the catalog remains 362 scenario-adapted, zero partial and one blocked.

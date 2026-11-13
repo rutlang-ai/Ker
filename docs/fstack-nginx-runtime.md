@@ -953,3 +953,53 @@ the Ker runtime has no authenticated generation packet-owner or packet
 dispatcher binding, and no source FSM, handover, drain, rollback, or repeated
 generation qualification is claimed. Graceful-off source lifecycle remains
 covered by `native-nginx-fstack-runtime-lifecycle`.
+
+## Original CPS probe across explicit commit and abort
+
+`native-nginx-overlap-source-cps-tap` and
+`native-nginx-overlap-abort-source-cps-tap` run the unchanged imported
+`m4_cps.py`/`http_probe.py` against two real pinned Nginx callers over the
+original-Linux socket broker. They preserve the original rt30 traffic defaults:
+one client thread, 180 seconds, two-second socket timeout, and a progress anchor
+of at least three seconds and 200 completed requests before candidate startup.
+The probe creates a fresh TCP connection for every complete HTTP response and
+checks clean EOF. It has no preload or broker authority.
+
+The existing controller freezes an actual SYN, commits or aborts the selector
+change, and verifies that this queued connection reaches the selected owner.
+An independent old keepalive also survives the decision. COMMIT retires the old
+Nginx owner; ABORT retires the rejected candidate and preserves old service.
+The source CPS process must remain alive through retirement. Its unmodified
+summary oracle requires nonempty samples, all requests successful, all workers
+active/completed, and zero worker errors. The adapter additionally requires
+monotonic failure-free progress and an increasing completed-request count
+between two samples taken after retirement, with a one-second margin.
+A clean summary alone cannot satisfy this temporal requirement.
+
+Evidence is saved in `nginx-overlap-source-cps-evidence.json` and
+`nginx-overlap-abort-source-cps-evidence.json` in the build directory. It contains
+the exact probe command and source hashes, output, summary, retirement-relative
+progress, authenticated worker identities, controller events and native packet
+ownership cleanup statistics. `native-nginx-source-cps-oracle` rejects missing
+post-retirement traffic, failures, regressing counters, incomplete workers,
+duplicate summaries and abnormal exits.
+
+```sh
+ctest --test-dir <build> --output-on-failure \
+  -R '^native-nginx-(source-cps-oracle|overlap-(abort-)?source-cps-tap)$'
+```
+
+This migrates rt30's TCP traffic probe to the explicit Ker commit/abort caller
+path. It does not execute `case_rt30`, the original same-master HUP FSM, CPU or
+throughput comparisons, source drain/forward counters, or cross-generation PEER
+forwarding. `graceful_reload=1` remains fail-closed. The full shell entrypoint
+stays blocked; the catalog remains 362 adapted, zero partial and one blocked.
+
+Local Debug qualification passed both complete 180-second CPS windows: 11,022
+successful requests for COMMIT and 14,197 for ABORT, with zero failed requests,
+zero worker errors and zero outstanding packet objects after shutdown. Native
+Linux reported 11,026 and 14,202 passive opens respectively, including the
+independent controller connections. These are correctness samples, not a
+throughput comparison. The existing 180-second source LC commit profile and
+the ordinary commit/abort profiles also passed; the LC oracle retained its
+original bounded old-connection closure policy.

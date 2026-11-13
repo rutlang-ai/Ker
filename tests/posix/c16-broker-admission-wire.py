@@ -1753,6 +1753,7 @@ def main():
     parser.add_argument('--nginx-overlap-controller', type=Path)
     parser.add_argument('--nginx-overlap-source-streams', action='store_true')
     parser.add_argument('--nginx-overlap-source-lc', action='store_true')
+    parser.add_argument('--nginx-overlap-source-cps', action='store_true')
     parser.add_argument('--nginx-overlap-abort', action='store_true')
     parser.add_argument('--nginx-overlap-successor', action='store_true')
     parser.add_argument('--nginx-overlap-retry', action='store_true')
@@ -1790,6 +1791,11 @@ def main():
         parser.error('candidate Nginx requires its runtime, shim, module and group client')
     if args.nginx_overlap_controller and not all(candidate_inputs):
         parser.error('overlap profile requires all pinned Nginx artifacts')
+    if args.nginx_overlap_source_cps and (not args.nginx_overlap_controller or
+            args.nginx_overlap_source_lc or args.nginx_overlap_source_streams or
+            args.nginx_overlap_alias_regression or args.nginx_overlap_successor or
+            args.nginx_overlap_retry or args.nginx_overlap_owner_death):
+        parser.error('source CPS requires a plain commit/abort overlap profile without other probes')
     if args.nginx_overlap_source_lc and (not args.nginx_overlap_controller or
             args.nginx_overlap_source_streams or args.nginx_overlap_alias_regression):
         parser.error('source LC requires the ordinary overlap profile without a stream/alias probe')
@@ -1851,6 +1857,8 @@ def main():
             command += ['--nginx-overlap-alias-module', str(args.nginx_overlap_alias_module.resolve())]
         if args.nginx_overlap_source_lc:
             command += ['--nginx-overlap-source-lc']
+        if args.nginx_overlap_source_cps:
+            command += ['--nginx-overlap-source-cps']
         if args.nginx_overlap_source_streams:
             command += ['--nginx-overlap-source-streams']
         if args.nginx_overlap_abort:
