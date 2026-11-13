@@ -20,6 +20,16 @@ def git(repo, *arguments):
                                    stderr=subprocess.DEVNULL).strip()
 
 
+def proc_state(pid):
+    try:
+        stat_fields = Path(f'/proc/{pid}/stat').read_text().split(') ', 1)[1].split()
+    except (FileNotFoundError, ProcessLookupError):
+        # The process can disappear after the proc entry lookup but before the
+        # read; Linux reports that race as ESRCH/ProcessLookupError.
+        return None
+    return stat_fields[0]
+
+
 class NativeFetchTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='ker-native-fetch-')
@@ -191,15 +201,26 @@ class NativeFetchTests(unittest.TestCase):
         helper_pid = int(pid_file.read_text())
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
-            try:
-                stat_fields = Path(f'/proc/{helper_pid}/stat').read_text().split(') ', 1)[1].split()
-                state = stat_fields[0]
-            except FileNotFoundError:
-                state = None
+            state = proc_state(helper_pid)
             if state in (None, 'Z'):
                 break
             time.sleep(0.02)
         self.assertIn(state, (None, 'Z'), 'fetch helper survived the bounded group kill')
+
+    def test_proc_state_handles_esrch_race_without_treating_live_helper_as_gone(self):
+        helper = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)'])
+        try:
+            self.assertNotIn(proc_state(helper.pid), (None, 'Z'),
+                             'live helper was misreported as absent')
+            with mock.patch.object(Path, 'read_text', side_effect=ProcessLookupError()):
+                self.assertIsNone(proc_state(helper.pid), 'ESRCH race was not treated as gone')
+            # Keep the actual live-process assertion independent of the ESRCH
+            # injection so a blanket "gone" result cannot hide a leaked helper.
+            self.assertNotIn(proc_state(helper.pid), (None, 'Z'),
+                             'ESRCH injection hid a still-live helper')
+        finally:
+            helper.terminate()
+            helper.wait(timeout=2)
 
 
 if __name__ == '__main__':
