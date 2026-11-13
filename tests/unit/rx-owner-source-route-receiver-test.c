@@ -96,16 +96,93 @@ int main(void)
     if (fixture.owner_pidfd < 0 || fixture.supervisor_pidfd < 0) return 2;
     uint64_t deadline = monotonic_ns() + UINT64_C(8000000000);
     bool staged = false;
+    bool waiting_successor = false;
+    bool retired_peer_reported = false;
+    bool successor_inflight = getenv("KER_TEST_SOURCE_ROUTE_SUCCESSOR_INFLIGHT") != NULL;
+    bool successor_inflight_reported = false;
+    unsigned active_routes_seen = 0;
     uint64_t expired_seen_sequence = 0;
     while (monotonic_ns() < deadline) {
+        if (waiting_successor && !retired_peer_reported) {
+            struct pollfd retired = {.fd = fixture.peer.pidfd, .events = POLLIN};
+            if (poll(&retired, 1, 0) == 1 && (retired.revents & POLLIN)) {
+                if (write((int)marker, "D", 1) != 1) return 32;
+                retired_peer_reported = true;
+            }
+        }
         int status = poll_owner_control(&fixture,
             late_route_arrival ? release_after_empty_source_route_poll : NULL,
             &late_route_barrier);
+        if (getenv("KER_TEST_SOURCE_ROUTE_REPLAY") && status == -ESTALE &&
+                fixture.source_route_active && active_routes_seen == 2 &&
+                fixture.owner_pid ==
+                    (pid_t)fixture.source_route_record.pair.owner.owner_pid &&
+                write((int)marker, "R", 1) == 1)
+            return finish_success(&fixture);
+        if (getenv("KER_TEST_SOURCE_ROUTE_DEAD_CURRENT") && waiting_successor &&
+                fixture.source_route_last_type ==
+                    KER_RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARE &&
+                fixture.source_route_rejected_operation_id &&
+                fixture.source_route_last_sequence >
+                    fixture.source_route_committed_record.command_sequence + 1 &&
+                !fixture.source_route_pending && !current_owner_live(&fixture)) {
+            if (!fixture.source_route_active || fixture.owner_pid == (pid_t)owner ||
+                fixture.relay_fd == (int)relay || write((int)marker, "R", 1) != 1)
+                return 33;
+            return finish_success(&fixture);
+        }
+        if (getenv("KER_TEST_SOURCE_ROUTE_SECOND_SUCCESSOR") && waiting_successor &&
+                fixture.source_route_successor_used &&
+                fixture.source_route_last_type ==
+                    KER_RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARE &&
+                fixture.source_route_rejected_operation_id &&
+                fixture.source_route_last_sequence >
+                    fixture.source_route_committed_record.command_sequence &&
+                !fixture.source_route_pending && current_owner_live(&fixture)) {
+            if (!fixture.source_route_active || fixture.owner_pid == (pid_t)owner ||
+                fixture.relay_fd == (int)relay || write((int)marker, "R", 1) != 1)
+                return 34;
+            return finish_success(&fixture);
+        }
         if (status) { fprintf(stderr, "SOURCE_ROUTE_COMMAND status=%d\n", status); return 3; }
+        if (successor_inflight && fixture.source_route_pending &&
+                fixture.source_route_record.pair.owner.type ==
+                    KER_RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARE &&
+                fixture.source_route_candidate_authenticated && !successor_inflight_reported) {
+            if (!fixture.source_route_active || fixture.packet_id != 991 ||
+                !fixture.deadline_ns || fixture.owner_pid !=
+                    (pid_t)fixture.source_route_record.pair.primary_pid ||
+                fixture.relay_fd == fixture.source_route_candidate_channel ||
+                fixture.peer.fd >= 0 || write((int)marker, "B", 1) != 1) return 35;
+            successor_inflight_reported = true;
+        }
+        if (successor_inflight && fixture.source_route_cut_pending) {
+            uint64_t deadline_before = fixture.deadline_ns;
+            uint64_t packet_before = fixture.packet_id;
+            uint32_t hash_before = fixture.current_frame_hash;
+            if (!packet_before || packet_before != fixture.source_route_cut_packet_id ||
+                deadline_before != fixture.source_route_cut_frame_deadline_ns ||
+                hash_before != fixture.source_route_cut_frame_hash ||
+                fixture.owner_pid != (pid_t)fixture.source_route_cut_record.pair.primary_pid ||
+                fixture.relay_fd == fixture.source_route_candidate_channel ||
+                fixture.peer.fd >= 0) return 36;
+            fixture.source_route_cut_completed_id = packet_before;
+            fixture.source_route_cut_completed_ns = monotonic_ns();
+            fixture.packet_id = 0;
+            fixture.completed++;
+            if (fixture.deadline_ns != deadline_before ||
+                fixture.source_route_cut_completed_ns >= deadline_before ||
+                write((int)marker, "F", 1) != 1) return 37;
+            status = progress_source_route_cut(&fixture);
+            if (status || fixture.source_route_cut_pending ||
+                fixture.deadline_ns != deadline_before || fixture.completed != 1 ||
+                !fixture.source_route_active || fixture.owner_pid ==
+                    (pid_t)fixture.source_route_cut_record.pair.primary_pid) return 38;
+        }
         uint16_t expected_commit = deferred_commit ?
             KER_RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME :
             KER_RX_OWNER_SOURCE_ROUTE_COMMIT;
-        if (staged && fixture.packet_id && fixture.source_route_pending &&
+        if (!successor_inflight && staged && fixture.packet_id && fixture.source_route_pending &&
             fixture.source_route_last_type == expected_commit) {
             uint64_t deadline_before = fixture.deadline_ns;
             uint64_t packet_before = fixture.packet_id;
@@ -217,26 +294,39 @@ int main(void)
         if (!staged && (fixture.source_route_record.operation_id ||
             fixture.source_route_rejected_operation_id) &&
             !fixture.source_route_pending && !fixture.source_route_candidate_authenticated &&
+            !waiting_successor &&
             !(getenv("KER_TEST_SOURCE_ROUTE_RETRY") && fixture.source_route_aborted)) {
             if (fixture.owner_pid != (pid_t)owner || fixture.relay_fd != (int)relay ||
                 fixture.peer.fd >= 0 || write((int)marker, "N", 1) != 1) return 12;
             return finish_success(&fixture);
         }
         if (fixture.source_route_candidate_authenticated && !staged) {
-            if (fixture.owner_pid != (pid_t)owner || fixture.relay_fd != (int)relay ||
-                fixture.peer.fd >= 0 || fixture.source_route_active) return 5;
+            bool successor_candidate = fixture.source_route_record.pair.owner.type ==
+                KER_RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARE;
+            if (successor_candidate) {
+                if (!fixture.source_route_active || fixture.peer.fd >= 0 ||
+                    fixture.owner_pid != (pid_t)fixture.source_route_record.pair.primary_pid ||
+                    fixture.relay_fd == fixture.source_route_candidate_channel) return 5;
+            } else if (fixture.owner_pid != (pid_t)owner || fixture.relay_fd != (int)relay ||
+                    fixture.peer.fd >= 0 || fixture.source_route_active) return 5;
             if (write((int)marker, "P", 1) != 1) return 6;
             staged = true;
+            waiting_successor = false;
         }
-        if (fixture.source_route_active) {
+        if (fixture.source_route_active && (active_routes_seen == 0 ||
+                (getenv("KER_TEST_SOURCE_ROUTE_SUCCESSOR") && active_routes_seen == 1 &&
+                 !fixture.source_route_pending &&
+                 fixture.source_route_committed_record.source_epoch ==
+                    KER_RX_OWNER_SOURCE_ROUTE_SUCCESSOR_EPOCH))) {
             if (fixture.source_route_quarantined) {
                 if (current_owner_live(&fixture) || peer_authority_live(&fixture) ||
                         write((int)marker, "Q", 1) != 1) return 18;
                 return finish_success(&fixture);
             }
-            if (!fixture.peer_authenticated || fixture.peer.fd != (int)relay ||
-                fixture.peer.identity.owner_pid != (uint32_t)owner ||
-                fixture.owner_pid == (pid_t)owner || !fixture.owner_authenticated ||
+            if (!fixture.peer_authenticated || fixture.peer.fd < 0 ||
+                fixture.peer.identity.owner_pid != fixture.source_route_record.pair.primary_pid ||
+                fixture.owner_pid != (pid_t)fixture.source_route_record.pair.owner.owner_pid ||
+                !fixture.owner_authenticated ||
                 fixture.peer_record.authority_deadline_ns !=
                     fixture.source_route_record.pair.authority_deadline_ns) return 7;
             uint8_t frame[64];
@@ -271,6 +361,33 @@ int main(void)
             }
             if (write((int)marker, "C", 1) != 1) return 8;
             if (write((int)marker, "L", 1) != 1) return 14;
+            active_routes_seen++;
+            if (successor_inflight && active_routes_seen == 1) {
+                fixture.packet_id = 991;
+                fixture.deadline_ns = monotonic_ns() + UINT64_C(500000000);
+                fixture.frame_bytes = 64;
+                memset(fixture.pending_frame, 0x5a, fixture.frame_bytes);
+                fixture.current_frame_hash = frame_hash32(fixture.pending_frame,
+                    fixture.frame_bytes);
+            }
+            if (getenv("KER_TEST_SOURCE_ROUTE_SUCCESSOR") && active_routes_seen == 1) {
+                if (successor_inflight &&
+                    (fixture.packet_id != 991 || fixture.peer_forward_pending)) return 31;
+                staged = false;
+                waiting_successor = true;
+                continue;
+            }
+            if (getenv("KER_TEST_SOURCE_ROUTE_SECOND_SUCCESSOR") &&
+                    active_routes_seen == 2) {
+                staged = false;
+                waiting_successor = true;
+                continue;
+            }
+            if (getenv("KER_TEST_SOURCE_ROUTE_REPLAY") && active_routes_seen == 2) {
+                staged = false;
+                waiting_successor = true;
+                continue;
+            }
             if (getenv("KER_TEST_SOURCE_WAIT_MASTER_DEATH")) {
                 struct pollfd master = {.fd = fixture.source_master_pidfd, .events = POLLIN};
                 if (poll(&master, 1, 3000) != 1 || peer_authority_live(&fixture) ||

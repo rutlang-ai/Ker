@@ -99,7 +99,8 @@ static int retire(void *context)
 static int rearm(void *context)
 {
     (void)context;
-    /* Only the first source HUP is delegated in this bounded profile. */
+    /* Each source worker opens one original map. A successor uses a fresh
+     * worker and slot rather than rearming this retired map. */
     return -EOPNOTSUPP;
 }
 

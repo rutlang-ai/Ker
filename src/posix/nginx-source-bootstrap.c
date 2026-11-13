@@ -575,8 +575,9 @@ int ker_nginx_source_is_master(void)
 
 int ker_nginx_source_master_barrier(uint16_t operation)
 {
-    /* Retain every attempt and receipt. Round two is not a reset: only the
-     * original master's acknowledged pre-flip abort may precede that round. */
+    /* Retain every attempt and receipt. Round two consumes either the exact
+     * acknowledged abort or the explicit committed-successor lineage; it
+     * never resets a role, operation ledger, deadline, or grant. */
     static unsigned consumed[3], completed[3];
     unsigned bit = operation == KER_NGINX_SOURCE_MASTER_PARK ? 1u :
         operation == KER_NGINX_SOURCE_MASTER_COMMIT ? 2u :
@@ -585,20 +586,35 @@ int ker_nginx_source_master_barrier(uint16_t operation)
     int *enabled = dlsym(RTLD_DEFAULT, "ngx_ff_graceful_reload");
     if (!bit || !ker_nginx_source_is_master() || !source || !*source ||
         !enabled || *enabled != 1 || !ff_reload_state_valid(*source, sizeof(**source)) ||
-        (*source)->active_gen != 0 || (*source)->target_gen != 1 ||
         (*source)->reload_active != 1 || (*source)->fsm_state != 2) return -EPROTO;
     uint32_t round = (*source)->epoch;
-    if ((round != 1 && (round != 2 || !ker_fstack_nginx_source_fault_profile() ||
-            completed[1] != (1u | 4u) || consumed[1] != (1u | 4u))) ||
+    if (round != 1 && round != 2) return -EPROTO;
+    unsigned old_generation = 0, target_generation = 1;
+    if (round == 2) {
+        const char *successor = getenv("KER_NGINX_SOURCE_SUCCESSOR_ENABLE");
+        const char *first = getenv("KER_NGINX_SOURCE_FIRST_HUP_ENABLE");
+        int committed_successor = successor && !strcmp(successor, "1") &&
+            first && !strcmp(first, "1") && !getenv("FF_FAULT") &&
+            !getenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE") &&
+            completed[1] == (1u | 2u) && consumed[1] == (1u | 2u);
+        int aborted_retry = ker_fstack_nginx_source_fault_profile() &&
+            completed[1] == (1u | 4u) && consumed[1] == (1u | 4u);
+        if (!committed_successor && !aborted_retry) return -EPROTO;
+        if (committed_successor) {
+            old_generation = 1;
+            target_generation = 0;
+        }
+    }
+    if ((*source)->active_gen != old_generation || (*source)->target_gen != target_generation ||
         (consumed[round] & bit) ||
         (bit != 1 && (!(consumed[round] & 1) || (consumed[round] & 6))) ||
         (bit == 4 && (round != 1 || !ker_fstack_nginx_source_fault_profile()))) return -EPROTO;
-    if ((bit == 1 && ((*source)->rx_owner_gen != 0 || (*source)->rx_stopped)) ||
-        (bit == 2 && ((*source)->rx_owner_gen != 1 || (*source)->rx_stopped)) ||
-        (bit == 4 && ((*source)->rx_owner_gen != 0 || (*source)->rx_stopped != 1))) return -ESTALE;
+    if ((bit == 1 && ((*source)->rx_owner_gen != old_generation || (*source)->rx_stopped)) ||
+        (bit == 2 && ((*source)->rx_owner_gen != target_generation || (*source)->rx_stopped)) ||
+        (bit == 4 && ((*source)->rx_owner_gen != old_generation || (*source)->rx_stopped != 1))) return -ESTALE;
     consumed[round] |= bit;
     struct ker_nginx_source_bootstrap binding;
-    int status = source_from_environment(KER_NGINX_SOURCE_ROLE_MASTER, 1, round,
+    int status = source_from_environment(KER_NGINX_SOURCE_ROLE_MASTER, target_generation, round,
         *source, operation, &binding);
     if (!status) {
         status = -(int)binding.record.flags;

@@ -546,14 +546,17 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
             }
             if (proc_id == 1 && binding.record.flags == KER_NGINX_SOURCE_WORKER_CANDIDATE) {
                 const char *enabled = getenv("KER_NGINX_SOURCE_FIRST_HUP_ENABLE");
+                const char *successor = getenv("KER_NGINX_SOURCE_SUCCESSOR_ENABLE");
                 /* The opt-in alone conveys no authority: the live bootstrap
                  * grant already binds the exact source master, round, FIFO,
                  * relay, and fresh READY channel. Only its first successor
                  * can stage admission; original READY additionally waits for
                  * authenticated C31 PREPARED and supervisor ACTIVATE. */
                 if (enabled && !strcmp(enabled, "1") &&
-                        plan.worker_generation == 1 && (plan.source_round_epoch == 1 ||
-                            (plan.source_round_epoch == 2 && ker_fstack_nginx_source_fault_profile()))) {
+                        ((plan.worker_generation == 1 && (plan.source_round_epoch == 1 ||
+                            (plan.source_round_epoch == 2 && ker_fstack_nginx_source_fault_profile()))) ||
+                         (plan.worker_generation == 0 && plan.source_round_epoch == 2 &&
+                            successor && !strcmp(successor, "1") && !getenv("FF_FAULT")))) {
                     source_worker_mode = 1;
                     source_worker_binding = binding;
                     goto open_worker_context;
