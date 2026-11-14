@@ -1,16 +1,24 @@
 """Validation for the private ker-run companion helper wire codec."""
 import unittest
+import array
+import fcntl
+import io
+from unittest import mock
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
 import select
+import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 
 from nginx_companion_wire import *
 from nginx_companion_supervisor import NginxCompanion
@@ -21,6 +29,12 @@ _COMPANION_SPEC = importlib.util.spec_from_file_location(
 _COMPANION = importlib.util.module_from_spec(_COMPANION_SPEC)
 _COMPANION_SPEC.loader.exec_module(_COMPANION)
 broker_ini_matches = _COMPANION.broker_ini_matches
+
+_ALIAS_CAPABILITY_SPEC = importlib.util.spec_from_file_location(
+    '_test_nginx_companion_alias_capability', Path(__file__).with_name(
+        'nginx_companion_test_alias.py'))
+_ALIAS_CAPABILITY = importlib.util.module_from_spec(_ALIAS_CAPABILITY_SPEC)
+_ALIAS_CAPABILITY_SPEC.loader.exec_module(_ALIAS_CAPABILITY)
 
 _TAP_SPEC = importlib.util.spec_from_file_location(
     '_test_native_nginx_companion_tap', Path(__file__).with_name(
@@ -395,6 +409,332 @@ class CompanionWireTest(unittest.TestCase):
                     path.write_text(content, encoding='utf-8')
                     self.assertEqual(broker_ini_matches(path, '/run/ker.sock'),
                         expected)
+
+    def _alias_profile_fixture(self, directory):
+        directory = Path(directory)
+        prefix = directory / 'nginx'
+        prefix.mkdir(mode=0o700)
+        module_source = directory / 'module.c'
+        alias_module = directory / 'alias-test.so'
+        normal_module = directory / 'normal.so'
+        module_source.write_text(
+            '#include <stddef.h>\n'
+            '#if defined(TEST_ALIAS)\n'
+            '__attribute__((visibility("default"),used))\n'
+            'const char ker_nginx_owner_activation_alias_test_marker[] = '
+            '"KER_NGINX_OWNER_ALIAS_TEST_V1";\n'
+            'void keep_marker(void) { (void)ker_nginx_owner_activation_alias_test_marker[0]; }\n'
+            '#else\n'
+            'int normal_owner_module(void) { return 1; }\n'
+            '#endif\n', encoding='ascii')
+        compiler = shutil.which('cc')
+        if compiler is None:
+            self.skipTest('C compiler required for ELF marker fixture')
+        for output, defines in ((alias_module, ['-DTEST_ALIAS=1']),
+                (normal_module, [])):
+            result = subprocess.run([compiler, '-shared', '-fPIC',
+                '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections',
+                *defines, str(module_source), '-o', str(output)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        alias_path = directory / 'initial-alias.sock'
+        listener.bind(str(alias_path))
+        os.chmod(alias_path, 0o600)
+        listener.listen(4)
+        path_stat = os.stat(alias_path, follow_symlinks=False)
+        parent_stat = os.stat(directory, follow_symlinks=False)
+        path_identity = (path_stat.st_dev, path_stat.st_ino, path_stat.st_mode,
+            path_stat.st_uid, path_stat.st_gid)
+        parent_identity = (parent_stat.st_dev, parent_stat.st_ino, parent_stat.st_mode,
+            parent_stat.st_uid, parent_stat.st_gid)
+        args = SimpleNamespace(owner_ready_required=True,
+            source_bootstrap_required=True, cycle_control_fd=None,
+            rx_owner_relay_fd=None, initial_slot_fd=None, candidate_slot_fd=None,
+            prefix=prefix, test_initial_alias_listener_fd=listener.fileno(),
+            test_initial_alias_path_identity=path_identity,
+            test_initial_alias_parent_identity=parent_identity)
+        values = {'KER_NGINX_SOURCE_FIRST_HUP_ENABLE': '1',
+            'KER_NGINX_TEST_INITIAL_ALIAS_SOCKET': str(alias_path),
+            'KER_NGINX_OWNER_MODULE_PATH': str(alias_module),
+            'KER_NGINX_OWNER_MODULE_SHA256':
+                hashlib.sha256(alias_module.read_bytes()).hexdigest()}
+        return (args, values, listener, alias_path, alias_module, normal_module,
+            path_identity, parent_identity)
+
+    def test_alias_profile_accepts_explicit_pinned_test_module_and_listener(self):
+        with tempfile.TemporaryDirectory(prefix='ker-companion-alias-profile-') as directory:
+            args, values, listener, _path, _alias, _normal, _pathid, _parentid =                 self._alias_profile_fixture(directory)
+            try:
+                identity = _COMPANION._validate_test_alias_profile(args, values)
+                self.assertIsNotNone(identity)
+                self.assertEqual(_COMPANION._validate_test_alias_profile(
+                    args, values, previous_identity=identity), identity)
+            finally:
+                listener.close()
+
+    def test_alias_profile_rejects_missing_source_flags_and_normal_profile(self):
+        with tempfile.TemporaryDirectory(prefix='ker-companion-alias-flags-') as directory:
+            args, values, listener, *_ = self._alias_profile_fixture(directory)
+            try:
+                for field in ('owner_ready_required', 'source_bootstrap_required'):
+                    original = getattr(args, field)
+                    setattr(args, field, False)
+                    with self.subTest(field=field), self.assertRaises(ValueError):
+                        _COMPANION._validate_test_alias_profile(args, values)
+                    setattr(args, field, original)
+                normal = dict(values)
+                normal['KER_NGINX_SOURCE_FIRST_HUP_ENABLE'] = '0'
+                with self.assertRaises(ValueError):
+                    _COMPANION._validate_test_alias_profile(args, normal)
+                faulted = dict(values, FF_FAULT='flip_fail_once')
+                with self.assertRaises(ValueError):
+                    _COMPANION._validate_test_alias_profile(args, faulted)
+            finally:
+                listener.close()
+
+    def test_alias_profile_rejects_normal_module_and_wrong_hash(self):
+        with tempfile.TemporaryDirectory(prefix='ker-companion-alias-module-') as directory:
+            args, values, listener, _path, _alias, normal, *_ = self._alias_profile_fixture(directory)
+            try:
+                wrong_module = dict(values,
+                    KER_NGINX_OWNER_MODULE_PATH=str(normal),
+                    KER_NGINX_OWNER_MODULE_SHA256=hashlib.sha256(normal.read_bytes()).hexdigest())
+                with self.assertRaisesRegex(PermissionError, 'alias-test variant'):
+                    _COMPANION._validate_test_alias_profile(args, wrong_module)
+                wrong_hash = dict(values, KER_NGINX_OWNER_MODULE_SHA256='0' * 64)
+                with self.assertRaisesRegex(PermissionError, 'hash mismatch'):
+                    _COMPANION._validate_test_alias_profile(args, wrong_hash)
+            finally:
+                listener.close()
+
+    def test_alias_profile_rejects_wrong_path_symlink_and_replaced_socket(self):
+        with tempfile.TemporaryDirectory(prefix='ker-companion-alias-path-') as directory:
+            args, values, listener, path, _alias, _normal, original_pathid, parentid =                 self._alias_profile_fixture(directory)
+            try:
+                wrong = dict(values, KER_NGINX_TEST_INITIAL_ALIAS_SOCKET=str(path.parent/'sibling.sock'))
+                with self.assertRaises(ValueError):
+                    _COMPANION._validate_test_alias_profile(args, wrong)
+                saved = path.with_name('saved.sock')
+                path.rename(saved)
+                path.symlink_to(saved.name)
+                with self.assertRaises(PermissionError):
+                    _COMPANION._validate_test_alias_profile(args, values)
+                path.unlink()
+                saved.rename(path)
+                replaced = path.with_name('replacement.sock')
+                path.unlink()
+                replacement_listener = socket.socket(socket.AF_UNIX,
+                    socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+                replacement_listener.bind(str(path))
+                os.chmod(path, 0o600)
+                replacement_listener.listen(1)
+                replacement_stat=os.stat(path,follow_symlinks=False)
+                replacement_identity=(replacement_stat.st_dev,replacement_stat.st_ino)
+                try:
+                    with self.assertRaisesRegex(PermissionError, 'captured'):
+                        _COMPANION._validate_test_alias_profile(args, values)
+                finally:
+                    replacement_listener.close()
+                    path.unlink()
+                # The caller's prelaunch identity detects same-path replacement.
+                self.assertNotEqual(original_pathid[:2], replacement_identity)
+                self.assertEqual(parentid[:2],
+                    (os.stat(path.parent, follow_symlinks=False).st_dev,
+                     os.stat(path.parent, follow_symlinks=False).st_ino))
+            finally:
+                listener.close()
+
+    def test_alias_profile_rejects_parent_mode_socket_mode_fd_and_listener_type(self):
+        with tempfile.TemporaryDirectory(prefix='ker-companion-alias-mode-') as directory:
+            args, values, listener, path, _alias, _normal, _pathid, _parentid =                 self._alias_profile_fixture(directory)
+            try:
+                os.chmod(path.parent, 0o755)
+                with self.assertRaisesRegex(PermissionError, 'parent'):
+                    _COMPANION._validate_test_alias_profile(args, values)
+                os.chmod(path.parent, 0o700)
+                os.chmod(path, 0o644)
+                with self.assertRaisesRegex(PermissionError, 'mode-0600'):
+                    _COMPANION._validate_test_alias_profile(args, values)
+                os.chmod(path, 0o600)
+                os.set_inheritable(listener.fileno(), True)
+                with self.assertRaisesRegex(PermissionError, 'close-on-exec'):
+                    _COMPANION._validate_test_alias_profile(args, values)
+                os.set_inheritable(listener.fileno(), False)
+                not_listener = socket.socket(socket.AF_UNIX,
+                    socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+                args.test_initial_alias_listener_fd = not_listener.fileno()
+                with self.assertRaisesRegex(PermissionError, 'exact listening'):
+                    _COMPANION._validate_test_alias_profile(args, values)
+                not_listener.close()
+            finally:
+                listener.close()
+
+    def test_alias_profile_rejects_wrong_owner_and_nonseqpacket_listener(self):
+        with tempfile.TemporaryDirectory(prefix='ker-companion-alias-owner-') as directory:
+            args, values, listener, path, _alias, _normal, _pathid, _parentid = \
+                self._alias_profile_fixture(directory)
+            try:
+                uid=os.geteuid()
+                with mock.patch.object(_COMPANION.os, 'geteuid',
+                        side_effect=(uid,uid + 1)):
+                    with self.assertRaisesRegex(PermissionError, 'owned private directory'):
+                        _COMPANION._validate_test_alias_profile(args, values)
+                stream_path=path.parent/'stream.sock'
+                listener.close()
+                path.unlink()
+                stream=socket.socket(socket.AF_UNIX,
+                    socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
+                stream.bind(str(path))
+                os.chmod(path,0o600)
+                stream.listen(1)
+                path_stat=os.stat(path,follow_symlinks=False)
+                args.test_initial_alias_path_identity=(path_stat.st_dev,path_stat.st_ino,
+                    path_stat.st_mode,path_stat.st_uid,path_stat.st_gid)
+                args.test_initial_alias_listener_fd=stream.fileno()
+                with self.assertRaisesRegex(PermissionError, 'SOCK_SEQPACKET'):
+                    _COMPANION._validate_test_alias_profile(args, values)
+                stream.close()
+            finally:
+                try: listener.close()
+                except OSError: pass
+
+    def test_member_alias_capability_requires_nonblocking_write_fifo(self):
+        read_fd, capability_fd = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+        try:
+            identity = _ALIAS_CAPABILITY.validate_member_alias_fd(capability_fd)
+            self.assertEqual(identity['access'], 'write-only')
+            self.assertTrue(identity['nonblocking'] and identity['cloexec'])
+            with self.assertRaisesRegex(PermissionError, 'write-only'):
+                _ALIAS_CAPABILITY.validate_member_alias_fd(read_fd)
+        finally:
+            os.close(capability_fd); os.close(read_fd)
+        blocking_read, blocking_write = os.pipe2(os.O_CLOEXEC)
+        try:
+            with self.assertRaisesRegex(PermissionError, 'nonblocking'):
+                _ALIAS_CAPABILITY.validate_member_alias_fd(blocking_write)
+        finally:
+            os.close(blocking_read); os.close(blocking_write)
+        socket_left, socket_right = socket.socketpair(
+            socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+        try:
+            with self.assertRaisesRegex(PermissionError, 'capability FIFO'):
+                _ALIAS_CAPABILITY.validate_member_alias_fd(socket_left.fileno())
+        finally:
+            socket_left.close(); socket_right.close()
+        plain_read, plain_write = os.pipe2(os.O_NONBLOCK)
+        try:
+            with self.assertRaisesRegex(PermissionError, 'close-on-exec'):
+                _ALIAS_CAPABILITY.validate_member_alias_fd(plain_write)
+        finally:
+            os.close(plain_read); os.close(plain_write)
+
+    @staticmethod
+    def _send_member_alias_packet(sender, descriptors):
+        rights = array.array('i', descriptors)
+        sender.sendmsg([b'A'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+            rights.tobytes())])
+
+    @staticmethod
+    def _open_fd_count():
+        return len(list(Path('/proc/self/fd').iterdir()))
+
+    def _member_alias_pair(self):
+        listener = socket.socket(socket.AF_UNIX,
+            socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        directory = Path(tempfile.mkdtemp(prefix='ker-alias-rx-'))
+        path = directory / 'alias.sock'
+        listener.bind(str(path))
+        listener.listen(1)
+        client = socket.socket(socket.AF_UNIX,
+            socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+        client.connect(str(path))
+        server, _ = listener.accept()
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        return path, listener, client, server
+
+    @staticmethod
+    def _close_member_alias_pair(path, listener, sender, receiver):
+        listener.close()
+        sender.close()
+        receiver.close()
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+
+    def test_member_alias_recv_accepts_kernel_cloexec_output_flag(self):
+        read_fd, write_fd = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+        path, listener, sender, receiver = self._member_alias_pair()
+        received = -1
+        try:
+            self._send_member_alias_packet(sender, [write_fd])
+            diagnostic_stream = io.StringIO()
+            with mock.patch('sys.stderr', diagnostic_stream):
+                received, capability, diagnostic = _ALIAS_CAPABILITY.receive_member_alias(
+                    receiver, os.getpid(), 'valid-cloexec')
+            self.assertIn('MEMBER_ALIAS_DIAGNOSTIC ', diagnostic_stream.getvalue())
+            self.assertEqual(capability['inode'], os.fstat(write_fd).st_ino)
+            self.assertEqual(diagnostic['flags'], socket.MSG_CMSG_CLOEXEC)
+            self.assertTrue(fcntl.fcntl(received, fcntl.F_GETFD) & fcntl.FD_CLOEXEC)
+        finally:
+            if received >= 0:
+                os.close(received)
+            self._close_member_alias_pair(path, listener, sender, receiver); os.close(write_fd); os.close(read_fd)
+
+    def test_member_alias_recv_rejects_wrong_pid_and_extra_fds_without_leaks(self):
+        read_fd, write_fd = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+        extra_read, extra_write = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+        for expected, sent in ((os.getpid() + 1, [write_fd]),
+                (os.getpid(), [write_fd, extra_write])):
+            path, listener, sender, receiver = self._member_alias_pair()
+            try:
+                self._send_member_alias_packet(sender, sent)
+                before = self._open_fd_count()
+                diagnostic_stream = io.StringIO()
+                with mock.patch('sys.stderr', diagnostic_stream):
+                    with self.assertRaisesRegex(RuntimeError, 'SCM credentials/FD/flags'):
+                        _ALIAS_CAPABILITY.receive_member_alias(receiver, expected, 'reject')
+                self.assertIn('MEMBER_ALIAS_DIAGNOSTIC ', diagnostic_stream.getvalue())
+                self.assertEqual(self._open_fd_count(), before)
+            finally:
+                self._close_member_alias_pair(path, listener, sender, receiver)
+        os.close(extra_write); os.close(extra_read); os.close(write_fd); os.close(read_fd)
+
+    def test_member_alias_recv_rejects_truncated_ancillary_and_closes_delivered_fds(self):
+        source = [os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC) for _ in range(3)]
+        read_fds = [pair[0] for pair in source]
+        write_fds = [pair[1] for pair in source]
+        path, listener, sender, receiver = self._member_alias_pair()
+        try:
+            self._send_member_alias_packet(sender, write_fds)
+            before = self._open_fd_count()
+            small_control = socket.CMSG_SPACE(array.array('i').itemsize) + socket.CMSG_SPACE(12)
+            diagnostic_stream = io.StringIO()
+            with mock.patch('sys.stderr', diagnostic_stream):
+                with self.assertRaisesRegex(RuntimeError, 'SCM credentials/FD/flags'):
+                    _ALIAS_CAPABILITY.receive_member_alias(receiver, os.getpid(),
+                        'truncated', control_size=small_control)
+            diagnostic = json.loads(diagnostic_stream.getvalue().split(
+                'MEMBER_ALIAS_DIAGNOSTIC ', 1)[1])
+            self.assertTrue(diagnostic['flags'] & socket.MSG_CTRUNC)
+            self.assertGreaterEqual(len(diagnostic['fds']), 1)
+            self.assertEqual(self._open_fd_count(), before)
+        finally:
+            self._close_member_alias_pair(path, listener, sender, receiver)
+            for descriptor in read_fds + write_fds:
+                os.close(descriptor)
+
+    def test_alias_env_cli_is_not_accepted_without_source_profile(self):
+        argv = ['--control-fd', '3', '--nonce', '01' * 16,
+            '--epoch', '1', '--binary', '/unused/nginx',
+            '--config', '/unused/nginx.conf', '--prefix', '/unused',
+            '--helper-sha256', '02' * 32, '--nginx-env',
+            'KER_NGINX_TEST_INITIAL_ALIAS_SOCKET=/unused/initial-alias.sock']
+        with mock.patch('sys.stderr'):
+            with self.assertRaises(SystemExit) as raised:
+                _COMPANION.main(argv)
+        self.assertEqual(raised.exception.code, 2)
 
     def test_unsettled_companion_retains_channel_and_pidfds(self):
         class LiveHelper:
