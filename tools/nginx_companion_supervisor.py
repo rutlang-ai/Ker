@@ -73,7 +73,10 @@ class NginxCompanion:
     def __init__(self, binary, config, prefix, nginx_env, cycle_control_fd=None,
                  owner_ready_required=False, rx_owner_relay_fd=None,
                  candidate_slot_transfer_fd=None, initial_slot_transfer_fd=None,
-                 source_bootstrap_required=False):
+                 source_bootstrap_required=False,
+                 test_initial_alias_listener_fd=None,
+                 test_initial_alias_path_identity=None,
+                 test_initial_alias_parent_identity=None):
         self.binary = Path(binary).resolve(strict=True)
         self.config = Path(config).resolve(strict=True)
         self.prefix = Path(prefix).resolve(strict=True)
@@ -83,6 +86,31 @@ class NginxCompanion:
         self.source_bootstrap_required = bool(source_bootstrap_required)
         if self.source_bootstrap_required and not self.owner_ready_required:
             raise ValueError('source bootstrap requires authenticated worker READY')
+        alias_key = 'KER_NGINX_TEST_INITIAL_ALIAS_SOCKET'
+        alias_path = self.nginx_env.get(alias_key)
+        self.test_initial_alias_listener_fd = test_initial_alias_listener_fd
+        self.test_initial_alias_path_identity = test_initial_alias_path_identity
+        self.test_initial_alias_parent_identity = test_initial_alias_parent_identity
+        if alias_path is not None:
+            expected_alias_path = str(self.prefix.parent / 'initial-alias.sock')
+            identity_fields = (test_initial_alias_path_identity,
+                test_initial_alias_parent_identity)
+            if (not self.owner_ready_required or not self.source_bootstrap_required or
+                    self.nginx_env.get('KER_NGINX_SOURCE_FIRST_HUP_ENABLE') != '1' or
+                    any(key in self.nginx_env for key in ('FF_FAULT',
+                        'KER_NGINX_SOURCE_ABORT_RETRY_ENABLE',
+                        'KER_NGINX_SOURCE_SUCCESSOR_ENABLE')) or
+                    test_initial_alias_listener_fd is None or
+                    type(test_initial_alias_listener_fd) is not int or
+                    test_initial_alias_listener_fd < 3 or alias_path != expected_alias_path or
+                    any(type(identity) is not tuple or len(identity) != 5 or
+                        any(type(value) is not int or value < 0 for value in identity)
+                        for identity in identity_fields)):
+                raise ValueError('test alias listener requires the explicit fault-free source first-HUP profile')
+        elif (test_initial_alias_listener_fd is not None or
+                test_initial_alias_path_identity is not None or
+                test_initial_alias_parent_identity is not None):
+            raise ValueError('test alias listener evidence requires its explicit alias environment entry')
         self.rx_owner_relay_fd = rx_owner_relay_fd
         if candidate_slot_transfer_fd is not None and initial_slot_transfer_fd is not None:
             raise ValueError('one delegated owner role is required')
@@ -343,6 +371,14 @@ class NginxCompanion:
             command.append('--owner-ready-required')
         if self.source_bootstrap_required:
             command.append('--source-bootstrap-required')
+        if self.test_initial_alias_listener_fd is not None:
+            command += ['--test-initial-alias-listener-fd',
+                str(self.test_initial_alias_listener_fd),
+                '--test-initial-alias-path-stat',
+                *(str(value) for value in self.test_initial_alias_path_identity),
+                '--test-initial-alias-parent-stat',
+                *(str(value) for value in self.test_initial_alias_parent_identity)]
+            helper_pass_fds.append(self.test_initial_alias_listener_fd)
         if self.rx_owner_relay_fd is not None:
             command += ['--rx-owner-relay-fd', str(self.rx_owner_relay_fd)]
             helper_pass_fds.append(self.rx_owner_relay_fd)

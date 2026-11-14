@@ -11,6 +11,7 @@ from pathlib import Path
 import select
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -61,6 +62,194 @@ OWNER_READY_MAGIC = 0x4B4E5244
 OWNER_READY_VERSION = 2
 OWNER_READY_RECORD = struct.Struct('=IHHIIQQQIIQQ')
 SO_COOKIE = getattr(socket, 'SO_COOKIE', 57)
+TEST_ALIAS_ENV = 'KER_NGINX_TEST_INITIAL_ALIAS_SOCKET'
+TEST_ALIAS_MARKER_SYMBOL = 'ker_nginx_owner_activation_alias_test_marker'
+TEST_ALIAS_MARKER_VALUE = b'KER_NGINX_OWNER_ALIAS_TEST_V1\0'
+
+
+def _stable_stat(st):
+    return (st.st_dev, st.st_ino, st.st_mode, st.st_uid, st.st_gid,
+        st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _read_alias_module(path_text, digest_text):
+    path = Path(path_text)
+    if (not path.is_absolute() or os.path.normpath(path_text) != path_text or
+            path.resolve(strict=True) != path):
+        raise ValueError('alias test module path is not canonical')
+    if (len(digest_text) != 64 or digest_text.lower() != digest_text or
+            any(char not in '0123456789abcdef' for char in digest_text)):
+        raise ValueError('alias test module digest is not canonical SHA-256')
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid() or
+                before.st_mode & 0o022 or before.st_size < 64 or
+                before.st_size > 64 * 1024 * 1024):
+            raise PermissionError('alias test module is not a bounded owned regular file')
+        chunks = []
+        total = 0
+        while total <= before.st_size:
+            block = os.read(fd, min(1024 * 1024, before.st_size + 1 - total))
+            if not block:
+                break
+            chunks.append(block)
+            total += len(block)
+            if total > before.st_size:
+                raise PermissionError('alias test module grew while being read')
+        raw = b''.join(chunks)
+        after = os.fstat(fd)
+        if total != before.st_size or _stable_stat(before) != _stable_stat(after):
+            raise PermissionError('alias test module changed while being read')
+    finally:
+        os.close(fd)
+    if hashlib.sha256(raw).hexdigest() != digest_text:
+        raise PermissionError('alias test module hash mismatch')
+    if not _elf_has_alias_test_marker(raw):
+        raise PermissionError('owner module is not the explicit alias-test variant')
+    return (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+        before.st_ctime_ns, digest_text)
+
+
+def _elf_has_alias_test_marker(raw):
+    """Recognize one exact exported ELF64 object marker without loading the DSO."""
+    ehdr = struct.Struct('<16sHHIQQQIHHHHHH')
+    shdr = struct.Struct('<IIQQQQIIQQ')
+    sym = struct.Struct('<IBBHQQ')
+    if len(raw) < ehdr.size:
+        return False
+    values = ehdr.unpack_from(raw)
+    ident, e_type, machine, version = values[:4]
+    shoff, ehsize, shentsize, shnum = values[6], values[8], values[11], values[12]
+    if (ident[:6] != b'\x7fELF\x02\x01' or ident[6] != 1 or e_type != 3 or
+            machine != 62 or version != 1 or ehsize != ehdr.size or
+            shentsize != shdr.size or not 1 <= shnum <= 256 or
+            shoff > len(raw) or shnum > (len(raw) - shoff) // shentsize):
+        return False
+    sections = [shdr.unpack_from(raw, shoff + i * shentsize) for i in range(shnum)]
+    found = 0
+    for section in sections:
+        _name, section_type, _flags, _address, offset, size, link, _info, _align, entsize = section
+        if section_type != 11:  # SHT_DYNSYM
+            continue
+        if (link >= shnum or entsize != sym.size or size % sym.size or
+                offset > len(raw) or size > len(raw) - offset):
+            return False
+        strings_section = sections[link]
+        if strings_section[1] != 3:  # SHT_STRTAB
+            return False
+        strings_offset, strings_size = strings_section[4], strings_section[5]
+        if strings_offset > len(raw) or strings_size > len(raw) - strings_offset:
+            return False
+        strings = raw[strings_offset:strings_offset + strings_size]
+        for at in range(offset, offset + size, sym.size):
+            name_offset, info, other, shndx, _value, symbol_size = sym.unpack_from(raw, at)
+            if name_offset >= len(strings):
+                return False
+            end = strings.find(b'\0', name_offset)
+            if end < 0:
+                return False
+            if strings[name_offset:end] != TEST_ALIAS_MARKER_SYMBOL.encode('ascii'):
+                continue
+            if ((info >> 4) != 1 or (info & 0x0f) != 1 or other & 0x03 != 0 or
+                    shndx == 0 or symbol_size != len(TEST_ALIAS_MARKER_VALUE)):
+                return False
+            found += 1
+    return found == 1
+
+
+def _open_absolute_directory_nofollow(path):
+    path = Path(path)
+    if not path.is_absolute() or os.path.normpath(str(path)) != str(path):
+        raise ValueError('alias socket parent path is not canonical absolute')
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for component in path.parts[1:]:
+            if component in ('', '.', '..'):
+                raise ValueError('alias socket parent contains a noncanonical component')
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY |
+                os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _validate_test_alias_profile(args, values, previous_identity=None):
+    alias_path = values.get(TEST_ALIAS_ENV)
+    listener_fd = getattr(args, 'test_initial_alias_listener_fd', None)
+    supplied_path_identity = getattr(args, 'test_initial_alias_path_identity', None)
+    supplied_parent_identity = getattr(args, 'test_initial_alias_parent_identity', None)
+    if alias_path is None:
+        if listener_fd is not None or supplied_path_identity is not None or supplied_parent_identity is not None:
+            raise ValueError('alias listener evidence supplied without alias profile')
+        return None
+    if (not args.owner_ready_required or not args.source_bootstrap_required or
+            values.get('KER_NGINX_SOURCE_FIRST_HUP_ENABLE') != '1' or
+            'FF_FAULT' in values or 'KER_NGINX_SOURCE_ABORT_RETRY_ENABLE' in values or
+            'KER_NGINX_SOURCE_SUCCESSOR_ENABLE' in values or
+            args.cycle_control_fd is not None or args.rx_owner_relay_fd is not None or
+            args.initial_slot_fd is not None or args.candidate_slot_fd is not None):
+        raise ValueError('alias test env requires the exact fault-free first-HUP source profile')
+    if type(listener_fd) is not int or listener_fd < 3:
+        raise ValueError('alias test profile requires its held listener descriptor')
+    if (type(supplied_path_identity) is not tuple or len(supplied_path_identity) != 5 or
+            type(supplied_parent_identity) is not tuple or len(supplied_parent_identity) != 5 or
+            any(type(value) is not int or value < 0
+                for value in supplied_path_identity + supplied_parent_identity)):
+        raise ValueError('alias test profile requires captured socket-path and parent identities')
+    prefix = Path(args.prefix)
+    if not prefix.is_absolute() or prefix.resolve(strict=True) != prefix:
+        raise ValueError('alias test prefix is not canonical')
+    expected_socket_path = prefix.parent / 'initial-alias.sock'
+    if alias_path != str(expected_socket_path):
+        raise ValueError('alias socket path is not the exact initial-alias.sock under the Nginx prefix parent')
+    module_path = values.get('KER_NGINX_OWNER_MODULE_PATH')
+    module_hash = values.get('KER_NGINX_OWNER_MODULE_SHA256')
+    if not module_path or not module_hash:
+        raise ValueError('alias test profile requires the pinned owner module identity')
+    module_identity = _read_alias_module(module_path, module_hash)
+    parent_fd = _open_absolute_directory_nofollow(expected_socket_path.parent)
+    try:
+        parent_stat = os.fstat(parent_fd)
+        parent_observed = (parent_stat.st_dev, parent_stat.st_ino,
+            parent_stat.st_mode, parent_stat.st_uid, parent_stat.st_gid)
+        if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != os.geteuid() or
+                stat.S_IMODE(parent_stat.st_mode) != 0o700 or
+                parent_observed != supplied_parent_identity):
+            raise PermissionError('alias socket parent is not the captured owned private directory')
+        path_stat = os.stat('initial-alias.sock', dir_fd=parent_fd,
+            follow_symlinks=False)
+        path_observed = (path_stat.st_dev, path_stat.st_ino, path_stat.st_mode,
+            path_stat.st_uid, path_stat.st_gid)
+        if (not stat.S_ISSOCK(path_stat.st_mode) or path_stat.st_uid != os.geteuid() or
+                stat.S_IMODE(path_stat.st_mode) != 0o600 or
+                path_observed != supplied_path_identity):
+            raise PermissionError('alias path is not the captured owned mode-0600 Unix socket')
+        fd_stat = os.fstat(listener_fd)
+        if not stat.S_ISSOCK(fd_stat.st_mode) or fd_stat.st_uid != os.geteuid():
+            raise PermissionError('held alias FD is not an owned Unix socket')
+        import fcntl
+        if not (fcntl.fcntl(listener_fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC):
+            raise PermissionError('held alias listener FD must be close-on-exec')
+        endpoint = socket.socket(fileno=os.dup(listener_fd))
+        try:
+            domain = endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_DOMAIN)
+            accepting = endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
+            if (domain != socket.AF_UNIX or endpoint.type & 0x0f != socket.SOCK_SEQPACKET or
+                    accepting != 1 or endpoint.getsockname() != alias_path):
+                raise PermissionError('held alias FD is not the exact listening Unix SOCK_SEQPACKET endpoint')
+        finally:
+            endpoint.close()
+        identity = (parent_observed, path_observed, _stable_stat(fd_stat),
+            module_identity, alias_path)
+        if previous_identity is not None and identity != previous_identity:
+            raise PermissionError('alias profile path, listener, or module identity changed before HUP')
+        return identity
+    finally:
+        os.close(parent_fd)
 
 
 def start_ticks(pid):
@@ -758,6 +947,9 @@ def run(args):
             for item in directives if len(item) == 2 and item[0] == b'load_module']
         if configured_modules.count(module_path) != 1:
             raise PermissionError('pinned C22 owner module is not loaded exactly once')
+        if args.test_initial_alias_identity is not None:
+            _validate_test_alias_profile(args, args.nginx_env,
+                previous_identity=args.test_initial_alias_identity)
     effective_ini_path, effective_ini_identity = effective_fstack_ini(
         config, directives, ini_path)
     actual_ini_hash = sha256_file(effective_ini_path)
@@ -850,6 +1042,9 @@ def run(args):
             raise PermissionError('pinned Nginx binary/configuration/INI profile changed before HUP')
         if sha256_file(f'/proc/{master.pid}/exe') != actual_binary_hash:
             raise PermissionError('running Nginx executable differs from pinned profile')
+        if args.test_initial_alias_identity is not None:
+            _validate_test_alias_profile(args, args.nginx_env,
+                previous_identity=args.test_initial_alias_identity)
         if not broker_ini_matches(current_effective_ini,
                 args.nginx_env['KER_SOCKET_BROKER_PATH'], graceful_reload=reload_value):
             raise PermissionError('Nginx reload INI left the pinned source/legacy profile')
@@ -1306,6 +1501,9 @@ def main(argv=None):
     parser.add_argument('--rx-owner-relay-fd', type=int)
     parser.add_argument('--candidate-slot-fd', type=int)
     parser.add_argument('--initial-slot-fd', type=int)
+    parser.add_argument('--test-initial-alias-listener-fd', type=int)
+    parser.add_argument('--test-initial-alias-path-stat', nargs=5, type=int)
+    parser.add_argument('--test-initial-alias-parent-stat', nargs=5, type=int)
     parser.add_argument('--nginx-env', action='append', default=[])
     args = parser.parse_args(argv)
     if (len(args.nonce) != 16 or args.nonce == bytes(16) or args.epoch <= 0 or
@@ -1314,7 +1512,8 @@ def main(argv=None):
     values = {}
     for value in args.nginx_env:
         key, separator, item = value.partition('=')
-        if not separator or key not in ENV_KEYS or key in values or not item:
+        if (not separator or (key not in ENV_KEYS and key != TEST_ALIAS_ENV) or
+                key in values or not item):
             parser.error('invalid/duplicate Nginx environment entry')
         values[key] = item
     source_keys = SOURCE_BOOTSTRAP_KEYS.intersection(values)
@@ -1348,6 +1547,19 @@ def main(argv=None):
             parser.error('invalid source bootstrap launch context')
     elif source_keys:
         parser.error('source bootstrap environment requires explicit source profile')
+    args.test_initial_alias_path_identity = (None if args.test_initial_alias_path_stat is None
+        else tuple(args.test_initial_alias_path_stat))
+    args.test_initial_alias_parent_identity = (None if args.test_initial_alias_parent_stat is None
+        else tuple(args.test_initial_alias_parent_stat))
+    if args.test_initial_alias_listener_fd is not None:
+        try:
+            os.set_inheritable(args.test_initial_alias_listener_fd, False)
+        except OSError as error:
+            parser.error(f'alias listener descriptor is not open: {error}')
+    try:
+        args.test_initial_alias_identity = _validate_test_alias_profile(args, values)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     args.candidate_slot_mode = args.candidate_slot_fd is not None
     args.candidate_slot_stat = None
     if args.initial_slot_fd is not None:

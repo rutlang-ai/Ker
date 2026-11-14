@@ -314,6 +314,20 @@ alias alive. Close the watch capability when it is no longer needed. Closing
 the final listener capability remains an ordinary original-Linux close even
 while the watch exists.
 
+For staged cutover, create the watch while the initial member is published and
+before either member claim. That one watch remains bound across the cutover; a
+new watch created after cutover is not equivalent. The member alias returned
+through the preload API is a broker capability represented to the host as a
+write-only FIFO descriptor. Its logical socket read authority is held in the
+broker object; the host descriptor is not a readable socket fd. Holding that
+alias keeps the underlying original listener capability alive, so the explicit
+`RETIRE0` operation remains `EAGAIN` until the alias is closed. The test also
+checks the pre-retirement watch state gate returns `EAGAIN` while the alias is
+held. That state-gate result is not evidence that the kernel census observed a
+remaining `LISTEN` socket. After actual listener retirement, the same watch
+uses the captured cookie as a retirement tombstone, not as a claim that the
+live listener cookie still exists.
+
 The watch capability cannot verify retirement by itself. A verification
 request is accepted only over the attached readiness channel from its pinned,
 authenticated supervisor. Each request has a fresh increasing sequence number.
@@ -332,6 +346,19 @@ has disappeared or that a full generation handoff is safe. It is not a
 replacement for the original graceful-reload oracle. The deterministic
 verification barrier used to test cancellation is compiled only into an
 uninstalled test fixture; it is absent from the installed SDK.
+
+The source-master alias-retirement test covers the held-listener case, the
+pre-retirement `EAGAIN` state gate, real `RETIRE0`, the post-retirement C34
+result, the bounded source HUP, the 8 MiB response, post-retirement TCP, and
+native shutdown. Its quarantine companion and generation-watch model controls
+cover failed identity/state transitions. Existing generic readiness and
+generation-handoff tests remain separate. The source-master alias scenario
+does not yet retain a nonzero-payload accepted socket across old-worker exit,
+so it does not test the staged watch's nonzero-payload rejection branch. The
+generic owner-payload test independently observes a real 1200-byte pending
+payload and its drain; it is not a staged-watch payload-negative test. The
+full original-shell inventory remains unchanged at 362 passed, 0 failed, and 1
+skipped.
 
 ## Scope
 

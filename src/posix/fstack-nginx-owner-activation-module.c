@@ -495,6 +495,9 @@ int ker_fstack_nginx_owner_activation_worker_ready(void)
 
 #ifdef KER_NGINX_OWNER_TEST_ALIAS
 #include <ngx_event.h>
+__attribute__((visibility("default"), used))
+const char ker_nginx_owner_activation_alias_test_marker[] =
+    "KER_NGINX_OWNER_ALIAS_TEST_V1";
 static int test_initial_alias_slot = -1;
 static ngx_event_t test_rearm_event;
 static void trace_line(const char *format, ...);
@@ -522,6 +525,8 @@ int ker_nginx_candidate_worker_commit(int slot);
 static ngx_int_t test_export_initial_member_alias(ngx_cycle_t *cycle)
 {
     (void)cycle;
+    if (strcmp(ker_nginx_owner_activation_alias_test_marker,
+            "KER_NGINX_OWNER_ALIAS_TEST_V1")) return NGX_ERROR;
     const char *path = getenv("KER_NGINX_TEST_INITIAL_ALIAS_SOCKET");
     if (!path) return NGX_OK;
     if (test_initial_alias_slot < 0 ||

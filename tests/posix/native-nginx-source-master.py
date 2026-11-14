@@ -7,6 +7,8 @@ same-master reload. It does not qualify repeated reloads or full-shell policy.
 import argparse
 import array
 import ctypes
+import errno
+import fcntl
 import hashlib
 import importlib.util
 import ipaddress
@@ -43,6 +45,51 @@ def require(value, message):
         raise RuntimeError(message)
 
 
+def pidfd_target_pid(pidfd):
+    match = re.search(r'^Pid:\s+(-?\d+)$',
+        Path(f'/proc/self/fdinfo/{pidfd}').read_text(), re.MULTILINE)
+    require(match is not None and int(match[1]) > 0,
+        'pidfd has no live target PID in fdinfo')
+    return int(match[1])
+
+
+def retain_owner_pidfd(owner, read_start_ticks):
+    """Own a verified duplicate before manager promotion can close its pidfd."""
+    pid = int(owner.owner_pid)
+    start = int(owner.owner_start)
+    borrowed = int(owner.owner_pidfd)
+    require(pid > 0 and start > 0 and borrowed >= 0,
+        'captured predecessor identity is incomplete')
+    require(pidfd_target_pid(borrowed) == pid and read_start_ticks(pid) == start and
+        not select.select([borrowed], [], [], 0)[0],
+        'borrowed predecessor pidfd does not identify the live captured worker')
+    retained = os.dup(borrowed)
+    try:
+        flags = fcntl.fcntl(retained, fcntl.F_GETFD)
+        fcntl.fcntl(retained, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
+        require(fcntl.fcntl(retained, fcntl.F_GETFD) & fcntl.FD_CLOEXEC and
+            pidfd_target_pid(retained) == pid and read_start_ticks(pid) == start and
+            not select.select([retained], [], [], 0)[0],
+            'retained predecessor pidfd changed identity or is not close-on-exec')
+        return retained
+    except BaseException:
+        os.close(retained)
+        raise
+
+
+def c34_verify_result_json(result):
+    """Encode only the two byte fields used in the JSON evidence receipt."""
+    if type(result) is not dict:
+        raise TypeError('C34 VERIFY result must be a decoded result dict')
+    encoded = dict(result)
+    for field, size in (('nonce', 16), ('profile', 32)):
+        value = encoded.get(field)
+        if type(value) is not bytes or len(value) != size:
+            raise ValueError(f'C34 VERIFY {field} is not the expected byte string')
+        encoded[field] = value.hex()
+    return encoded
+
+
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build', type=Path, required=True)
@@ -51,8 +98,10 @@ def arguments():
     parser.add_argument('--source-nginx-module-source', type=Path, required=True)
     parser.add_argument('--root', type=Path, required=True,
         help='host directory where this run retains logs, receipt, and artifacts')
-    parser.add_argument('--mode', choices=('first-hup', 'shared-budget-expiry'),
-        default='first-hup', help='run the positive first HUP or expired-COMMIT containment case')
+    parser.add_argument('--mode', choices=('first-hup', 'shared-budget-expiry', 'alias-retirement'),
+        default='first-hup', help='run the positive first HUP, expiry containment, or held-alias retirement case')
+    parser.add_argument('--owner-alias-module', type=Path,
+        help='test-only owner module that exports actual member aliases by SCM_RIGHTS')
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--run-dir', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -60,6 +109,8 @@ def arguments():
     args.nginx = args.nginx.resolve(strict=True)
     args.dpdk_plugin_dir = args.dpdk_plugin_dir.resolve(strict=True)
     args.source_nginx_module_source = args.source_nginx_module_source.resolve(strict=True)
+    if args.owner_alias_module is not None:
+        args.owner_alias_module = args.owner_alias_module.resolve(strict=True)
     args.root = args.root.resolve()
     require((args.build / 'ker-io-worker').is_file() and
         (args.build / 'ker-socket-broker-rx-owner-relay-fixture').is_file() and
@@ -67,6 +118,8 @@ def arguments():
         'build directory lacks source-master test binaries')
     require((args.dpdk_plugin_dir / 'librte_net_tap.so').is_file(),
         'DPDK plugin directory lacks librte_net_tap.so')
+    require(args.mode != 'alias-retirement' or args.owner_alias_module is not None,
+        'alias-retirement requires the test alias module')
     require(hashlib.sha256(args.source_nginx_module_source.read_bytes()).hexdigest() ==
         SOURCE_NGINX_SHA256, 'pinned upstream Nginx event module source changed')
     require(not args.root.is_relative_to(Path('/dev/shm')),
@@ -85,6 +138,8 @@ if not args.inside:
         '--nginx', str(args.nginx), '--dpdk-plugin-dir', str(args.dpdk_plugin_dir),
         '--source-nginx-module-source', str(args.source_nginx_module_source),
         '--root', str(args.root), '--mode', args.mode, '--run-dir', str(run_dir)]
+    if args.owner_alias_module is not None:
+        command += ['--owner-alias-module', str(args.owner_alias_module)]
     try:
         with (run_dir / 'process.log').open('wb') as log:
             result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,
@@ -114,6 +169,8 @@ for target, options in ((b'/run', b'mode=0755,size=8m'),
     require(libc.mount(b'tmpfs', target, b'tmpfs', 2 | 4, options) == 0,
         f'cannot mount private tmpfs at {target.decode()}')
 
+alias_capability = load('source_member_alias',
+    ROOT / 'tests/posix/nginx_companion_test_alias.py')
 base = load('source_worker_tap', ROOT / 'tests/posix/native-nginx-companion-tap.py')
 base.set_up_network()
 peer = load('source_peer_setup', ROOT / 'tests/posix/native-nginx-peer-source.py')
@@ -126,7 +183,7 @@ dpdk_plugin_dir = args.dpdk_plugin_dir
 nginx_binary = args.nginx
 source_module = args.source_nginx_module_source
 evidence_dir = args.run_dir
-manager=authority=controller=None;caps=[];channels=[];source_watch={}
+manager=authority=controller=None;caps=[];channels=[];source_watch={};generation_watch_fd=-1;verify_responses=[]
 def execute():
     nonce, epoch = secrets.token_bytes(16), secrets.randbits(63) or 1
     supfd = os.pidfd_open(os.getpid())
@@ -145,7 +202,13 @@ def execute():
     worker = kr.AdditionalWorker(item)
     app = service = ready = None
     owners = []
-    global manager,authority,controller
+    alias_listener = None
+    initial_alias_fd = -1
+    candidate_alias_fd = -1
+    retained_old_owner_pidfd = -1
+    alias_path_identity = alias_parent_identity = None
+    alias_receipts = []
+    global manager,authority,controller,generation_watch_fd
     try:
         worker.start(build / 'ker-io-worker', SimpleNamespace(idle_sleep_us=1000,
             tx_delay_us=0, numa=True, all_multicast=False, promiscuous=None,
@@ -205,30 +268,65 @@ def execute():
             require(time.monotonic() < deadline and app.poll() is None, 'broker READY failed')
             time.sleep(.01)
         caprecv,capsend=pair()
-        controller=subprocess.Popen([str(build/'ker-nginx-owner-group-controller'),str(root/'broker.sock'),str(capsend.fileno())],pass_fds=(capsend.fileno(),),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=(root/'controller.stderr').open('wb'),bufsize=0)
+        controller=subprocess.Popen([str(build/'ker-nginx-owner-group-controller'),str(root/'broker.sock'),str(capsend.fileno()),'--generation-watch-preclaim'],pass_fds=(capsend.fileno(),),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=(root/'controller.stderr').open('wb'),bufsize=0)
         capsend.close()
         require(select.select([caprecv],[],[],10)[0],'controller slot transfer timed out')
-        body,anc,flags,_=caprecv.recvmsg(8,socket.CMSG_SPACE(12)+socket.CMSG_SPACE(8))
+        body,anc,flags,_=caprecv.recvmsg(8,socket.CMSG_SPACE(12)+socket.CMSG_SPACE(12))
         creds=[]
         for level,kind,value in anc:
             if kind==socket.SCM_RIGHTS:
                 fds=array.array('i');fds.frombytes(value);caps.extend(fds)
             elif kind==socket.SCM_CREDENTIALS:creds.append(struct.unpack('=3i',value))
             else:raise RuntimeError('unexpected slot ancillary')
-        require(body==b'N' and not flags and len(caps)==2 and creds==[(controller.pid,os.getuid(),os.getgid())],'invalid original SDK slot transfer')
+        require(body==b'N' and not flags and len(caps)==3 and creds==[(controller.pid,os.getuid(),os.getgid())],'invalid original SDK slot/watch transfer')
+        generation_watch_fd=caps.pop()
         caprecv.close()
         def command(value):
             controller.stdin.write((value+'\n').encode());controller.stdin.flush()
             return base.wait_line(controller,'OWNER_GROUP_OK '+value,15)
+        def receive_member_alias(expected_pid, label):
+            require(alias_listener is not None, 'member alias listener is unavailable')
+            channel,_=alias_listener.accept()
+            try:
+                channel.settimeout(5)
+                channel.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
+                descriptor,capability_info,_diagnostic=alias_capability.receive_member_alias(
+                    channel,expected_pid,label)
+                alias_receipts.append({'label':label,'pid':expected_pid,
+                    'uid':os.getuid(),'gid':os.getgid(),**capability_info})
+                return descriptor
+            finally:
+                channel.close()
         endpoint=socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET);endpoint.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1);endpoint.bind(str(root/'source.sock'));endpoint.listen();endpoint.settimeout(8)
         deadline=time.monotonic_ns()+140_000_000_000
+        if args.mode == 'alias-retirement':
+            alias_listener=socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET)
+            alias_listener.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
+            alias_listener.bind(str(root/'initial-alias.sock'))
+            os.chmod(root/'initial-alias.sock',0o600)
+            alias_listener.listen(4)
+            alias_listener.settimeout(15)
+            alias_path_stat=os.stat(root/'initial-alias.sock',follow_symlinks=False)
+            alias_parent_stat=os.stat(root,follow_symlinks=False)
+            alias_path_identity=(alias_path_stat.st_dev,alias_path_stat.st_ino,
+                alias_path_stat.st_mode,alias_path_stat.st_uid,alias_path_stat.st_gid)
+            alias_parent_identity=(alias_parent_stat.st_dev,alias_parent_stat.st_ino,
+                alias_parent_stat.st_mode,alias_parent_stat.st_uid,alias_parent_stat.st_gid)
         prefix=root/'nginx';(prefix/'logs').mkdir(parents=True);(prefix/'html').mkdir();(prefix/'html/index.html').write_text('original-source-worker\n'); large=bytes(range(256))*32768; (prefix/'html/large.bin').write_bytes(large)
         ini=prefix/'fstack.ini';ini.write_text(f'[ker_socket_broker]\nversion=1\npath={root}/broker.sock\n[dpdk]\ngraceful_reload=1\nlcore_mask=0x3\n')
-        module=build/'ker-fstack-nginx-owner-activation.so'
+        module=(args.owner_alias_module if args.mode == 'alias-retirement' else
+            build/'ker-fstack-nginx-owner-activation.so')
         ownerenv=dict(KER_NGINX_SOURCE_FIRST_HUP_ENABLE='1',LD_PRELOAD=':'.join(str(build/name) for name in ['libker-fstack-nginx-worker-shim.so','libfstack.so','libker-socket-preload.so']),KER_SOCKET_BROKER_PATH=str(root/'broker.sock'),KER_FSTACK_NGINX_INI=str(ini),KER_FSTACK_RUNTIME_TRACE=str(prefix/'runtime.trace'),KER_NGINX_OWNER_MODULE_PATH=str(module),KER_NGINX_OWNER_MODULE_SHA256=hashlib.sha256(module.read_bytes()).hexdigest(),KER_NGINX_SOURCE_BOOTSTRAP_PATH=str(root/'source.sock'),KER_NGINX_SOURCE_BOOTSTRAP_NONCE=nonce.hex(),KER_NGINX_SOURCE_BOOTSTRAP_EPOCH=str(epoch),KER_NGINX_SOURCE_BOOTSTRAP_DEADLINE_NS=str(deadline),KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_PID=str(os.getpid()),KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_START=str(sup.start_ticks))
+        if args.mode == 'alias-retirement':
+            ownerenv['KER_NGINX_TEST_INITIAL_ALIAS_SOCKET']=str(root/'initial-alias.sock')
         config=prefix/'nginx.conf';exports='\n'.join(f'env {key};' for key in ownerenv)
         config.write_text(f'load_module {module};\ndaemon off; master_process on; worker_processes 1; user root;\nfstack_conf {ini}; timer_resolution 1ms;\npid {prefix}/logs/nginx.pid; error_log {prefix}/logs/error.log notice;\n{exports}\nevents {{ worker_connections 256; use epoll; }}\nhttp {{ access_log off; sendfile off; keepalive_timeout 300; server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index index.html; }} }}\n')
-        manager=kr.nginx_companion.NginxCompanion(nginx_binary,config,prefix,ownerenv,owner_ready_required=True,source_bootstrap_required=True)
+        manager=kr.nginx_companion.NginxCompanion(nginx_binary,config,prefix,ownerenv,
+            owner_ready_required=True,source_bootstrap_required=True,
+            test_initial_alias_listener_fd=(alias_listener.fileno()
+                if alias_listener is not None else None),
+            test_initial_alias_path_identity=alias_path_identity,
+            test_initial_alias_parent_identity=alias_parent_identity)
         def started(companion):
             global authority
             actor=lambda process,pidfd:SimpleNamespace(pid=process.pid,pidfd=pidfd,start_ticks=kr.process_start_ticks(process.pid),executable_hash=kr.runtime_service.process_executable_hash(process.pid))
@@ -247,6 +345,8 @@ def execute():
                     finally:receiver.close()
         manager.start(timeout=20,on_master_started=started)
         require(manager.started and manager.owner_role==0,'source worker READY failed')
+        if args.mode == 'alias-retirement':
+            initial_alias_fd=receive_member_alias(manager.owner_pid,'initial-worker')
         trace=(prefix/'runtime.trace').read_text();require('ff_source_original_ready' not in trace,'original READY published before C31 AUTH')
         source_address=authority.slim_reply[13]
         ready_address=source_address+48+source_watch['process_slot']*8
@@ -262,6 +362,9 @@ def execute():
         require('ff_source_original_ready' in trace,'authenticated original source READY never published')
         require(struct.unpack('=Q',boot.memory(manager.master_pid,ready_address,8))[0]==manager.owner_pid,'original source READY word not exact epoch0/workerPID')
         command('CONTROL');command('CENSUS0')
+        cookie_match=re.fullmatch(r'OWNER_GROUP_OK COOKIE0 cookie=([1-9][0-9]*)',command('COOKIE0'))
+        require(cookie_match is not None,'initial native listener cookie was not captured')
+        generation_cookie=int(cookie_match[1])
         # Keep a real request active: original drain_start correctly closes idle keepalives.
         conn=socket.socket();conn.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,8192);conn.settimeout(8);conn.connect(('198.18.0.2',4108))
         conn.sendall(b'GET /large.bin HTTP/1.1\r\nHost: source\r\nConnection: close\r\n\r\n')
@@ -270,7 +373,34 @@ def execute():
         header,body=response.split(b'\r\n\r\n',1)
         require(b'200 OK' in header,'initial long response failed')
         old=SimpleNamespace(**{name:getattr(manager,name) for name in ('owner_pid','owner_tid','owner_start','owner_role','owner_slot_device','owner_slot_inode','owner_cookie','owner_pidfd')})
+        retained_old_owner_pidfd = retain_owner_pidfd(old, kr.process_start_ticks)
+        old.owner_pidfd = retained_old_owner_pidfd
         old_pid = old.owner_pid
+        def verify_quarantined_watch():
+            ready.begin_verify(os.dup(generation_watch_fd),1,timeout=6.0)
+            verify_deadline=time.monotonic()+6.0
+            packet=None
+            while packet is None:
+                packet=ready.poll_verify()
+                require(time.monotonic()<verify_deadline,
+                    'quarantined C34 VERIFY exceeded its existing six-second bound')
+                if packet is None:time.sleep(.001)
+            fields=kr.broker_readiness.wire.VERIFY_RESULT.unpack(packet)
+            result=kr.broker_readiness.wire.unpack_verify_result(
+                packet,ready.nonce,ready.epoch,1)
+            verify_responses.append({'sequence':1,'length':len(packet),
+                'sha256':hashlib.sha256(packet).hexdigest(),'packet_hex':packet.hex(),
+                'readiness_nonce':ready.nonce.hex(),'readiness_epoch':ready.epoch,
+                'rx_decision_nonce':nonce.hex(),'rx_decision_epoch':epoch,
+                'raw_status':fields[4],'raw_state':fields[16],
+                'raw_owner_pid':fields[8],'raw_owner_start_ticks':fields[10],
+                'raw_listener_cookie':fields[14],'error':None})
+            require(result['status']==errno.ESTALE and result['state']==0 and
+                result['owner_pid']==old_pid and
+                result['owner_start_ticks']==old.owner_start and
+                result['listener_cookie']==generation_cookie,
+                f'failed/quarantined cutover produced a retirement proof: {result!r}')
+            return result
         manager.signal_source_hup()
         channel,_=endpoint.accept();channels.append(channel)
         packet,anc,flags,_=channel.recvmsg(boot.RECORD.size+1,socket.CMSG_SPACE(12))
@@ -280,6 +410,9 @@ def execute():
         try: candidate=manager.watch_source_candidate(watch,receiver,timeout=15)
         finally:receiver.close()
         candidate_pid = watch['pid']
+        if args.mode == 'alias-retirement':
+            candidate_alias_fd=receive_member_alias(candidate_pid,'candidate-worker')
+            os.close(candidate_alias_fd);candidate_alias_fd=-1
         print('ACTUAL_SOURCE_CANDIDATE_READY',watch,flush=True)
         command('CENSUS1')
         prepared=kr.rx_owner_source_route_prepare(auth_sup,old_app,app,appfd,supfd,old,candidate,authority.master,nonce,epoch,deadline,secrets.randbits(63) or 1)
@@ -404,6 +537,7 @@ def execute():
                 controller.stdin.write(b'QUARANTINED\n');controller.stdin.flush()
                 command_result=base.wait_line(controller,'SOURCE_EXPIRED_QUARANTINED',15)
                 base.wait_line(controller,'OWNER_GROUP_OK QUARANTINED',15)
+                quarantined_verify=verify_quarantined_watch()
                 require(re.search(r'SOURCE_EXPIRED_QUARANTINED phase=6 result=-\d+ received=\d+ accepted=0',
                     command_result), 'native selector did not report read-only quarantined state')
                 helper_status=manager.helper.wait(timeout=5)
@@ -466,6 +600,7 @@ def execute():
                     route_sequence=prepared.command_sequence,route_commit_applied=False,
                     native_commit_applied=False,original_released_state=list(state_before),
                     held_fresh_syn=expiry_held_status,
+                    c34_verify_quarantined=c34_verify_result_json(quarantined_verify),
                     source_state=list(source),source_helper_exit=helper_status,
                     source_containment_error=containment_error,
                     source_unresolved_children=error_fields[3],source_pidfds_dead=True,
@@ -503,7 +638,79 @@ def execute():
             if values[4:7]==(1,1,0) and owner==1 and not stopped and fsm==0:break
             time.sleep(.01)
         require(values[4:7]==(1,1,0) and owner==1 and not stopped and fsm==0,'original source FSM did not settle '+str((values,owner,stopped,fsm)))
+        def save_verify_packet(sequence, raw, error=None):
+            fields=kr.broker_readiness.wire.VERIFY_RESULT.unpack(raw)
+            verify_responses.append({'sequence':sequence,
+                'length':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),
+                'packet_hex':raw.hex(),'readiness_nonce':ready.nonce.hex(),
+                'readiness_epoch':ready.epoch,'rx_decision_nonce':nonce.hex(),
+                'raw_fields':{'magic':fields[0],'version':fields[1],
+                    'record_type':fields[2],'size':fields[3],'status':fields[4],
+                    'nonce':fields[5].hex(),'epoch':fields[6],
+                    'sequence':fields[7],'owner_pid':fields[8],
+                    'owner_reserved':fields[9],'owner_start_ticks':fields[10],
+                    'owner_token':fields[11],'claim_generation':fields[12],
+                    'mark':fields[13],'listener_cookie':fields[14],
+                    'profile':fields[15].hex(),'state':fields[16]},
+                'rx_decision_epoch':epoch,'error':None if error is None else
+                    f'{type(error).__name__}: {error}'})
+        def verify_generation_watch(sequence, expected_status, expected_cookie=None):
+            ready.begin_verify(os.dup(generation_watch_fd), sequence, timeout=6.0)
+            verify_deadline=time.monotonic()+6.0
+            packet=None
+            while packet is None:
+                try:
+                    packet=ready.poll_verify()
+                except BaseException as error:
+                    raw=ready.last_verify_packet
+                    if raw is not None:save_verify_packet(sequence,raw,error)
+                    raise
+                require(time.monotonic()<verify_deadline,
+                    'C34 source retirement VERIFY exceeded its existing six-second bound')
+                if packet is None:time.sleep(.001)
+            # Preserve the exact fixed-size response before the explicit C34
+            # decode, and use the broker readiness session rather than the
+            # independent RX-decision session above.
+            save_verify_packet(sequence,packet)
+            try:
+                result=kr.broker_readiness.wire.unpack_verify_result(
+                    packet,ready.nonce,ready.epoch,sequence)
+            except BaseException as error:
+                verify_responses[-1]['error']=f'{type(error).__name__}: {error}'
+                raise
+            require(result['status']==expected_status and
+                result['state']==(1 if expected_status==0 else 0),
+                f'C34 retirement VERIFY status/state mismatch: {result}')
+            require(result['owner_pid']==old_pid and
+                result['owner_start_ticks']==old.owner_start,
+                'C34 retirement VERIFY changed the captured original worker identity')
+            if expected_cookie is not None:
+                require(result['listener_cookie']==expected_cookie,
+                    'C34 retirement VERIFY did not retain the exact preclaim cookie')
+            return result
+        # The watch was captured before either member claim. A committed
+        # selector is insufficient: C34 must wait for actual RETIRE0.
+        if args.mode == 'alias-retirement':
+            wait_deadline=time.monotonic()+10
+            while not select.select([retained_old_owner_pidfd],[],[],0)[0] and time.monotonic()<wait_deadline:
+                time.sleep(.005)
+            require(select.select([retained_old_owner_pidfd],[],[],0)[0],
+                'original predecessor worker did not exit before alias-retirement control')
+            alias_retire=command('ALIAS_RETIRE')
+            before_retire=verify_generation_watch(1,errno.EAGAIN,generation_cookie)
+            require(initial_alias_fd>=0, 'initial listener alias was already closed')
+            alias_stat=os.fstat(initial_alias_fd)
+            os.close(initial_alias_fd);initial_alias_fd=-1
+            alias_receipts.append({'event':'initial-alias-closed','device':alias_stat.st_dev,
+                'inode':alias_stat.st_ino,'monotonic_ns':time.monotonic_ns()})
+        else:
+            alias_retire=None
+            before_retire=verify_generation_watch(1,errno.EAGAIN)
         command('RETIRE0')
+        retired=verify_generation_watch(2,0,generation_cookie)
+        require(retired['owner_pid']>0 and retired['owner_start_ticks'] and
+            retired['owner_token'] and retired['claim_generation'] and retired['mark'],
+            'C34 post-retirement result lost captured owner identity')
         until=time.monotonic()+5
         while time.monotonic()<until and 'ff_source_plane_retired' not in (prefix/'runtime.trace').read_text():time.sleep(.01)
         require('ff_source_plane_retired' in (prefix/'runtime.trace').read_text(),'native admission did not drain before original map retirement')
@@ -523,6 +730,7 @@ def execute():
         for fd in caps:
             if fd>=0:os.close(fd)
         caps.clear()
+        if generation_watch_fd>=0:os.close(generation_watch_fd);generation_watch_fd=-1
         ready.stop()
         require(select.select([run_sup],[],[],35)[0] and run_sup.recv(64)==b'KER_RUN_STOP\n','native shutdown missing')
         require(service.prepare_worker_shutdown(1.0),'runtime lease remains')
@@ -562,10 +770,15 @@ def execute():
             'new correlated PEER->old-LOCAL packet was not observed after route swap and before native commit')
         body_hash=hashlib.sha256(body).hexdigest()
         require(body_hash==hashlib.sha256(large).hexdigest(), 'old original TCP body hash changed across HUP')
-        receipt=dict(status='PASS_ACTUAL_SOURCE_FIRST_HUP',scope='Bounded first same-master HUP only; does not qualify repeated reload/full shell policy.',
+        receipt=dict(status=('PASS_ACTUAL_SOURCE_ALIAS_RETIREMENT' if args.mode == 'alias-retirement' else 'PASS_ACTUAL_SOURCE_FIRST_HUP'),
+            scope=('Bounded first same-master HUP plus external held actual listener-alias retirement; does not qualify repeated reload/full shell policy.' if args.mode == 'alias-retirement' else 'Bounded first same-master HUP only; does not qualify repeated reload/full shell policy.'),
             master=manager.master_pid,old_worker_pid=old_pid,worker=manager.owner_pid,tid=manager.owner_tid,
             slot=[manager.owner_slot_device,manager.owner_slot_inode],ready_cookie=manager.owner_cookie,
             native=native,io=io,trace=trace,barriers=barriers,gap=gaps,
+            c34_verify_before_retire=c34_verify_result_json(before_retire),
+            c34_verify_after_retire=c34_verify_result_json(retired),
+            held_alias_retirement=({'controller_result':alias_retire,'aliases':alias_receipts}
+                if args.mode == 'alias-retirement' else None),
             shared_barrier_deadline_ns=barriers[0]['deadline'],route_commit_ns=route_commit_ns,
             native_selector_commit_ns=native_commit_ns,body_bytes=len(body),body_sha256=body_hash,
             expected_body_sha256=hashlib.sha256(large).hexdigest(),source_state=list(values),
@@ -581,6 +794,7 @@ def execute():
     finally:
         diagnostic={str(f.relative_to(root)):f.read_text(errors='replace')
             for f in root.rglob('*') if f.is_file() and f.suffix in ['.log','.trace','.stderr','.stdout']}
+        diagnostic['c34_verify_responses']=verify_responses
         (evidence_dir/'diagnostic.json').write_text(json.dumps(diagnostic,indent=2)+'\n')
         artifacts=evidence_dir/'artifacts'
         artifacts.mkdir(exist_ok=True)
@@ -597,6 +811,11 @@ def execute():
         for channel in channels:channel.close()
         for fd in caps:
             if fd>=0:os.close(fd)
+        if generation_watch_fd>=0:os.close(generation_watch_fd);generation_watch_fd=-1
+        if initial_alias_fd>=0:os.close(initial_alias_fd);initial_alias_fd=-1
+        if candidate_alias_fd>=0:os.close(candidate_alias_fd);candidate_alias_fd=-1
+        if retained_old_owner_pidfd>=0:os.close(retained_old_owner_pidfd);retained_old_owner_pidfd=-1
+        if alias_listener is not None:alias_listener.close()
         if controller is not None and controller.poll() is None:controller.terminate()
         if app is not None and app.poll() is None:app.terminate()
 execute()

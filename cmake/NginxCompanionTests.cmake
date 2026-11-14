@@ -159,6 +159,22 @@ if(KER_BUILD_FSTACK_NGINX_RUNTIME AND KER_FSTACK_NGINX_BINARY)
                 set_tests_properties(native-nginx-source-master-first-hup PROPERTIES
                     TIMEOUT 300
                     LABELS "native-tcp;fstack;socket-broker;nginx-companion;source-bootstrap;source-master;first-hup")
+                if(TARGET ker-fstack-nginx-owner-activation-source-alias-test)
+                    add_test(NAME native-nginx-source-master-retire-alias
+                        COMMAND "${Python3_EXECUTABLE}"
+                            "${PROJECT_SOURCE_DIR}/tests/posix/native-nginx-source-master.py"
+                            --build "${CMAKE_BINARY_DIR}"
+                            --nginx "${KER_FSTACK_NGINX_BINARY}"
+                            --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                            --source-nginx-module-source
+                            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules/ngx_ff_module.c"
+                            --owner-alias-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation-source-alias-test>"
+                            --mode alias-retirement
+                            --root "${CMAKE_BINARY_DIR}/Testing/Temporary/native-nginx-source-master-retire-alias")
+                    set_tests_properties(native-nginx-source-master-retire-alias PROPERTIES
+                        TIMEOUT 300
+                        LABELS "native-tcp;fstack;socket-broker;nginx-companion;source-bootstrap;source-master;generation-watch;alias-retirement")
+                endif()
                 add_test(NAME native-nginx-source-master-two-successful-hups
                     COMMAND "${Python3_EXECUTABLE}"
                         "${PROJECT_SOURCE_DIR}/tests/posix/native-nginx-source-master-successor.py"
