@@ -59,7 +59,9 @@ static int cutover_wait(struct ker_socket_client *client, int cap,
 
 int main(int argc, char **argv)
 {
-    CHECK(argc == 3);
+    int generation_watch = argc == 4 &&
+        !strcmp(argv[3], "--generation-watch-preclaim");
+    CHECK(argc == 3 || generation_watch);
     char *end;
     long transfer = strtol(argv[2], &end, 10);
     CHECK(argv[2][0] && !*end && transfer >= 0 && transfer <= INT32_MAX);
@@ -70,18 +72,23 @@ int main(int argc, char **argv)
     int plan = ker_socket_client_owner_group_staged_plan(&client, &address, 16,
         KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_READ);
     CHECK(plan >= 0);
+    int watch = generation_watch ?
+        ker_socket_client_owner_generation_watch_create(&client, plan) : -1;
+    CHECK(!generation_watch || watch >= 0);
     int slots[] = {ker_socket_client_owner_group_slot(&client, plan, 0),
         ker_socket_client_owner_group_slot(&client, plan, 1)};
     CHECK(slots[0] >= 0 && slots[1] >= 0);
     char byte = 'N';
-    union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(slots))]; } control = {0};
+    int transferred[3] = {slots[0], slots[1], watch};
+    size_t transferred_count = generation_watch ? 3 : 2;
+    union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(transferred))]; } control = {0};
     struct iovec vector = {&byte, 1};
     struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1,
         .msg_control = control.bytes, .msg_controllen = sizeof(control.bytes)};
     struct cmsghdr *header = CMSG_FIRSTHDR(&message);
     header->cmsg_level = SOL_SOCKET; header->cmsg_type = SCM_RIGHTS;
-    header->cmsg_len = CMSG_LEN(sizeof(slots));
-    memcpy(CMSG_DATA(header), slots, sizeof(slots));
+    header->cmsg_len = CMSG_LEN(transferred_count * sizeof(transferred[0]));
+    memcpy(CMSG_DATA(header), transferred, transferred_count * sizeof(transferred[0]));
     CHECK(sendmsg((int)transfer, &message, MSG_NOSIGNAL) == 1);
     int previous_plan = -1, previous_group = -1, discarded_census = -1;
     int previous_aborted = 0, previous_abandoned = 0;
@@ -523,6 +530,7 @@ int main(int argc, char **argv)
     }
     if (group >= 0) close(group);
     if (plan >= 0) close(plan);
+    if (watch >= 0) close(watch);
     if (discarded_census >= 0) close(discarded_census);
     if (previous_plan >= 0) close(previous_plan);
     if (previous_group >= 0) close(previous_group);

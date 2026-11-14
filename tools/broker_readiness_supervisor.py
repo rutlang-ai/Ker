@@ -77,6 +77,7 @@ class BrokerReadiness:
         self._verify = None
         self._stop = None
         self._verify_sequence = 0
+        self.last_verify_packet = None
 
     def environment(self):
         return {
@@ -221,6 +222,7 @@ class BrokerReadiness:
                 sequence != self._verify_sequence + 1):
             raise RuntimeError('broker VERIFY is unavailable or out of sequence')
         self._verify_sequence = sequence
+        self.last_verify_packet = None
         self._verify = {'fd': watch_fd, 'sequence': sequence,
             'deadline': time.monotonic() + timeout, 'sent': False}
 
@@ -263,6 +265,9 @@ class BrokerReadiness:
         try:
             packet = self._receive(wire.VERIFY_RESULT.size,
                 request['deadline'], poll_slice=0.01)
+            # Keep only this one fixed-size record so a caller can retain exact
+            # bounded diagnostics if strict decoding rejects the response.
+            self.last_verify_packet = bytes(packet)
             wire.unpack_verify_result(packet, self.nonce, self.epoch,
                 request['sequence'])
         except _PollSliceElapsed:

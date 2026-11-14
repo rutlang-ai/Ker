@@ -577,6 +577,37 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
     target_link_libraries(ker-fstack-nginx-owner-activation PRIVATE
         ker-socket-client ker-ini OpenSSL::Crypto ${CMAKE_DL_LIBS})
     if(BUILD_TESTING)
+        # Source-master alias qualification uses the production adapter path
+        # plus only the test-only member-alias export hook. Keep the relay,
+        # flow-map, and admission test callbacks in the separate legacy target.
+        add_library(ker-fstack-nginx-owner-activation-source-alias-test MODULE
+            src/posix/fstack-nginx-owner-activation-module.c
+            src/posix/nginx-source-owner-admission.c
+            src/posix/nginx-candidate-admission.c
+            src/posix/nginx-owner-ready.c
+            src/posix/nginx-candidate-map.c)
+        set_target_properties(ker-fstack-nginx-owner-activation-source-alias-test PROPERTIES
+            PREFIX "" OUTPUT_NAME "ker-fstack-nginx-owner-activation-source-alias-test")
+        target_include_directories(ker-fstack-nginx-owner-activation-source-alias-test PRIVATE
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core"
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event"
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules"
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/os/unix"
+            "${KER_FSTACK_NGINX_BUILD_DIR}"
+            "${PROJECT_SOURCE_DIR}/include"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-reload")
+        target_compile_features(ker-fstack-nginx-owner-activation-source-alias-test PRIVATE c_std_11)
+        target_compile_options(ker-fstack-nginx-owner-activation-source-alias-test PRIVATE
+            -Wall -Wextra -Werror)
+        target_compile_definitions(ker-fstack-nginx-owner-activation-source-alias-test PRIVATE
+            KER_NGINX_OWNER_TEST_ALIAS=1)
+        target_link_libraries(ker-fstack-nginx-owner-activation-source-alias-test PRIVATE
+            ker-socket-client ker-ini OpenSSL::Crypto ${CMAKE_DL_LIBS})
+    endif()
+    if(BUILD_TESTING)
         add_library(ker-fstack-nginx-owner-activation-alias-test MODULE
             src/posix/fstack-nginx-owner-activation-module.c
             src/posix/nginx-source-owner-admission.c
@@ -763,6 +794,23 @@ if(BUILD_TESTING)
         KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING=1
         KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING=1)
     target_link_libraries(ker-socket-broker-readiness-test-server PRIVATE ker-posix)
+
+    add_executable(ker-socket-broker-generation-watch-tombstone-model
+        tests/posix/socket-broker-generation-watch-tombstone-model.c)
+    target_include_directories(ker-socket-broker-generation-watch-tombstone-model PRIVATE
+        "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_features(ker-socket-broker-generation-watch-tombstone-model PRIVATE c_std_11)
+    target_compile_options(ker-socket-broker-generation-watch-tombstone-model PRIVATE
+        -Wall -Wextra -Werror -Wno-unused-function -ffunction-sections -fdata-sections)
+    target_link_options(ker-socket-broker-generation-watch-tombstone-model PRIVATE
+        -Wl,--gc-sections)
+    find_program(KER_GENERATION_WATCH_UNSHARE_EXECUTABLE unshare REQUIRED)
+    add_test(NAME socket-broker-generation-watch-tombstone-model
+        COMMAND "${KER_GENERATION_WATCH_UNSHARE_EXECUTABLE}"
+            --user --map-root-user --net
+            "$<TARGET_FILE:ker-socket-broker-generation-watch-tombstone-model>")
+    set_tests_properties(socket-broker-generation-watch-tombstone-model PROPERTIES
+        TIMEOUT 10 LABELS "socket-broker;generation-watch;model;identity")
 endif()
 target_link_libraries(ker-socket-broker-server PRIVATE ker-posix)
 add_library(ker::socket-broker-server ALIAS ker-socket-broker-server)
