@@ -312,3 +312,27 @@ DPDK 收发及 mbuf 归零。构建和环境要求见 [原生 TCP](native-tcp.md
 ```bash
 ctest --test-dir build-native-tcp -R '^native-posix-tcp-vectored$' --output-on-failure --no-tests=error
 ```
+
+## TCP 接收半关闭
+
+`native-fstack-tcp-shutdown-read` 将固定 F-Stack host shutdown/message/vector、
+dup 和 readiness 桥接场景扩展到原生 Linux `SHUT_RD`；上游 shutdown 案例只
+测试 `SHUT_WR`，这里不声明同一覆盖或 FreeBSD 等价。宿主参考、原生客户端和
+原生服务端分别运行同一程序；每次建立独立 control 连接和四条 data 连接，
+在两个端点分别验证空队列和已有 37 字节数据的接收半关闭。
+
+control 屏障与有界 FIONREAD 等待确保数据确已入队，且本地 EOF 检查完成前
+对端不会发送 FIN。保持 SO_RCVLOWAT=128，先确认 poll/epoll 无接收就绪；
+非法 shutdown 不改变连接，dup 上的 SHUT_RD 与原 fd 上的重复调用共享状态，
+两者随后报告 IN/RDHUP，完整 64 位 epoll tag 保持正确，且无 ERR/HUP。
+已有数据仍可 peek，并经 readv/recvmsg 按精确字节数消费；队列计数随之减少。
+耗尽后两个 fd 均返回 EOF，目标 canary 不变，SO_ERROR 保持零。关闭原 fd 后，
+alias 仍能发送反向 payload 并 SHUT_WR；独立对端校验数据和真正的 FIN。
+
+每个原生实例要求至少五次对应原生 TCP open、真实 DPDK RX/TX 与 mbuf 归零。
+仅增加测试，不修改协议或 runtime；不覆盖 SHUT_RD 后新到达数据、SHUT_RDWR、
+阻塞 recv 的并发唤醒、并发 reader 或未读数据关闭引发的 reset。
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-tcp-shutdown-read$' --output-on-failure --no-tests=error
+```

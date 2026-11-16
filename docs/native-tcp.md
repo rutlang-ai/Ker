@@ -442,3 +442,13 @@ INI 使用 `[vlan.ID] addresses=...`；CLI 整体替换 INI VLAN 列表。父接
 原始 Linux 创建 `ker.ID` 子接口，负责标签和地址语义；应用可用 `SO_BINDTODEVICE` 绑定它。
 需要以当前 defconfig 重新构建 native Linux 产物（启用 `CONFIG_VLAN_8021Q`）。
 已验证 net_tap、IPv4、MTU1500、两个 VLAN 和 VLAN VIP；其它部署边界见 `docs/fstack-migration.md`。
+
+`native-fstack-tcp-shutdown-read` 补充本地接收半关闭：宿主参考及原生主动/被动
+两种角色，分别在两端验证空队列和已排队 37 字节。独立 control 连接约束对端
+在本地 EOF 断言结束前不发送 FIN；SO_RCVLOWAT 保持 128，SHUT_RD 后两份 dup
+引用均报告 IN/RDHUP。已排队数据仍可 peek/readv/recvmsg，FIONREAD 精确递减，
+读尽后 EOF 不修改输出缓冲区；关闭原 fd 后 alias 仍发送完整反向数据并正常
+发送 FIN，SO_ERROR 保持零。每个原生实例要求五次对应 TCP open、DPDK 收发及
+mbuf 归零。此测试不改变协议或适配代码，不覆盖新数据在 SHUT_RD 后到达、
+SHUT_RDWR、并发阻塞调用或未读数据关闭。完整来源和边界见
+[F-Stack 测试场景迁移](fstack-tests.md#tcp-接收半关闭)。
