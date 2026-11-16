@@ -51,7 +51,12 @@ static struct lkl_tls_key *key_alloc(void (*destructor)(void *))
 static void key_free(struct lkl_tls_key *opaque)
 {
     struct ker_tls_key *key = (struct ker_tls_key *)opaque;
-    pthread_key_delete(key->key);
+    int error = pthread_key_delete(key->key);
+    if (error) {
+        errno = error;
+        perror("ker: host TLS key deletion");
+        abort(); /* A void callback cannot report a still-registered key. */
+    }
     free(key);
 }
 static int key_set(struct lkl_tls_key *opaque, void *value)

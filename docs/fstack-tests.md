@@ -363,3 +363,11 @@ mutex-init 失败回滚及后续真实锁恢复。子进程以测试 wrapper 注
 以及真实 SIGUSR1 触发 EINTR 后持续重试到真正 post。测试启动原始 Linux，
 测量真实 semaphore callback 调用并 halt。属于 F-Stack thread 场景的 Ker
 同步扩展，不把这两项 CTest 计为新增已迁移源用例。
+
+## host TLS 生命周期失败
+
+线程 runtime 三个 profile 新增 key-create EAGAIN/ENOMEM、空/已有槽值上的
+set ENOMEM、有效 key 上的 delete EINVAL 注入。要求准确 errno、分配回收、
+写入失败不改值、真实后续操作恢复；无法返回错误的删除 callback 必须终止。
+所有成功路径使用真实 pthread，删除故障子进程在 host 线程启动前 fork，
+不向 pthreads 传入故意无效 key。源码案例迁移数不增加，Linux/LKL 保持不变。

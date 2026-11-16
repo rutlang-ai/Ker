@@ -470,3 +470,9 @@ NDEBUG 和原始 Linux 实际 callback 调用，不修改 Linux/LKL 源码。
 其他无法通过 void callback 返回的 wait/post/destroy 错误明确终止，不继续
 执行未完成同步的内核路径。DEBUG/NDEBUG 测试测量真实 EINTR、实际 post 溢出、
 失败后恢复和原始 Linux callback 使用，不声明跨进程共享、取消或公平性。
+
+Host TLS key 删除错误不能被 void callback 当作完成：Ker 保存 pthread 返回
+错误号并明确终止，保留错误现场而不继续丢弃仍注册 key 的管理对象。创建与
+设置失败仍返回 NULL/-1 和 errno；测试核对 wrapper 余额、空/已有槽不变及
+真实后续 set/clear/delete 恢复。此为 Ker 适配层修复，不修改原始 Linux、
+TLS key 布局或提供 FreeBSD 每 CPU 上下文等价性。
