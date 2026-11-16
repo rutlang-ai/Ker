@@ -125,7 +125,7 @@ if(BUILD_TESTING)
     target_include_directories(ker-thread-runtime-test SYSTEM PRIVATE
         "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
     target_link_libraries(ker-thread-runtime-test PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
-    target_link_options(ker-thread-runtime-test PRIVATE -Wl,--wrap=malloc -Wl,--wrap=free)
+    target_link_options(ker-thread-runtime-test PRIVATE -Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=pthread_create)
     target_compile_options(ker-thread-runtime-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-thread-runtime COMMAND ker-thread-runtime-test)
     set_tests_properties(native-fstack-thread-runtime PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")

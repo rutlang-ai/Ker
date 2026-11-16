@@ -63,3 +63,26 @@ ctest --test-dir /tmp/ker-shutdown-read-build --output-on-failure --parallel 3 -
 ```
 
 本次未重跑 sanitizer、安装或物理 NIC 验收，不作性能声明。
+
+## 2026-11-16 host thread 创建失败回滚
+
+集成基线 `3fc8bf1a1` 使用的固定 LKL host callback 在 pthread_create 失败时
+未释放 start wrapper。本批先加入 EAGAIN/EPERM 注入检查：修复前 Debug
+`native-fstack-thread-runtime` 在 allocation-balance 断言失败；移入 Ker 适配层
+修复（来源 `4f99cadba`）后，该测试通过。错误返回零句柄和对应 errno，回调
+不运行，分配余额归零；每次失败后的真实 create/join 验证成功参数及 wrapper
+在例程入口前仅释放一次。原始 Linux 同样调用该 host callback 并正常启停。
+
+重新构建当前 Debug Ker 库及全套测试后，**194/194 CTest 通过，无 skip**，
+包含 native-tcp 标签 **43 项**、native-udp 标签 **25 项**（标签可能重叠）。
+Release 直接编译相同 host-thread 适配器的线程测试 **1/1 通过**。构建与运行：
+
+```sh
+ctest --test-dir /tmp/ker-thread-create-build --output-on-failure --parallel 3 --no-tests=error
+ctest --test-dir /tmp/ker-thread-create-release -R '^native-fstack-thread-runtime$' --output-on-failure --no-tests=error
+```
+
+两种构建均复用经 CMake fingerprint 验证的固定 Linux/LKL 库，未修改或重建
+上游内核；未运行 sanitizer、Release 全套、安装或物理 NIC 验收。本批是实际
+资源泄漏修复，不提升上游源案例状态，也不将 pthread 错误当成 FreeBSD
+curcpu/pcpup panic 合同已迁移。

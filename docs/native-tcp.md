@@ -452,3 +452,9 @@ INI 使用 `[vlan.ID] addresses=...`；CLI 整体替换 INI VLAN 列表。父接
 mbuf 归零。此测试不改变协议或适配代码，不覆盖新数据在 SHUT_RD 后到达、
 SHUT_RDWR、并发阻塞调用或未读数据关闭。完整来源和边界见
 [F-Stack 测试场景迁移](fstack-tests.md#tcp-接收半关闭)。
+
+主机线程创建由 Ker 适配层持有 start-argument 所有权：pthread_create 失败时
+释放参数并返回零句柄、准确 errno；成功时先复制/释放 wrapper 再调用原始例程。
+这修复固定 LKL POSIX callback 的失败路径泄漏，Linux 和 LKL 源码保持不变。
+`native-fstack-thread-runtime` 以 EAGAIN/EPERM 注入检查回收和真实 create/join 恢复，
+并启动原始 Linux 验证实际 host callback 调用；不声明 FreeBSD 每 CPU TLS 等价。

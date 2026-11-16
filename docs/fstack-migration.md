@@ -488,3 +488,29 @@ launcher-config/config-lifecycle 和两项 migration audit 共 **7/7 通过**。
 再检查有效加载及全局默认值，防止仅用新进程掩盖配置串状态。
 清单完整性审计通过；完整迁移门禁按预期返回 2（224 blocked + 18 partial）。
 本批只运行相关配置和审计测试，未重跑完整内核构建、网络互通或全量 CTest。
+
+## 主机线程创建失败的参数所有权
+
+在集成提交 `3fc8bf1a1` 上复现固定 LKL POSIX host callback 的泄漏：分配
+thread-start wrapper 后，`pthread_create` 返回错误直接退出，没有释放 wrapper。
+新增 EAGAIN 注入在修复前使 `native-fstack-thread-runtime` 的 allocation-balance
+断言失败；不是仅依据源码推断，也没有通过真实系统线程耗尽制造故障。
+
+本批复用另一开发线提交 `4f99cadba` 的 Ker `thread_create` 适配：分配失败返回
+零；pthread 创建失败释放 start 参数、把返回的错误号写入 errno 并返回零；成功线程先
+复制参数并释放 wrapper，再进入原始例程。所有成功路径调用真实 pthread_create，
+不修改固定 Linux/LKL，也不改变 Linux 调度、网络协议或 thread-join/TLS 合同。
+
+测试分别注入 EAGAIN/EPERM，要求未运行回调、分配余额归零和准确 errno。
+每次失败后以真实 pthread 创建/join 恢复，检查参数传递、wrapper 在例程入口前
+只释放一次。既有四线程 semaphore/mutex/TLS/destructor 检查继续执行，最后由
+原始 Linux 启动、实际调用受监测的 host thread callback 并 halt。
+
+此为已迁移线程场景的 Ker 失败回滚扩展，迁移数量不变。另一个仍 blocked 的
+`test_ff_pthread_create_failfast` 实际检查 NULL FreeBSD pcpup 的 curcpu panic，
+不能用 pthread 创建失败冒充其通过；本批纠正了该项的处置理由。
+
+2026-11-16 验证：修复前的线程测试按预期失败，修复后 Debug 全量 **194/194**
+通过，无 skip；Release 线程测试 **1/1** 通过。固定 Linux/LKL 未修改，复用
+其已验证构建产物。此批不新增迁移计数，仍为 128 adapted、18 partial、
+224 blocked，待完成 242 项。

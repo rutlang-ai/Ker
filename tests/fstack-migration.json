@@ -4161,7 +4161,7 @@
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_failfast",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack pthread wrapper propagates FreeBSD pcurthread/per-CPU TLS and injects ff_malloc failures; Ker/LKL has a different host-thread runtime.",
+      "reason": "The source case clears FreeBSD pcurthread/pcpup and expects curcpu lookup to panic. LKL has no equivalent FreeBSD per-CPU TLS lookup ABI; pthread creation/allocation failure tests do not satisfy this contract.",
       "ker_tests": []
     },
     {
