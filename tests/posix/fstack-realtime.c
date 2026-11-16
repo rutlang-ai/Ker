@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdatomic.h>
+#include <string.h>
 #include <time.h>
 #include <lkl.h>
 #include <lkl_host.h>
@@ -32,11 +33,16 @@ static int64_t host_ns(clockid_t clock)
     CHECK(value.tv_nsec >= 0 && value.tv_nsec < 1000000000L);
     return (int64_t)value.tv_sec * 1000000000LL + value.tv_nsec;
 }
-static int64_t native_ns(int clock)
+static struct __lkl__kernel_timespec native_clock(int clock)
 {
     struct __lkl__kernel_timespec value = {.tv_sec = -1, .tv_nsec = -1};
     CHECK(lkl_sys_clock_gettime(clock, &value) == 0);
     CHECK(value.tv_nsec >= 0 && value.tv_nsec < 1000000000L);
+    return value;
+}
+static int64_t native_ns(int clock)
+{
+    struct __lkl__kernel_timespec value = native_clock(clock);
     return value.tv_sec * 1000000000LL + value.tv_nsec;
 }
 static void obsolete_epoch(void)
@@ -88,17 +94,55 @@ static void successful_sync(void)
     CHECK(mono_after - mono_before <= host_mono_after - host_mono_before + 1000000LL);
     puts("PASS: original Linux realtime matches host epoch/advances; monotonic timer clock unchanged");
 }
-int main(void)
+static void native_wait_advance(const char *stage)
 {
+    unsigned int reads = atomic_load(&realtime_reads);
+    int64_t host_before = host_ns(CLOCK_MONOTONIC);
+    struct __lkl__kernel_timespec before = native_clock(LKL_CLOCK_REALTIME);
+    int64_t mono_before = native_ns(LKL_CLOCK_MONOTONIC);
+    /* Use original Linux's timed wait rather than a host sleep to advance
+     * the observations. No descriptors or host socket fallback are involved. */
+    CHECK(lkl_sys_poll(NULL, 0, 25) == 0);
+    int64_t mono_after = native_ns(LKL_CLOCK_MONOTONIC);
+    struct __lkl__kernel_timespec after = native_clock(LKL_CLOCK_REALTIME);
+    int64_t host_after = host_ns(CLOCK_MONOTONIC);
+    CHECK(before.tv_sec > 0 && after.tv_sec > 0);
+    CHECK(after.tv_sec > before.tv_sec ||
+          (after.tv_sec == before.tv_sec && after.tv_nsec > before.tv_nsec));
+    int64_t elapsed = (after.tv_sec - before.tv_sec) * 1000000000LL +
+        after.tv_nsec - before.tv_nsec;
+    CHECK(mono_after - mono_before >= 25000000LL);
+    CHECK(elapsed >= 25000000LL);
+    CHECK(mono_after - mono_before <= host_after - host_before + 1000000LL);
+    CHECK(elapsed <= host_after - host_before + 1000000LL);
+    /* The advancing samples came from the original Linux clock, not another
+     * invocation of the wrapped host realtime read. */
+    CHECK(atomic_load(&realtime_reads) == reads);
+    printf("PASS: %s, normalized native realtime advances across original Linux timed poll\n", stage);
+}
+static void current_time_updates(void)
+{
+    obsolete_epoch(); native_wait_advance("old epoch");
+    successful_sync(); native_wait_advance("first synchronization");
+    failed_sync(HOST_ERROR, EIO); native_wait_advance("host EIO retains advancing old epoch");
+    failed_sync(INVALID_NSEC, EINVAL); native_wait_advance("native EINVAL retains advancing old epoch");
+    successful_sync(); native_wait_advance("recovered synchronization");
+}
+int main(int argc, char **argv)
+{
+    CHECK(argc == 1 || (argc == 2 && !strcmp(argv[1], "--updates")));
     ker_native_host_memory_init(&lkl_host_ops);
     ker_native_host_clock_init(&lkl_host_ops);
     lkl_host_ops.print = NULL;
     CHECK(lkl_init(&lkl_host_ops) == 0);
     CHECK(lkl_start_kernel("%s", "mem=64M") == 0);
-    failed_sync(HOST_ERROR, EIO);
-    /* Host read succeeds, but original Linux must reject invalid nanoseconds. */
-    failed_sync(INVALID_NSEC, EINVAL);
-    successful_sync(); successful_sync();
+    if (argc == 2) current_time_updates();
+    else {
+        failed_sync(HOST_ERROR, EIO);
+        /* Host read succeeds, but original Linux must reject invalid nanoseconds. */
+        failed_sync(INVALID_NSEC, EINVAL);
+        successful_sync(); successful_sync();
+    }
     CHECK(lkl_sys_halt() == 0); lkl_cleanup();
     puts("PASS: host EIO/native EINVAL propagate without epoch mutation; recovery and repeat sync succeed");
     return 0;

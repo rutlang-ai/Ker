@@ -14,13 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 128 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 129 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 224 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 223 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
+当前待完成 **241 项**（223 blocked + 18 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -77,7 +78,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 20 | 0 | 14 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 21 | 0 | 13 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 4 | 2 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
@@ -620,3 +621,33 @@ curcpu/TLS 合同，不提升源案例数量；128 adapted、18 partial、224 bl
 2026-11-16 验证：两项错误分别复现后修复；Debug 全量 **198/198** 无 skip，
 优化 Release 线程矩阵 **3/3** 通过。动态导出表没有应用 pthread/Ker 线程接口，
 正常操作全部通过真实 pthread；固定内核复用且保持不变。未增加源案例迁移数。
+
+
+## 原始 Linux 实时时钟更新后的前进
+
+基于已合并 #596 的集成提交 `6491156cd`，移植独立开发线 `a6f36344a` 的
+`test_ff_get_current_time_advances` 场景。测试启动固定版本原始 Linux，使用
+生产 constructor 调用的 `ker_native_sync_realtime()`，先将私有内核设置为
+2000 年旧 epoch，再验证首次同步、宿主 realtime EIO、原始 Linux 拒绝非法
+纳秒 EINVAL、恢复同步后的时间读数。秒/纳秒必须归一化并按字典序前进。
+
+每阶段在原始 Linux 的 `poll(NULL, 0, 25)` 前后读取原生 REALTIME/MONOTONIC，
+两者 elapsed 必须至少为 25ms，并落在宿主 monotonic 采样区间内（1ms 容差）。
+采样期间宿主 realtime 读取次数不得增加；时间前进必须由私有 Linux 时钟
+给出。同步失败保留旧 epoch，并验证该 epoch 仍前进，随后能够恢复同步。
+全部 settime 仅作用于私有 Linux，不修改宿主时间。
+
+新增 `native-fstack-realtime-updates`，保留原 `native-fstack-realtime` 的
+错误传播、宿主 epoch 区间、重复同步检查。这是读钟合同的场景适配，不
+提供 FreeBSD static current_ts 缓存或 NULL 输出分量 API，不声明正在等待
+timer 的 clock-step、TCP 重传或 NIC 流量覆盖。上游及 Ker 生产代码均不修改。
+
+本批一个源场景由 blocked 改为 scenario-adapted，清单与来源映射同步更新：
+**129 adapted、18 partial、223 blocked，待完成 241 项**。
+
+2026-11-16 验证：Debug 中原 realtime、新增 updates、清单完整性与 mutation
+门禁 **4/4** 通过，优化 Release 两个时钟 CTest **2/2** 通过，无 skip。
+重新构建直接链接生产适配器的 realtime 测试，固定 Linux 产物经 CMake
+fingerprint 验证后复用；未重建内核或重跑全量网络、sanitizer、物理 NIC。
+完整迁移门禁仍按预期返回 2（223 blocked + 18 partial）。日志保存在工作树外
+`~/.local/state/ker-native-linux/realtime-updates-integration-validation/`。

@@ -379,3 +379,12 @@ set ENOMEM、有效 key 上的 delete EINVAL 注入。要求准确 errno、分�
 另在有效线程上注入 detach EINVAL 并验证 void callback 终止。它们仅覆盖
 内部 LKL 到 pthread 的薄适配，应用直接使用 pthread API，公共接口不增加
 Ker 线程类型或线程函数，迁移计数不变。
+
+## 更新后的原生时钟前进
+
+`native-fstack-realtime-updates` 通过生产 realtime 同步适配器和原始 Linux
+clock/poll syscall，验证成功更新、宿主 EIO、内核 EINVAL 和恢复后秒/纳秒仍
+正确前进，且原生 timed poll 的 elapsed 与宿主 monotonic 区间相符。失败不改变
+已有 epoch；全部 settime 仅作用于私有 Linux。来源映射到固定 F-Stack 的
+`test_ff_get_current_time_advances`，不声明 FreeBSD 静态缓存、NULL 输出分量、
+正在等待的 timer clock-step、TCP 定时器或 NIC 流量覆盖。
