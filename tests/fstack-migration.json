@@ -1357,9 +1357,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_bad_section_returns_zero",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Reject malformed VLAN section identifiers through the production Ker loader before library/device setup; test the original [vlanXX] spelling and native [vlan.ID] malformed/range cases, both orders relative to a valid VLAN, CLI override attempts and subsequent successful loads. The native syntax is [vlan.ID] addresses, not the upstream VLAN-filter table ABI; no ignored-orphan VLAN or NIC behavior is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-vlan-section",
+          "provenance_case": "native-fstack-config-vlan-section"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vdev_cfg_handler_no_nb_vdev_returns_zero",
@@ -1385,9 +1390,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_port_cfg_handler_bad_section_returns_zero",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Reject malformed port section names through the production Ker loader before library/device setup, including the original [portXX] spelling and native schema variants, both configuration orders, CLI override attempts and successful reload recovery. Ker selects one port with [dpdk] port rather than F-Stack [portN]; this adapts malformed-configuration rejection, not its global struct or numeric port-handler ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-port-section",
+          "provenance_case": "native-fstack-config-port-section"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_port_cfg_handler_id_over_max_returns_one",
@@ -1679,9 +1689,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_disabled_port_over_1500_fails",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt disabled-jumbo rejection to Ker explicit deployment max_mtu=1500. Production configuration and CLI validation reject MTU 1501 and 9000 with that ceiling in large/scatter modes before library/device setup; exact 1500, explicit ceiling raise, CLI disable/override and failure recovery are checked. Ker has no mtu_enable switch and permits explicit jumbo MTUs by default when within its default ceiling; this is an explicitly configured gate scenario, not identical default behavior or wire/NIC coverage.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-jumbo-gate",
+          "provenance_case": "native-fstack-config-jumbo-gate"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_large_65535_fails",

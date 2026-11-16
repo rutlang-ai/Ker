@@ -336,3 +336,13 @@ alias 仍能发送反向 payload 并 SHUT_WR；独立对端校验数据和真正
 ```sh
 ctest --test-dir build-native-tcp -R '^native-fstack-tcp-shutdown-read$' --output-on-failure --no-tests=error
 ```
+
+## 配置拒绝边界
+
+`native-fstack-config-port-section`、`native-fstack-config-vlan-section` 和
+`native-fstack-config-jumbo-gate` 通过实际生产 loader 覆盖三个固定 F-Stack
+配置失败场景，包含非法节顺序、CLI 不能掩盖坏配置、VLAN ID 边界和失败恢复。
+jumbo 禁用明确转换为 Ker 的部署上限 `max_mtu=1500`；这不是上游默认值或
+`mtu_enable` API 的实现。large/scatter 两种模式均检查 1500/1501/9000 及 CLI
+覆盖。三项 CTest 共七个 unittest 方法，只提供配置层证据，不声称 NIC/内核互通。
+准确来源、语法差异和清单计数见 [迁移清单](fstack-migration.md#非法-portvlan-配置与显式-jumbo-禁用边界)。
