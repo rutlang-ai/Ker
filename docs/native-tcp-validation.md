@@ -37,3 +37,29 @@ bridge 配置），配置 SHA-256 为
 CMake 校验固定提交及配置/库指纹通过；本次重新编译 Ker 库与测试，未重新
 编译完整内核，也未重跑安装、sanitizer 或物理 NIC 验收。上述历史验收记录
 仍对应各自当时的构建。
+
+## 2026-11-16 接收半关闭回归
+
+基于集成分支提交 `3c9eafb16`，在独立分支 `test/native-tcp-shutdown-read` 新增
+`native-fstack-tcp-shutdown-read`。宿主参考、原生客户端与原生服务端分别验证
+空队列和已排队数据的本地接收半关闭、dup 共享状态、低水位下的 EOF/readiness
+和关闭原 fd 后的反向发送。每个原生角色要求至少五次对应 TCP open、真实
+DPDK RX/TX 和 `outstanding=0`。
+
+本次从固定 Linux/LKL 源码重新构建完整内核、Ker 适配库和测试，使用默认
+`config/native-linux.defconfig`；构建器确认原始协议路径不变，CMake 通过
+输入 fingerprint、配置和库指纹校验。Linux release 为 `6.12.113+`，
+配置 SHA-256 为 `3aca0137b1852368b19da5f9667df1c89a26799009548b5fe9cf9fa09d590400`，
+生成源码 tree 为 `b93ff967656b4af400da830a7b2193a2a69e0529`；
+原始 `net/` 和 `include/net/` tree 与上述首版记录一致。
+
+Debug 全量 CTest **190/190 通过**（无 skip），其中 `native-tcp` 标签
+**42/42**、`native-udp` 标签 **25/25**；标签可能重叠，不合并计数。
+新增测试通过宿主参考、原生客户端和原生服务端；两个原生实例各记录五次
+对应 TCP open，并确认 DPDK RX/TX 非零及 `outstanding=0`。运行命令：
+
+```sh
+ctest --test-dir /tmp/ker-shutdown-read-build --output-on-failure --parallel 3 --no-tests=error
+```
+
+本次未重跑 sanitizer、安装或物理 NIC 验收，不作性能声明。

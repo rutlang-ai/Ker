@@ -524,6 +524,11 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-shutdown-write COMMAND ${ker_native_test_command}
         --shutdown-write-app "$<TARGET_FILE:ker-posix-fstack-tcp-shutdown-write-test>")
     set_tests_properties(native-fstack-tcp-shutdown-write PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-shutdown-read-test tests/posix/fstack-tcp-shutdown-read.c)
+    target_compile_options(ker-posix-fstack-tcp-shutdown-read-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-shutdown-read COMMAND ${ker_native_test_command}
+        --shutdown-read-app "$<TARGET_FILE:ker-posix-fstack-tcp-shutdown-read-test>")
+    set_tests_properties(native-fstack-tcp-shutdown-read PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-udp-reuseport-test tests/posix/fstack-udp-reuseport.c)
     target_compile_options(ker-posix-fstack-udp-reuseport-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-udp-reuseport COMMAND ${ker_native_test_command}

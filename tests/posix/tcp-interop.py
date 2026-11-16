@@ -467,6 +467,35 @@ def tcp_urgent(args, launcher, work, env, log):
             print('native TCP urgent ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def tcp_shutdown_read(args, launcher, work, env, log):
+    if not args.shutdown_read_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 29800 + 4 * index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.shutdown_read_app), 'server', address, str(port)]
+        connect = [str(args.shutdown_read_app), 'client', address, str(port)]
+        stats_path = work / ('tcp-shutdown-read-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP SHUT_RD server did not verify queued bytes, local EOF and reverse I/O')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    stats['native']['passive_opens' if native_server else 'active_opens'] < 5):
+                raise RuntimeError('TCP shutdown scenario missed native traffic: ' + str(stats))
+            print('native TCP shutdown read ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def tcp_shutdown_write(args, launcher, work, env, log):
     if not args.shutdown_write_app:
         return
@@ -1410,6 +1439,7 @@ def inside(args):
                 dualstack(args, launcher, work, env, log)
                 tcp_listener_restart(args, launcher, work, env, log)
                 tcp_shutdown_write(args, launcher, work, env, log)
+                tcp_shutdown_read(args, launcher, work, env, log)
                 tcp_receive_queue(args, launcher, work, env, log)
                 tcp_linger(args, launcher, work, env, log)
                 tcp_urgent(args, launcher, work, env, log)
@@ -1505,6 +1535,7 @@ def main():
     parser.add_argument('--send-timeouts-app', type=Path)
     parser.add_argument('--listener-restart-app', type=Path)
     parser.add_argument('--shutdown-write-app', type=Path)
+    parser.add_argument('--shutdown-read-app', type=Path)
     parser.add_argument('--linger-app', type=Path)
     parser.add_argument('--receive-queue-app', type=Path)
     parser.add_argument('--urgent-app', type=Path)

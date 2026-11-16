@@ -1214,6 +1214,19 @@
         "test_ff_dpdk_if_send_tcp_csum"
       ],
       "adaptation": "Ker-specific native Linux socket extension, motivated only by the upstream segmented-send and TCP-checksum scenarios. A plain POSIX application runs as both active and passive endpoint against an independent host TCP peer over real DPDK net_tap. Each direction verifies 262147 patterned bytes with alternating writev/sendmsg and readv/recvmsg, empty iovecs, required short writes with exact offset advancement, MSG_PEEK/MSG_WAITALL, half-close reverse delivery, EOF and EPOLLRDHUP. The harness requires DPDK RX/TX, the corresponding imported-kernel open counter and zero outstanding mbufs. All TCP state is implemented by the pinned original Linux backend. The upstream cases exercise glue-layer TX, not socket I/O; this is not an upstream F-Stack socket test or physical-NIC/offload/performance coverage."
+    },
+    "native-fstack-tcp-shutdown-read": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_readv_writev",
+        "test_ff_host_dup",
+        "test_ff_host_kqueue_ctl_poll"
+      ],
+      "adaptation": "Ker-specific Linux local SHUT_RD extension of pinned host shutdown/message/vector/dup/readiness bridge scenarios; the upstream shutdown case tests SHUT_WR, not these receive-shutdown semantics. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Four data connections exercise each receiving endpoint with an empty queue and 37 queued patterned bytes. A separate control connection and bounded FIONREAD observation prove delivery and keep the sender from sending FIN until all local EOF assertions finish. SO_RCVLOWAT=128 suppresses initial readiness; invalid shutdown how=42 leaves the connection usable. SHUT_RD through dup and repetition through the original descriptor expose shared IN/RDHUP readiness despite the high low-water mark, with no ERR/HUP and distinct full 64-bit epoll tags. Queued data survives SHUT_RD: peek leaves FIONREAD unchanged, then readv/recvmsg consume exact bytes through both aliases. Both descriptors observe local EOF without modifying destination canaries and SO_ERROR stays zero. Closing the original descriptor leaves the alias able to send a verified reverse payload and SHUT_WR; the independent sender validates reverse bytes and real FIN before shutdown. Each native instance requires at least five corresponding original-Linux TCP opens, DPDK RX/TX and zero outstanding mbufs. No protocol/runtime changes, newly arriving data after SHUT_RD, SHUT_RDWR, blocked-recv interruption, concurrent readers, unread-data close/reset or physical-NIC coverage is introduced.",
+      "ker_ctests": [
+        "native-fstack-tcp-shutdown-read"
+      ]
     }
   }
 }
