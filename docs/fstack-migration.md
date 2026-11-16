@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 125 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 128 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 227 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 224 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -450,3 +450,41 @@ DPDK VLAN stripping/filter offload 保持关闭，tag/demux 属于原始 Linux�
 F-Stack 的完整 DPDK 字段、KNI/FreeBSD/bond/RSS/reload 配置未因此变为支持。
 重复键测试明确验证 Ker 拒绝重复键；上游的 last-value-wins 用例仍 blocked。
 多次加载不串状态不等同于 allocator 泄漏检测或热重载能力。
+
+## 非法 port/VLAN 配置与显式 jumbo 禁用边界
+
+本批将以下三项从 blocked 调整为 scenario-adapted，均执行生产
+`ker-run` loader，不调用上游 parser 或复制其内部结构：
+
+| 固定源用例 | Ker CTest |
+|---|---|
+| `test_port_cfg_handler_bad_section_returns_zero` | `native-fstack-config-port-section` |
+| `test_vlan_cfg_handler_bad_section_returns_zero` | `native-fstack-config-vlan-section` |
+| `test_mtu_disabled_port_over_1500_fails` | `native-fstack-config-jumbo-gate` |
+
+三个 CTest 共七个 unittest 方法。非法 port/VLAN 节在有效设置前后都必须拒绝；
+CLI 覆盖不能掩盖文件中的非法节。VLAN 另覆盖原始 `[vlanXX]` 拼写和 Ker
+`[vlan.ID]` 的空、非数字及越界 ID，失败后再加载有效设置必须恢复正确值。
+Ker 的单个 port 由 `[dpdk] port` 选择，不实现上游 `[portN]` 数组或其 handler ABI。
+这些是非法配置的拒绝场景，不把所有未知节都等同为上游已迁移。
+
+jumbo 禁用场景显式使用 Ker `max_mtu=1500`，分别在 large/scatter 模式验证
+1500 可解析、1501 和 9000 拒绝、配置与 CLI 的双向覆盖，以及失败后上限不串状态。
+Ker 没有 `mtu_enable` 开关，默认 `max_mtu=9000`；此处适配的是显式部署门限，
+不声明与上游“默认禁用 jumbo”相同。正向检查只验证生产 loader 的类型和值；
+不能据此声明设备已设置 MTU 或报文已送达。
+
+所有负向场景均执行实际 launcher 子进程，以退出码 2 和对应诊断验证拒绝发生在
+库解析/worker 准备之前；不存在的库与 worker 路径不会进入报错结果。
+不修改配置实现、Linux/DPDK 或只读快照；既有实际 jumbo/VLAN 测试保持独立。
+
+当前清单：128 adapted、18 partial、224 blocked、8 architecture-specific、
+55 harness-only，共 433 项。待完成由 245 降至 **242**（224 blocked + 18 partial）；
+`--require-complete` 仍必须失败。
+
+2026-11-16 基于集成提交 `c21dd045e` 的验证：三个新增 CTest、既有
+launcher-config/config-lifecycle 和两项 migration audit 共 **7/7 通过**。
+新增七个 unittest 方法既运行实际子进程拒绝路径，也在同一解释器中执行失败解析，
+再检查有效加载及全局默认值，防止仅用新进程掩盖配置串状态。
+清单完整性审计通过；完整迁移门禁按预期返回 2（224 blocked + 18 partial）。
+本批只运行相关配置和审计测试，未重跑完整内核构建、网络互通或全量 CTest。

@@ -1227,6 +1227,36 @@
       "ker_ctests": [
         "native-fstack-tcp-shutdown-read"
       ]
+    },
+    "native-fstack-config-port-section": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_port_cfg_handler_bad_section_returns_zero"
+      ],
+      "adaptation": "Reject malformed port section names through the production Ker loader before library/device setup, including the original [portXX] spelling and native schema variants, both configuration orders, CLI override attempts and successful reload recovery. Ker selects one port with [dpdk] port rather than F-Stack [portN]; this adapts malformed-configuration rejection, not its global struct or numeric port-handler ABI.",
+      "ker_ctests": [
+        "native-fstack-config-port-section"
+      ]
+    },
+    "native-fstack-config-vlan-section": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_vlan_cfg_handler_bad_section_returns_zero"
+      ],
+      "adaptation": "Reject malformed VLAN section identifiers through the production Ker loader before library/device setup; test the original [vlanXX] spelling and native [vlan.ID] malformed/range cases, both orders relative to a valid VLAN, CLI override attempts and subsequent successful loads. The native syntax is [vlan.ID] addresses, not the upstream VLAN-filter table ABI; no ignored-orphan VLAN or NIC behavior is claimed.",
+      "ker_ctests": [
+        "native-fstack-config-vlan-section"
+      ]
+    },
+    "native-fstack-config-jumbo-gate": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_mtu_disabled_port_over_1500_fails"
+      ],
+      "adaptation": "Adapt disabled-jumbo rejection to Ker explicit deployment max_mtu=1500. Production configuration and CLI validation reject MTU 1501 and 9000 with that ceiling in large/scatter modes before library/device setup; exact 1500, explicit ceiling raise, CLI disable/override and failure recovery are checked. Ker has no mtu_enable switch and permits explicit jumbo MTUs by default when within its default ceiling; this is an explicitly configured gate scenario, not identical default behavior or wire/NIC coverage.",
+      "ker_ctests": [
+        "native-fstack-config-jumbo-gate"
+      ]
     }
   }
 }
