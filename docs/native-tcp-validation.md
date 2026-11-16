@@ -104,3 +104,20 @@ Linux 启停和受监测的 mutex callback。检查使用 CHECK，不依赖 asse
 native-tcp 标签 45 项、native-udp 标签 25 项，标签可能重叠。原始内核库继续
 复用通过 fingerprint 验证的固定产物；未修改 Linux/LKL 或网络协议代码，
 未重跑 sanitizer、安装、物理 NIC 或完整 Release 套件。本批不提升源案例状态。
+
+## 2026-11-16 host semaphore 失败边界
+
+在 `1048a247e` 上整合 `89466bf0c` 的 Ker semaphore 适配。新增测试先以真实
+SEM_VALUE_MAX 的 post 溢出复现原 callback 继续执行：修复前子进程未 SIGABRT，
+测试失败；修复后实际 EOVERFLOW、注入的 wait/destroy EINVAL 均明确终止。
+分配/init ENOSPC/ENOMEM 检查回收和 errno，正常信号量操作均调用真实 POSIX API。
+
+DEBUG/NDEBUG 两种测试通过真实 pthread_kill(SIGUSR1) 使真实 sem_wait 返回
+EINTR，确认重试且直到真正 post 才放行，随后 join、检查参数/结果并恢复信号
+状态。各 profile 还启动/关闭固定原始 Linux，计数其实际 semaphore allocation。
+
+重新构建 Debug 库及全套测试后，**198/198 CTest 通过，无 skip**；优化
+Release 构建下两种 semaphore profile **2/2 通过**。全量运行包含 native-tcp
+标签 47 项、native-udp 标签 25 项，标签可能重叠。复用通过 fingerprint 验证的
+固定内核产物，未改动上游或重建内核，未重跑 sanitizer、安装、完整 Release
+套件或物理 NIC。此为运行时同步扩展，不增加已迁移上游源案例数量。

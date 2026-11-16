@@ -464,3 +464,9 @@ NULL/errno 并回滚分配、attributes 和已初始化 mutex；成功路径使�
 normal/recursive 类型。无法返回错误的同步回调在 pthread 返回失败时明确终止，
 防止继续使用无效锁或释放未销毁的对象。测试覆盖失败余额、真实恢复、DEBUG/
 NDEBUG 和原始 Linux 实际 callback 调用，不修改 Linux/LKL 源码。
+
+原生 host semaphore 的成功操作由真实 POSIX sem_init/wait/post/destroy 执行。
+负初值和分配/init 错误返回 NULL/errno 并回收存储；EINTR 按既有合同重试。
+其他无法通过 void callback 返回的 wait/post/destroy 错误明确终止，不继续
+执行未完成同步的内核路径。DEBUG/NDEBUG 测试测量真实 EINTR、实际 post 溢出、
+失败后恢复和原始 Linux callback 使用，不声明跨进程共享、取消或公平性。

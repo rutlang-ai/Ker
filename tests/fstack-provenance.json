@@ -1259,6 +1259,17 @@
       "ker_ctests": [
         "native-fstack-config-jumbo-gate"
       ]
+    },
+    "native-fstack-host-semaphore": {
+      "source_file": "tests/unit/test_ff_thread.c",
+      "source_case": [
+        "test_ff_pthread_create_arg_passed"
+      ],
+      "ker_ctests": [
+        "native-fstack-host-semaphore-debug",
+        "native-fstack-host-semaphore-release"
+      ],
+      "adaptation": "Ker-specific host synchronization extension of pinned F-Stack thread argument scenarios, not a registered upstream semaphore test or FreeBSD ABI equivalence claim. Ker owns an opaque POSIX semaphore adapter with real sem_init/wait/post/destroy. Negative counts fail EINVAL; allocation/init failures return NULL with preserved errno and release storage. Wait retries EINTR; unrecoverable void-callback wait/post/destroy errors abort rather than proceeding without synchronization. DEBUG/NDEBUG tests use per-test-thread allocation/init/wait/destroy fault injection, count storage cleanup, and verify real semaphore recovery. Before threads exist, child processes require SIGABRT for actual SEM_VALUE_MAX post overflow and injected EINVAL wait/destroy errors. A real host thread receives pthread_kill SIGUSR1 without SA_RESTART; a forwarding sem_wait wrapper must observe actual EINTR, then the adapter must retry and remain blocked until a real post. Argument/result transfer, join and signal-state restoration are checked. Original Linux must boot, allocate measured real adapted semaphores and halt with faults disabled; native TCP/UDP regression checks real DPDK traffic. No upstream, protocol or scheduling changes and no source-case count change. This does not qualify fairness, process-shared semaphores, thread cancellation, destruction with active waiters or performance."
     }
   }
 }

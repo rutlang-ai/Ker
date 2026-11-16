@@ -544,3 +544,31 @@ mutex callback，并完成启动/关闭；先前线程创建故障和四线程 T
 2026-11-16 验证：修复前新增 EAGAIN 检查失败；修复后普通/DEBUG/NDEBUG profile
 均通过，Debug 全量 **196/196** 无 skip，优化 Release 三 profile **3/3** 通过。
 复用固定内核产物，重新构建当前适配库与测试，未重跑 sanitizer 或硬件验收。
+
+## host semaphore 不可恢复错误与真实 EINTR
+
+本批继续在 `1048a247e` 上整合运行时修复，复用另一开发线 `89466bf0c` 的
+Ker semaphore 适配。固定 LKL POSIX callback 会在 wait/post/destroy 失败时
+记录警告后继续，void callback 无法将该失败返回给原始 Linux。新增测试先
+以真实 SEM_VALUE_MAX post 溢出复现：修复前子进程继续运行，SIGABRT 检查失败。
+
+Ker 成组持有 opaque sem_alloc/free/up/down callbacks，成功路径使用真实
+sem_init/wait/post/destroy，负初值 EINVAL，malloc/init 失败回收存储并保留
+errno。EINTR 重试行为保持；其他无法报告的 wait/post/destroy 失败明确 abort，
+防止未获得同步却继续执行内核。上游 Linux/LKL 与调度/协议实现不修改。
+
+`native-fstack-host-semaphore-debug/release` 检查分配及 init ENOSPC/ENOMEM 的
+余额和恢复；无 host 线程时 fork 的子进程要求真实 post 溢出及注入的
+wait/destroy EINVAL 均 SIGABRT。中断场景使用真实 pthread_kill(SIGUSR1)、
+无 SA_RESTART 的 handler 和转发真实 sem_wait 的 wrapper，必须实际观察到
+EINTR、重试并保持等待，直到真正 post。join 后检查参数/结果并恢复 signal
+mask/handler。之后原始 Linux 必须分配被计数的真实适配信号量、启动并 halt。
+
+这是 F-Stack thread argument 场景的 Ker 同步扩展，没有上游注册的 semaphore
+用例；不增加源案例完成数，也不声明公平性、跨进程共享、线程取消、活跃
+waiter 销毁或性能。128 adapted、18 partial、224 blocked，待完成 242 项不变。
+
+2026-11-16 验证：修复前实际 post 溢出检查失败；修复后 Debug 全量
+**198/198** 无 skip，优化 Release 两个 semaphore profile **2/2** 通过。
+先前线程创建、mutex 初始化和网络互通测试继续运行。固定内核产物复用，
+未改动上游代码或提升源案例完成数量。

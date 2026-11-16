@@ -355,3 +355,11 @@ mutex-init 失败回滚及后续真实锁恢复。子进程以测试 wrapper 注
 验证 void callback 在 DEBUG/NDEBUG 下都明确 abort；不借助真正销毁已锁对象的
 未定义行为。原始 Linux 启停测量实际 mutex 分配 callback，先前线程创建/TLS/
 同步测试保持执行。此为 Ker 运行时修复扩展，迁移总数不增加。
+
+## 主机 semaphore 同步边界
+
+`native-fstack-host-semaphore-debug/release` 验证实际 POSIX semaphore 的分配/
+初始化失败回收、真实恢复、实际 post EOVERFLOW、注入的 wait/destroy 错误终止，
+以及真实 SIGUSR1 触发 EINTR 后持续重试到真正 post。测试启动原始 Linux，
+测量真实 semaphore callback 调用并 halt。属于 F-Stack thread 场景的 Ker
+同步扩展，不把这两项 CTest 计为新增已迁移源用例。
