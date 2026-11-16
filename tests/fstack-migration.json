@@ -3100,9 +3100,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_advances",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt advancing current-time observations to the production Ker realtime synchronization adapter and original Linux clock syscalls, not a libc-only check. The private kernel boots and native seconds/nanoseconds advance lexicographically after original Linux poll(NULL,0,25) at an obsolete epoch, after a successful host synchronization, after host EIO and native EINVAL rejection, and after recovery. Native monotonic and realtime elapsed intervals must reach the poll duration and fit the real host monotonic bracket, while no additional host realtime reads occur during the observations. Original-Linux rejection leaves the old epoch advancing and later synchronization succeeds. This is a scenario adaptation, not the FreeBSD static current_ts cache or NULL-component API, active-timer clock-step, TCP retransmission or NIC coverage.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-realtime-updates",
+          "provenance_case": "native-fstack-realtime-updates"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_os_errno_mapping",
