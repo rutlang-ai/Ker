@@ -121,3 +121,18 @@ Release 构建下两种 semaphore profile **2/2 通过**。全量运行包含 na
 标签 47 项、native-udp 标签 25 项，标签可能重叠。复用通过 fingerprint 验证的
 固定内核产物，未改动上游或重建内核，未重跑 sanitizer、安装、完整 Release
 套件或物理 NIC。此为运行时同步扩展，不增加已迁移上游源案例数量。
+
+## 2026-11-16 host TLS key 删除错误
+
+基于已合并 #594 的 `57d5bc535`，复用 `7c622c5f8` 的 Ker key-delete 检查和
+TLS 回归。测试先在有效 key 上注入 pthread_key_delete EINVAL：修复前 callback
+释放包装对象并返回，子进程未按要求 SIGABRT；修复后 void callback 设置 errno
+并明确终止。创建 EAGAIN/ENOMEM 的存储回收、空/已有槽上的 set ENOMEM 保留
+原值，以及后续真实 create/set/get/clear/delete 恢复均通过。
+
+当前适配库和测试重新编译后，Debug 全量 **198/198 CTest 通过，无 skip**；
+优化 Release 的默认/DEBUG/NDEBUG 线程 profiles **3/3 通过**。所有成功操作
+调用真实 pthread，原始 Linux 启停和 TCP/UDP/DPDK 回归继续执行；删除错误
+在启动 host 线程前的独立子进程注入，不使用故意无效 key。复用通过 fingerprint
+校验的固定内核产物，未改动或重建上游内核，未重跑 sanitizer、安装、物理 NIC
+或完整 Release 套件。源案例状态和剩余 242 项的计数保持不变。

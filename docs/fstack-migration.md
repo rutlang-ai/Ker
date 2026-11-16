@@ -572,3 +572,25 @@ waiter 销毁或性能。128 adapted、18 partial、224 blocked，待完成 242 
 **198/198** 无 skip，优化 Release 两个 semaphore profile **2/2** 通过。
 先前线程创建、mutex 初始化和网络互通测试继续运行。固定内核产物复用，
 未改动上游代码或提升源案例完成数量。
+
+## TLS key 删除失败与槽值恢复
+
+基于已合并 #594 的集成提交 `57d5bc535`，复用另一开发线 `7c622c5f8` 的 TLS
+回归和 Ker 删除错误处理。`key_free` 原先忽略 pthread_key_delete 错误并释放
+wrapper，丢失仍注册 key 的管理对象；新增注入测试在修复前观察到子进程继续
+执行，要求 SIGABRT 的断言失败。修复仅在 Ker 的 void callback 中将该错误
+记录到 errno 并明确 abort，不修改 Linux/LKL、成功 pthread 语义或 TLS 布局。
+
+同一测试还覆盖 pthread_key_create 的 EAGAIN/ENOMEM：NULL、准确 errno、
+wrapper 余额为零，之后真实创建/删除恢复。pthread_setspecific ENOMEM 分别
+作用于空槽和已有值槽，失败必须返回 -1/errno，原槽值不变；随后真实 set、
+get、clear、delete 成功且余额归零。所有成功操作直接使用真实 pthread。
+
+删除错误在尚无 host 线程时 fork 的子进程中注入；底层 key 保持有效且未注销，
+不借用无效 pthread key 行为。默认、DEBUG、NDEBUG 使用 CHECK，原始 Linux
+仍以相同 host callback 表正常启动/关闭。属于已适配线程场景的 Ker 生命周期
+修复，128 adapted、18 partial、224 blocked，剩余 242 项不变。
+
+2026-11-16 验证：删除错误场景修复前失败，修复后 Debug 全量 **198/198**
+无 skip，优化 Release 三线程 profile **3/3** 通过。固定内核复用，当前 Ker
+适配库与测试重新构建；不提升上游源案例状态。
