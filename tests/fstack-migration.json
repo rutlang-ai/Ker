@@ -3284,9 +3284,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_kernel_fd_encode_roundtrip",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt fd namespace classification and encode/decode roundtrip to the production Ker host-placeholder/native-fd table, using a booted original Linux and real UDP/TCP sockets. Source sample numbers 0, 3, 1024 and 65535 are host allocation minima rather than an arithmetic encoding ABI. Each exported app fd reserves a real host slot, looks up the exact live native fd and socket type, survives repeated lookup, and releases both namespaces on close. Real unmanaged host descriptors, including slot 65535 before and after managed use, must not be classified as native; re-export at that slot must resolve a new UDP object rather than the prior TCP mapping. Invalid -1/65536 lookups are rejected. Ker uses table membership, not FF_KERNEL_FD_BASE or numeric-threshold classification; no FreeBSD fixed-offset API equivalence, fd exhaustion, concurrency, network traffic or NIC claim.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-fd-roundtrip",
+          "provenance_case": "native-fstack-fd-roundtrip"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_native_fd_map",

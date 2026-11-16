@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 129 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 130 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 223 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 222 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **241 项**（223 blocked + 18 partial）。
+当前待完成 **240 项**（222 blocked + 18 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -78,7 +78,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 21 | 0 | 13 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 22 | 0 | 12 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 4 | 2 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
@@ -651,3 +651,37 @@ timer 的 clock-step、TCP 重传或 NIC 流量覆盖。上游及 Ker 生产代�
 fingerprint 验证后复用；未重建内核或重跑全量网络、sanitizer、物理 NIC。
 完整迁移门禁仍按预期返回 2（223 blocked + 18 partial）。日志保存在工作树外
 `~/.local/state/ker-native-linux/realtime-updates-integration-validation/`。
+
+
+## 原生 fd 往返与宿主命名空间区分
+
+`native-fstack-fd-roundtrip` 迁移固定 F-Stack 的
+`test_ff_kernel_fd_encode_roundtrip`，直接链接生产 fd-table.c 并启动原始 Linux。
+Ker 通过真实宿主占位 fd 和映射表管理原生 Linux fd；源测试的固定偏移编码
+与按数值阈值分类不适用于这个表示。迁移保留命名空间区分、导出与逆向查询
+合同，不引入 FF_KERNEL_FD_BASE 或另一套 fd codec。
+
+源样本 0、3、1024、65535 作为真实宿主 fd 的分配下界。四个同时存活的
+UDP/TCP socket 导出后应用 fd 互不冲突，重复查询必须得到同一个真实 native
+fd，SO_TYPE 由原始 Linux 确认，宿主占位 fd 具有实际 CLOEXEC。宿主 /dev/null
+描述符在整个过程中可读且不在原生映射表中。关闭后 native fd 必须返回
+Linux EBADF，宿主保留槽也必须释放。
+
+特别检查最后一个有效槽 65535：先作为普通宿主 fd，后作为原生 TCP 的
+应用 fd，再回收为普通宿主 fd，最后导出新的原生 UDP socket。每次分类和
+SO_TYPE 都必须正确，不能留下旧映射。-1 和 65536 不可查询为有效映射。
+测试只在自身进程内将 RLIMIT_NOFILE soft limit 提高到 65536，并在关闭所有
+测试 fd 后恢复；hard limit 需至少为 65536。没有宿主协议 socket fallback，
+没有改动生产、Linux/LKL 或 DPDK 代码。不声明固定偏移 ABI 等价、真实 fd
+耗尽、并发 fd 回收、网络流量或 NIC 覆盖。
+
+本批基于时钟迁移提交 `1576fbbb3`（PR #597），新增一个已迁移源场景：
+**130 adapted、18 partial、222 blocked，待完成 240 项**。
+
+
+2026-11-16 验证：Debug 两个 fd CTest **2/2**、清单完整性和 mutation guards
+**2/2**、优化 Release 两个 fd CTest **2/2** 通过，无 skip。固定 Linux
+产物复用，fd 测试和直接链接的生产 fd/memory/clock 适配器重新构建；未重建
+完整内核、重跑全量网络、sanitizer 或物理 NIC。完整迁移门禁按预期返回 2，
+报告 222 blocked + 18 partial。日志保存在工作树外
+`~/.local/state/ker-native-linux/fd-roundtrip-integration-validation/`。

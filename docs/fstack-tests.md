@@ -388,3 +388,14 @@ clock/poll syscall，验证成功更新、宿主 EIO、内核 EINVAL 和恢复�
 已有 epoch；全部 settime 仅作用于私有 Linux。来源映射到固定 F-Stack 的
 `test_ff_get_current_time_advances`，不声明 FreeBSD 静态缓存、NULL 输出分量、
 正在等待的 timer clock-step、TCP 定时器或 NIC 流量覆盖。
+
+
+## 原生 fd 导出/反查与宿主 fd 共存
+
+`native-fstack-fd-roundtrip` 将 `test_ff_kernel_fd_encode_roundtrip` 的命名空间
+区分和往返合同适配到生产 Ker fd 表，不实现 F-Stack 固定偏移编码。使用
+真实 Linux UDP/TCP fd，验证分配下界 0/3/1024/65535、重复逆向查询、实际
+宿主占位和关闭回收；65535 在普通宿主 fd、原生 TCP、普通宿主 fd、原生 UDP
+之间反复使用，不得误分类或保留旧映射。需要 `KER_WITH_NATIVE_TCP=ON`，
+测试进程 RLIMIT_NOFILE hard limit 至少 65536；临时 soft limit 在结束时恢复。
+原 `native-fstack-fd-map` 的替换、引用、alias 和错误路径测试继续保留。

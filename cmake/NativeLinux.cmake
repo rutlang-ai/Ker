@@ -183,6 +183,8 @@ if(BUILD_TESTING)
     target_compile_options(ker-fd-map-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-fd-map COMMAND ker-fd-map-test)
     set_tests_properties(native-fstack-fd-map PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-fd-roundtrip COMMAND ker-fd-map-test --roundtrip)
+    set_tests_properties(native-fstack-fd-roundtrip PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-errno-test tests/posix/fstack-errno.c src/posix/host-memory.c src/posix/host-clock.c)
     target_include_directories(ker-errno-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-errno-test SYSTEM PRIVATE
