@@ -1256,7 +1256,7 @@ def inside(args):
                 with jumbo_config.open('a') as configuration:
                     configuration.write('[dpdk]\nmbuf_mode=scatter\n')
             launcher += ['--config', str(jumbo_config), '--max-mtu', '9000']
-        app = str(args.app)
+        app = str(args.vectored_app or args.app)
         with (work / 'server.log').open('w+') as log:
             try:
                 for native_server in [True, False]:
@@ -1460,7 +1460,7 @@ def inside(args):
                 with socket.socket() as occupied:
                     occupied.bind(('127.0.0.1', 0))
                     occupied.listen()
-                    client([*launcher, '--', app, 'loopback', '127.0.0.1',
+                    client([*launcher, '--', str(args.app), 'loopback', '127.0.0.1',
                         str(occupied.getsockname()[1])], env)
             except BaseException:
                 log.seek(0)
@@ -1483,6 +1483,7 @@ def main():
     parser.add_argument('--zero-window', action='store_true')
     parser.add_argument('--udp-cork-app', type=Path)
     parser.add_argument('--fd-app', type=Path)
+    parser.add_argument('--vectored-app', type=Path)
     parser.add_argument('--dualstack-app', type=Path)
     parser.add_argument('--epoll-app', type=Path)
     parser.add_argument('--message-app', type=Path)
