@@ -32,6 +32,26 @@ static lkl_thread_t thread_create(void (*routine)(void *), void *argument)
     }
     return (lkl_thread_t)thread;
 }
+/* LKL expects one handle and a 0/-1 result; pthread_join takes a result
+ * pointer and returns its error number. The handle remains the host pthread. */
+static int pthread_join_callback(lkl_thread_t thread)
+{
+    int error = pthread_join((pthread_t)thread, NULL);
+    if (!error) return 0;
+    errno = error;
+    return -1;
+}
+/* LKL's no-argument detach callback refers to the calling host pthread.
+ * This is only a signature/error adapter, not a Ker thread implementation. */
+static void pthread_detach_callback(void)
+{
+    int error = pthread_detach(pthread_self());
+    if (error) {
+        errno = error;
+        perror("ker: host pthread detach");
+        abort();
+    }
+}
 /* The pinned POSIX host tsd_alloc dereferences its allocation before checking
  * failure. Keep the fix in Ker, using a private key representation and the
  * same pthread TLS semantics (including destructors) as the original table. */
@@ -175,6 +195,8 @@ void ker_native_host_thread_init(struct lkl_host_operations *ops)
     ops->sem_up = semaphore_up;
     ops->sem_down = semaphore_down;
     ops->thread_create = thread_create;
+    ops->thread_join = pthread_join_callback;
+    ops->thread_detach = pthread_detach_callback;
     ops->mutex_alloc = mutex_alloc;
     ops->mutex_free = mutex_free;
     ops->mutex_lock = mutex_lock;

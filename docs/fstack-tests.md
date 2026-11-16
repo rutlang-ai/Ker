@@ -371,3 +371,11 @@ set ENOMEM、有效 key 上的 delete EINVAL 注入。要求准确 errno、分�
 写入失败不改值、真实后续操作恢复；无法返回错误的删除 callback 必须终止。
 所有成功路径使用真实 pthread，删除故障子进程在 host 线程启动前 fork，
 不向 pthreads 传入故意无效 key。源码案例迁移数不增加，Linux/LKL 保持不变。
+
+## pthread 完成阶段的 LKL 回调转换
+
+线程 runtime 三 profiles 补充 join EDEADLK/EINVAL/ESRCH 的 -1/errno 转换与
+对同一真实 pthread 的后续 join 回收；真实 self-detach 后查询 DETACHED 状态，
+另在有效线程上注入 detach EINVAL 并验证 void callback 终止。它们仅覆盖
+内部 LKL 到 pthread 的薄适配，应用直接使用 pthread API，公共接口不增加
+Ker 线程类型或线程函数，迁移计数不变。
