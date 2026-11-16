@@ -297,3 +297,18 @@ INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_co
 
 `native-fstack-launcher-config` 验证独立 `max_mtu`、相等边界、9000/2000 拒绝和 CLI 覆盖。
 `native-fstack-jumbo-mtu` 先验证低上限在启动前拒绝，再覆盖到 9000 执行真实 jumbo TCP/UDP、DF 和抓包检查，补齐 `test_mtu_port_over_max_fails`。
+
+## 原生 TCP vectored I/O
+
+可选完整内核后端另有 `native-posix-tcp-vectored`：受上游
+`test_ff_dpdk_if_send_multiseg` / `test_ff_dpdk_if_send_tcp_csum` 的分段发送场景
+启发，新增真实 socket 黑盒验证，并非复制 F-Stack socket 测试。普通 POSIX
+程序分别作为主动/被动端，经 DPDK `net_tap` 与独立宿主 TCP 对端通信；每向
+262147 个有模式的字节覆盖 writev/sendmsg、readv/recvmsg、空 iovec、强制短写
+重试、MSG_PEEK/MSG_WAITALL、半关闭后的反向发送及 EOF/EPOLLRDHUP。
+协议状态由固定的原始 Linux 完整后端执行，测试要求原生连接计数增长、实际
+DPDK 收发及 mbuf 归零。构建和环境要求见 [原生 TCP](native-tcp.md)，运行：
+
+```bash
+ctest --test-dir build-native-tcp -R '^native-posix-tcp-vectored$' --output-on-failure --no-tests=error
+```

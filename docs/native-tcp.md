@@ -102,6 +102,7 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | 场景 | 断言 |
 | --- | --- |
 | 主动/被动连接 | 双向 1 MiB 校验、非阻塞 connect/accept、epoll、半关闭与 EOF |
+| vectored/message I/O | `native-posix-tcp-vectored`：原生主动/被动两种角色，每向 262147 字节；交替 writev/sendmsg、readv/recvmsg，空 iovec、强制短写后的精确偏移重试、MSG_PEEK/MSG_WAITALL、半关闭后反向发送、EOF 与 EPOLLRDHUP；检查原生连接计数、DPDK 收发及 mbuf 归零 |
 | 丢包与乱序 | 双向 2% seeded loss、delay、reorder，数据完整；原生内核重传与乱序队列计数增长 |
 | 零窗口 | 两个方向慢读和小接收缓存；原生窗口探测计数增长，恢复完整字节流 |
 | 错误 | RST、ECONNRESET、EPIPE、SIGPIPE/MSG_NOSIGNAL、SO_RCVTIMEO、ECONNREFUSED、SYN 重传后 ETIMEDOUT |

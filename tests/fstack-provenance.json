@@ -1206,6 +1206,14 @@
         "test_ff_dpdk_if_send_copydata_fail"
       ],
       "adaptation": "Ker-specific bounded TX FIFO failure-recovery extension for exact chain mode with 1/2/7-byte segments. Every incomplete allocation prefix fails twice without sink delivery, preserving pending/FIFO order, byte accounting, original skbs and pool availability. Negative and positive sink rejections reclaim copies; retaining an accepted first copy forces the next allocation to fail in the same poll, which returns the completed prefix and records the error. Pending and queued successors cancel in order, then the exact originals re-enqueue and recover. Independent byte checks distinguish folded-zero policies and verify accepted-copy lifetime after source release. Calls production TX poll directly; no worker scheduling, BSD copydata fault, NIC/offload, native F-Stack TX or protocol state coverage is claimed."
+    },
+    "native-posix-tcp-vectored": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_multiseg",
+        "test_ff_dpdk_if_send_tcp_csum"
+      ],
+      "adaptation": "Ker-specific native Linux socket extension, motivated only by the upstream segmented-send and TCP-checksum scenarios. A plain POSIX application runs as both active and passive endpoint against an independent host TCP peer over real DPDK net_tap. Each direction verifies 262147 patterned bytes with alternating writev/sendmsg and readv/recvmsg, empty iovecs, required short writes with exact offset advancement, MSG_PEEK/MSG_WAITALL, half-close reverse delivery, EOF and EPOLLRDHUP. The harness requires DPDK RX/TX, the corresponding imported-kernel open counter and zero outstanding mbufs. All TCP state is implemented by the pinned original Linux backend. The upstream cases exercise glue-layer TX, not socket I/O; this is not an upstream F-Stack socket test or physical-NIC/offload/performance coverage."
     }
   }
 }
