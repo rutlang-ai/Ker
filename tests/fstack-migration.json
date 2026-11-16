@@ -3148,9 +3148,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_setenv_getenv_roundtrip",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt the F-Stack host setenv/getenv roundtrip to applications using standard POSIX environment APIs through the production Ker launcher, app guard and native constructor. The real launcher must preserve an ordinary FF_UNIT_TEST_VAR when inherited and leave it absent when omitted; the application sets hello-world, reads it back, verifies overwrite=0 preservation and unsets its local value. Three fresh launches exercise inherited, absent and inherited input with real net_tap worker startup/cleanup. Each application must report the pinned original-Linux release, observe raw host TCP socket denial and successfully create/bind a native TCP socket to the private configured address. Launcher stats require native shutdown diagnostics, one actual ethdev, zero outstanding mbufs and successful real EAL cleanup. This is a host-environment scenario, not a Ker-owned environment wrapper, Linux syscall environment ABI, cross-process shared environment, F-Stack helper ABI, TCP handshake or NIC traffic coverage.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-environment",
+          "provenance_case": "native-fstack-environment"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_munmap_roundtrip",

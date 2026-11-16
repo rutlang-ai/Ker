@@ -295,6 +295,16 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-startup-interface-test>"
             --probe "$<TARGET_FILE:ker-startup-failure-probe>")
     set_tests_properties(native-fstack-startup-failures PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_executable(ker-environment-test tests/posix/fstack-environment.c)
+    target_compile_options(ker-environment-test PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(ker-environment-test PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
+    target_link_libraries(ker-environment-test PRIVATE ${CMAKE_DL_LIBS})
+    add_test(NAME native-fstack-environment
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/environment-roundtrip.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-environment-test>"
+            --probe "$<TARGET_FILE:ker-startup-failure-probe>")
+    set_tests_properties(native-fstack-environment PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
     add_executable(ker-network-sysctl-test tests/posix/network-sysctl.c)
     target_compile_options(ker-network-sysctl-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-network-sysctl

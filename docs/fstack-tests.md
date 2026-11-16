@@ -399,3 +399,14 @@ clock/poll syscall，验证成功更新、宿主 EIO、内核 EINVAL 和恢复�
 之间反复使用，不得误分类或保留旧映射。需要 `KER_WITH_NATIVE_TCP=ON`，
 测试进程 RLIMIT_NOFILE hard limit 至少 65536；临时 soft limit 在结束时恢复。
 原 `native-fstack-fd-map` 的替换、引用、alias 和错误路径测试继续保留。
+
+
+## 应用环境变量往返
+
+`native-fstack-environment` 对应 `test_ff_setenv_getenv_roundtrip`。通过生产
+launcher/app guard/preload 链验证普通环境变量的继承或缺省、POSIX set/get
+与 overwrite=0，并在三次独立原生启动中检查 Linux 身份、宿主 TCP syscall
+拒绝、私有地址 bind 和 worker/EAL 清理。应用环境 API 由 POSIX 提供，Ker
+不提供额外 wrapper。需 `KER_WITH_NATIVE_TCP=ON`，以及已有 native 测试所需
+的 user/network namespace、net_tap、ip 和 /dev/net/tun 环境；不声明握手或
+NIC 流量覆盖。
