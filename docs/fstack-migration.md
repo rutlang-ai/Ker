@@ -717,3 +717,41 @@ bind 原生 TCP socket。真实 net_tap worker 必须完成初始化和 teardown
 内核或重跑全量网络、sanitizer、物理 NIC。完整迁移门禁按预期返回 2，
 报告 221 blocked + 18 partial。日志归档于工作树外
 `~/.local/state/ker-native-linux/environment-integration-validation/`。
+
+
+## 接口激活失败的直接返回路径
+
+接续 `289e3faeb` 的迁移分支，复用另一开发线 `58b75c806`（来源 `62c8a0968`）
+的接口激活失败测试。此前 `test_ff_init_fail_dpdk_if_up` 只有 off-subnet route
+失败等相关覆盖，缺少直接 lkl_if_up 负返回。本批补齐 loopback/device 两个
+activation 错误处理入口，源项仍保留 partial。
+
+新增 non-installed `ker-posix-if-up-failure`，使用与生产 ker-posix 完全相同的
+适配层源文件和固定原始 liblkl，仅添加测试链接器 wrapper。成功控制调用真实
+lkl_if_up；loopback EIO 后不得调用设备 activation；设备 EIO 必须在真实
+loopback 成功之后出现。精确 trace 校验调用顺序和返回值。两种错误都必须
+在 native READY/application main 之前返回 launcher 状态 125，应用 marker
+不存在，不能生成 native 成功诊断。真实 worker/EAL 完成清理且 outstanding
+mbuf 为零。
+
+独立 production control 设置同样 hook 环境变量，仍须正常启动且无 trace，
+证明测试注入不进入生产路径。成功 app 的接口/UP/MTU 检查改用 CHECK；移除
+该 target 的 -UNDEBUG，让 Release 真正在 NDEBUG 下验证相同检查。未修改
+任何生产、Linux/LKL/DPDK 实现，也不注入成功 stub。
+
+F-Stack 的 ff_dpdk_if_up ABI、精确 FreeBSD 初始化顺序仍不是 Ker 接口；注入
+错误不等于自然发生的 kernel/NIC 故障，故不升级为 scenario-adapted。
+**131 adapted、18 partial、221 blocked，待完成 239 项**保持不变，但该
+partial 源项的直接接口失败覆盖缺口已补齐，remaining 与 provenance 同步更新。
+
+
+2026-11-16 验证：Debug 扩展启动失败 CTest **1/1**、原生命周期与两项清单
+门禁 **3/3** 通过。优化 Release 启动失败 **1/1** 通过；生命周期控制首次
+因缺少 TCP echo 测试可执行文件未完成，补构建依赖后重跑 **1/1** 通过。
+八个启动失败/控制场景均检查真实 EAL cleanup；普通生命周期继续测试独立
+宿主 TCP 对端。nm 确认 production 无 wrapper 符号，而测试变体具有该符号；
+Release probe 编译 flags 为 -O3 -DNDEBUG，未含 -UNDEBUG。固定原始 Linux
+产物复用，生产与变体适配库及相关测试重新构建，无上游改动；未运行全量
+CTest、sanitizer 或物理 NIC。完整迁移门禁按预期返回 2。
+日志与二进制隔离/编译 flags 证据保存于工作树外
+`~/.local/state/ker-native-linux/if-up-integration-validation/`。

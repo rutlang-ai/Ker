@@ -410,3 +410,14 @@ launcher/app guard/preload 链验证普通环境变量的继承或缺省、POSIX
 不提供额外 wrapper。需 `KER_WITH_NATIVE_TCP=ON`，以及已有 native 测试所需
 的 user/network namespace、net_tap、ip 和 /dev/net/tun 环境；不声明握手或
 NIC 流量覆盖。
+
+
+## 接口激活失败与初始化短路
+
+`native-fstack-startup-failures` 增加真实成功控制、production hook 隔离控制，
+以及 link-time lkl_if_up loopback/device EIO。测试专用 preload 使用同一生产
+源列表及原始 liblkl，成功路径调用真实函数；trace 要求失败后不进入下一
+activation。失败必须阻止 native READY/main，并保留 worker/EAL 真实清理和
+零 outstanding mbuf。源 `test_ff_init_fail_dpdk_if_up` 仍为 partial，未声明
+F-Stack ABI 或自然 NIC 故障等价。接口 probe 使用不依赖 assert 的 CHECK，
+Release 不再通过 -UNDEBUG 保留断言。
