@@ -86,3 +86,21 @@ ctest --test-dir /tmp/ker-thread-create-release -R '^native-fstack-thread-runtim
 上游内核；未运行 sanitizer、Release 全套、安装或物理 NIC 验收。本批是实际
 资源泄漏修复，不提升上游源案例状态，也不将 pthread 错误当成 FreeBSD
 curcpu/pcpup panic 合同已迁移。
+
+## 2026-11-16 host mutex 初始化回滚
+
+在 `fdd15b2f3` 的线程创建修复上移入 Ker mutex 适配（来源 `3d0f68d03`）。
+先加入 mutex-init EAGAIN 测试，修复前原 callback 返回非空无效对象而失败；
+修复后 malloc、attribute init/type、mutex init 和 post-real attribute-destroy
+故障均按 NULL/errno 回滚，正常/递归 mutex 可恢复并真实加解锁和销毁。
+
+增加两个显式 DEBUG/NDEBUG CTest profile。子进程在有效 mutex destroy 上注入
+EBUSY，要求 void callback SIGABRT；避免真正销毁已加锁 mutex 的未定义行为。
+每个 profile 都执行此前线程创建失败回收、四线程 TLS/析构/计数，以及真实
+Linux 启停和受监测的 mutex callback。检查使用 CHECK，不依赖 assert。
+
+当前 Debug Ker 库和全套测试重新构建后，**196/196 CTest 通过，无 skip**。
+优化 Release 构建下相同三个线程 profile **3/3 通过**。完整 Debug 运行包含
+native-tcp 标签 45 项、native-udp 标签 25 项，标签可能重叠。原始内核库继续
+复用通过 fingerprint 验证的固定产物；未修改 Linux/LKL 或网络协议代码，
+未重跑 sanitizer、安装、物理 NIC 或完整 Release 套件。本批不提升源案例状态。

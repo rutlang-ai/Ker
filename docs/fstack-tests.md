@@ -346,3 +346,12 @@ jumbo 禁用明确转换为 Ker 的部署上限 `max_mtu=1500`；这不是上游
 `mtu_enable` API 的实现。large/scatter 两种模式均检查 1500/1501/9000 及 CLI
 覆盖。三项 CTest 共七个 unittest 方法，只提供配置层证据，不声称 NIC/内核互通。
 准确来源、语法差异和清单计数见 [迁移清单](fstack-migration.md#非法-portvlan-配置与显式-jumbo-禁用边界)。
+
+## 主机 mutex 失败回滚
+
+`native-fstack-thread-runtime` 及新增的 `-debug`/`-release` profiles 直接编译
+生产 host-thread 适配器，检查 normal/recursive mutex 的 malloc、attribute、
+mutex-init 失败回滚及后续真实锁恢复。子进程以测试 wrapper 注入 destroy EBUSY，
+验证 void callback 在 DEBUG/NDEBUG 下都明确 abort；不借助真正销毁已锁对象的
+未定义行为。原始 Linux 启停测量实际 mutex 分配 callback，先前线程创建/TLS/
+同步测试保持执行。此为 Ker 运行时修复扩展，迁移总数不增加。

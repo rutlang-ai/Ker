@@ -458,3 +458,9 @@ SHUT_RDWR、并发阻塞调用或未读数据关闭。完整来源和边界见
 这修复固定 LKL POSIX callback 的失败路径泄漏，Linux 和 LKL 源码保持不变。
 `native-fstack-thread-runtime` 以 EAGAIN/EPERM 注入检查回收和真实 create/join 恢复，
 并启动原始 Linux 验证实际 host callback 调用；不声明 FreeBSD 每 CPU TLS 等价。
+
+Ker 的 opaque host mutex 适配成组提供 alloc/lock/unlock/free。初始化失败返回
+NULL/errno 并回滚分配、attributes 和已初始化 mutex；成功路径使用真实 pthread
+normal/recursive 类型。无法返回错误的同步回调在 pthread 返回失败时明确终止，
+防止继续使用无效锁或释放未销毁的对象。测试覆盖失败余额、真实恢复、DEBUG/
+NDEBUG 和原始 Linux 实际 callback 调用，不修改 Linux/LKL 源码。

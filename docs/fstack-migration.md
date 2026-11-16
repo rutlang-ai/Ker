@@ -514,3 +514,33 @@ thread-start wrapper 后，`pthread_create` 返回错误直接退出，没有释
 通过，无 skip；Release 线程测试 **1/1** 通过。固定 Linux/LKL 未修改，复用
 其已验证构建产物。此批不新增迁移计数，仍为 128 adapted、18 partial、
 224 blocked，待完成 242 项。
+
+## host mutex 初始化回滚与 void 回调错误
+
+本批在 `fdd15b2f3` 的线程创建修复上继续推进，复用另一开发线
+`3d0f68d03` 的 Ker mutex 适配。固定 LKL POSIX mutex allocator 在初始化报错后
+仍返回对象，且没有销毁 attributes；新增 mutex-init EAGAIN 测试在修复前失败，
+随后在 Ker 适配层完成所有权和错误处理，不修改固定 Linux/LKL。
+
+normal/recursive 两种 mutex 分别覆盖 malloc、attribute init/type、mutex init、
+attribute destroy 返回错误。每个返回 NULL/准确 errno，检查 heap、attribute、
+已初始化 mutex 余额；后续创建、真实 lock/unlock、recursive 双重 lock/unlock
+及销毁必须恢复。attribute-destroy 注入在真实 attributes 已释放后返回 EIO，
+以安全观察已初始化 mutex 的回滚，不声称证明未被真实 pthread 释放的资源。
+
+opaque mutex 的四个 callback 由 Ker 成组替换，保持 pthread 成功语义。lock、
+unlock、destroy 的 void callback 无法返回错误，检测到失败时明确 abort。
+测试在启动 host 线程前 fork 子进程，对有效 mutex 的 destroy 注入 EBUSY 并要求
+SIGABRT；不实际销毁已加锁 mutex，避免借用未定义行为。
+
+增加 DEBUG 与 NDEBUG 两种 CTest profile，检查不使用 assert。DEBUG 的普通锁
+使用原 callback 同样的 ERRORCHECK 选项，非 DEBUG 保持默认类型；两个分支和
+recursive 类型均检测 attribute-type 设置失败。原始 Linux 仍实际调用计数的
+mutex callback，并完成启动/关闭；先前线程创建故障和四线程 TLS/计数检查保留。
+
+此项属于已适配线程场景的生产运行时修复，不增加上游源案例完成数量；当前
+128 adapted、18 partial、224 blocked，待完成 242 项保持不变。
+
+2026-11-16 验证：修复前新增 EAGAIN 检查失败；修复后普通/DEBUG/NDEBUG profile
+均通过，Debug 全量 **196/196** 无 skip，优化 Release 三 profile **3/3** 通过。
+复用固定内核产物，重新构建当前适配库与测试，未重跑 sanitizer 或硬件验收。
