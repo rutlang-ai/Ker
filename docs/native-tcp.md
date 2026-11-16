@@ -10,7 +10,13 @@
 
 每个应用进程运行独立的原生内核，初始内存 64 MiB。原生 virtio-net 设备通过有界 UNIX datagram 通道连接 DPDK worker。worker 只转发 Ethernet，不建立 TCP 连接，不转发宿主 socket 字节流。第一版复制报文，固定 MTU 1500、单 RX/TX 队列，关闭 checksum/TSO/LRO/VLAN strip 等卸载。未支持的卸载请求报错；接收变形元数据的帧被丢弃并计数。
 
-应用 fd 使用真实宿主占位描述符保留编号，表中持有私有 Linux fd；不会根据编号大小猜测后端。引用保护支持并发操作与关闭。宿主文件、pipe、UNIX socket 和原生网络 socket 可共同用于 poll/select/epoll；混合等待以最多 1 ms 的间隔检查原生就绪。协议定时器由原生内核运行。原生 realtime 时钟在启动时从宿主 CLOCK_REALTIME 初始化，供软件收包时间戳等使用；monotonic clocksource 保持上游行为，启动后的宿主墙钟调整尚不持续同步。
+应用 fd 使用真实宿主占位描述符保留编号，表中持有私有 Linux fd；不会根据编号大小猜测后端。引用保护支持并发操作与关闭。宿主文件、pipe、UNIX socket 和原生网络 socket 可共同用于 poll/select/epoll；混合等待以最多 1 ms 的间隔检查原生就绪。协议定时器由原生内核运行。
+
+应用线程直接使用宿主 pthread API，线程身份沿用 pthread_t。Ker 只为原始 LKL
+host_operations 与 pthread 的签名差异提供内部薄适配：转换回调签名、维护
+启动函数参数生命周期及传播错误。启动参数包装不是线程对象；没有应用可见的
+Ker 线程 API、额外线程身份表或 Ker 调度器。应用 pthread_join/pthread_detach
+仍保留 pthread 自己的调用方式、返回值和错误处理。原生 realtime 时钟在启动时从宿主 CLOCK_REALTIME 初始化，供软件收包时间戳等使用；monotonic clocksource 保持上游行为，启动后的宿主墙钟调整尚不持续同步。
 
 UDP 多播接收需显式给 `ker-run` 添加 `--all-multicast`，请求 DPDK ethdev 接收所有多播帧，
 由原始 Linux 按 socket 成员关系过滤。设备无法启用该模式时启动失败；动态 MAC group
@@ -476,3 +482,9 @@ Host TLS key 删除错误不能被 void callback 当作完成：Ker 保存 pthre
 设置失败仍返回 NULL/-1 和 errno；测试核对 wrapper 余额、空/已有槽不变及
 真实后续 set/clear/delete 恢复。此为 Ker 适配层修复，不修改原始 Linux、
 TLS key 布局或提供 FreeBSD 每 CPU 上下文等价性。
+
+LKL 内部 join callback 直接调用 pthread_join(handle, NULL)，仅将 pthread
+错误号转换为该 callback 所需的 -1/errno；成功为零。内部 detach callback 的
+上游签名无参数，因而直接对 pthread_self() 调用 pthread_detach，失败时明确
+终止。这个 void callback 的失败策略不改变应用直接调用 pthread_detach 的
+标准返回语义，也不提供另一套线程生命周期。

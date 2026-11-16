@@ -594,3 +594,29 @@ get、clear、delete 成功且余额归零。所有成功操作直接使用真�
 2026-11-16 验证：删除错误场景修复前失败，修复后 Debug 全量 **198/198**
 无 skip，优化 Release 三线程 profile **3/3** 通过。固定内核复用，当前 Ker
 适配库与测试重新构建；不提升上游源案例状态。
+
+## pthread join/detach 到 LKL 的内部薄适配
+
+基于 `b496a8307`（已合并 #595）复用 `014d5067a` 的完成阶段测试与错误转换，
+不新增 Ker 线程库。LKL callback 的 one-handle join 与无参数 detach 签名不同于
+pthread；适配直接调用 pthread_join(handle, NULL) 和 pthread_detach(pthread_self())，
+保持原 pthread 身份。应用继续直接使用标准 pthread，公共导出表没有线程 API。
+
+分别复现两个错误：detach 注入 EINVAL 后原 callback 警告并返回，终止检查
+失败；修复 detach 后，join 注入 EDEADLK 返回 -1 但未设置 errno，错误码检查
+失败。最终 join 只在内部 LKL 边界转换为 0 或 -1/errno，void detach 在失败时
+明确 abort。Linux/LKL 与 pthread 成功路径不改，不创建额外线程管理或调度层。
+
+测试 fork 的成功控制对当前真实 pthread self-detach，并以 pthread_getattr_np
+核对实际 DETACHED 状态；失败控制用有效 pthread 注入 EINVAL，要求 SIGABRT。
+随后在有效 joinable pthread 上注入 EDEADLK/EINVAL/ESRCH，检查错误号，
+并对同一个线程执行真实 join，确保回收和 callback completion。所有子进程
+控制均在父进程创建 worker pthread 前完成，注入不把无效句柄传给 pthread。
+
+属于既有线程场景的 Ker/LKL 适配修复，不完成 FreeBSD join 返回值槽或
+curcpu/TLS 合同，不提升源案例数量；128 adapted、18 partial、224 blocked，
+剩余 242 项不变。
+
+2026-11-16 验证：两项错误分别复现后修复；Debug 全量 **198/198** 无 skip，
+优化 Release 线程矩阵 **3/3** 通过。动态导出表没有应用 pthread/Ker 线程接口，
+正常操作全部通过真实 pthread；固定内核复用且保持不变。未增加源案例迁移数。

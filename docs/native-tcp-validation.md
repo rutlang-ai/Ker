@@ -136,3 +136,21 @@ TLS 回归。测试先在有效 key 上注入 pthread_key_delete EINVAL：修复
 在启动 host 线程前的独立子进程注入，不使用故意无效 key。复用通过 fingerprint
 校验的固定内核产物，未改动或重建上游内核，未重跑 sanitizer、安装、物理 NIC
 或完整 Release 套件。源案例状态和剩余 242 项的计数保持不变。
+
+## 2026-11-16 LKL pthread join/detach 薄适配
+
+基于 `b496a8307`（已合并 #595），复用 `014d5067a` 的完成阶段错误转换与测试。
+先复现 detach 返回错误后继续执行：有效 pthread 的注入 EINVAL 未触发应有
+SIGABRT；加入 detach 转换后，再单独复现 join EDEADLK 未保留 errno。最终
+仅在私有 LKL callback 签名上直接转换 pthread 调用，不提供 Ker 线程库。
+
+默认/DEBUG/NDEBUG 均验证真实 self-detach 的 DETACHED 属性、有效线程上的
+失败注入与准确错误码，以及对同一 joinable pthread 的后续真实 join/完成观察。
+应用直接使用 pthread，句柄沿用 pthread 身份；公共导出检查确认正常 libker-posix
+没有定义 pthread_* 或 Ker 应用线程 API。应用 pthread 错误返回语义不改变，
+LKL void detach callback 的错误终止仅作用于原始 LKL 内部接口边界。
+
+重新构建当前 Debug Ker 库和测试后，**198/198 CTest 通过，无 skip**；优化
+Release 三个线程 profile **3/3 通过**。固定 Linux/LKL 产物通过 fingerprint
+校验后复用，未改动或重建上游内核，未运行 sanitizer、安装、物理 NIC 或完整
+Release 回归。迁移状态不变，仍有 242 项 incomplete。
