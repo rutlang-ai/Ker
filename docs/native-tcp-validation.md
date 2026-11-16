@@ -63,3 +63,61 @@ ctest --test-dir /tmp/ker-shutdown-read-build --output-on-failure --parallel 3 -
 ```
 
 本次未重跑 sanitizer、安装或物理 NIC 验收，不作性能声明。
+
+## 2026-11-16 host thread 创建失败回滚
+
+集成基线 `3fc8bf1a1` 使用的固定 LKL host callback 在 pthread_create 失败时
+未释放 start wrapper。本批先加入 EAGAIN/EPERM 注入检查：修复前 Debug
+`native-fstack-thread-runtime` 在 allocation-balance 断言失败；移入 Ker 适配层
+修复（来源 `4f99cadba`）后，该测试通过。错误返回零句柄和对应 errno，回调
+不运行，分配余额归零；每次失败后的真实 create/join 验证成功参数及 wrapper
+在例程入口前仅释放一次。原始 Linux 同样调用该 host callback 并正常启停。
+
+重新构建当前 Debug Ker 库及全套测试后，**194/194 CTest 通过，无 skip**，
+包含 native-tcp 标签 **43 项**、native-udp 标签 **25 项**（标签可能重叠）。
+Release 直接编译相同 host-thread 适配器的线程测试 **1/1 通过**。构建与运行：
+
+```sh
+ctest --test-dir /tmp/ker-thread-create-build --output-on-failure --parallel 3 --no-tests=error
+ctest --test-dir /tmp/ker-thread-create-release -R '^native-fstack-thread-runtime$' --output-on-failure --no-tests=error
+```
+
+两种构建均复用经 CMake fingerprint 验证的固定 Linux/LKL 库，未修改或重建
+上游内核；未运行 sanitizer、Release 全套、安装或物理 NIC 验收。本批是实际
+资源泄漏修复，不提升上游源案例状态，也不将 pthread 错误当成 FreeBSD
+curcpu/pcpup panic 合同已迁移。
+
+## 2026-11-16 host mutex 初始化回滚
+
+在 `fdd15b2f3` 的线程创建修复上移入 Ker mutex 适配（来源 `3d0f68d03`）。
+先加入 mutex-init EAGAIN 测试，修复前原 callback 返回非空无效对象而失败；
+修复后 malloc、attribute init/type、mutex init 和 post-real attribute-destroy
+故障均按 NULL/errno 回滚，正常/递归 mutex 可恢复并真实加解锁和销毁。
+
+增加两个显式 DEBUG/NDEBUG CTest profile。子进程在有效 mutex destroy 上注入
+EBUSY，要求 void callback SIGABRT；避免真正销毁已加锁 mutex 的未定义行为。
+每个 profile 都执行此前线程创建失败回收、四线程 TLS/析构/计数，以及真实
+Linux 启停和受监测的 mutex callback。检查使用 CHECK，不依赖 assert。
+
+当前 Debug Ker 库和全套测试重新构建后，**196/196 CTest 通过，无 skip**。
+优化 Release 构建下相同三个线程 profile **3/3 通过**。完整 Debug 运行包含
+native-tcp 标签 45 项、native-udp 标签 25 项，标签可能重叠。原始内核库继续
+复用通过 fingerprint 验证的固定产物；未修改 Linux/LKL 或网络协议代码，
+未重跑 sanitizer、安装、物理 NIC 或完整 Release 套件。本批不提升源案例状态。
+
+## 2026-11-16 host semaphore 失败边界
+
+在 `1048a247e` 上整合 `89466bf0c` 的 Ker semaphore 适配。新增测试先以真实
+SEM_VALUE_MAX 的 post 溢出复现原 callback 继续执行：修复前子进程未 SIGABRT，
+测试失败；修复后实际 EOVERFLOW、注入的 wait/destroy EINVAL 均明确终止。
+分配/init ENOSPC/ENOMEM 检查回收和 errno，正常信号量操作均调用真实 POSIX API。
+
+DEBUG/NDEBUG 两种测试通过真实 pthread_kill(SIGUSR1) 使真实 sem_wait 返回
+EINTR，确认重试且直到真正 post 才放行，随后 join、检查参数/结果并恢复信号
+状态。各 profile 还启动/关闭固定原始 Linux，计数其实际 semaphore allocation。
+
+重新构建 Debug 库及全套测试后，**198/198 CTest 通过，无 skip**；优化
+Release 构建下两种 semaphore profile **2/2 通过**。全量运行包含 native-tcp
+标签 47 项、native-udp 标签 25 项，标签可能重叠。复用通过 fingerprint 验证的
+固定内核产物，未改动上游或重建内核，未重跑 sanitizer、安装、完整 Release
+套件或物理 NIC。此为运行时同步扩展，不增加已迁移上游源案例数量。

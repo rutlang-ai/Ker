@@ -19,7 +19,7 @@ FreeBSD 栈或 cmocka mock/stub 当作 Ker 实现。上游测试和脚本另存�
 | native-fstack-config-lifecycle | test_ff_config.c 的 6 项配置加载场景 | 8 个独立检查验证 CLI/INI、缺失文件和加载隔离；3 项适配、3 项部分覆盖，未知节/完整 schema 差异保留。仅配置层证据，不计 NIC/内核互通 |
 | native-fstack-launcher-config / native-fstack-launcher-config-interop | test_ff_ini_parser.c：18 项场景适配，1 项多行部分覆盖 | 实际 launcher 的标准库 INI 解析、类型校验、CLI 覆盖和配置文件相对路径；真实 DPDK/原始 Linux TCP 双角色及日志/capture 验证。不是 F-Stack config schema/callback ABI 兼容层。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-worker-log / native-fstack-worker-log-interop | test_ff_log.c 的 13 项场景 | 真实 DPDK 日志文件、追加、实例文件名、流切换、级别过滤、格式与返回值；检查 flush/close 失败。Ker 使用自身分类，不模拟 FreeBSD 分类；独立 Linux TCP 对端验证实际 worker 和 launcher 错误传播。需 KER_WITH_NATIVE_TCP=ON |
-| native-fstack-thread-runtime | test_ff_pthread_create_arg_passed / test_ff_pthread_create_malloc_failure；basic / join_retval 部分覆盖 | LKL 真实线程、参数和分配失败，扩展验证 TLS/析构/回收、信号量和互斥；真实 Linux 启停确认线程回调被调用。FreeBSD pcurthread 继承和返回值槽仍未迁移。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-thread-runtime | test_ff_pthread_create_arg_passed / test_ff_pthread_create_malloc_failure；basic / join_retval 部分覆盖 | LKL 真实线程、参数和分配失败；pthread EAGAIN/EPERM 回滚检查 start 参数回收、errno 和真实 create/join 恢复，扩展验证 TLS/析构/回收、信号量和互斥；真实 Linux 启停确认线程回调被调用。FreeBSD pcurthread 继承和返回值槽仍未迁移。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-host-runtime | test_ff_malloc_normal / test_ff_free_null / test_ff_clock_gettime_monotonic / test_ff_clock_gettime_ns_advances / test_ff_mmap_munmap_roundtrip / test_ff_mmap_prot_writeonly / test_ff_mmap_prot_readonly | 直接验证原生 LKL 主机回调的内存、单调时钟和映射权限；碰撞不得破坏原有映射。LKL 使用精确地址，区别于 F-Stack 的 NULL 地址分配接口。真实 Linux 启停确认内存/时钟回调被使用；固定地址 mmap 由回调测试覆盖，当前非 MMU 内核启动不走该路径。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-message-io | test_ff_host_msg_name_shutdown_bridges / test_ff_host_readv_writev / test_ff_host_ioctl_fionbio / test_ff_host_dup / test_ff_host_dup2 | 6 个公共 POSIX 场景分别在宿主 Linux 与完整导入内核运行：message/vector I/O、地址查询、半关闭、FIONBIO、dup/dup2；Ker 扩展覆盖零长度 iovec、短读、PEEK/DONTWAIT、FIONREAD、共享状态与跨后端 fd 替换。原生连接计数必须增长；UNIX socket 明确走宿主透传。上游场景只测试 FF_KERNEL_COEXIST 宿主桥接，本适配不声称上游已验证用户态 TCP。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-stream-io | test_ff_host_msg_name_shutdown_bridges / test_ff_host_readv_writev | Ker-specific 独立对端扩展：vector、message、batched-message 三种 API × 原生客户端/服务端，共六种组合；每方向校验 256 KiB + 13 字节、非阻塞进度、半关闭和 EOF，逐实例断言 DPDK TX/RX、原生 open 和回收。上游只有小型宿主桥接，不覆盖本测试的原生 TCP、DPDK 或 sendmmsg/recvmmsg 扩展。需 KER_WITH_NATIVE_TCP=ON |
@@ -346,3 +346,20 @@ jumbo 禁用明确转换为 Ker 的部署上限 `max_mtu=1500`；这不是上游
 `mtu_enable` API 的实现。large/scatter 两种模式均检查 1500/1501/9000 及 CLI
 覆盖。三项 CTest 共七个 unittest 方法，只提供配置层证据，不声称 NIC/内核互通。
 准确来源、语法差异和清单计数见 [迁移清单](fstack-migration.md#非法-portvlan-配置与显式-jumbo-禁用边界)。
+
+## 主机 mutex 失败回滚
+
+`native-fstack-thread-runtime` 及新增的 `-debug`/`-release` profiles 直接编译
+生产 host-thread 适配器，检查 normal/recursive mutex 的 malloc、attribute、
+mutex-init 失败回滚及后续真实锁恢复。子进程以测试 wrapper 注入 destroy EBUSY，
+验证 void callback 在 DEBUG/NDEBUG 下都明确 abort；不借助真正销毁已锁对象的
+未定义行为。原始 Linux 启停测量实际 mutex 分配 callback，先前线程创建/TLS/
+同步测试保持执行。此为 Ker 运行时修复扩展，迁移总数不增加。
+
+## 主机 semaphore 同步边界
+
+`native-fstack-host-semaphore-debug/release` 验证实际 POSIX semaphore 的分配/
+初始化失败回收、真实恢复、实际 post EOVERFLOW、注入的 wait/destroy 错误终止，
+以及真实 SIGUSR1 触发 EINTR 后持续重试到真正 post。测试启动原始 Linux，
+测量真实 semaphore callback 调用并 halt。属于 F-Stack thread 场景的 Ker
+同步扩展，不把这两项 CTest 计为新增已迁移源用例。
