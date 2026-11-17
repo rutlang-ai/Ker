@@ -4,6 +4,8 @@ Exercise Ker's production loader with its native schema. These checks do not
 claim NIC traffic or implementation equivalence with the F-Stack loader.
 """
 import contextlib
+import builtins
+import copy
 import importlib.util
 import io
 from pathlib import Path
@@ -11,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 SOURCE = Path(__file__).resolve().parents[2] / 'tools/ker-run.py'
@@ -108,6 +111,59 @@ class MissingDeploymentTests(BoundaryCase):
                            if index != missing for value in setting]
                 with self.subTest(config=config, missing=names[missing]):
                     self.reject_missing(options, [names[missing]], config)
+
+
+class LcoreAllocationFailureTests(BoundaryCase):
+    def allocation_failure(self, provider, config):
+        text = MINIMAL + 'lcore_mask=01\n' if config else MINIMAL
+        self.path.write_text(text)
+        options = ['--config', str(self.path)]
+        if not config:
+            options += ['--lcore-mask', '0xA']
+        options += ['--library', str(self.directory / 'missing-library.so'),
+                    '--io-worker', str(self.directory / 'missing-worker'), '--', '/bin/true']
+        calls = []
+        real = getattr(builtins, provider)
+
+        def fail_mask_allocation(*args, **kwargs):
+            # Only the mask's integer conversion or normalized string is
+            # failed. Other provider calls retain actual Python behavior.
+            selected = len(args) == 2 and args[1] == (16 if provider == 'int' else 'x')
+            if selected:
+                calls.append(args)
+                raise MemoryError('injected lcore allocation failure')
+            return real(*args, **kwargs)
+
+        defaults = copy.deepcopy(launcher.CONFIG_DEFAULTS)
+        diagnostic = io.StringIO()
+        with mock.patch.object(launcher, provider, fail_mask_allocation, create=True), \
+                mock.patch.object(sys, 'argv', [str(SOURCE), *options]), \
+                mock.patch.object(launcher.subprocess, 'Popen',
+                                  side_effect=AssertionError('process started before validation')) as start, \
+                contextlib.redirect_stderr(diagnostic), self.assertRaises(SystemExit) as error:
+            launcher.main()
+        self.assertEqual(error.exception.code, 2)
+        self.assertEqual(len(calls), 1)
+        self.assertIn('not enough memory while processing --lcore-mask', diagnostic.getvalue())
+        self.assertNotIn('Traceback', diagnostic.getvalue())
+        self.assertNotIn('missing-library', diagnostic.getvalue())
+        start.assert_not_called()
+        self.assertEqual(launcher.CONFIG_DEFAULTS, defaults)
+        recovered = launcher.parse_arguments(options)
+        mask = '1' if config else 'a'
+        self.assertEqual(recovered.lcore_mask, mask)
+        self.assertEqual(recovered.eal_args, ['--no-huge', '-c', mask])
+        self.assertEqual((str(recovered.address), recovered.port), ('198.18.0.2/24', 'net_tap0'))
+
+    def test_cli_mask_allocation_failures_reject_then_recover(self):
+        for provider in ('int', 'format'):
+            with self.subTest(provider=provider):
+                self.allocation_failure(provider, False)
+
+    def test_ini_mask_allocation_failures_reject_then_recover(self):
+        for provider in ('int', 'format'):
+            with self.subTest(provider=provider):
+                self.allocation_failure(provider, True)
 
 
 class PortSectionTests(BoundaryCase):

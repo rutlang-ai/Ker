@@ -226,16 +226,22 @@ def parse_arguments(argv=None):
     except ValueError as error:
         parser.error(f'--eal: {error}')
     if args.lcore_mask is not None:
-        mask = args.lcore_mask.strip()
-        if not re.fullmatch(r'(?:0[xX])?[0-9a-fA-F]+', mask) or int(mask, 16) == 0:
-            parser.error('--lcore-mask must be a nonzero hexadecimal mask')
-        # Keep one source of EAL CPU selection. Do not silently override or
-        # remove caller-provided CPU mapping, especially --lcores remapping.
-        if any(token in ('--lcores', '-c', '-l') or token.startswith(('--lcores=', '-c', '-l'))
-                for token in args.eal_args):
-            parser.error('--lcore-mask conflicts with EAL -c, -l or --lcores')
-        args.lcore_mask = format(int(mask, 16), 'x')
-        args.eal_args += ['-c', args.lcore_mask]
+        try:
+            mask = args.lcore_mask.strip()
+            if not re.fullmatch(r'(?:0[xX])?[0-9a-fA-F]+', mask):
+                parser.error('--lcore-mask must be a nonzero hexadecimal mask')
+            number = int(mask, 16)
+            if number == 0:
+                parser.error('--lcore-mask must be a nonzero hexadecimal mask')
+            # Keep one source of EAL CPU selection. Do not silently override or
+            # remove caller-provided CPU mapping, especially --lcores remapping.
+            if any(token in ('--lcores', '-c', '-l') or token.startswith(('--lcores=', '-c', '-l'))
+                    for token in args.eal_args):
+                parser.error('--lcore-mask conflicts with EAL -c, -l or --lcores')
+            args.lcore_mask = format(number, 'x')
+            args.eal_args += ['-c', args.lcore_mask]
+        except MemoryError:
+            parser.error('not enough memory while processing --lcore-mask')
     return args
 
 

@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 136 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 137 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 215 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 214 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **234 项**（215 blocked + 19 partial）。
+当前待完成 **233 项**（214 blocked + 19 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -72,7 +72,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 15 | 2 | 79 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 16 | 2 | 78 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 5 | 1 | 61 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
@@ -899,3 +899,38 @@ ABI、global schema/layout 等价，也不触发 DPDK/原生内核/NIC 初始化
 仍校验复用的固定内核 fingerprint。完整迁移门禁按预期返回 2，报告
 215 blocked + 19 partial。日志保存于工作树外
 `~/.local/state/ker-native-linux/missing-config-integration-validation/`。
+
+
+## lcore mask 配置分配失败
+
+接续 `0e4acfb2e`，迁移 `test_parse_lcore_mask_calloc_oom_returns_error` 的
+lcore 配置分配失败拒绝场景。Ker 不创建 F-Stack proc_lcore 数组；实际依赖
+是 Python 十六进制转换、规范化字符串及 EAL 参数构造。原实现对这些阶段的
+MemoryError 没有处理，会冒出 traceback，而不是正常报告配置失败。
+
+新增 `native-fstack-config-lcore-allocation`：在生产 main 的实际解析路径，
+仅对 mask 的 int(...,16) 或 format(...,'x') 注入 MemoryError，其他 provider
+调用仍使用真实 Python 行为。CLI 和 INI 各两处失败，修复前四种情况均逃逸。
+Ker 现在只在 lcore-mask 处理范围捕获 MemoryError，返回 argparse 状态 2
+与明确诊断；不继续解析不存在的 library/worker，不调用 subprocess.Popen。
+同一数字只解析一次，正常 mask 归一化和 EAL CPU 选择冲突规则保持。
+
+每次失败后检查 CONFIG_DEFAULTS 完整保留，再解除注入重新解析同一输入，
+必须恢复 canonical mask、准确 EAL -c token、地址和 port。没有成功 stub，
+不修改原始 Linux/DPDK，也不新增测试 hook 到生产。此为错误处理场景适配，
+不声明 F-Stack calloc 次序/数组布局、任意配置阶段 OOM 或自然进程级内存
+耗尽时仍可恢复；Python parser 报错本身仍需要宿主资源。
+
+本批一个源场景由 blocked 改为 scenario-adapted：
+**137 adapted、19 partial、214 blocked，待完成 233 项**。
+
+
+2026-11-17 验证：两个新 unittest 方法的四个 subcase 在修复前均因
+MemoryError 逃逸失败；修复后配置与清单 CTest **9/9** 通过，真实
+`native-fstack-lcore-mask` **1/1** 通过，验证原始 Linux TCP/DPDK 双角色
+互通、INI mask/CLI 优先级与真实 EAL lcore/main CPU。故障注入仅在配置
+main 的单元驱动中，实际网络控制不注入故障。生产 Python launcher 直接
+执行当前源码；复用既有 native 二进制与校验过的固定 Linux 产物，没有
+上游改动、全量 CTest、sanitizer 或自然 OOM 压力资格。完整迁移门禁按预期
+返回 2（214 blocked + 19 partial）。日志保存于工作树外
+`~/.local/state/ker-native-linux/lcore-allocation-integration-validation/`。

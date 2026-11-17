@@ -462,3 +462,13 @@ F-Stack 的共享匿名、无 ANON 私有文件映射源场景。应用直接使
 address/port/eal 时，在 library/worker 解析及应用执行前准确拒绝，并补充
 真实空 INI 场景。完整 CLI-only 配置继续合法；多次失败后解析可恢复。
 使用生产 Ker 配置 loader，无 DPDK/NIC 或 F-Stack filename ABI 等价声明。
+
+
+## lcore 配置分配失败
+
+`native-fstack-config-lcore-allocation` 对应
+`test_parse_lcore_mask_calloc_oom_returns_error`，将 source calloc 失败拒绝
+适配到 Ker 实际 mask int/format 分配阶段。CLI/INI 注入失败必须由生产 main
+返回配置错误 2，不加载库或创建 worker；默认配置不变，随后真实解析恢复。
+测试在修复前四个 subcase 均因未捕获 MemoryError 失败。不声明 F-Stack
+数组布局、自然全进程 OOM 或 DPDK/NIC 覆盖。

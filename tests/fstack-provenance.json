@@ -1361,6 +1361,16 @@
         "native-fstack-config-missing"
       ],
       "adaptation": "Adapt the actual no-configuration invocation in test_ff_load_config_empty_ini: the pinned source passes only argv[0] and no -c filename; it does not read an empty file. Ker parse_arguments([]) must fail with all missing deployment fields. CLI subprocess checks require status 2 and the exact missing address/port/eal diagnostics before nonexistent library/worker resolution or application execution. No settings and each individually missing setting are tested both without an INI and with an actual empty INI. Repeated in-process rejection is followed by successful complete CLI-only parsing, proving recovery and preserving Ker optional-INI policy. This is a missing-deployment rejection scenario, not mandatory filename semantics, a NULL fopen ABI, F-Stack global schema/layout, DPDK startup or NIC behavior."
+    },
+    "native-fstack-config-lcore-allocation": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_parse_lcore_mask_calloc_oom_returns_error"
+      ],
+      "ker_ctests": [
+        "native-fstack-config-lcore-allocation"
+      ],
+      "adaptation": "Adapt allocation-failure rejection in lcore parsing to the production Ker CLI/INI lcore-mask normalization, rather than emulating a FreeBSD proc_lcore array. Test-only provider faults raise MemoryError during actual hexadecimal int conversion and normalized format string allocation; other provider calls retain real Python behavior. The production main must convert either failure to argparse status 2 with a lcore-specific diagnostic before nonexistent library/worker resolution or subprocess creation. Both CLI and INI masks are exercised; defaults remain unchanged and later real parsing recovers canonical masks plus correct EAL -c tokens. Before the adapter fix all four cases escaped as MemoryError. No source calloc ordinal/layout, whole-process OOM survivability, kernel allocation, DPDK startup or NIC claim."
     }
   }
 }
