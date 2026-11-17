@@ -285,6 +285,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-config-lcore-allocation
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_boundaries.py" LcoreAllocationFailureTests)
     set_tests_properties(native-fstack-config-lcore-allocation PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-config-vlan-allocation
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_boundaries.py" VLANAllocationFailureTests)
+    set_tests_properties(native-fstack-config-vlan-allocation PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-fstack-config-vlan-section
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_boundaries.py" VLANSectionTests)
     set_tests_properties(native-fstack-config-vlan-section PROPERTIES TIMEOUT 30 LABELS fstack)

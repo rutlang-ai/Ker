@@ -472,3 +472,13 @@ address/port/eal 时，在 library/worker 解析及应用执行前准确拒绝�
 返回配置错误 2，不加载库或创建 worker；默认配置不变，随后真实解析恢复。
 测试在修复前四个 subcase 均因未捕获 MemoryError 失败。不声明 F-Stack
 数组布局、自然全进程 OOM 或 DPDK/NIC 覆盖。
+
+
+## VLAN 配置分配失败
+
+`native-fstack-config-vlan-allocation` 对应
+`test_vlan_cfgs_calloc_oom_returns_error`。真实生产 main 经 CLI/INI 解析，在
+第一个或第二个 typed VLAN 地址列表构造时注入 MemoryError，并补充 INI
+加载边界分配失败。要求配置错误 2、无资源启动、默认值不变、半成品不泄漏
+到后续解析；解除注入后恢复精确 VLAN 集合。五个 subcase 在修复前均因
+未捕获 MemoryError 失败。无源 calloc 次序或自然进程 OOM/NIC 故障资格声明。

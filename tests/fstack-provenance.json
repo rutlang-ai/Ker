@@ -1371,6 +1371,16 @@
         "native-fstack-config-lcore-allocation"
       ],
       "adaptation": "Adapt allocation-failure rejection in lcore parsing to the production Ker CLI/INI lcore-mask normalization, rather than emulating a FreeBSD proc_lcore array. Test-only provider faults raise MemoryError during actual hexadecimal int conversion and normalized format string allocation; other provider calls retain real Python behavior. The production main must convert either failure to argparse status 2 with a lcore-specific diagnostic before nonexistent library/worker resolution or subprocess creation. Both CLI and INI masks are exercised; defaults remain unchanged and later real parsing recovers canonical masks plus correct EAL -c tokens. Before the adapter fix all four cases escaped as MemoryError. No source calloc ordinal/layout, whole-process OOM survivability, kernel allocation, DPDK startup or NIC claim."
+    },
+    "native-fstack-config-vlan-allocation": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_vlan_cfgs_calloc_oom_returns_error"
+      ],
+      "ker_ctests": [
+        "native-fstack-config-vlan-allocation"
+      ],
+      "adaptation": "Adapt VLAN configuration allocation-failure rejection to actual Ker typed VLAN address-list construction and INI loading, without emulating the F-Stack third-calloc array layout. A test-only vip_addresses provider raises MemoryError on the first or second VLAN; all earlier successful calls forward to the real provider. CLI and INI paths must report status 2 with a VLAN diagnostic before library/worker resolution or process creation. Failure of the second VLAN must not publish the already-parsed first VLAN; defaults remain unchanged and a later real parse recovers exactly two VLANs and their addresses. A separate read_configuration MemoryError tests the INI storage/loading boundary. All five cases escaped as MemoryError before the fix. No source allocation ordinal, whole-process natural OOM recovery, kernel allocation or injected NIC-fault claim."
     }
   }
 }

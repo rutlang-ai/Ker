@@ -1594,9 +1594,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfgs_calloc_oom_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt VLAN configuration allocation-failure rejection to actual Ker typed VLAN address-list construction and INI loading, without emulating the F-Stack third-calloc array layout. A test-only vip_addresses provider raises MemoryError on the first or second VLAN; all earlier successful calls forward to the real provider. CLI and INI paths must report status 2 with a VLAN diagnostic before library/worker resolution or process creation. Failure of the second VLAN must not publish the already-parsed first VLAN; defaults remain unchanged and a later real parse recovers exactly two VLANs and their addresses. A separate read_configuration MemoryError tests the INI storage/loading boundary. All five cases escaped as MemoryError before the fix. No source allocation ordinal, whole-process natural OOM recovery, kernel allocation or injected NIC-fault claim.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-vlan-allocation",
+          "provenance_case": "native-fstack-config-vlan-allocation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vdev_cfgs_calloc_oom_returns_error",

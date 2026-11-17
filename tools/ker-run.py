@@ -47,17 +47,20 @@ def vip_addresses(text):
 
 
 def vlan_setting(text):
-    tag, separator, addresses = text.partition('=')
-    if not separator or not tag.isascii() or not tag.isdecimal() or not 1 <= int(tag) <= 4094:
-        raise ValueError('VLAN requires ID=IPv4/PREFIX[,IPv4/PREFIX...] with ID 1..4094')
-    values = vip_addresses(addresses)
-    if not 1 <= len(values) <= 8:
-        raise ValueError('VLAN requires 1..8 IPv4 addresses')
-    if any(value.ip.is_unspecified or value.ip.is_multicast for value in values):
-        raise ValueError('VLAN addresses must be unicast and nonzero')
-    if len({value.ip for value in values}) != len(values):
-        raise ValueError('duplicate VLAN address')
-    return int(tag), values
+    try:
+        tag, separator, addresses = text.partition('=')
+        if not separator or not tag.isascii() or not tag.isdecimal() or not 1 <= int(tag) <= 4094:
+            raise ValueError('VLAN requires ID=IPv4/PREFIX[,IPv4/PREFIX...] with ID 1..4094')
+        values = vip_addresses(addresses)
+        if not 1 <= len(values) <= 8:
+            raise ValueError('VLAN requires 1..8 IPv4 addresses')
+        if any(value.ip.is_unspecified or value.ip.is_multicast for value in values):
+            raise ValueError('VLAN addresses must be unicast and nonzero')
+        if len({value.ip for value in values}) != len(values):
+            raise ValueError('duplicate VLAN address')
+        return int(tag), values
+    except MemoryError:
+        raise argparse.ArgumentTypeError('not enough memory while processing VLAN') from None
 
 
 def sysctl_setting(text):
@@ -168,7 +171,9 @@ def parse_arguments(argv=None):
     if supplied.config is not None:
         try:
             values.update(load_configuration(supplied.config))
-        except (OSError, UnicodeError, configparser.Error, ValueError) as error:
+        except MemoryError:
+            parser.error(f'{supplied.config}: not enough memory while loading configuration')
+        except (OSError, UnicodeError, configparser.Error, ValueError, argparse.ArgumentTypeError) as error:
             parser.error(f'{supplied.config}: {error}')
     sysctls = dict(values['sysctls'])
     sysctls.update(getattr(supplied, 'sysctls', ()))
