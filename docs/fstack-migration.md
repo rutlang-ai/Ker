@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 133 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 135 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 218 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 216 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **237 项**（218 blocked + 19 partial）。
+当前待完成 **235 项**（216 blocked + 19 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -78,7 +78,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 25 | 1 | 8 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 27 | 1 | 6 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 4 | 2 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
@@ -831,3 +831,42 @@ DPDK net_tap、原始 Linux 和独立宿主 TCP 对端。初次 runner 使用了
 未重建内核或运行全量 CTest、sanitizer、物理 NIC。完整迁移门禁按预期返回
 2（218 blocked + 19 partial）。日志保存于工作树外
 `~/.local/state/ker-native-linux/application-mappings-integration-validation/`。
+
+
+## calloc 清零与 realloc 前缀保留
+
+接续 `cf424d256`，增加 `native-fstack-calloc`、
+`native-fstack-realloc-grow`，分别迁移 `test_ff_calloc_zeros_memory` 和
+`test_ff_realloc_grow`。复用真实 TCP/DPDK 内存互通驱动，并将 fixture 更名为
+`fstack-memory-interop.c` / `memory-interop.py`，已有共享/文件映射 CTest 名称
+及其合同保留。应用内存继续由 POSIX malloc/calloc/realloc/free 提供，不创建
+Ker heap API 或替换内核分配器。
+
+calloc 模式先逐字节检查源用例的 calloc(16,4)，再检查两页应用缓冲区全部
+清零；填入确定 payload 后，直接作为原始 Linux TCP send/recv buffer，经
+DPDK 与独立宿主 peer 交换并核对完整响应，最后 free。
+
+realloc 模式先验证源 8 字节 0x10..0x17 扩到 32 字节后前缀保留，再将已写入
+32 字节扩到两页并核对。完成相同原生 TCP 交换后，再扩到四页，整个网络
+响应前缀必须保持；新尾部只有写入后才检查，不能假设 realloc 会将其清零。
+最后 free。测试 target 禁用 calloc/realloc builtins，优化 Release 仍执行
+实际分配调用与 CHECK；不要求 realloc 一定移动地址。
+
+每例要求固定原始 Linux 身份、raw host TCP syscall 拒绝、原生 active opens、
+真实 DPDK TX/RX、零 outstanding mbuf 和实际 EAL cleanup。未修改生产或
+Linux/LKL/DPDK 代码。不声明失败 realloc/OOM、分配器性能、内核 heap API
+或零拷贝。F-Stack realloc(size=0) 保留原指针的独立合同与 POSIX 不同，
+对应源项继续 blocked，未被本批覆盖。
+
+本批两个源场景由 blocked 改为 scenario-adapted：
+**135 adapted、19 partial、216 blocked，待完成 235 项**。
+
+
+2026-11-17 验证：Debug 的原映射与新增分配场景 **4/4**、优化 Release
+**4/4**、清单完整性与 mutation guards **2/2** 均通过，无 skip。每例都完成
+真实原始 Linux TCP/DPDK 与独立宿主 peer 的完整字节互通。固定 Linux 产物
+复用，当前 preload、worker/app guard 和 memory fixture 重新构建；未重建
+完整内核、运行全量 CTest、sanitizer 或自然内存耗尽压力。完整迁移门禁按
+预期返回 2（216 blocked + 19 partial）。日志与 Release allocator symbol/
+编译 flags 记录于工作树外
+`~/.local/state/ker-native-linux/application-allocation-integration-validation/`。

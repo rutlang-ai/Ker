@@ -339,17 +339,22 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-environment-test>"
             --probe "$<TARGET_FILE:ker-startup-failure-probe>")
     set_tests_properties(native-fstack-environment PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
-    add_executable(ker-mmap-interop-test tests/posix/fstack-mmap-interop.c)
-    target_compile_options(ker-mmap-interop-test PRIVATE -Wall -Wextra -Werror)
-    target_compile_definitions(ker-mmap-interop-test PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
-    target_link_libraries(ker-mmap-interop-test PRIVATE ${CMAKE_DL_LIBS})
-    set(ker_mmap_test_command "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/mmap-interop.py"
+    add_executable(ker-memory-interop-test tests/posix/fstack-memory-interop.c)
+    # Preserve actual allocator calls and checks in the optimized test.
+    target_compile_options(ker-memory-interop-test PRIVATE -Wall -Wextra -Werror
+        -fno-builtin-calloc -fno-builtin-realloc)
+    target_compile_definitions(ker-memory-interop-test PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
+    target_link_libraries(ker-memory-interop-test PRIVATE ${CMAKE_DL_LIBS})
+    set(ker_memory_test_command "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/memory-interop.py"
         --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
-        --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-mmap-interop-test>"
+        --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-memory-interop-test>"
         --probe "$<TARGET_FILE:ker-startup-failure-probe>")
-    add_test(NAME native-fstack-mmap-shared COMMAND ${ker_mmap_test_command} --mode shared)
-    add_test(NAME native-fstack-mmap-file-private COMMAND ${ker_mmap_test_command} --mode file)
+    add_test(NAME native-fstack-mmap-shared COMMAND ${ker_memory_test_command} --mode shared)
+    add_test(NAME native-fstack-mmap-file-private COMMAND ${ker_memory_test_command} --mode file)
+    add_test(NAME native-fstack-calloc COMMAND ${ker_memory_test_command} --mode calloc)
+    add_test(NAME native-fstack-realloc-grow COMMAND ${ker_memory_test_command} --mode realloc)
     set_tests_properties(native-fstack-mmap-shared native-fstack-mmap-file-private
+        native-fstack-calloc native-fstack-realloc-grow
         PROPERTIES TIMEOUT 60 LABELS "native-tcp;fstack")
     add_executable(ker-network-sysctl-test tests/posix/network-sysctl.c)
     target_compile_options(ker-network-sysctl-test PRIVATE -Wall -Wextra -Werror)

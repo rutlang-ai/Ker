@@ -442,3 +442,14 @@ F-Stack 的共享匿名、无 ANON 私有文件映射源场景。应用直接使
 关闭后映射/原生 fd 共存及真实解除映射。原生 opens、DPDK TX/RX、mbuf/EAL
 清理均需通过。需现有 native net_tap/namespace 环境；不提供 fork、零拷贝
 或 LKL MMU/file-mmap 功能。
+
+
+## calloc/realloc 缓冲区与原生 TCP
+
+`native-fstack-calloc` 验证源 calloc(16,4) 与两页缓冲区的逐字节清零；
+`native-fstack-realloc-grow` 验证源 8→32 字节前缀保留、增长到两页，以及
+完整网络响应在再次增长到四页后的保留。两者都通过生产 Ker 启动链，直接
+使用 POSIX 分配的内存收发原始 Linux TCP/DPDK 数据，独立宿主 peer 校验
+全部字节并要求真实 worker/EAL 清理。共用 memory-interop fixture，原共享
+与文件映射测试保留。Release 禁用 allocator builtins，CHECK 不依赖 assert。
+不提供 Ker heap API、不实现 F-Stack realloc(size=0) 的特殊保留行为。

@@ -1,4 +1,4 @@
-/* POSIX process mappings used by an application of the original Linux stack. */
+/* POSIX process memory used by an application of the original Linux stack. */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <dlfcn.h>
@@ -39,7 +39,10 @@ int main(int argc, char **argv)
 {
     CHECK(argc == 4);
     int shared = !strcmp(argv[1], "shared");
-    CHECK(shared || !strcmp(argv[1], "file"));
+    int file_mapping = !strcmp(argv[1], "file");
+    int zero_allocation = !strcmp(argv[1], "calloc");
+    int grow_allocation = !strcmp(argv[1], "realloc");
+    CHECK(shared || file_mapping || zero_allocation || grow_allocation);
     char *end;
     long port = strtol(argv[2], &end, 10); CHECK(!*end && port > 0 && port <= 65535);
     const char *(*release)(void) = dlsym(RTLD_DEFAULT, "ker_posix_kernel_release");
@@ -62,7 +65,7 @@ int main(int argc, char **argv)
         mapping_mode(bytes, 's');
         for (size_t i = 0; i < size; ++i) CHECK(bytes[i] == 0);
         for (size_t i = 0; i < size; ++i) bytes[i] = pattern(i);
-    } else {
+    } else if (file_mapping) {
         int file = mkstemp(argv[3]); CHECK(file >= 0 && file != network);
         CHECK(unlink(argv[3]) == 0 && ftruncate(file, (off_t)size) == 0);
         unsigned char *source = malloc(size); CHECK(source);
@@ -77,6 +80,25 @@ int main(int argc, char **argv)
         /* Closing the ordinary host fd must not close the native TCP socket;
          * both file mappings must remain usable after their fd is closed. */
         CHECK(close(file) == 0);
+    } else if (zero_allocation) {
+        /* Retain the exact source dimensions as well as a multi-packet
+         * allocation whose entire contents are checked before network use. */
+        unsigned char *small = calloc(16, 4); CHECK(small);
+        for (size_t i = 0; i < 64; ++i) CHECK(small[i] == 0);
+        free(small);
+        CHECK(size % 4 == 0);
+        bytes = calloc(size / 4, 4); CHECK(bytes);
+        for (size_t i = 0; i < size; ++i) CHECK(bytes[i] == 0);
+        for (size_t i = 0; i < size; ++i) bytes[i] = pattern(i);
+    } else {
+        unsigned char *small = malloc(8); CHECK(small);
+        for (size_t i = 0; i < 8; ++i) small[i] = (unsigned char)(0x10 + i);
+        unsigned char *grown = realloc(small, 32); CHECK(grown);
+        for (size_t i = 0; i < 8; ++i) CHECK(grown[i] == 0x10 + i);
+        for (size_t i = 0; i < 32; ++i) grown[i] = pattern(i);
+        bytes = realloc(grown, size); CHECK(bytes);
+        for (size_t i = 0; i < 32; ++i) CHECK(bytes[i] == pattern(i));
+        for (size_t i = 32; i < size; ++i) bytes[i] = pattern(i);
     }
     size_t done = 0;
     while (done < size) {
@@ -97,8 +119,17 @@ int main(int argc, char **argv)
         if (witness) CHECK(witness[i] == pattern(i));
     }
     CHECK(close(network) == 0);
-    release_mapping(bytes, size);
+    if (grow_allocation) {
+        unsigned char *grown = realloc(bytes, size * 2); CHECK(grown);
+        /* The entire response from original Linux must survive growth; the
+         * new tail has unspecified contents until the application writes it. */
+        for (size_t i = 0; i < size; ++i) CHECK(grown[i] == (unsigned char)(pattern(i) ^ 0x5a));
+        for (size_t i = size; i < size * 2; ++i) grown[i] = pattern(i);
+        for (size_t i = size; i < size * 2; ++i) CHECK(grown[i] == pattern(i));
+        free(grown);
+    } else if (zero_allocation) free(bytes);
+    else release_mapping(bytes, size);
     if (witness) release_mapping(witness, size);
-    puts("PASS: POSIX application mapping carries original-Linux TCP data and releases cleanly");
+    puts("PASS: POSIX application buffer carries original-Linux TCP data and releases cleanly");
     return 0;
 }

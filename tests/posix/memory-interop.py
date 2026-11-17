@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise application mappings with original-Linux TCP and a host peer."""
+"""Exercise application memory buffers with original-Linux TCP and a host peer."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -24,10 +24,10 @@ def exchange(listener):
         data = bytearray()
         while len(data) < size:
             part = connection.recv(size - len(data))
-            require(part, 'native peer closed before the mapped payload arrived')
+            require(part, 'native peer closed before the application payload arrived')
             data.extend(part)
         require(data == bytes((i * 37 + 11) & 255 for i in range(size)),
-                'mapped payload differs at the independent host peer')
+                'application payload differs at the independent host peer')
         require(connection.recv(1) == b'', 'native peer did not finish its request')
         connection.sendall(bytes(value ^ 0x5a for value in data))
         connection.shutdown(socket.SHUT_WR)
@@ -37,7 +37,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app', 'probe'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--mode', choices=('shared', 'file'), required=True)
+    parser.add_argument('--mode', choices=('shared', 'file', 'calloc', 'realloc'), required=True)
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if not args.inside:
@@ -61,7 +61,7 @@ def main():
     env = os.environ.copy()
     env.pop('KER_TEST_STARTUP_FAILURE', None)
     env['LD_PRELOAD'] = str(args.probe) + ' ' + env.get('LD_PRELOAD', '')
-    with tempfile.TemporaryDirectory(prefix='ker-mmap-') as directory, socket.socket() as listener:
+    with tempfile.TemporaryDirectory(prefix='ker-memory-') as directory, socket.socket() as listener:
         root = Path(directory)
         cleanup, stats = root / 'cleanup', root / 'stats.json'
         env['KER_TEST_STARTUP_CLEANUP'] = str(cleanup)
@@ -74,7 +74,7 @@ def main():
                 env=env, capture_output=True, text=True, timeout=40)
             require(result.returncode == 0, f'{result.stdout}\n{result.stderr}')
             peer.result(timeout=5)
-        require('PASS: POSIX application mapping' in result.stdout, 'missing application checks')
+        require('PASS: POSIX application buffer' in result.stdout, 'missing application checks')
         record = json.loads(stats.read_text())
         require(record['native']['active_opens'] > 0, 'original Linux did not open TCP')
         require(record['tx'] > 0 and record['rx'] > 0,
@@ -82,7 +82,7 @@ def main():
         require(record['outstanding'] == 0, f'packet buffers leaked: {record}')
         require(cleanup.is_file() and cleanup.read_text().strip() == '0', 'real EAL cleanup failed')
         require(not list(root.glob('mapping-*')), 'temporary backing file was not removed')
-        print(f'PASS: {args.mode} mapping, independent host TCP/DPDK payload and actual cleanup')
+        print(f'PASS: {args.mode} buffer, independent host TCP/DPDK payload and actual cleanup')
     return 0
 
 

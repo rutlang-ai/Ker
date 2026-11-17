@@ -1331,6 +1331,26 @@
         "native-fstack-mmap-file-private"
       ],
       "adaptation": "POSIX application file-mapping adaptation through the production Ker launcher, app guard and preload. With a live original-Linux TCP connection, the app creates/unlinks/truncates a real host file, writes deterministic data and maps it read/write MAP_PRIVATE without MAP_ANONYMOUS; rw-p host VMA metadata is checked. A read-only shared witness maps the same backing file. Closing the ordinary host file fd must leave both mappings and native TCP usable. Mapped bytes are sent over actual DPDK to an independent host peer; receiving transformed bytes into the private mapping must leave the backing witness unchanged, proving copy-on-write. Both mappings must unmap, with mincore confirming release. Native identity, raw host TCP denial, active opens, real DPDK TX/RX, zero outstanding mbufs and EAL cleanup are required. No F-Stack helper ABI, imported-kernel file mmap/MMU, file durability, fork or zero-copy claim; host POSIX memory APIs remain unchanged."
+    },
+    "native-fstack-calloc": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_calloc_zeros_memory"
+      ],
+      "ker_ctests": [
+        "native-fstack-calloc"
+      ],
+      "adaptation": "Adapt the host calloc-zeroing scenario to the standard POSIX application allocator through the production Ker launcher/app guard/preload, not a Ker-owned heap API. The application checks every byte of the source 16*4 allocation, then all zero bytes of a two-page calloc allocation before filling it for actual original-Linux TCP send/recv over DPDK. An independent host peer validates the full payload and returns a transformation that is received into the same allocated buffer and checked byte-for-byte before free. Runtime calloc/realloc builtins are disabled for the test so optimized builds retain allocator calls/checks. Pinned native identity, raw host TCP denial, original-Linux active opens, real TX/RX, zero outstanding mbufs and real EAL cleanup are required. No imported-kernel calloc API, F-Stack helper ABI, natural OOM, allocator performance or zero-copy claim."
+    },
+    "native-fstack-realloc-grow": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_realloc_grow"
+      ],
+      "ker_ctests": [
+        "native-fstack-realloc-grow"
+      ],
+      "adaptation": "Adapt the host realloc growth scenario to standard POSIX application memory through the actual Ker launcher/app guard/preload. The source eight bytes 0x10..0x17 must survive growth from 8 to 32; a filled 32-byte prefix must survive growth to two pages, used directly for original-Linux TCP/DPDK request and transformed response against an independent host peer. The entire received response must then survive another realloc growth to four pages; new tail bytes are unspecified until written and verified by the application. Final storage is freed. Runtime calloc/realloc builtins are disabled in the test; CHECK remains active in Release. Native identity, raw host TCP denial, active opens, DPDK TX/RX, zero outstanding mbufs and actual EAL cleanup are required. No F-Stack realloc(size=0) pointer-preservation semantics, forced pointer movement, failed realloc/OOM, imported-kernel realloc, zero-copy or helper ABI claim."
     }
   }
 }

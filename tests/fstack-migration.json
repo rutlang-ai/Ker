@@ -3050,16 +3050,26 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_calloc_zeros_memory",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt the host calloc-zeroing scenario to the standard POSIX application allocator through the production Ker launcher/app guard/preload, not a Ker-owned heap API. The application checks every byte of the source 16*4 allocation, then all zero bytes of a two-page calloc allocation before filling it for actual original-Linux TCP send/recv over DPDK. An independent host peer validates the full payload and returns a transformation that is received into the same allocated buffer and checked byte-for-byte before free. Runtime calloc/realloc builtins are disabled for the test so optimized builds retain allocator calls/checks. Pinned native identity, raw host TCP denial, original-Linux active opens, real TX/RX, zero outstanding mbufs and real EAL cleanup are required. No imported-kernel calloc API, F-Stack helper ABI, natural OOM, allocator performance or zero-copy claim.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-calloc",
+          "provenance_case": "native-fstack-calloc"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_realloc_grow",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt the host realloc growth scenario to standard POSIX application memory through the actual Ker launcher/app guard/preload. The source eight bytes 0x10..0x17 must survive growth from 8 to 32; a filled 32-byte prefix must survive growth to two pages, used directly for original-Linux TCP/DPDK request and transformed response against an independent host peer. The entire received response must then survive another realloc growth to four pages; new tail bytes are unspecified until written and verified by the application. Final storage is freed. Runtime calloc/realloc builtins are disabled in the test; CHECK remains active in Release. Native identity, raw host TCP denial, active opens, DPDK TX/RX, zero outstanding mbufs and actual EAL cleanup are required. No F-Stack realloc(size=0) pointer-preservation semantics, forced pointer movement, failed realloc/OOM, imported-kernel realloc, zero-copy or helper ABI claim.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-realloc-grow",
+          "provenance_case": "native-fstack-realloc-grow"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_free_null",
