@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 129 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 223 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 138 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 213 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **241 项**（223 blocked + 18 partial）。
+当前待完成 **232 项**（213 blocked + 19 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -72,13 +72,13 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 14 | 2 | 80 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 17 | 2 | 77 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 5 | 1 | 61 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 21 | 0 | 13 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 27 | 1 | 6 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 4 | 2 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
@@ -651,3 +651,321 @@ timer 的 clock-step、TCP 重传或 NIC 流量覆盖。上游及 Ker 生产代�
 fingerprint 验证后复用；未重建内核或重跑全量网络、sanitizer、物理 NIC。
 完整迁移门禁仍按预期返回 2（223 blocked + 18 partial）。日志保存在工作树外
 `~/.local/state/ker-native-linux/realtime-updates-integration-validation/`。
+
+
+## 原生 fd 往返与宿主命名空间区分
+
+`native-fstack-fd-roundtrip` 迁移固定 F-Stack 的
+`test_ff_kernel_fd_encode_roundtrip`，直接链接生产 fd-table.c 并启动原始 Linux。
+Ker 通过真实宿主占位 fd 和映射表管理原生 Linux fd；源测试的固定偏移编码
+与按数值阈值分类不适用于这个表示。迁移保留命名空间区分、导出与逆向查询
+合同，不引入 FF_KERNEL_FD_BASE 或另一套 fd codec。
+
+源样本 0、3、1024、65535 作为真实宿主 fd 的分配下界。四个同时存活的
+UDP/TCP socket 导出后应用 fd 互不冲突，重复查询必须得到同一个真实 native
+fd，SO_TYPE 由原始 Linux 确认，宿主占位 fd 具有实际 CLOEXEC。宿主 /dev/null
+描述符在整个过程中可读且不在原生映射表中。关闭后 native fd 必须返回
+Linux EBADF，宿主保留槽也必须释放。
+
+特别检查最后一个有效槽 65535：先作为普通宿主 fd，后作为原生 TCP 的
+应用 fd，再回收为普通宿主 fd，最后导出新的原生 UDP socket。每次分类和
+SO_TYPE 都必须正确，不能留下旧映射。-1 和 65536 不可查询为有效映射。
+测试只在自身进程内将 RLIMIT_NOFILE soft limit 提高到 65536，并在关闭所有
+测试 fd 后恢复；hard limit 需至少为 65536。没有宿主协议 socket fallback，
+没有改动生产、Linux/LKL 或 DPDK 代码。不声明固定偏移 ABI 等价、真实 fd
+耗尽、并发 fd 回收、网络流量或 NIC 覆盖。
+
+本批基于时钟迁移提交 `1576fbbb3`（PR #597），新增一个已迁移源场景：
+**130 adapted、18 partial、222 blocked，待完成 240 项**。
+
+
+2026-11-16 验证：Debug 两个 fd CTest **2/2**、清单完整性和 mutation guards
+**2/2**、优化 Release 两个 fd CTest **2/2** 通过，无 skip。固定 Linux
+产物复用，fd 测试和直接链接的生产 fd/memory/clock 适配器重新构建；未重建
+完整内核、重跑全量网络、sanitizer 或物理 NIC。完整迁移门禁按预期返回 2，
+报告 222 blocked + 18 partial。日志保存在工作树外
+`~/.local/state/ker-native-linux/fd-roundtrip-integration-validation/`。
+
+
+## 真实启动链中的环境变量往返
+
+`native-fstack-environment` 迁移 `test_ff_setenv_getenv_roundtrip`。应用继续
+直接使用 POSIX setenv/getenv，Ker 不新增环境变量 API；测试经过生产
+ker-run、ker-app 和 preload constructor，避免只执行脱离 Ker 的 libc 断言。
+
+三次独立启动分别输入已有 FF_UNIT_TEST_VAR、无该变量、再次已有变量；应用
+必须观察到正确初值，将其设为 hello-world 并准确读回，overwrite=0 不覆盖，
+最后 unset 自己的值。每次都验证固定原始 Linux release、原始宿主 TCP syscall
+被 app guard 拒绝，以及通过 POSIX wrapper 在私有 198.18.0.2 地址成功创建、
+bind 原生 TCP socket。真实 net_tap worker 必须完成初始化和 teardown，
+原生 shutdown diagnostics 存在，mbuf outstanding 为零，实际 EAL cleanup
+返回零。测试 CHECK 不依赖 assert，Debug/Release 都保留断言。
+
+此项属于宿主环境合同的场景适配，不提供 F-Stack helper ABI、私有 Linux
+环境 syscall、跨进程共享环境或另一套环境变量管理实现，也不声明 TCP 握手
+或 NIC 流量覆盖。全部生产、Linux/LKL/DPDK 代码不修改。namespace/net_tap
+运行要求与现有 native 启动测试一致。
+
+本批接续 fd 往返提交 `edf64ec0c`，新增一个源场景：
+**131 adapted、18 partial、221 blocked，待完成 239 项**。
+
+
+2026-11-16 验证：Debug 环境场景、清单完整性和 mutation guards **3/3**
+通过，优化 Release 环境场景 **1/1** 通过，无 skip；每个环境 CTest 内执行
+三次真实 launcher/native/worker 生命周期。固定 Linux 产物经 CMake 校验后
+复用，两个构建的 Ker preload、worker/app guard 和测试重新构建。未重建
+内核或重跑全量网络、sanitizer、物理 NIC。完整迁移门禁按预期返回 2，
+报告 221 blocked + 18 partial。日志归档于工作树外
+`~/.local/state/ker-native-linux/environment-integration-validation/`。
+
+
+## 接口激活失败的直接返回路径
+
+接续 `289e3faeb` 的迁移分支，复用另一开发线 `58b75c806`（来源 `62c8a0968`）
+的接口激活失败测试。此前 `test_ff_init_fail_dpdk_if_up` 只有 off-subnet route
+失败等相关覆盖，缺少直接 lkl_if_up 负返回。本批补齐 loopback/device 两个
+activation 错误处理入口，源项仍保留 partial。
+
+新增 non-installed `ker-posix-if-up-failure`，使用与生产 ker-posix 完全相同的
+适配层源文件和固定原始 liblkl，仅添加测试链接器 wrapper。成功控制调用真实
+lkl_if_up；loopback EIO 后不得调用设备 activation；设备 EIO 必须在真实
+loopback 成功之后出现。精确 trace 校验调用顺序和返回值。两种错误都必须
+在 native READY/application main 之前返回 launcher 状态 125，应用 marker
+不存在，不能生成 native 成功诊断。真实 worker/EAL 完成清理且 outstanding
+mbuf 为零。
+
+独立 production control 设置同样 hook 环境变量，仍须正常启动且无 trace，
+证明测试注入不进入生产路径。成功 app 的接口/UP/MTU 检查改用 CHECK；移除
+该 target 的 -UNDEBUG，让 Release 真正在 NDEBUG 下验证相同检查。未修改
+任何生产、Linux/LKL/DPDK 实现，也不注入成功 stub。
+
+F-Stack 的 ff_dpdk_if_up ABI、精确 FreeBSD 初始化顺序仍不是 Ker 接口；注入
+错误不等于自然发生的 kernel/NIC 故障，故不升级为 scenario-adapted。
+**131 adapted、18 partial、221 blocked，待完成 239 项**保持不变，但该
+partial 源项的直接接口失败覆盖缺口已补齐，remaining 与 provenance 同步更新。
+
+
+2026-11-16 验证：Debug 扩展启动失败 CTest **1/1**、原生命周期与两项清单
+门禁 **3/3** 通过。优化 Release 启动失败 **1/1** 通过；生命周期控制首次
+因缺少 TCP echo 测试可执行文件未完成，补构建依赖后重跑 **1/1** 通过。
+八个启动失败/控制场景均检查真实 EAL cleanup；普通生命周期继续测试独立
+宿主 TCP 对端。nm 确认 production 无 wrapper 符号，而测试变体具有该符号；
+Release probe 编译 flags 为 -O3 -DNDEBUG，未含 -UNDEBUG。固定原始 Linux
+产物复用，生产与变体适配库及相关测试重新构建，无上游改动；未运行全量
+CTest、sanitizer 或物理 NIC。完整迁移门禁按预期返回 2。
+日志与二进制隔离/编译 flags 证据保存于工作树外
+`~/.local/state/ker-native-linux/if-up-integration-validation/`。
+
+
+## 关键启动映射失败必须终止
+
+接续 `147587def`，为 `test_ff_mmap_failure_exits` 增加原始 Linux 启动内存
+分配失败证据，源项从 blocked 推进为 **partial**。不把不同 mmap flags/API
+合同直接算作已迁移。
+
+`native-fstack-boot-memory-debug/release` 安装实际 Ker memory/thread/clock
+callbacks，page_alloc 计数后转发到固定版本 POSIX host。Linux bootmem_init
+请求真实 64 MiB 页面时，测试专用 mmap64 wrapper 返回 MAP_FAILED/ENOMEM；
+pipe 记录尺寸、错误和 page_alloc 次数，只有实际 boot mapping 才能触发。
+子进程在父进程启动任何内核/host 线程之前 fork，关闭 core dump；必须因
+原始 Linux 的 BUG_ON(!memory_start) 进入真实 panic callback 并以 SIGABRT
+终止，不能从 lkl_start_kernel 返回成功或以普通错误退出冒充 fatal panic。
+
+随后父进程禁用故障，真实启动相同固定 Linux，执行 timed poll 和 UDP socket
+创建/关闭，再 halt/cleanup。必须只分配和释放一次真实 boot mapping，
+mincore 验证起始及末尾页面均已解除。错误状态不污染父进程。正常 mmap64
+调用始终转发真实宿主函数，Ker 线程仍由 pthread 提供；没有改动任何生产、
+Linux/LKL/DPDK 源码。
+
+源用例的 conflicting MAP_SHARED|MAP_PRIVATE flags、ff_mmap 翻译与 exit ABI
+仍无对应 Ker wrapper；现有 exact-address mmap 本身返回 NULL，此批没有
+改变该合同。覆盖的是不可恢复的内核启动分配失败，不是任意应用映射失败、
+自然内存耗尽或 NIC 流量。两种 DEBUG/NDEBUG 只作用于 Ker 适配器/测试，
+固定原始 Linux 产物复用。
+
+当前 **131 adapted、19 partial、220 blocked，待完成 239 项**；未增加完成数。
+
+
+2026-11-17 验证：Debug 构建的两种 adapter profile **2/2**、优化 Release
+构建的两种 profile **2/2**、清单完整性与 mutation guards **2/2** 均通过，
+无 skip。测试与直接链接的 Ker memory/thread/clock 适配器重新构建；未重建
+固定内核，未执行全量网络、sanitizer、自然 OOM 压力或物理 NIC。完整迁移
+门禁仍按预期返回 2，报告 220 blocked + 19 partial。日志保存于工作树外
+`~/.local/state/ker-native-linux/boot-memory-integration-validation/`。
+
+
+## 应用共享匿名与私有文件映射
+
+接续 `c32bd070b`，新增 `native-fstack-mmap-shared` 和
+`native-fstack-mmap-file-private`，分别迁移 `test_ff_mmap_map_shared_anon`、
+`test_ff_mmap_file_backed_no_anon`。应用进程内存继续使用宿主 POSIX mmap，
+不增加 Ker 内存 API；这些场景与 LKL 的 exact-address boot-memory callback
+不同，也不意味着非 MMU 原始内核新增文件 mmap/shared-physical-memory 功能。
+
+测试经过真实 launcher/app guard/preload 启动。应用确认固定原始 Linux
+身份和原始宿主 TCP syscall 拒绝，再连接独立宿主 TCP 对端。共享匿名场景
+映射两页 MAP_SHARED|MAP_ANONYMOUS，检查零初始化与 host /proc/self/maps
+中的 rw-s 权限。文件场景创建/立即 unlink 真实临时文件、写入确定字节，
+以无 MAP_ANONYMOUS 的 MAP_PRIVATE 映射，检查 rw-p；另建只读共享 witness。
+关闭宿主文件 fd 后，映射和原生 TCP 都必须继续可用。
+
+映射本身作为完整 send/recv buffer，经原始 Linux TCP/DPDK 与宿主对端交换
+两页含 NUL 的 payload，逐字节验证 XOR 后的响应。文件 witness 必须保留
+原内容，证明 recv 到私有映射触发写时复制，没有写坏文件。最后 munmap，
+mincore 确认解除映射；worker 必须记录真实 TX/RX、原始 Linux active opens、
+零 outstanding mbuf 和成功 EAL cleanup。协议行为仍来自原始 Linux。
+
+未增加初始化后 fork 支持，不把 rw-s 元数据检查当作跨进程共享可见性资格；
+不声明零拷贝、文件持久性、LKL MMU 或 F-Stack helper ABI 等价。全部生产、
+Linux/LKL/DPDK 代码不修改。
+
+本批两个源场景从 blocked 改为 scenario-adapted：
+**133 adapted、19 partial、218 blocked，待完成 237 项**。
+
+
+2026-11-17 验证：Debug 映射互通 **2/2**、优化 Release **2/2**、清单完整性
+与 mutation guards **2/2** 均通过，无 skip。每个映射场景均真实启动
+DPDK net_tap、原始 Linux 和独立宿主 TCP 对端。初次 runner 使用了错误
+统计字段名，修正为现有 tx/rx 后重跑通过；没有生产实现修复。
+固定内核产物复用，当前 Ker preload、worker/app guard 和新测试重新构建；
+未重建内核或运行全量 CTest、sanitizer、物理 NIC。完整迁移门禁按预期返回
+2（218 blocked + 19 partial）。日志保存于工作树外
+`~/.local/state/ker-native-linux/application-mappings-integration-validation/`。
+
+
+## calloc 清零与 realloc 前缀保留
+
+接续 `cf424d256`，增加 `native-fstack-calloc`、
+`native-fstack-realloc-grow`，分别迁移 `test_ff_calloc_zeros_memory` 和
+`test_ff_realloc_grow`。复用真实 TCP/DPDK 内存互通驱动，并将 fixture 更名为
+`fstack-memory-interop.c` / `memory-interop.py`，已有共享/文件映射 CTest 名称
+及其合同保留。应用内存继续由 POSIX malloc/calloc/realloc/free 提供，不创建
+Ker heap API 或替换内核分配器。
+
+calloc 模式先逐字节检查源用例的 calloc(16,4)，再检查两页应用缓冲区全部
+清零；填入确定 payload 后，直接作为原始 Linux TCP send/recv buffer，经
+DPDK 与独立宿主 peer 交换并核对完整响应，最后 free。
+
+realloc 模式先验证源 8 字节 0x10..0x17 扩到 32 字节后前缀保留，再将已写入
+32 字节扩到两页并核对。完成相同原生 TCP 交换后，再扩到四页，整个网络
+响应前缀必须保持；新尾部只有写入后才检查，不能假设 realloc 会将其清零。
+最后 free。测试 target 禁用 calloc/realloc builtins，优化 Release 仍执行
+实际分配调用与 CHECK；不要求 realloc 一定移动地址。
+
+每例要求固定原始 Linux 身份、raw host TCP syscall 拒绝、原生 active opens、
+真实 DPDK TX/RX、零 outstanding mbuf 和实际 EAL cleanup。未修改生产或
+Linux/LKL/DPDK 代码。不声明失败 realloc/OOM、分配器性能、内核 heap API
+或零拷贝。F-Stack realloc(size=0) 保留原指针的独立合同与 POSIX 不同，
+对应源项继续 blocked，未被本批覆盖。
+
+本批两个源场景由 blocked 改为 scenario-adapted：
+**135 adapted、19 partial、216 blocked，待完成 235 项**。
+
+
+2026-11-17 验证：Debug 的原映射与新增分配场景 **4/4**、优化 Release
+**4/4**、清单完整性与 mutation guards **2/2** 均通过，无 skip。每例都完成
+真实原始 Linux TCP/DPDK 与独立宿主 peer 的完整字节互通。固定 Linux 产物
+复用，当前 preload、worker/app guard 和 memory fixture 重新构建；未重建
+完整内核、运行全量 CTest、sanitizer 或自然内存耗尽压力。完整迁移门禁按
+预期返回 2（216 blocked + 19 partial）。日志与 Release allocator symbol/
+编译 flags 记录于工作树外
+`~/.local/state/ker-native-linux/application-allocation-integration-validation/`。
+
+
+## 无部署配置调用的拒绝与恢复
+
+接续 `08934605d`，新增 `native-fstack-config-missing` 迁移
+`test_ff_load_config_empty_ini`。该源名容易误解：固定源码只传 argv[0]、
+无 -c filename，并不实际读取空文件。测试保留缺少部署信息必须失败的场景，
+不把可选 INI 改成 Ker 必填项。
+
+精确的 parse_arguments([]) 必须报告缺少 address、port、eal。实际 CLI
+subprocess 还使用不存在的 library/worker 路径和可生成 marker 的应用命令，
+要求状态 2、准确缺失字段诊断、无 traceback/库或 worker 解析错误、无应用
+执行。无 INI 和真实空 INI 都测试完全缺省，以及各缺一项设置的情况。
+每次在同一解释器拒绝后，完整 CLI-only 设置仍必须成功并准确保留地址、
+port 和 EAL token；INI 缺省本身不构成错误。
+
+这是配置拒绝合同的场景适配，不声明 F-Stack mandatory filename、NULL fopen
+ABI、global schema/layout 等价，也不触发 DPDK/原生内核/NIC 初始化。
+全部生产和上游代码保持不变。该源项由 blocked 改为 scenario-adapted：
+**136 adapted、19 partial、215 blocked，待完成 234 项**。
+
+
+2026-11-17 验证：新增 MissingDeploymentTests 的两个 unittest 方法通过；
+新增 CTest、原 launcher/config lifecycle/port/VLAN/MTU 回归与两项清单门禁
+共 **8/8** CTest 通过，无 skip。生产 Python 配置 loader 直接被执行；没有
+修改或重建 native 二进制，也未运行内核/DPDK 网络测试。CMake 注册测试时
+仍校验复用的固定内核 fingerprint。完整迁移门禁按预期返回 2，报告
+215 blocked + 19 partial。日志保存于工作树外
+`~/.local/state/ker-native-linux/missing-config-integration-validation/`。
+
+
+## lcore mask 配置分配失败
+
+接续 `0e4acfb2e`，迁移 `test_parse_lcore_mask_calloc_oom_returns_error` 的
+lcore 配置分配失败拒绝场景。Ker 不创建 F-Stack proc_lcore 数组；实际依赖
+是 Python 十六进制转换、规范化字符串及 EAL 参数构造。原实现对这些阶段的
+MemoryError 没有处理，会冒出 traceback，而不是正常报告配置失败。
+
+新增 `native-fstack-config-lcore-allocation`：在生产 main 的实际解析路径，
+仅对 mask 的 int(...,16) 或 format(...,'x') 注入 MemoryError，其他 provider
+调用仍使用真实 Python 行为。CLI 和 INI 各两处失败，修复前四种情况均逃逸。
+Ker 现在只在 lcore-mask 处理范围捕获 MemoryError，返回 argparse 状态 2
+与明确诊断；不继续解析不存在的 library/worker，不调用 subprocess.Popen。
+同一数字只解析一次，正常 mask 归一化和 EAL CPU 选择冲突规则保持。
+
+每次失败后检查 CONFIG_DEFAULTS 完整保留，再解除注入重新解析同一输入，
+必须恢复 canonical mask、准确 EAL -c token、地址和 port。没有成功 stub，
+不修改原始 Linux/DPDK，也不新增测试 hook 到生产。此为错误处理场景适配，
+不声明 F-Stack calloc 次序/数组布局、任意配置阶段 OOM 或自然进程级内存
+耗尽时仍可恢复；Python parser 报错本身仍需要宿主资源。
+
+本批一个源场景由 blocked 改为 scenario-adapted：
+**137 adapted、19 partial、214 blocked，待完成 233 项**。
+
+
+2026-11-17 验证：两个新 unittest 方法的四个 subcase 在修复前均因
+MemoryError 逃逸失败；修复后配置与清单 CTest **9/9** 通过，真实
+`native-fstack-lcore-mask` **1/1** 通过，验证原始 Linux TCP/DPDK 双角色
+互通、INI mask/CLI 优先级与真实 EAL lcore/main CPU。故障注入仅在配置
+main 的单元驱动中，实际网络控制不注入故障。生产 Python launcher 直接
+执行当前源码；复用既有 native 二进制与校验过的固定 Linux 产物，没有
+上游改动、全量 CTest、sanitizer 或自然 OOM 压力资格。完整迁移门禁按预期
+返回 2（214 blocked + 19 partial）。日志保存于工作树外
+`~/.local/state/ker-native-linux/lcore-allocation-integration-validation/`。
+
+
+## VLAN 配置分配失败与半成品隔离
+
+接续 `264b09d98`，增加 `native-fstack-config-vlan-allocation`，迁移
+`test_vlan_cfgs_calloc_oom_returns_error` 的 VLAN 配置分配失败合同。Ker 使用
+typed VLAN 地址列表，不模拟 F-Stack 第三次 calloc 或数组布局。
+
+测试只在真实 VLAN 地址列表 provider 的第一个或第二个调用注入 MemoryError，
+较早的成功调用仍调用真实实现。CLI/INI 共四种故障，另对 INI 的
+read_configuration 边界注入一次 MemoryError。修复前五种情况均逃逸为
+traceback；现在 VLAN converter 将分配失败交给 argparse 正常报告，INI
+加载边界处理 MemoryError 和转换器的 ArgumentTypeError，统一返回状态 2。
+普通 VLAN 值/范围/重复校验规则保持不变，不继续解析不存在的 library/worker
+或创建子进程。
+
+第二个 VLAN 失败前，第一个 VLAN 确实已构造成功；失败后 CONFIG_DEFAULTS
+必须完全不变，解除注入后重新解析必须精确恢复两个 VLAN 及其全部地址，
+不能夹带旧的半成品结果。地址、port、EAL token 同时保持。没有成功 stub，
+不修改原始 Linux/LKL/DPDK，不声明任意位置的进程级自然 OOM 可恢复、源
+calloc 次序或 NIC 故障等价；错误诊断本身仍需要宿主资源。
+
+本批一个源场景由 blocked 改为 scenario-adapted：
+**138 adapted、19 partial、213 blocked，待完成 232 项**。
+
+
+2026-11-17 验证：三个新 unittest 方法的五个 subcase 在修复前均因
+MemoryError 逃逸失败；修复后配置与清单 CTest **10/10** 通过，实际
+`native-fstack-vlan` **1/1** 通过，验证原始 Linux 的双 VLAN/VIP TCP+UDP、
+完整 tag/checksum、设备隔离与清理。错误注入仅在配置单元驱动，实际网络
+控制不注入故障。生产 Python launcher 执行当前源码，复用已有 native
+二进制与经校验的固定原始 Linux；未改上游、运行全量 CTest/sanitizer 或
+自然 OOM 压力。完整迁移门禁按预期返回 2（213 blocked + 19 partial）。
+日志保存于工作树外
+`~/.local/state/ker-native-linux/vlan-allocation-integration-validation/`。

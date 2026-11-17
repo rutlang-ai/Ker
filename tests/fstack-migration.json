@@ -1211,9 +1211,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_empty_ini",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt the actual no-configuration invocation in test_ff_load_config_empty_ini: the pinned source passes only argv[0] and no -c filename; it does not read an empty file. Ker parse_arguments([]) must fail with all missing deployment fields. CLI subprocess checks require status 2 and the exact missing address/port/eal diagnostics before nonexistent library/worker resolution or application execution. No settings and each individually missing setting are tested both without an INI and with an actual empty INI. Repeated in-process rejection is followed by successful complete CLI-only parsing, proving recovery and preserving Ker optional-INI policy. This is a missing-deployment rejection scenario, not mandatory filename semantics, a NULL fopen ABI, F-Stack global schema/layout, DPDK startup or NIC behavior.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-missing",
+          "provenance_case": "native-fstack-config-missing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_isolated",
@@ -1570,9 +1575,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_calloc_oom_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt allocation-failure rejection in lcore parsing to the production Ker CLI/INI lcore-mask normalization, rather than emulating a FreeBSD proc_lcore array. Test-only provider faults raise MemoryError during actual hexadecimal int conversion and normalized format string allocation; other provider calls retain real Python behavior. The production main must convert either failure to argparse status 2 with a lcore-specific diagnostic before nonexistent library/worker resolution or subprocess creation. Both CLI and INI masks are exercised; defaults remain unchanged and later real parsing recovers canonical masks plus correct EAL -c tokens. Before the adapter fix all four cases escaped as MemoryError. No source calloc ordinal/layout, whole-process OOM survivability, kernel allocation, DPDK startup or NIC claim.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-lcore-allocation",
+          "provenance_case": "native-fstack-config-lcore-allocation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_alloc_port_cfgs_calloc_oom_returns_error",
@@ -1584,9 +1594,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfgs_calloc_oom_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt VLAN configuration allocation-failure rejection to actual Ker typed VLAN address-list construction and INI loading, without emulating the F-Stack third-calloc array layout. A test-only vip_addresses provider raises MemoryError on the first or second VLAN; all earlier successful calls forward to the real provider. CLI and INI paths must report status 2 with a VLAN diagnostic before library/worker resolution or process creation. Failure of the second VLAN must not publish the already-parsed first VLAN; defaults remain unchanged and a later real parse recovers exactly two VLANs and their addresses. A separate read_configuration MemoryError tests the INI storage/loading boundary. All five cases escaped as MemoryError before the fix. No source allocation ordinal, whole-process natural OOM recovery, kernel allocation or injected NIC-fault claim.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-vlan-allocation",
+          "provenance_case": "native-fstack-config-vlan-allocation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vdev_cfgs_calloc_oom_returns_error",
@@ -3050,16 +3065,26 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_calloc_zeros_memory",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt the host calloc-zeroing scenario to the standard POSIX application allocator through the production Ker launcher/app guard/preload, not a Ker-owned heap API. The application checks every byte of the source 16*4 allocation, then all zero bytes of a two-page calloc allocation before filling it for actual original-Linux TCP send/recv over DPDK. An independent host peer validates the full payload and returns a transformation that is received into the same allocated buffer and checked byte-for-byte before free. Runtime calloc/realloc builtins are disabled for the test so optimized builds retain allocator calls/checks. Pinned native identity, raw host TCP denial, original-Linux active opens, real TX/RX, zero outstanding mbufs and real EAL cleanup are required. No imported-kernel calloc API, F-Stack helper ABI, natural OOM, allocator performance or zero-copy claim.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-calloc",
+          "provenance_case": "native-fstack-calloc"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_realloc_grow",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt the host realloc growth scenario to standard POSIX application memory through the actual Ker launcher/app guard/preload. The source eight bytes 0x10..0x17 must survive growth from 8 to 32; a filled 32-byte prefix must survive growth to two pages, used directly for original-Linux TCP/DPDK request and transformed response against an independent host peer. The entire received response must then survive another realloc growth to four pages; new tail bytes are unspecified until written and verified by the application. Final storage is freed. Runtime calloc/realloc builtins are disabled in the test; CHECK remains active in Release. Native identity, raw host TCP denial, active opens, DPDK TX/RX, zero outstanding mbufs and actual EAL cleanup are required. No F-Stack realloc(size=0) pointer-preservation semantics, forced pointer movement, failed realloc/OOM, imported-kernel realloc, zero-copy or helper ABI claim.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-realloc-grow",
+          "provenance_case": "native-fstack-realloc-grow"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_free_null",
@@ -3148,9 +3173,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_setenv_getenv_roundtrip",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt the F-Stack host setenv/getenv roundtrip to applications using standard POSIX environment APIs through the production Ker launcher, app guard and native constructor. The real launcher must preserve an ordinary FF_UNIT_TEST_VAR when inherited and leave it absent when omitted; the application sets hello-world, reads it back, verifies overwrite=0 preservation and unsets its local value. Three fresh launches exercise inherited, absent and inherited input with real net_tap worker startup/cleanup. Each application must report the pinned original-Linux release, observe raw host TCP socket denial and successfully create/bind a native TCP socket to the private configured address. Launcher stats require native shutdown diagnostics, one actual ethdev, zero outstanding mbufs and successful real EAL cleanup. This is a host-environment scenario, not a Ker-owned environment wrapper, Linux syscall environment ABI, cross-process shared environment, F-Stack helper ABI, TCP handshake or NIC traffic coverage.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-environment",
+          "provenance_case": "native-fstack-environment"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_munmap_roundtrip",
@@ -3167,9 +3197,19 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Partial adaptation of critical mapping failure termination through actual original-Linux boot, not a standalone libc mmap check. The test installs the production Ker memory/thread/clock callbacks and forwards page_alloc to the pinned POSIX host. A test-only mmap64 wrapper fails the first actual 64 MiB boot mapping with ENOMEM; mapping flags are checked and a pipe records size, ENOMEM and page_alloc call count, and a pre-thread forked child must terminate with SIGABRT through Linux bootmem_init BUG_ON and the installed fatal panic callback. A fault-free parent then boots/halts the same original Linux, executes timed poll and a UDP socket lifecycle, and verifies one real page allocation/release plus unmapped first/last pages. Both DEBUG/NDEBUG adapters are exercised; upstream kernel build is unchanged.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-boot-memory-debug",
+          "provenance_case": "native-fstack-boot-memory"
+        },
+        {
+          "ctest": "native-fstack-boot-memory-release",
+          "provenance_case": "native-fstack-boot-memory"
+        }
+      ],
+      "remaining": "The source invokes ff_mmap with conflicting MAP_SHARED|MAP_PRIVATE flags and expects its exit branch. Ker has no equivalent flag-taking ff_mmap wrapper; exact-address host mmap still reports NULL to its caller. Only unrecoverable kernel-boot mapping failure is covered here, not F-Stack flag translation, its exit ABI, arbitrary application mapping failure or naturally exhausted memory."
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_realloc_zero_size_returns_p",
@@ -3233,16 +3273,26 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_map_shared_anon",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "POSIX application-memory adaptation through the production Ker launcher, app guard and preload, distinct from LKL fixed-address boot-memory callbacks. The native application maps two zeroed pages using MAP_SHARED|MAP_ANONYMOUS, verifies an rw-s host VMA, fills deterministic bytes and uses that mapping directly for send and recv over original-Linux TCP/DPDK to an independent host peer. Both peers validate the transformed full payload, then munmap/mincore confirms release. The app checks the pinned original-Linux identity and raw host TCP denial; stats require original-Linux active opens, real DPDK TX/RX, zero outstanding mbufs and successful real EAL cleanup. Standard POSIX mmap remains the application API; no F-Stack helper ABI, LKL MMU/shared-physical-memory feature, fork support, interprocess visibility qualification or zero-copy claim.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-mmap-shared",
+          "provenance_case": "native-fstack-mmap-shared"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_file_backed_no_anon",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "POSIX application file-mapping adaptation through the production Ker launcher, app guard and preload. With a live original-Linux TCP connection, the app creates/unlinks/truncates a real host file, writes deterministic data and maps it read/write MAP_PRIVATE without MAP_ANONYMOUS; rw-p host VMA metadata is checked. A read-only shared witness maps the same backing file. Closing the ordinary host file fd must leave both mappings and native TCP usable. Mapped bytes are sent over actual DPDK to an independent host peer; receiving transformed bytes into the private mapping must leave the backing witness unchanged, proving copy-on-write. Both mappings must unmap, with mincore confirming release. Native identity, raw host TCP denial, active opens, real DPDK TX/RX, zero outstanding mbufs and EAL cleanup are required. No F-Stack helper ABI, imported-kernel file mmap/MMU, file durability, fork or zero-copy claim; host POSIX memory APIs remain unchanged.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-mmap-file-private",
+          "provenance_case": "native-fstack-mmap-file-private"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_sec",
@@ -3284,9 +3334,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_kernel_fd_encode_roundtrip",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt fd namespace classification and encode/decode roundtrip to the production Ker host-placeholder/native-fd table, using a booted original Linux and real UDP/TCP sockets. Source sample numbers 0, 3, 1024 and 65535 are host allocation minima rather than an arithmetic encoding ABI. Each exported app fd reserves a real host slot, looks up the exact live native fd and socket type, survives repeated lookup, and releases both namespaces on close. Real unmanaged host descriptors, including slot 65535 before and after managed use, must not be classified as native; re-export at that slot must resolve a new UDP object rather than the prior TCP mapping. Invalid -1/65536 lookups are rejected. Ker uses table membership, not FF_KERNEL_FD_BASE or numeric-threshold classification; no FreeBSD fixed-offset API equivalence, fd exhaustion, concurrency, network traffic or NIC claim.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-fd-roundtrip",
+          "provenance_case": "native-fstack-fd-roundtrip"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_native_fd_map",
@@ -3863,14 +3918,14 @@
       "id": "tests/unit/test_ff_init.c::test_ff_init_fail_dpdk_if_up",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Actual original Linux rejects an off-subnet gateway during native network bring-up; the application is not executed and the real DPDK worker cleans up. An unknown worker ethdev also fails before native startup and preserves its cleanup snapshot.",
+      "reason": "Actual original Linux rejects an off-subnet gateway and a real worker rejects an unknown ethdev. A non-installed preload variant built from the same Ker sources and original liblkl additionally injects negative lkl_if_up returns at loopback/device activation. Exact traces prove real loopback success before device EIO and no device activation after loopback EIO. Both fail125 before native READY/application main and preserve real worker/EAL cleanup with zero outstanding mbufs; the wrapped success control uses real activation.",
       "ker_tests": [
         {
           "ctest": "native-fstack-startup-failures",
           "provenance_case": "native-fstack-startup-failures"
         }
       ],
-      "remaining": "The direct negative-return path from lkl_if_up is not injected or exercised. F-Stack ff_dpdk_if_up and its precise FreeBSD-to-DPDK stage ordering are not Ker APIs; route rejection is related bring-up coverage, not a full equivalent."
+      "remaining": "F-Stack ff_dpdk_if_up ABI and precise FreeBSD-to-DPDK initialization ordering are not Ker APIs. Injected lkl_if_up errors exercise the Ker adapter failure path, not naturally occurring kernel/NIC faults or full F-Stack equivalence."
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_plain",

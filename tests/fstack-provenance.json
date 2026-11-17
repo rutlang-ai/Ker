@@ -134,7 +134,7 @@
       "ker_ctests": [
         "native-fstack-startup-failures"
       ],
-      "adaptation": "Run the actual Ker launcher, production preload/guard and original DPDK net_tap worker in a private network namespace. A successful control must execute the interface probe and publish native statistics. Test-only host CLOCK_REALTIME EIO is restricted to the application preload by its startup/packet environment: original Linux boots, then the production realtime adapter fails before native READY and main. A real off-subnet gateway is rejected by original Linux during network bring-up; this is only partial coverage for ff_dpdk_if_up, whose direct interface-up failure and stage ordering remain untested. Unknown ethdev lookup fails in the worker before native startup; retain its already-consumed DONE snapshot in launcher --stats. Every case requires actual successful rte_eal_cleanup and zero outstanding mbufs; failures return125 and leave no application marker/native success statistics. Monotonic host clocks and upstream sources are unchanged. No FreeBSD initialization ABI or exit1 equivalence is claimed."
+      "adaptation": "Run the actual Ker launcher, production preload/guard plus a separate test-only preload variant and original DPDK net_tap worker in a private network namespace. A successful control must execute the interface probe and publish native statistics. Test-only host CLOCK_REALTIME EIO is restricted to the application preload by its startup/packet environment: original Linux boots, then the production realtime adapter fails before native READY and main. A real off-subnet gateway is rejected by original Linux during network bring-up. A separate non-installed library compiles the exact same Ker adaptation sources and pinned liblkl with link-time --wrap=lkl_if_up; no hook exists in the production library. Its successful control calls real loopback and device activation. Injected loopback EIO must stop before device activation; injected device EIO follows successful real loopback activation and must reach the production interface-activation failure handler. Exact host-side traces prove these stages; neither failure may send native READY or execute main. These are injected adapter-return failures, not organic kernel/NIC activation faults or full F-Stack stage equivalence. Unknown ethdev lookup fails in the worker before native startup; retain its already-consumed DONE snapshot in launcher --stats. Every case requires actual successful rte_eal_cleanup and zero outstanding mbufs; failures return125 and leave no application marker/native success statistics. Monotonic host clocks and upstream sources are unchanged. No FreeBSD initialization ABI or exit1 equivalence is claimed. An additional control sets the failure/trace environment on the unmodified production library; startup must still succeed and no hook trace may exist. Successful app interface checks use CHECK rather than assert so Release/NDEBUG cannot erase them."
     },
     "native-fstack-packet-device": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
@@ -320,7 +320,7 @@
       "ker_ctests": [
         "native-fstack-startup-lifecycle"
       ],
-      "adaptation": "Actual Ker launcher starts real DPDK worker and imported Linux before application main; app marker and native interface ioctls prove startup, native DONE plus zero outstanding prove shutdown. Missing configuration exits 2; real EAL argument rejection and missing selected ethdev exit 125 without executing the application, instead of F-Stack exit(1). No mocked successful startup, FreeBSD boot failure or native interface activation failure injection. Run/stop mapping remains partial: real worker control-channel stop and native teardown, without the ff_run callback/argument forwarding ABI."
+      "adaptation": "Actual Ker launcher starts real DPDK worker and imported Linux before application main; app marker and native interface ioctls prove startup, native DONE plus zero outstanding prove shutdown. Missing configuration exits 2; real EAL argument rejection and missing selected ethdev exit 125 without executing the application, instead of F-Stack exit(1). No mocked successful startup or FreeBSD boot failure; interface activation injection is covered separately by native-fstack-startup-failures. Run/stop mapping remains partial: real worker control-channel stop and native teardown, without the ff_run callback/argument forwarding ABI."
     },
     "native-fstack-launcher-config": {
       "source_file": "tests/unit/test_ff_ini_parser.c",
@@ -1280,6 +1280,107 @@
       "ker_ctests": [
         "native-fstack-realtime-updates"
       ]
+    },
+    "native-fstack-fd-roundtrip": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_kernel_fd_encode_roundtrip"
+      ],
+      "ker_ctests": [
+        "native-fstack-fd-roundtrip"
+      ],
+      "adaptation": "Adapt fd namespace classification and encode/decode roundtrip to the production Ker host-placeholder/native-fd table, using a booted original Linux and real UDP/TCP sockets. Source sample numbers 0, 3, 1024 and 65535 are host allocation minima rather than an arithmetic encoding ABI. Each exported app fd reserves a real host slot, looks up the exact live native fd and socket type, survives repeated lookup, and releases both namespaces on close. Real unmanaged host descriptors, including slot 65535 before and after managed use, must not be classified as native; re-export at that slot must resolve a new UDP object rather than the prior TCP mapping. Invalid -1/65536 lookups are rejected. Ker uses table membership, not FF_KERNEL_FD_BASE or numeric-threshold classification; no FreeBSD fixed-offset API equivalence, fd exhaustion, concurrency, network traffic or NIC claim."
+    },
+    "native-fstack-environment": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_setenv_getenv_roundtrip"
+      ],
+      "ker_ctests": [
+        "native-fstack-environment"
+      ],
+      "adaptation": "Adapt the F-Stack host setenv/getenv roundtrip to applications using standard POSIX environment APIs through the production Ker launcher, app guard and native constructor. The real launcher must preserve an ordinary FF_UNIT_TEST_VAR when inherited and leave it absent when omitted; the application sets hello-world, reads it back, verifies overwrite=0 preservation and unsets its local value. Three fresh launches exercise inherited, absent and inherited input with real net_tap worker startup/cleanup. Each application must report the pinned original-Linux release, observe raw host TCP socket denial and successfully create/bind a native TCP socket to the private configured address. Launcher stats require native shutdown diagnostics, one actual ethdev, zero outstanding mbufs and successful real EAL cleanup. This is a host-environment scenario, not a Ker-owned environment wrapper, Linux syscall environment ABI, cross-process shared environment, F-Stack helper ABI, TCP handshake or NIC traffic coverage."
+    },
+    "native-fstack-boot-memory": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_mmap_failure_exits"
+      ],
+      "ker_ctests": [
+        "native-fstack-boot-memory-debug",
+        "native-fstack-boot-memory-release"
+      ],
+      "adaptation": "Partial adaptation of critical mapping failure termination through actual original-Linux boot, not a standalone libc mmap check. The test installs the production Ker memory/thread/clock callbacks and forwards page_alloc to the pinned POSIX host. A test-only mmap64 wrapper fails the first actual 64 MiB boot mapping with ENOMEM; mapping flags are checked and a pipe records size, ENOMEM and page_alloc call count, and a pre-thread forked child must terminate with SIGABRT through Linux bootmem_init BUG_ON and the installed fatal panic callback. A fault-free parent then boots/halts the same original Linux, executes timed poll and a UDP socket lifecycle, and verifies one real page allocation/release plus unmapped first/last pages. Both DEBUG/NDEBUG adapters are exercised; upstream kernel build is unchanged. Remaining: The source invokes ff_mmap with conflicting MAP_SHARED|MAP_PRIVATE flags and expects its exit branch. Ker has no equivalent flag-taking ff_mmap wrapper; exact-address host mmap still reports NULL to its caller. Only unrecoverable kernel-boot mapping failure is covered here, not F-Stack flag translation, its exit ABI, arbitrary application mapping failure or naturally exhausted memory."
+    },
+    "native-fstack-mmap-shared": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_mmap_map_shared_anon"
+      ],
+      "ker_ctests": [
+        "native-fstack-mmap-shared"
+      ],
+      "adaptation": "POSIX application-memory adaptation through the production Ker launcher, app guard and preload, distinct from LKL fixed-address boot-memory callbacks. The native application maps two zeroed pages using MAP_SHARED|MAP_ANONYMOUS, verifies an rw-s host VMA, fills deterministic bytes and uses that mapping directly for send and recv over original-Linux TCP/DPDK to an independent host peer. Both peers validate the transformed full payload, then munmap/mincore confirms release. The app checks the pinned original-Linux identity and raw host TCP denial; stats require original-Linux active opens, real DPDK TX/RX, zero outstanding mbufs and successful real EAL cleanup. Standard POSIX mmap remains the application API; no F-Stack helper ABI, LKL MMU/shared-physical-memory feature, fork support, interprocess visibility qualification or zero-copy claim."
+    },
+    "native-fstack-mmap-file-private": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_mmap_file_backed_no_anon"
+      ],
+      "ker_ctests": [
+        "native-fstack-mmap-file-private"
+      ],
+      "adaptation": "POSIX application file-mapping adaptation through the production Ker launcher, app guard and preload. With a live original-Linux TCP connection, the app creates/unlinks/truncates a real host file, writes deterministic data and maps it read/write MAP_PRIVATE without MAP_ANONYMOUS; rw-p host VMA metadata is checked. A read-only shared witness maps the same backing file. Closing the ordinary host file fd must leave both mappings and native TCP usable. Mapped bytes are sent over actual DPDK to an independent host peer; receiving transformed bytes into the private mapping must leave the backing witness unchanged, proving copy-on-write. Both mappings must unmap, with mincore confirming release. Native identity, raw host TCP denial, active opens, real DPDK TX/RX, zero outstanding mbufs and EAL cleanup are required. No F-Stack helper ABI, imported-kernel file mmap/MMU, file durability, fork or zero-copy claim; host POSIX memory APIs remain unchanged."
+    },
+    "native-fstack-calloc": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_calloc_zeros_memory"
+      ],
+      "ker_ctests": [
+        "native-fstack-calloc"
+      ],
+      "adaptation": "Adapt the host calloc-zeroing scenario to the standard POSIX application allocator through the production Ker launcher/app guard/preload, not a Ker-owned heap API. The application checks every byte of the source 16*4 allocation, then all zero bytes of a two-page calloc allocation before filling it for actual original-Linux TCP send/recv over DPDK. An independent host peer validates the full payload and returns a transformation that is received into the same allocated buffer and checked byte-for-byte before free. Runtime calloc/realloc builtins are disabled for the test so optimized builds retain allocator calls/checks. Pinned native identity, raw host TCP denial, original-Linux active opens, real TX/RX, zero outstanding mbufs and real EAL cleanup are required. No imported-kernel calloc API, F-Stack helper ABI, natural OOM, allocator performance or zero-copy claim."
+    },
+    "native-fstack-realloc-grow": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_realloc_grow"
+      ],
+      "ker_ctests": [
+        "native-fstack-realloc-grow"
+      ],
+      "adaptation": "Adapt the host realloc growth scenario to standard POSIX application memory through the actual Ker launcher/app guard/preload. The source eight bytes 0x10..0x17 must survive growth from 8 to 32; a filled 32-byte prefix must survive growth to two pages, used directly for original-Linux TCP/DPDK request and transformed response against an independent host peer. The entire received response must then survive another realloc growth to four pages; new tail bytes are unspecified until written and verified by the application. Final storage is freed. Runtime calloc/realloc builtins are disabled in the test; CHECK remains active in Release. Native identity, raw host TCP denial, active opens, DPDK TX/RX, zero outstanding mbufs and actual EAL cleanup are required. No F-Stack realloc(size=0) pointer-preservation semantics, forced pointer movement, failed realloc/OOM, imported-kernel realloc, zero-copy or helper ABI claim."
+    },
+    "native-fstack-config-missing": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_empty_ini"
+      ],
+      "ker_ctests": [
+        "native-fstack-config-missing"
+      ],
+      "adaptation": "Adapt the actual no-configuration invocation in test_ff_load_config_empty_ini: the pinned source passes only argv[0] and no -c filename; it does not read an empty file. Ker parse_arguments([]) must fail with all missing deployment fields. CLI subprocess checks require status 2 and the exact missing address/port/eal diagnostics before nonexistent library/worker resolution or application execution. No settings and each individually missing setting are tested both without an INI and with an actual empty INI. Repeated in-process rejection is followed by successful complete CLI-only parsing, proving recovery and preserving Ker optional-INI policy. This is a missing-deployment rejection scenario, not mandatory filename semantics, a NULL fopen ABI, F-Stack global schema/layout, DPDK startup or NIC behavior."
+    },
+    "native-fstack-config-lcore-allocation": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_parse_lcore_mask_calloc_oom_returns_error"
+      ],
+      "ker_ctests": [
+        "native-fstack-config-lcore-allocation"
+      ],
+      "adaptation": "Adapt allocation-failure rejection in lcore parsing to the production Ker CLI/INI lcore-mask normalization, rather than emulating a FreeBSD proc_lcore array. Test-only provider faults raise MemoryError during actual hexadecimal int conversion and normalized format string allocation; other provider calls retain real Python behavior. The production main must convert either failure to argparse status 2 with a lcore-specific diagnostic before nonexistent library/worker resolution or subprocess creation. Both CLI and INI masks are exercised; defaults remain unchanged and later real parsing recovers canonical masks plus correct EAL -c tokens. Before the adapter fix all four cases escaped as MemoryError. No source calloc ordinal/layout, whole-process OOM survivability, kernel allocation, DPDK startup or NIC claim."
+    },
+    "native-fstack-config-vlan-allocation": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_vlan_cfgs_calloc_oom_returns_error"
+      ],
+      "ker_ctests": [
+        "native-fstack-config-vlan-allocation"
+      ],
+      "adaptation": "Adapt VLAN configuration allocation-failure rejection to actual Ker typed VLAN address-list construction and INI loading, without emulating the F-Stack third-calloc array layout. A test-only vip_addresses provider raises MemoryError on the first or second VLAN; all earlier successful calls forward to the real provider. CLI and INI paths must report status 2 with a VLAN diagnostic before library/worker resolution or process creation. Failure of the second VLAN must not publish the already-parsed first VLAN; defaults remain unchanged and a later real parse recovers exactly two VLANs and their addresses. A separate read_configuration MemoryError tests the INI storage/loading boundary. All five cases escaped as MemoryError before the fix. No source allocation ordinal, whole-process natural OOM recovery, kernel allocation or injected NIC-fault claim."
     }
   }
 }

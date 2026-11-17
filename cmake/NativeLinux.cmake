@@ -141,6 +141,25 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-thread-runtime-release COMMAND ker-thread-runtime-release-test)
     set_tests_properties(native-fstack-thread-runtime native-fstack-thread-runtime-debug
         native-fstack-thread-runtime-release PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    foreach(memory_mode debug release)
+        add_executable(ker-boot-memory-${memory_mode}-test tests/posix/fstack-boot-memory.c
+            src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c)
+        target_include_directories(ker-boot-memory-${memory_mode}-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+        target_include_directories(ker-boot-memory-${memory_mode}-test SYSTEM PRIVATE
+            "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+        target_link_libraries(ker-boot-memory-${memory_mode}-test PRIVATE "${ker_native_tools}/liblkl.a"
+            Threads::Threads ${CMAKE_DL_LIBS} rt)
+        target_link_options(ker-boot-memory-${memory_mode}-test PRIVATE -Wl,--wrap=mmap64)
+        target_compile_options(ker-boot-memory-${memory_mode}-test PRIVATE -Wall -Wextra -Werror)
+    endforeach()
+    add_test(NAME native-fstack-boot-memory-debug COMMAND ker-boot-memory-debug-test)
+    add_test(NAME native-fstack-boot-memory-release COMMAND ker-boot-memory-release-test)
+    set_tests_properties(native-fstack-boot-memory-debug native-fstack-boot-memory-release
+        PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    target_compile_definitions(ker-boot-memory-debug-test PRIVATE DEBUG)
+    target_compile_options(ker-boot-memory-debug-test PRIVATE -UNDEBUG)
+    target_compile_definitions(ker-boot-memory-release-test PRIVATE NDEBUG)
+    target_compile_options(ker-boot-memory-release-test PRIVATE -UDEBUG)
     foreach(sem_mode debug release)
         add_executable(ker-host-semaphore-${sem_mode}-test tests/posix/fstack-host-semaphore.c
             src/posix/host-thread.c src/posix/host-memory.c src/posix/host-clock.c)
@@ -183,6 +202,8 @@ if(BUILD_TESTING)
     target_compile_options(ker-fd-map-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-fd-map COMMAND ker-fd-map-test)
     set_tests_properties(native-fstack-fd-map PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-fd-roundtrip COMMAND ker-fd-map-test --roundtrip)
+    set_tests_properties(native-fstack-fd-roundtrip PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-errno-test tests/posix/fstack-errno.c src/posix/host-memory.c src/posix/host-clock.c)
     target_include_directories(ker-errno-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-errno-test SYSTEM PRIVATE
@@ -258,6 +279,15 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-config-port-section
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_boundaries.py" PortSectionTests)
     set_tests_properties(native-fstack-config-port-section PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-config-missing
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_boundaries.py" MissingDeploymentTests)
+    set_tests_properties(native-fstack-config-missing PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-config-lcore-allocation
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_boundaries.py" LcoreAllocationFailureTests)
+    set_tests_properties(native-fstack-config-lcore-allocation PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-config-vlan-allocation
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_boundaries.py" VLANAllocationFailureTests)
+    set_tests_properties(native-fstack-config-vlan-allocation PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-fstack-config-vlan-section
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_boundaries.py" VLANSectionTests)
     set_tests_properties(native-fstack-config-vlan-section PROPERTIES TIMEOUT 30 LABELS fstack)
@@ -280,19 +310,61 @@ if(BUILD_TESTING)
     add_test(NAME native-posix-tcp-interop COMMAND ${ker_native_test_command}
         --fd-app "$<TARGET_FILE:ker-posix-fd-compat-test>")
     add_executable(ker-startup-interface-test tests/posix/startup-interface.c)
-    target_compile_options(ker-startup-interface-test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    target_compile_options(ker-startup-interface-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-startup-lifecycle COMMAND ${ker_native_test_command}
         --startup-app "$<TARGET_FILE:ker-startup-interface-test>")
     set_tests_properties(native-fstack-startup-lifecycle PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_library(ker-startup-failure-probe SHARED tests/posix/startup-failure-probe.c)
     target_compile_options(ker-startup-failure-probe PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-startup-failure-probe PRIVATE ${CMAKE_DL_LIBS})
+    # Build the same adaptation layer with a link-time failure wrapper. This
+    # target is test-only and is never installed or used by the production CLI.
+    get_target_property(ker_posix_sources ker-posix SOURCES)
+    add_library(ker-posix-if-up-failure SHARED ${ker_posix_sources} tests/posix/interface-up-failure.c)
+    target_include_directories(ker-posix-if-up-failure PRIVATE "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-posix-if-up-failure SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_compile_definitions(ker-posix-if-up-failure PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
+    target_compile_features(ker-posix-if-up-failure PRIVATE c_std_11)
+    target_compile_options(ker-posix-if-up-failure PRIVATE -Wall -Wextra -Werror)
+    target_link_options(ker-posix-if-up-failure PRIVATE -Wl,--no-undefined -Wl,--wrap=lkl_if_up
+        "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
+    set_property(TARGET ker-posix-if-up-failure APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
+    target_link_libraries(ker-posix-if-up-failure PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
     add_test(NAME native-fstack-startup-failures
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/startup-failures.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-startup-interface-test>"
-            --probe "$<TARGET_FILE:ker-startup-failure-probe>")
+            --probe "$<TARGET_FILE:ker-startup-failure-probe>"
+            --failure-library "$<TARGET_FILE:ker-posix-if-up-failure>")
     set_tests_properties(native-fstack-startup-failures PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_executable(ker-environment-test tests/posix/fstack-environment.c)
+    target_compile_options(ker-environment-test PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(ker-environment-test PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
+    target_link_libraries(ker-environment-test PRIVATE ${CMAKE_DL_LIBS})
+    add_test(NAME native-fstack-environment
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/environment-roundtrip.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-environment-test>"
+            --probe "$<TARGET_FILE:ker-startup-failure-probe>")
+    set_tests_properties(native-fstack-environment PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_executable(ker-memory-interop-test tests/posix/fstack-memory-interop.c)
+    # Preserve actual allocator calls and checks in the optimized test.
+    target_compile_options(ker-memory-interop-test PRIVATE -Wall -Wextra -Werror
+        -fno-builtin-calloc -fno-builtin-realloc)
+    target_compile_definitions(ker-memory-interop-test PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
+    target_link_libraries(ker-memory-interop-test PRIVATE ${CMAKE_DL_LIBS})
+    set(ker_memory_test_command "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/memory-interop.py"
+        --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+        --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-memory-interop-test>"
+        --probe "$<TARGET_FILE:ker-startup-failure-probe>")
+    add_test(NAME native-fstack-mmap-shared COMMAND ${ker_memory_test_command} --mode shared)
+    add_test(NAME native-fstack-mmap-file-private COMMAND ${ker_memory_test_command} --mode file)
+    add_test(NAME native-fstack-calloc COMMAND ${ker_memory_test_command} --mode calloc)
+    add_test(NAME native-fstack-realloc-grow COMMAND ${ker_memory_test_command} --mode realloc)
+    set_tests_properties(native-fstack-mmap-shared native-fstack-mmap-file-private
+        native-fstack-calloc native-fstack-realloc-grow
+        PROPERTIES TIMEOUT 60 LABELS "native-tcp;fstack")
     add_executable(ker-network-sysctl-test tests/posix/network-sysctl.c)
     target_compile_options(ker-network-sysctl-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-network-sysctl

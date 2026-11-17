@@ -388,3 +388,97 @@ clock/poll syscall，验证成功更新、宿主 EIO、内核 EINVAL 和恢复�
 已有 epoch；全部 settime 仅作用于私有 Linux。来源映射到固定 F-Stack 的
 `test_ff_get_current_time_advances`，不声明 FreeBSD 静态缓存、NULL 输出分量、
 正在等待的 timer clock-step、TCP 定时器或 NIC 流量覆盖。
+
+
+## 原生 fd 导出/反查与宿主 fd 共存
+
+`native-fstack-fd-roundtrip` 将 `test_ff_kernel_fd_encode_roundtrip` 的命名空间
+区分和往返合同适配到生产 Ker fd 表，不实现 F-Stack 固定偏移编码。使用
+真实 Linux UDP/TCP fd，验证分配下界 0/3/1024/65535、重复逆向查询、实际
+宿主占位和关闭回收；65535 在普通宿主 fd、原生 TCP、普通宿主 fd、原生 UDP
+之间反复使用，不得误分类或保留旧映射。需要 `KER_WITH_NATIVE_TCP=ON`，
+测试进程 RLIMIT_NOFILE hard limit 至少 65536；临时 soft limit 在结束时恢复。
+原 `native-fstack-fd-map` 的替换、引用、alias 和错误路径测试继续保留。
+
+
+## 应用环境变量往返
+
+`native-fstack-environment` 对应 `test_ff_setenv_getenv_roundtrip`。通过生产
+launcher/app guard/preload 链验证普通环境变量的继承或缺省、POSIX set/get
+与 overwrite=0，并在三次独立原生启动中检查 Linux 身份、宿主 TCP syscall
+拒绝、私有地址 bind 和 worker/EAL 清理。应用环境 API 由 POSIX 提供，Ker
+不提供额外 wrapper。需 `KER_WITH_NATIVE_TCP=ON`，以及已有 native 测试所需
+的 user/network namespace、net_tap、ip 和 /dev/net/tun 环境；不声明握手或
+NIC 流量覆盖。
+
+
+## 接口激活失败与初始化短路
+
+`native-fstack-startup-failures` 增加真实成功控制、production hook 隔离控制，
+以及 link-time lkl_if_up loopback/device EIO。测试专用 preload 使用同一生产
+源列表及原始 liblkl，成功路径调用真实函数；trace 要求失败后不进入下一
+activation。失败必须阻止 native READY/main，并保留 worker/EAL 真实清理和
+零 outstanding mbuf。源 `test_ff_init_fail_dpdk_if_up` 仍为 partial，未声明
+F-Stack ABI 或自然 NIC 故障等价。接口 probe 使用不依赖 assert 的 CHECK，
+Release 不再通过 -UNDEBUG 保留断言。
+
+
+## 关键 boot mapping 分配失败
+
+`native-fstack-boot-memory-debug/release` 对 `test_ff_mmap_failure_exits` 提供
+partial 证据：实际 Linux bootmem 的 64 MiB POSIX 映射注入 ENOMEM，pipe
+记录确切注入位置，子进程必须 SIGABRT；正常父进程随后完成原始内核启动、
+等待、UDP socket 和页面释放，检查真实映射起止页已解除。需
+`KER_WITH_NATIVE_TCP=ON`，独立测试不启动 DPDK/NIC。该项不实现 F-Stack
+无效 mmap flags/exit API，不计为完整源场景迁移。
+
+
+## 映射内存作为原生 TCP 缓冲区
+
+`native-fstack-mmap-shared`、`native-fstack-mmap-file-private` 分别对应固定
+F-Stack 的共享匿名、无 ANON 私有文件映射源场景。应用直接使用 POSIX mmap，
+在实际 Ker 启动后以映射作为原始 Linux TCP send/recv buffer，与独立宿主
+对端经 DPDK 交换并核对完整字节；验证 rw-s/rw-p、文件 COW witness、host fd
+关闭后映射/原生 fd 共存及真实解除映射。原生 opens、DPDK TX/RX、mbuf/EAL
+清理均需通过。需现有 native net_tap/namespace 环境；不提供 fork、零拷贝
+或 LKL MMU/file-mmap 功能。
+
+
+## calloc/realloc 缓冲区与原生 TCP
+
+`native-fstack-calloc` 验证源 calloc(16,4) 与两页缓冲区的逐字节清零；
+`native-fstack-realloc-grow` 验证源 8→32 字节前缀保留、增长到两页，以及
+完整网络响应在再次增长到四页后的保留。两者都通过生产 Ker 启动链，直接
+使用 POSIX 分配的内存收发原始 Linux TCP/DPDK 数据，独立宿主 peer 校验
+全部字节并要求真实 worker/EAL 清理。共用 memory-interop fixture，原共享
+与文件映射测试保留。Release 禁用 allocator builtins，CHECK 不依赖 assert。
+不提供 Ker heap API、不实现 F-Stack realloc(size=0) 的特殊保留行为。
+
+
+## 缺少部署配置
+
+`native-fstack-config-missing` 对应 `test_ff_load_config_empty_ini` 的实际
+无 -c/无配置参数调用；源名不代表它读取了空文件。验证无设置或缺少
+address/port/eal 时，在 library/worker 解析及应用执行前准确拒绝，并补充
+真实空 INI 场景。完整 CLI-only 配置继续合法；多次失败后解析可恢复。
+使用生产 Ker 配置 loader，无 DPDK/NIC 或 F-Stack filename ABI 等价声明。
+
+
+## lcore 配置分配失败
+
+`native-fstack-config-lcore-allocation` 对应
+`test_parse_lcore_mask_calloc_oom_returns_error`，将 source calloc 失败拒绝
+适配到 Ker 实际 mask int/format 分配阶段。CLI/INI 注入失败必须由生产 main
+返回配置错误 2，不加载库或创建 worker；默认配置不变，随后真实解析恢复。
+测试在修复前四个 subcase 均因未捕获 MemoryError 失败。不声明 F-Stack
+数组布局、自然全进程 OOM 或 DPDK/NIC 覆盖。
+
+
+## VLAN 配置分配失败
+
+`native-fstack-config-vlan-allocation` 对应
+`test_vlan_cfgs_calloc_oom_returns_error`。真实生产 main 经 CLI/INI 解析，在
+第一个或第二个 typed VLAN 地址列表构造时注入 MemoryError，并补充 INI
+加载边界分配失败。要求配置错误 2、无资源启动、默认值不变、半成品不泄漏
+到后续解析；解除注入后恢复精确 VLAN 集合。五个 subcase 在修复前均因
+未捕获 MemoryError 失败。无源 calloc 次序或自然进程 OOM/NIC 故障资格声明。
