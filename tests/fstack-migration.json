@@ -3172,9 +3172,19 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Partial adaptation of critical mapping failure termination through actual original-Linux boot, not a standalone libc mmap check. The test installs the production Ker memory/thread/clock callbacks and forwards page_alloc to the pinned POSIX host. A test-only mmap64 wrapper fails the first actual 64 MiB boot mapping with ENOMEM; mapping flags are checked and a pipe records size, ENOMEM and page_alloc call count, and a pre-thread forked child must terminate with SIGABRT through Linux bootmem_init BUG_ON and the installed fatal panic callback. A fault-free parent then boots/halts the same original Linux, executes timed poll and a UDP socket lifecycle, and verifies one real page allocation/release plus unmapped first/last pages. Both DEBUG/NDEBUG adapters are exercised; upstream kernel build is unchanged.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-boot-memory-debug",
+          "provenance_case": "native-fstack-boot-memory"
+        },
+        {
+          "ctest": "native-fstack-boot-memory-release",
+          "provenance_case": "native-fstack-boot-memory"
+        }
+      ],
+      "remaining": "The source invokes ff_mmap with conflicting MAP_SHARED|MAP_PRIVATE flags and expects its exit branch. Ker has no equivalent flag-taking ff_mmap wrapper; exact-address host mmap still reports NULL to its caller. Only unrecoverable kernel-boot mapping failure is covered here, not F-Stack flag translation, its exit ABI, arbitrary application mapping failure or naturally exhausted memory."
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_realloc_zero_size_returns_p",

@@ -15,13 +15,13 @@
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | scenario-adapted | 131 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 221 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 220 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **239 项**（221 blocked + 18 partial）。
+当前待完成 **239 项**（220 blocked + 19 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -78,7 +78,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 23 | 0 | 11 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 23 | 1 | 10 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 4 | 2 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
@@ -755,3 +755,40 @@ Release probe 编译 flags 为 -O3 -DNDEBUG，未含 -UNDEBUG。固定原始 Lin
 CTest、sanitizer 或物理 NIC。完整迁移门禁按预期返回 2。
 日志与二进制隔离/编译 flags 证据保存于工作树外
 `~/.local/state/ker-native-linux/if-up-integration-validation/`。
+
+
+## 关键启动映射失败必须终止
+
+接续 `147587def`，为 `test_ff_mmap_failure_exits` 增加原始 Linux 启动内存
+分配失败证据，源项从 blocked 推进为 **partial**。不把不同 mmap flags/API
+合同直接算作已迁移。
+
+`native-fstack-boot-memory-debug/release` 安装实际 Ker memory/thread/clock
+callbacks，page_alloc 计数后转发到固定版本 POSIX host。Linux bootmem_init
+请求真实 64 MiB 页面时，测试专用 mmap64 wrapper 返回 MAP_FAILED/ENOMEM；
+pipe 记录尺寸、错误和 page_alloc 次数，只有实际 boot mapping 才能触发。
+子进程在父进程启动任何内核/host 线程之前 fork，关闭 core dump；必须因
+原始 Linux 的 BUG_ON(!memory_start) 进入真实 panic callback 并以 SIGABRT
+终止，不能从 lkl_start_kernel 返回成功或以普通错误退出冒充 fatal panic。
+
+随后父进程禁用故障，真实启动相同固定 Linux，执行 timed poll 和 UDP socket
+创建/关闭，再 halt/cleanup。必须只分配和释放一次真实 boot mapping，
+mincore 验证起始及末尾页面均已解除。错误状态不污染父进程。正常 mmap64
+调用始终转发真实宿主函数，Ker 线程仍由 pthread 提供；没有改动任何生产、
+Linux/LKL/DPDK 源码。
+
+源用例的 conflicting MAP_SHARED|MAP_PRIVATE flags、ff_mmap 翻译与 exit ABI
+仍无对应 Ker wrapper；现有 exact-address mmap 本身返回 NULL，此批没有
+改变该合同。覆盖的是不可恢复的内核启动分配失败，不是任意应用映射失败、
+自然内存耗尽或 NIC 流量。两种 DEBUG/NDEBUG 只作用于 Ker 适配器/测试，
+固定原始 Linux 产物复用。
+
+当前 **131 adapted、19 partial、220 blocked，待完成 239 项**；未增加完成数。
+
+
+2026-11-17 验证：Debug 构建的两种 adapter profile **2/2**、优化 Release
+构建的两种 profile **2/2**、清单完整性与 mutation guards **2/2** 均通过，
+无 skip。测试与直接链接的 Ker memory/thread/clock 适配器重新构建；未重建
+固定内核，未执行全量网络、sanitizer、自然 OOM 压力或物理 NIC。完整迁移
+门禁仍按预期返回 2，报告 220 blocked + 19 partial。日志保存于工作树外
+`~/.local/state/ker-native-linux/boot-memory-integration-validation/`。

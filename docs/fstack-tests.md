@@ -421,3 +421,13 @@ activation。失败必须阻止 native READY/main，并保留 worker/EAL 真实�
 零 outstanding mbuf。源 `test_ff_init_fail_dpdk_if_up` 仍为 partial，未声明
 F-Stack ABI 或自然 NIC 故障等价。接口 probe 使用不依赖 assert 的 CHECK，
 Release 不再通过 -UNDEBUG 保留断言。
+
+
+## 关键 boot mapping 分配失败
+
+`native-fstack-boot-memory-debug/release` 对 `test_ff_mmap_failure_exits` 提供
+partial 证据：实际 Linux bootmem 的 64 MiB POSIX 映射注入 ENOMEM，pipe
+记录确切注入位置，子进程必须 SIGABRT；正常父进程随后完成原始内核启动、
+等待、UDP socket 和页面释放，检查真实映射起止页已解除。需
+`KER_WITH_NATIVE_TCP=ON`，独立测试不启动 DPDK/NIC。该项不实现 F-Stack
+无效 mmap flags/exit API，不计为完整源场景迁移。

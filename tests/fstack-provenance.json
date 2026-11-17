@@ -1300,6 +1300,17 @@
         "native-fstack-environment"
       ],
       "adaptation": "Adapt the F-Stack host setenv/getenv roundtrip to applications using standard POSIX environment APIs through the production Ker launcher, app guard and native constructor. The real launcher must preserve an ordinary FF_UNIT_TEST_VAR when inherited and leave it absent when omitted; the application sets hello-world, reads it back, verifies overwrite=0 preservation and unsets its local value. Three fresh launches exercise inherited, absent and inherited input with real net_tap worker startup/cleanup. Each application must report the pinned original-Linux release, observe raw host TCP socket denial and successfully create/bind a native TCP socket to the private configured address. Launcher stats require native shutdown diagnostics, one actual ethdev, zero outstanding mbufs and successful real EAL cleanup. This is a host-environment scenario, not a Ker-owned environment wrapper, Linux syscall environment ABI, cross-process shared environment, F-Stack helper ABI, TCP handshake or NIC traffic coverage."
+    },
+    "native-fstack-boot-memory": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_mmap_failure_exits"
+      ],
+      "ker_ctests": [
+        "native-fstack-boot-memory-debug",
+        "native-fstack-boot-memory-release"
+      ],
+      "adaptation": "Partial adaptation of critical mapping failure termination through actual original-Linux boot, not a standalone libc mmap check. The test installs the production Ker memory/thread/clock callbacks and forwards page_alloc to the pinned POSIX host. A test-only mmap64 wrapper fails the first actual 64 MiB boot mapping with ENOMEM; mapping flags are checked and a pipe records size, ENOMEM and page_alloc call count, and a pre-thread forked child must terminate with SIGABRT through Linux bootmem_init BUG_ON and the installed fatal panic callback. A fault-free parent then boots/halts the same original Linux, executes timed poll and a UDP socket lifecycle, and verifies one real page allocation/release plus unmapped first/last pages. Both DEBUG/NDEBUG adapters are exercised; upstream kernel build is unchanged. Remaining: The source invokes ff_mmap with conflicting MAP_SHARED|MAP_PRIVATE flags and expects its exit branch. Ker has no equivalent flag-taking ff_mmap wrapper; exact-address host mmap still reports NULL to its caller. Only unrecoverable kernel-boot mapping failure is covered here, not F-Stack flag translation, its exit ABI, arbitrary application mapping failure or naturally exhausted memory."
     }
   }
 }

@@ -141,6 +141,25 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-thread-runtime-release COMMAND ker-thread-runtime-release-test)
     set_tests_properties(native-fstack-thread-runtime native-fstack-thread-runtime-debug
         native-fstack-thread-runtime-release PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    foreach(memory_mode debug release)
+        add_executable(ker-boot-memory-${memory_mode}-test tests/posix/fstack-boot-memory.c
+            src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c)
+        target_include_directories(ker-boot-memory-${memory_mode}-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+        target_include_directories(ker-boot-memory-${memory_mode}-test SYSTEM PRIVATE
+            "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+        target_link_libraries(ker-boot-memory-${memory_mode}-test PRIVATE "${ker_native_tools}/liblkl.a"
+            Threads::Threads ${CMAKE_DL_LIBS} rt)
+        target_link_options(ker-boot-memory-${memory_mode}-test PRIVATE -Wl,--wrap=mmap64)
+        target_compile_options(ker-boot-memory-${memory_mode}-test PRIVATE -Wall -Wextra -Werror)
+    endforeach()
+    add_test(NAME native-fstack-boot-memory-debug COMMAND ker-boot-memory-debug-test)
+    add_test(NAME native-fstack-boot-memory-release COMMAND ker-boot-memory-release-test)
+    set_tests_properties(native-fstack-boot-memory-debug native-fstack-boot-memory-release
+        PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    target_compile_definitions(ker-boot-memory-debug-test PRIVATE DEBUG)
+    target_compile_options(ker-boot-memory-debug-test PRIVATE -UNDEBUG)
+    target_compile_definitions(ker-boot-memory-release-test PRIVATE NDEBUG)
+    target_compile_options(ker-boot-memory-release-test PRIVATE -UDEBUG)
     foreach(sem_mode debug release)
         add_executable(ker-host-semaphore-${sem_mode}-test tests/posix/fstack-host-semaphore.c
             src/posix/host-thread.c src/posix/host-memory.c src/posix/host-clock.c)
