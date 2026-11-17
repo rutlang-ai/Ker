@@ -453,3 +453,12 @@ F-Stack 的共享匿名、无 ANON 私有文件映射源场景。应用直接使
 全部字节并要求真实 worker/EAL 清理。共用 memory-interop fixture，原共享
 与文件映射测试保留。Release 禁用 allocator builtins，CHECK 不依赖 assert。
 不提供 Ker heap API、不实现 F-Stack realloc(size=0) 的特殊保留行为。
+
+
+## 缺少部署配置
+
+`native-fstack-config-missing` 对应 `test_ff_load_config_empty_ini` 的实际
+无 -c/无配置参数调用；源名不代表它读取了空文件。验证无设置或缺少
+address/port/eal 时，在 library/worker 解析及应用执行前准确拒绝，并补充
+真实空 INI 场景。完整 CLI-only 配置继续合法；多次失败后解析可恢复。
+使用生产 Ker 配置 loader，无 DPDK/NIC 或 F-Stack filename ABI 等价声明。

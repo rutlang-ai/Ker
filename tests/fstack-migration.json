@@ -1211,9 +1211,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_empty_ini",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt the actual no-configuration invocation in test_ff_load_config_empty_ini: the pinned source passes only argv[0] and no -c filename; it does not read an empty file. Ker parse_arguments([]) must fail with all missing deployment fields. CLI subprocess checks require status 2 and the exact missing address/port/eal diagnostics before nonexistent library/worker resolution or application execution. No settings and each individually missing setting are tested both without an INI and with an actual empty INI. Repeated in-process rejection is followed by successful complete CLI-only parsing, proving recovery and preserving Ker optional-INI policy. This is a missing-deployment rejection scenario, not mandatory filename semantics, a NULL fopen ABI, F-Stack global schema/layout, DPDK startup or NIC behavior.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-missing",
+          "provenance_case": "native-fstack-config-missing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_isolated",

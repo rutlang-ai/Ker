@@ -1,4 +1,4 @@
-"""Pinned F-Stack malformed-section and disabled-jumbo scenarios.
+"""Pinned F-Stack missing-deployment, malformed-section and MTU boundaries.
 
 Exercise Ker's production loader with its native schema. These checks do not
 claim NIC traffic or implementation equivalence with the F-Stack loader.
@@ -51,6 +51,63 @@ class BoundaryCase(unittest.TestCase):
             launcher.parse_arguments(['--config', str(self.path), *options, '--', '/bin/true'])
         self.assertEqual(error.exception.code, 2)
         self.assertIn(diagnostic, diagnostics.getvalue().splitlines()[-1])
+
+
+class MissingDeploymentTests(BoundaryCase):
+    settings = (('--address', '198.18.0.2/24'), ('--port', 'net_tap0'), ('--eal=--no-huge',))
+
+    def reject_missing(self, options, missing, config=False):
+        # An actual empty INI is an additional Ker boundary. The pinned
+        # F-Stack test itself passes no filename, despite its "empty_ini" name.
+        self.path.write_text('')
+        marker = self.directory / 'application-ran'
+        application = self.directory / 'application.py'
+        application.write_text('from pathlib import Path\nimport sys\nPath(sys.argv[1]).touch()\n')
+        library = self.directory / 'missing-library.so'
+        worker = self.directory / 'missing-worker'
+        prefix = ['--config', str(self.path)] if config else []
+        command = [*prefix, *options, '--library', str(library), '--io-worker', str(worker),
+                   '--', sys.executable, str(application), str(marker)]
+        result = subprocess.run([sys.executable, str(SOURCE), *command],
+                                capture_output=True, text=True, timeout=5)
+        diagnostic = 'required via CLI or --config: ' + ', '.join('--' + name for name in missing)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(diagnostic, result.stderr.splitlines()[-1])
+        self.assertEqual(result.stdout, '')
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertNotIn(str(library), result.stderr)
+        self.assertNotIn(str(worker), result.stderr)
+        self.assertFalse(marker.exists())
+        # The same failure in a long-lived interpreter must not poison a
+        # subsequent parse with complete, explicit deployment settings.
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            launcher.parse_arguments(command)
+        self.assertEqual(error.exception.code, 2)
+        complete = [value for setting in self.settings for value in setting]
+        args = launcher.parse_arguments([*complete, '--', '/bin/true'])
+        self.assertIsNone(args.config)
+        self.assertEqual((str(args.address), args.port, args.eal_args),
+                         ('198.18.0.2/24', 'net_tap0', ['--no-huge']))
+
+    def test_no_arguments_report_all_missing_settings(self):
+        diagnostic = io.StringIO()
+        with contextlib.redirect_stderr(diagnostic), self.assertRaises(SystemExit) as error:
+            launcher.parse_arguments([])
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn('required via CLI or --config: --address, --port, --eal',
+                      diagnostic.getvalue().splitlines()[-1])
+        self.reject_missing([], ['address', 'port', 'eal'])
+
+    def test_empty_file_and_incomplete_cli_reject_before_any_setup(self):
+        names = ('address', 'port', 'eal')
+        for config in (False, True):
+            with self.subTest(config=config, missing='all'):
+                self.reject_missing([], names, config)
+            for missing in range(len(names)):
+                options = [value for index, setting in enumerate(self.settings)
+                           if index != missing for value in setting]
+                with self.subTest(config=config, missing=names[missing]):
+                    self.reject_missing(options, [names[missing]], config)
 
 
 class PortSectionTests(BoundaryCase):
