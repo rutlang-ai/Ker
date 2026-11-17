@@ -339,6 +339,18 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-environment-test>"
             --probe "$<TARGET_FILE:ker-startup-failure-probe>")
     set_tests_properties(native-fstack-environment PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_executable(ker-mmap-interop-test tests/posix/fstack-mmap-interop.c)
+    target_compile_options(ker-mmap-interop-test PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(ker-mmap-interop-test PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
+    target_link_libraries(ker-mmap-interop-test PRIVATE ${CMAKE_DL_LIBS})
+    set(ker_mmap_test_command "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/mmap-interop.py"
+        --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+        --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-mmap-interop-test>"
+        --probe "$<TARGET_FILE:ker-startup-failure-probe>")
+    add_test(NAME native-fstack-mmap-shared COMMAND ${ker_mmap_test_command} --mode shared)
+    add_test(NAME native-fstack-mmap-file-private COMMAND ${ker_mmap_test_command} --mode file)
+    set_tests_properties(native-fstack-mmap-shared native-fstack-mmap-file-private
+        PROPERTIES TIMEOUT 60 LABELS "native-tcp;fstack")
     add_executable(ker-network-sysctl-test tests/posix/network-sysctl.c)
     target_compile_options(ker-network-sysctl-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-network-sysctl

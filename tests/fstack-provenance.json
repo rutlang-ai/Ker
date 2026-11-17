@@ -1311,6 +1311,26 @@
         "native-fstack-boot-memory-release"
       ],
       "adaptation": "Partial adaptation of critical mapping failure termination through actual original-Linux boot, not a standalone libc mmap check. The test installs the production Ker memory/thread/clock callbacks and forwards page_alloc to the pinned POSIX host. A test-only mmap64 wrapper fails the first actual 64 MiB boot mapping with ENOMEM; mapping flags are checked and a pipe records size, ENOMEM and page_alloc call count, and a pre-thread forked child must terminate with SIGABRT through Linux bootmem_init BUG_ON and the installed fatal panic callback. A fault-free parent then boots/halts the same original Linux, executes timed poll and a UDP socket lifecycle, and verifies one real page allocation/release plus unmapped first/last pages. Both DEBUG/NDEBUG adapters are exercised; upstream kernel build is unchanged. Remaining: The source invokes ff_mmap with conflicting MAP_SHARED|MAP_PRIVATE flags and expects its exit branch. Ker has no equivalent flag-taking ff_mmap wrapper; exact-address host mmap still reports NULL to its caller. Only unrecoverable kernel-boot mapping failure is covered here, not F-Stack flag translation, its exit ABI, arbitrary application mapping failure or naturally exhausted memory."
+    },
+    "native-fstack-mmap-shared": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_mmap_map_shared_anon"
+      ],
+      "ker_ctests": [
+        "native-fstack-mmap-shared"
+      ],
+      "adaptation": "POSIX application-memory adaptation through the production Ker launcher, app guard and preload, distinct from LKL fixed-address boot-memory callbacks. The native application maps two zeroed pages using MAP_SHARED|MAP_ANONYMOUS, verifies an rw-s host VMA, fills deterministic bytes and uses that mapping directly for send and recv over original-Linux TCP/DPDK to an independent host peer. Both peers validate the transformed full payload, then munmap/mincore confirms release. The app checks the pinned original-Linux identity and raw host TCP denial; stats require original-Linux active opens, real DPDK TX/RX, zero outstanding mbufs and successful real EAL cleanup. Standard POSIX mmap remains the application API; no F-Stack helper ABI, LKL MMU/shared-physical-memory feature, fork support, interprocess visibility qualification or zero-copy claim."
+    },
+    "native-fstack-mmap-file-private": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_mmap_file_backed_no_anon"
+      ],
+      "ker_ctests": [
+        "native-fstack-mmap-file-private"
+      ],
+      "adaptation": "POSIX application file-mapping adaptation through the production Ker launcher, app guard and preload. With a live original-Linux TCP connection, the app creates/unlinks/truncates a real host file, writes deterministic data and maps it read/write MAP_PRIVATE without MAP_ANONYMOUS; rw-p host VMA metadata is checked. A read-only shared witness maps the same backing file. Closing the ordinary host file fd must leave both mappings and native TCP usable. Mapped bytes are sent over actual DPDK to an independent host peer; receiving transformed bytes into the private mapping must leave the backing witness unchanged, proving copy-on-write. Both mappings must unmap, with mincore confirming release. Native identity, raw host TCP denial, active opens, real DPDK TX/RX, zero outstanding mbufs and EAL cleanup are required. No F-Stack helper ABI, imported-kernel file mmap/MMU, file durability, fork or zero-copy claim; host POSIX memory APIs remain unchanged."
     }
   }
 }

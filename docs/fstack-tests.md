@@ -431,3 +431,14 @@ partial 证据：实际 Linux bootmem 的 64 MiB POSIX 映射注入 ENOMEM，pip
 等待、UDP socket 和页面释放，检查真实映射起止页已解除。需
 `KER_WITH_NATIVE_TCP=ON`，独立测试不启动 DPDK/NIC。该项不实现 F-Stack
 无效 mmap flags/exit API，不计为完整源场景迁移。
+
+
+## 映射内存作为原生 TCP 缓冲区
+
+`native-fstack-mmap-shared`、`native-fstack-mmap-file-private` 分别对应固定
+F-Stack 的共享匿名、无 ANON 私有文件映射源场景。应用直接使用 POSIX mmap，
+在实际 Ker 启动后以映射作为原始 Linux TCP send/recv buffer，与独立宿主
+对端经 DPDK 交换并核对完整字节；验证 rw-s/rw-p、文件 COW witness、host fd
+关闭后映射/原生 fd 共存及真实解除映射。原生 opens、DPDK TX/RX、mbuf/EAL
+清理均需通过。需现有 native net_tap/namespace 环境；不提供 fork、零拷贝
+或 LKL MMU/file-mmap 功能。

@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 131 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 133 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 220 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 218 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **239 项**（220 blocked + 19 partial）。
+当前待完成 **237 项**（218 blocked + 19 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -78,7 +78,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 23 | 1 | 10 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 25 | 1 | 8 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 4 | 2 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
@@ -792,3 +792,42 @@ Linux/LKL/DPDK 源码。
 固定内核，未执行全量网络、sanitizer、自然 OOM 压力或物理 NIC。完整迁移
 门禁仍按预期返回 2，报告 220 blocked + 19 partial。日志保存于工作树外
 `~/.local/state/ker-native-linux/boot-memory-integration-validation/`。
+
+
+## 应用共享匿名与私有文件映射
+
+接续 `c32bd070b`，新增 `native-fstack-mmap-shared` 和
+`native-fstack-mmap-file-private`，分别迁移 `test_ff_mmap_map_shared_anon`、
+`test_ff_mmap_file_backed_no_anon`。应用进程内存继续使用宿主 POSIX mmap，
+不增加 Ker 内存 API；这些场景与 LKL 的 exact-address boot-memory callback
+不同，也不意味着非 MMU 原始内核新增文件 mmap/shared-physical-memory 功能。
+
+测试经过真实 launcher/app guard/preload 启动。应用确认固定原始 Linux
+身份和原始宿主 TCP syscall 拒绝，再连接独立宿主 TCP 对端。共享匿名场景
+映射两页 MAP_SHARED|MAP_ANONYMOUS，检查零初始化与 host /proc/self/maps
+中的 rw-s 权限。文件场景创建/立即 unlink 真实临时文件、写入确定字节，
+以无 MAP_ANONYMOUS 的 MAP_PRIVATE 映射，检查 rw-p；另建只读共享 witness。
+关闭宿主文件 fd 后，映射和原生 TCP 都必须继续可用。
+
+映射本身作为完整 send/recv buffer，经原始 Linux TCP/DPDK 与宿主对端交换
+两页含 NUL 的 payload，逐字节验证 XOR 后的响应。文件 witness 必须保留
+原内容，证明 recv 到私有映射触发写时复制，没有写坏文件。最后 munmap，
+mincore 确认解除映射；worker 必须记录真实 TX/RX、原始 Linux active opens、
+零 outstanding mbuf 和成功 EAL cleanup。协议行为仍来自原始 Linux。
+
+未增加初始化后 fork 支持，不把 rw-s 元数据检查当作跨进程共享可见性资格；
+不声明零拷贝、文件持久性、LKL MMU 或 F-Stack helper ABI 等价。全部生产、
+Linux/LKL/DPDK 代码不修改。
+
+本批两个源场景从 blocked 改为 scenario-adapted：
+**133 adapted、19 partial、218 blocked，待完成 237 项**。
+
+
+2026-11-17 验证：Debug 映射互通 **2/2**、优化 Release **2/2**、清单完整性
+与 mutation guards **2/2** 均通过，无 skip。每个映射场景均真实启动
+DPDK net_tap、原始 Linux 和独立宿主 TCP 对端。初次 runner 使用了错误
+统计字段名，修正为现有 tx/rx 后重跑通过；没有生产实现修复。
+固定内核产物复用，当前 Ker preload、worker/app guard 和新测试重新构建；
+未重建内核或运行全量 CTest、sanitizer、物理 NIC。完整迁移门禁按预期返回
+2（218 blocked + 19 partial）。日志保存于工作树外
+`~/.local/state/ker-native-linux/application-mappings-integration-validation/`。
