@@ -1,2 +1,3 @@
 # Preserve the pinned upstream test snapshot byte-for-byte.
 tests/upstream/fstack/** -text -filter -ident
+third_party/inih/** -text -filter -ident

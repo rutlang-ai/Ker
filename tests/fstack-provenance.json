@@ -373,6 +373,16 @@
       ],
       "adaptation": "Actual Ker launcher starts real DPDK worker and imported Linux before application main; app marker and native interface ioctls prove startup, native DONE plus zero outstanding prove shutdown. Missing configuration exits 2; real EAL argument rejection and missing selected ethdev exit 125 without executing the application, instead of F-Stack exit(1). No mocked successful startup or FreeBSD boot failure; interface activation injection is covered separately by native-fstack-startup-failures. Run/stop mapping remains partial: real worker control-channel stop and native teardown, without the ff_run callback/argument forwarding ABI."
     },
+    "fstack-ini-multiline": {
+      "source_file": "tests/unit/test_ff_ini_parser.c",
+      "source_case": [
+        "test_ini_parse_stream_multiline_value_continuation"
+      ],
+      "ker_ctests": [
+        "fstack-ini-multiline"
+      ],
+      "adaptation": "The caller-facing ker::ini API forwards the original input through the unchanged pinned F-Stack/inih parser. A real caller-owned stream and callback verify three ordered deliveries for the original line and both continuation lines, with the same section and key. The test also verifies the stream remains open. Ker's typed launcher keeps its own configuration schema and parse behavior."
+    },
     "native-fstack-ini-long-key": {
       "source_file": "tests/unit/test_ff_ini_parser.c",
       "source_case": [
@@ -410,7 +420,7 @@
       "ker_ctests": [
         "native-fstack-launcher-config"
       ],
-      "adaptation": "Eighteen pinned F-Stack INI scenarios adapted to the actual Ker launcher configuration reader: known sections/options, multiple sections, comments and whitespace, empty text/value, missing final newline, colon delimiter, valid UTF-8 BOM, malformed syntax, missing bracket, bare lines, real open-file/filename input, missing file and malformed BOM byte rejection. Python configparser exceptions and UTF-8 decode errors replace F-Stack integer return codes and callback records; typed Ker configuration, not direct F-Stack config-file/API compatibility. One multiline scenario remains partial because Ker joins lines into an EAL string instead of invoking a handler per line. No sectionless globals, arbitrary handler rejection/userdata, NULL FILE C ABI or name-truncation claim. Ker extensions test strict unknown/duplicate/default rejection, interpolation disabled, CLI and negative-boolean overrides, config-relative paths, app argument isolation and pre-launch configuration rejection. Separate native-fstack-launcher-config-interop starts real DPDK/native Linux TCP workers in both roles using file-provided network/EAL/log/capture settings; validates kernel opens, TX/RX, zero outstanding, capture/log files and explicit CLI port/stats overrides."
+      "adaptation": "Eighteen pinned F-Stack INI scenarios adapted to the actual Ker launcher configuration reader: known sections/options, multiple sections, comments and whitespace, empty text/value, missing final newline, colon delimiter, valid UTF-8 BOM, malformed syntax, missing bracket, bare lines, real open-file/filename input, missing file and malformed BOM byte rejection. Python configparser exceptions and UTF-8 decode errors replace F-Stack integer return codes and callback records; typed Ker configuration, not direct F-Stack config-file/API compatibility. The launcher joins continuations into one EAL string. The separate fstack-ini-multiline test verifies per-line callbacks through ker::ini. No sectionless globals, arbitrary handler rejection/userdata, NULL FILE C ABI or name-truncation claim. Ker extensions test strict unknown/duplicate/default rejection, interpolation disabled, CLI and negative-boolean overrides, config-relative paths, app argument isolation and pre-launch configuration rejection. Separate native-fstack-launcher-config-interop starts real DPDK/native Linux TCP workers in both roles using file-provided network/EAL/log/capture settings; validates kernel opens, TX/RX, zero outstanding, capture/log files and explicit CLI port/stats overrides."
     },
     "native-fstack-worker-log": {
       "source_file": "tests/unit/test_ff_log.c",

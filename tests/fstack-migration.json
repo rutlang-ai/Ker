@@ -3843,15 +3843,18 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_multiline_value_continuation",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini stream reader produces three ordered callbacks with the original section and key and the three expected values through byte-identical pinned F-Stack parser source.",
       "ker_tests": [
+        {
+          "ctest": "fstack-ini-multiline",
+          "provenance_case": "fstack-ini-multiline"
+        },
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
         }
-      ],
-      "remaining": "Ker combines continuation lines into one EAL string. F-Stack invokes the handler separately for the initial value and every continuation line; that callback sequence is not implemented."
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_colon_separator",
