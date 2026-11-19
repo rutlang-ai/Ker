@@ -345,6 +345,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-port-queue-allocation COMMAND ${ker_startup_failure_command}
         --port-allocation)
     set_tests_properties(native-fstack-port-queue-allocation PROPERTIES TIMEOUT 120 LABELS "fstack;native-dpdk")
+    add_test(NAME native-fstack-realtime-startup-failure COMMAND ${ker_startup_failure_command}
+        --realtime-clock)
+    set_tests_properties(native-fstack-realtime-startup-failure PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-environment-test tests/posix/fstack-environment.c)
     target_compile_options(ker-environment-test PRIVATE -Wall -Wextra -Werror)
     target_compile_definitions(ker-environment-test PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
