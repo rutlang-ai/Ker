@@ -3486,9 +3486,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_host_kqueue_ctl_add_idempotent",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The native POSIX epoll test explicitly follows a duplicate listener ADD returning EEXIST with MOD and observes exactly one readiness event bearing the replacement application tag, before a single removal and real TCP accept.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-repeated-listener-registration"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_host_readv_writev",

@@ -964,6 +964,16 @@
       "adaptation": "Ker-specific Linux packet_type fanout and ownership extension. Real net_ring RX supplies segmented opaque Ethernet frames through the actual worker, original Ethernet classification and imported Linux ptype delivery. Global-before-device ordering, per-callback descriptor references, final-handler status, explicit invalid-status reporting, no-handler drop, retained skb lifetime, cloned backing, COW ENOMEM rollback/recovery, independent header/payload mutation, both release orders and full pool reclamation are checked. The pinned F-Stack cases motivate worker iteration and basic ownership only; they do not test Linux ptype fanout or COW. No F-Stack RX, NIC, IP/transport processing or application-protocol behavior is claimed.",
       "ker_ctests": ["ethdev-rx-fanout"]
     },
+    "native-fstack-repeated-listener-registration": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_kqueue_ctl_add_idempotent"
+      ],
+      "ker_ctests": [
+        "native-fstack-epoll"
+      ],
+      "adaptation": "Adapt the repeated ADD operation from the caller-side F-Stack readiness helper to explicit Linux epoll calls. The caller observes EEXIST and uses MOD to update the listener's application tag before a real TCP connection arrives. A poll with space for two events reports exactly one event with the new tag. A single DEL removes readiness while the connection can still be accepted. The fixture runs on the host and through Ker's POSIX adapter against the original Linux TCP and epoll implementations. This tests the caller sequence and readiness outcome, while the public Linux API continues to return EEXIST for duplicate ADD."
+    },
     "native-fstack-epoll": {
       "source_file": "tests/unit/test_ff_epoll.c",
       "source_case": [
