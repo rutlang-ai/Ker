@@ -181,8 +181,41 @@ static void transfer_and_stop(void)
     CHECK(fcntl(fd[1], F_GETFD) >= 0 && descriptors() == before - 1);
     CHECK(close(fd[1]) == 0);
 }
-int main(void)
+static void null_context(void)
 {
+    unsigned before = descriptors();
+    unsigned allocated = allocations, freed = releases;
+    int fd[2];
+    pair(fd);
+    struct lkl_netdev *device = ker_packet_device_create(fd[0]);
+    CHECK(device);
+    unsigned opened = descriptors();
+    errno = 0;
+    CHECK(device->ops->tx(NULL, NULL, 0) == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK(device->ops->rx(NULL, NULL, 0) == -1 && errno == EINVAL);
+    CHECK(allocations == allocated + 1 && releases == freed && descriptors() == opened);
+
+    char byte = 'T';
+    struct iovec vector = {&byte, sizeof(byte)};
+    CHECK(device->ops->tx(device, &vector, 1) == 1);
+    CHECK(recv(fd[1], &byte, sizeof(byte), 0) == 1 && byte == 'T');
+    byte = 'R';
+    CHECK(send(fd[1], &byte, sizeof(byte), 0) == 1);
+    byte = 0;
+    CHECK(device->ops->rx(device, &vector, 1) == 1 && byte == 'R');
+    device->ops->free(device);
+    CHECK(close(fd[1]) == 0);
+    CHECK(!allocation && releases == freed + 1 && descriptors() == before);
+    puts("PASS: null packet context rejection, valid TX/RX and resource balance");
+}
+int main(int argc, char **argv)
+{
+    if (argc == 2 && !strcmp(argv[1], "--null-context")) {
+        null_context();
+        return 0;
+    }
+    CHECK(argc == 1);
     struct sigaction action = {.sa_handler = signal_handler};
     sigemptyset(&action.sa_mask);
     CHECK(sigaction(SIGUSR1, &action, NULL) == 0);

@@ -29,6 +29,7 @@ static void notify(struct packet_device *device)
 }
 static int transfer(struct lkl_netdev *native, struct iovec *iov, int count, bool tx)
 {
+    if (!native) { errno = EINVAL; return -1; }
     struct packet_device *device = (struct packet_device *)native;
     if (atomic_load_explicit(&device->stopped, memory_order_acquire)) {
         errno = ESHUTDOWN;
