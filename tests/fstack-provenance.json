@@ -403,6 +403,16 @@
       ],
       "adaptation": "Call the exported INI file reader with a NULL file and require a return of -1 without invoking the handler. A real subsequent file parse supplies the positive control and confirms the caller still owns the stream. This uses the byte-identical F-Stack/inih parser in ker::ini."
     },
+    "fstack-ini-long-section": {
+      "source_file": "tests/unit/test_ff_ini_parser.c",
+      "source_case": [
+        "test_ini_parse_stream_long_section_name"
+      ],
+      "ker_ctests": [
+        "fstack-ini-long-section"
+      ],
+      "adaptation": "Use the pinned parser through Ker's exported API and verify that a 60-character section reaches the callback as exactly its first 49 characters. The key and value remain intact. This uses the byte-identical F-Stack/inih parser in ker::ini."
+    },
     "fstack-ini-multiline": {
       "source_file": "tests/unit/test_ff_ini_parser.c",
       "source_case": [
