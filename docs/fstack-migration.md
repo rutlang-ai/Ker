@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 142 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 143 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 209 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 208 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **228 项**（209 blocked + 19 partial）。
+当前待完成 **227 项**（208 blocked + 19 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -79,7 +79,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 28 | 1 | 5 | 0 | 0 |
-| [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
+| [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 19 | 1 | 5 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 4 | 2 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
@@ -1015,3 +1015,10 @@ F-Stack 的缓存时钟更新以断言失败，Ker 的适配发生在原生启�
 测试重复加载并丢弃包含 lcore、VLAN、sysctl 的配置 32 次，通过弱引用验证
 配置 namespace 和类型化地址对象可回收，同时检查进程描述符集合恢复。
 每轮再从空文件加载并验证 CLI 设置及默认值，确保前一轮的配置状态已隔离。
+
+## 保留 INI 长键的完整名称
+
+`test_ini_parse_stream_long_key_name` 适配到生产 `[sysctl]` 解析和原生启动。
+两个 60 字符的键共享前 59 个字符，解析后仍可区分，CLI 仅覆盖完整名称匹配的键。
+128 字符边界可解析，超长键报错。真实 DPDK 和原始 Linux 启动时，未注册的
+60 字符键从其完整 procfs 路径返回 ENOENT，随后正常回收 worker 资源。

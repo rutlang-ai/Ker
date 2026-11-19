@@ -178,6 +178,26 @@ class ConfigTests(unittest.TestCase):
                     launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
                 self.assertEqual(error.exception.code, 2)
 
+    def test_long_ini_keys_remain_distinct_and_untruncated(self):
+        prefix = 'net.ipv4.' + 'k' * 50
+        first, second = prefix + 'a', prefix + 'b'
+        self.assertEqual((len(first), len(second)), (60, 60))
+        text = f'[sysctl]\n{first}=1\n{second}=2\n'
+        self.assertEqual(self.read(text)['sysctls'], [(first, '1'), (second, '2')])
+
+        boundary = 'net.ipv4.' + 'k' * 119
+        self.assertEqual(len(boundary), 128)
+        self.assertEqual(self.read(f'[sysctl]\n{boundary}=3\n')['sysctls'], [(boundary, '3')])
+        with self.assertRaisesRegex(ValueError, r'dotted Linux net\.\* key'):
+            self.read(f'[sysctl]\n{boundary}x=3\n')
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'long.ini'
+            config.write_text(text)
+            args = launcher.parse_arguments(['--config', str(config), '--address', '198.18.0.2/24',
+                '--port', 'net_tap0', '--eal=--no-huge', '--sysctl', f'{second}=4', '--', '/bin/true'])
+            self.assertEqual(args.sysctls, {first: '1', second: '4'})
+
     def test_vip_addresses_and_cli_replacement(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertEqual(launcher.parse_arguments(base + ['--', '/bin/true']).vip_addresses, [])
