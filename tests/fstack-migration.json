@@ -3820,9 +3820,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_user_data_passed",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The Ker configuration schema has no opaque caller handler/userdata callback interface.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Verify the real INI parser invokes the callback with the exact opaque context pointer supplied by the application. The callback sees the intact sentinel and stores the result in the original context.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-user-data",
+          "provenance_case": "fstack-ini-user-data"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_zero_byte_input",

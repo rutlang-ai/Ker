@@ -413,6 +413,16 @@
       ],
       "adaptation": "Use the pinned parser through Ker's exported API and verify that a 60-character section reaches the callback as exactly its first 49 characters. The key and value remain intact. This uses the byte-identical F-Stack/inih parser in ker::ini."
     },
+    "fstack-ini-user-data": {
+      "source_file": "tests/unit/test_ff_ini_parser.c",
+      "source_case": [
+        "test_ini_parse_stream_user_data_passed"
+      ],
+      "ker_ctests": [
+        "fstack-ini-user-data"
+      ],
+      "adaptation": "Verify the real INI parser invokes the callback with the exact opaque context pointer supplied by the application. The callback sees the intact sentinel and stores the result in the original context. This uses the byte-identical F-Stack/inih parser in ker::ini."
+    },
     "fstack-ini-multiline": {
       "source_file": "tests/unit/test_ff_ini_parser.c",
       "source_case": [
