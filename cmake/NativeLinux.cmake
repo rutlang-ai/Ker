@@ -278,6 +278,10 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-config-lifecycle
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_lifecycle.py")
     set_tests_properties(native-fstack-config-lifecycle PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-config-release
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_lifecycle.py"
+            ConfigLifecycleTests.test_discarded_configuration_releases_objects_and_file)
+    set_tests_properties(native-fstack-config-release PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-fstack-config-port-section
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_boundaries.py" PortSectionTests)
     set_tests_properties(native-fstack-config-port-section PROPERTIES TIMEOUT 30 LABELS fstack)
