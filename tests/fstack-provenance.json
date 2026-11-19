@@ -383,6 +383,16 @@
       ],
       "adaptation": "Exercise a sectionless record through the exported INI reader. The application callback receives exactly one record with an empty section and the original key and value. This uses the byte-identical F-Stack/inih parser in ker::ini."
     },
+    "fstack-ini-handler-rejection": {
+      "source_file": "tests/unit/test_ff_ini_parser.c",
+      "source_case": [
+        "test_ini_parse_stream_handler_returns_zero"
+      ],
+      "ker_ctests": [
+        "fstack-ini-handler-rejection"
+      ],
+      "adaptation": "Verify that a callback returning zero stops the real INI reader at line 2. The next key is neither delivered nor consumed and the caller can still read it from the open file. This uses the byte-identical F-Stack/inih parser in ker::ini."
+    },
     "fstack-ini-multiline": {
       "source_file": "tests/unit/test_ff_ini_parser.c",
       "source_case": [
