@@ -77,6 +77,12 @@ cmake --install build-native-tcp --prefix "$PWD/build-native-tcp/install"
 
 安装产物为 `bin/ker-run`、`bin/ker-app`、`bin/ker-io-worker`、`bin/ker-socket-echo`、`lib*/libker-posix.so`、公共头与 CMake target `ker::posix`；build/source 记录和 Linux 许可文本位于 `share/ker/native-linux`。完整生成源码保留在构建记录的 `source` 目录；分发内核库时应一并保留对应源码、配置和构建材料。此构建包含 Linux 的 GPL-2.0 代码。
 
+`ker_posix_get_current_time(&seconds, &nanoseconds)` 读取当前原生 Linux 的
+`CLOCK_REALTIME`，秒为 Unix epoch 秒，纳秒范围为 0–999999999。
+两个输出均可省略，调用仍读取一次内核时钟。错误按 POSIX 方式返回
+`-1/errno`，保留调用方原有输出。实例未启动或已停止时返回 ENETDOWN。
+应用应在关闭实例前停止发起读取。
+
 ## 启动现有应用
 
 为每个实例独占一个 DPDK ethdev，并在外部配置好设备驱动、权限、hugepage、peer 与路由。选择已构建的 PMD。示例中的 PCI 地址、CPU、IP 和网关需替换为部署环境值：
