@@ -3696,9 +3696,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_no_section",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker requires known named sections; F-Stack sectionless key callbacks are not implemented.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Exercise a sectionless record through the exported INI reader. The application callback receives exactly one record with an empty section and the original key and value.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-no-section",
+          "provenance_case": "fstack-ini-no-section"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_invalid_syntax",
