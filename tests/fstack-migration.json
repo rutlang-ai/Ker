@@ -3324,9 +3324,18 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_nsec",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original Linux realtime adapter returns Unix epoch seconds with nanoseconds omitted. A private epoch proves native reads, and after normal startup the deployed application calls the exported symbol and observes a synchronized epoch.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-current-time-null-nanoseconds",
+          "provenance_case": "native-fstack-current-time-null-nanoseconds"
+        },
+        {
+          "ctest": "native-fstack-realtime-startup-failure",
+          "provenance_case": "native-fstack-current-time-null-nanoseconds"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_assert_fail_on_clock_error",
