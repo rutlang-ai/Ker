@@ -1276,9 +1276,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original full DPDK fixture checks the lcore and port arrays, bond settings, RSS entries, and port VIP and lcore lists. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_dpdk_full",
+          "provenance_case": "fstack-config-source-test_ff_load_config_dpdk_full"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_lcore_mask_no_bits",
