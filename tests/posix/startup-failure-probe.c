@@ -49,15 +49,25 @@ int clock_gettime(clockid_t clock, struct timespec *value)
     const char *mode = getenv("KER_TEST_STARTUP_FAILURE");
     /* Only the application preload has this startup channel. The separate
      * DPDK worker and every monotonic sample keep using the real host clock. */
-    if (clock == CLOCK_REALTIME && mode && !strcmp(mode, "realtime") &&
-        getenv("KER_STARTUP_FD") && getenv("KER_PACKET_FD")) {
+    int startup_realtime = clock == CLOCK_REALTIME && getenv("KER_STARTUP_FD") &&
+        getenv("KER_PACKET_FD");
+    int trace = startup_realtime && getenv("KER_TEST_STARTUP_REALTIME_TRACE");
+    if (startup_realtime && mode && !strcmp(mode, "realtime")) {
+        if (trace) fputs("ker-test: startup realtime injected EIO\n", stderr);
         errno = EIO;
         return -1;
     }
     int (*next_clock)(clockid_t, struct timespec *) = dlsym(RTLD_NEXT, "clock_gettime");
     if (!next_clock) { errno = ENOSYS; return -1; }
     errno = saved;
-    return next_clock(clock, value);
+    int result = next_clock(clock, value);
+    if (trace) {
+        saved = errno;
+        fputs(result ? "ker-test: startup realtime real error\n" :
+            "ker-test: startup realtime real ok\n", stderr);
+        errno = saved;
+    }
+    return result;
 }
 
 int rte_eal_cleanup(void)

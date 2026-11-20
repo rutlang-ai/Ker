@@ -24,6 +24,7 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--failure-library', type=Path)
     mode.add_argument('--port-allocation', action='store_true')
+    mode.add_argument('--realtime-clock', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if not args.inside:
@@ -32,6 +33,8 @@ def main():
             command += ['--' + name, str(getattr(args, name).resolve())]
         if args.port_allocation:
             command += ['--port-allocation']
+        elif args.realtime_clock:
+            command += ['--realtime-clock']
         else:
             command += ['--failure-library', str(args.failure_library.resolve())]
         return subprocess.run(command).returncode
@@ -72,16 +75,25 @@ def main():
                 ('tx', [], None, 125, 'ethdev initialization failed for net_tap0'),
                 ('recovery', [], None, 0, 'PASS: native interfaces ready'),
             ]
+        if args.realtime_clock:
+            cases = [
+                ('native-clock', [], 'realtime', 125,
+                 f'native realtime clock initialization ({-errno.EIO})'),
+                ('clock-recovery', [], None, 0, 'PASS: native interfaces ready'),
+            ]
         for name, options, failure, expected, diagnostic in cases:
             marker, stats, cleanup = [root / (name + suffix) for suffix in ('.app', '.json', '.cleanup')]
             env = environment.copy()
             env['KER_TEST_STARTUP_CLEANUP'] = str(cleanup)
             env.pop('KER_TEST_STARTUP_FAILURE', None)
+            env.pop('KER_TEST_STARTUP_REALTIME_TRACE', None)
             env.pop('KER_TEST_IF_UP_FAILURE', None)
             env.pop('KER_TEST_IF_UP_TRACE', None)
             env.pop('KER_TEST_PORT_QUEUE_ALLOCATION', None)
             if args.port_allocation:
                 env['KER_TEST_PORT_QUEUE_ALLOCATION'] = name
+            if args.realtime_clock:
+                env['KER_TEST_STARTUP_REALTIME_TRACE'] = '1'
             selected_launcher = list(launcher)
             wrapped = name in ('wrapped-success', 'loopback-up', 'interface-up')
             trace = root / (name + '.trace')
@@ -137,6 +149,12 @@ def main():
                             f'{name}: original DPDK did not report configuration ENOMEM: {result.stderr}')
                     require('DPDK worker failed before packet I/O became ready' in result.stderr,
                             f'{name}: expected worker startup failure: {result.stderr}')
+            if args.realtime_clock:
+                prefix = 'ker-test: startup realtime '
+                observed = [line.removeprefix(prefix) for line in result.stderr.splitlines()
+                            if line.startswith(prefix)]
+                require(observed == ['injected EIO' if failure else 'real ok'],
+                        f'{name}: unexpected realtime clock trace: {result.stderr}')
             print('PASS: ' + name + ' startup order, application marker and worker/EAL cleanup', flush=True)
     return 0
 

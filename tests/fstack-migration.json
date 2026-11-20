@@ -3337,9 +3337,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_update_current_ts_assert_fail_on_clock_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production native startup exits 125 before application entry when the host realtime read returns EIO. The real DPDK worker cleans up and the subsequent launch succeeds with the actual host clock and original Linux interfaces.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-realtime-startup-failure",
+          "provenance_case": "native-fstack-realtime-startup-failure"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_kernel_fd_encode_roundtrip",

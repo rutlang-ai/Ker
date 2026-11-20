@@ -146,6 +146,16 @@
       ],
       "adaptation": "The source rejects deployment after port-configuration allocation fails. Ker exercises the same failure scenario at the actual DPDK ethdev queue-table allocation boundary for its selected port. A test-only interposer fails the tagged RX or TX rte_zmalloc call in separate launches and forwards other allocations and frees to pinned DPDK. The RX failure must precede TX allocation. A TX failure must release the specific successfully allocated RX table before EAL cleanup. Both failures must report DPDK ENOMEM, make ker-run exit 125 before worker or native READY, leave no application marker, and remove the TAP with successful EAL cleanup and zero outstanding packet buffers. A later launch without an injected failure reuses the same port and TAP names in the same namespace and verifies original Linux interface configuration. The source uses an INI port-config array and a calloc ordinal. Ker stages allocation inside the DPDK worker and exercises an injected allocator failure."
     },
+    "native-fstack-realtime-startup-failure": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_update_current_ts_assert_fail_on_clock_error"
+      ],
+      "ker_ctests": [
+        "native-fstack-realtime-startup-failure"
+      ],
+      "adaptation": "Inject EIO into the one host CLOCK_REALTIME read in production native initialization. Exact trace and diagnostic prove the failure reached the native realtime synchronization boundary after the DPDK net_tap worker was ready. The launcher exits 125 before native READY or application main and captures successful EAL cleanup with zero outstanding mbufs. A fresh process in the same namespace forwards the same read to the host, starts the original Linux interfaces, runs the application probe and cleans up again. Ker aborts this startup through its process exit contract, while the FreeBSD helper uses an assertion around its cached time update."
+    },
     "native-fstack-null-packet-context": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": [
