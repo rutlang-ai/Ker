@@ -245,6 +245,16 @@
       ],
       "adaptation": "The pinned formatter preserves legacy and slot-zero names, wraps epochs 4 and onwards to nonzero slots, and reports the original maximum output name, truncation and invalid argument results."
     },
+    "fstack-ipc-legacy-ring-names": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_m5_graceful_zero_epoch_invariance"
+      ],
+      "ker_ctests": [
+        "fstack-ipc-legacy-ring-names"
+      ],
+      "adaptation": "Sweep the source process IDs, generations, epochs and every reply message type. Legacy mode emits the exact original unsuffixed input and reply names for every coordinate."
+    },
     "fstack-ipc-process-coordinate": {
       "source_file": "tests/unit/test_ff_ipc.c",
       "source_case": [
