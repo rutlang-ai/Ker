@@ -4,6 +4,8 @@ These are parser/lifecycle checks, not NIC or original-kernel traffic evidence.
 F-Stack's permissive unknown sections and global struct ABI are not emulated.
 """
 import contextlib
+import copy
+import gc
 import importlib.util
 import io
 from pathlib import Path
@@ -11,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import weakref
 
 sys.dont_write_bytecode = True
 SOURCE = Path(__file__).resolve().parents[2] / 'tools/ker-run.py'
@@ -132,6 +135,30 @@ addresses=198.19.100.2/24,198.19.100.3/24
     def test_repeated_keys_have_explicit_strict_boundary(self):
         self.reject_before_setup(MINIMAL + 'port=net_tap1\n', 'already exists')
         self.assertEqual(self.parse(MINIMAL).port, 'net_tap0')
+
+    def test_discarded_configuration_releases_objects_and_file(self):
+        defaults = copy.deepcopy(launcher.CONFIG_DEFAULTS)
+        before = set(Path('/proc/self/fd').iterdir())
+        for iteration in range(32):
+            address = f'198.19.100.{iteration + 2}/24'
+            args = self.parse(MINIMAL + f'''[sysctl]
+net.ipv4.ip_default_ttl=66
+[vlan.100]
+addresses={address}
+''')
+            self.assertEqual(args.lcore_mask, '1')
+            self.assertEqual(args.sysctls, {'net.ipv4.ip_default_ttl': '66'})
+            self.assertEqual(str(args.vlans[0][1][0]), address)
+            refs = [weakref.ref(value) for value in (args, args.address, args.vlans[0][1][0])]
+            del args
+            gc.collect()
+            self.assertTrue(all(ref() is None for ref in refs))
+            self.assertEqual(set(Path('/proc/self/fd').iterdir()), before)
+
+            fresh = self.parse('', BASE)
+            self.assertEqual((fresh.lcore_mask, fresh.vlans, fresh.sysctls), (None, (), {}))
+            self.assertEqual(fresh.eal_args, ['--no-huge'])
+            self.assertEqual(launcher.CONFIG_DEFAULTS, defaults)
 
 
 if __name__ == '__main__':
