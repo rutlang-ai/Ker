@@ -4,7 +4,14 @@
 
 #define FIXTURE_PATH(name) "fixtures/" name
 
-static int load_with_fixture(const char *path)
+int load_with_proc(const char *path, const char *type, const char *id)
+{
+    char program[] = "config-test", config[] = "-c", process[] = "-t", index[] = "-p";
+    char *args[] = {program, config, (char *)path, process, (char *)type, index, (char *)id, NULL};
+    return example_fstack_config_load(7, args);
+}
+
+int load_with_fixture(const char *path)
 {
     char program[] = "config-test", config[] = "-c";
     char *args[] = {program, config, (char *)path, NULL};

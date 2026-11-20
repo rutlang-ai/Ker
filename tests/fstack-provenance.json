@@ -1428,6 +1428,16 @@
       ],
       "adaptation": "The source fixture keeps the RSS section enabled while setting its hash adjustment flag to zero. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_parse_lcore_mask_proc_id_in_range": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_parse_lcore_mask_proc_id_in_range"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_parse_lcore_mask_proc_id_in_range"
+      ],
+      "adaptation": "The original lcore-mask fixture accepts the final valid process index and constructs its process mask. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
