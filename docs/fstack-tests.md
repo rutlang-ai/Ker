@@ -423,6 +423,14 @@ F-Stack ABI 或自然 NIC 故障等价。接口 probe 使用不依赖 assert 的
 Release 不再通过 -UNDEBUG 保留断言。
 
 
+## DPDK 端口队列表分配失败
+
+`native-fstack-port-queue-allocation` 对真实 DPDK `net_tap` ethdev 的 RX 和
+TX 队列表分配分别注入 ENOMEM，验证启动在就绪前失败。TX 分配失败时，确认先前
+分配的 RX 队列表在 EAL 清理前释放。两次失败后，以同名端口重新启动并通过原始
+Linux ioctl 验证接口配置。需要 `KER_WITH_NATIVE_TCP=ON` 和现有 namespace/TAP
+环境。[来源与迁移清单](fstack-migration.md#dpdk-端口队列表分配失败)
+
 ## 关键 boot mapping 分配失败
 
 `native-fstack-boot-memory-debug/release` 对 `test_ff_mmap_failure_exits` 提供

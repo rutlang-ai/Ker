@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 138 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 139 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 213 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 212 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **232 项**（213 blocked + 19 partial）。
+当前待完成 **231 项**（212 blocked + 19 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -72,7 +72,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 17 | 2 | 77 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 18 | 2 | 76 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 5 | 1 | 61 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
@@ -969,3 +969,23 @@ MemoryError 逃逸失败；修复后配置与清单 CTest **10/10** 通过，实
 自然 OOM 压力。完整迁移门禁按预期返回 2（213 blocked + 19 partial）。
 日志保存于工作树外
 `~/.local/state/ker-native-linux/vlan-allocation-integration-validation/`。
+
+## DPDK 端口队列表分配失败
+
+`native-fstack-port-queue-allocation` 适配
+`test_alloc_port_cfgs_calloc_oom_returns_error`。F-Stack 在 INI 加载期间分配
+端口配置数组，Ker 在所选 ethdev 的 DPDK 队列配置阶段分配队列表。测试在真实
+`net_tap` worker 里分别让原始 DPDK 的 RX 或 TX 队列表分配返回 ENOMEM。
+RX 分配失败必须中止 TX 分配。TX 分配失败前 RX 队列表确实已分配，测试跟踪
+同一个指针，并确认它在 EAL 清理前已经释放。
+
+两种失败均要求 launcher 返回 125，worker 和原生 Linux 均未报告就绪，
+应用未启动，且实际 EAL 清理成功、mbuf 计数归零、TAP 被移除。随后在同一网络
+namespace 使用相同 DPDK 端口名与 TAP 名无故障启动，通过原始 Linux socket
+ioctl 验证 loopback、IPv4 和 MTU。故障注入仅用于测试，适配证据限于启动
+与清理路径。
+
+2026-11-19 验证使用固定 gitlink 新构建的 DPDK 和通过构建指纹校验的原始
+Linux 产物。Debug 全量 CTest 通过 211/211，Release 的启动错误、端口队列
+分配和清单检查通过 4/4。两个构建均无跳过。完整迁移门禁返回 2，仍有
+212 项 blocked 和 19 项 partial。

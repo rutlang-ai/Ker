@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Exercise real DPDK/native startup failure ordering and worker cleanup."""
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -16,14 +18,22 @@ def require(condition, message):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('launcher', 'library', 'worker', 'app', 'probe', 'failure-library'):
+    paths = ('launcher', 'library', 'worker', 'app', 'probe')
+    for name in paths:
         parser.add_argument('--' + name, type=Path, required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--failure-library', type=Path)
+    mode.add_argument('--port-allocation', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if not args.inside:
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
-        for name in ('launcher', 'library', 'worker', 'app', 'probe', 'failure-library'):
-            command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
+        for name in paths:
+            command += ['--' + name, str(getattr(args, name).resolve())]
+        if args.port_allocation:
+            command += ['--port-allocation']
+        else:
+            command += ['--failure-library', str(args.failure_library.resolve())]
         return subprocess.run(command).returncode
     for scope in ('all', 'default'):
         Path('/proc/sys/net/ipv6/conf/' + scope + '/disable_ipv6').write_text('1\n')
@@ -50,6 +60,18 @@ def main():
             ('native-route', ['--gateway', '203.0.113.1'], None, 125, 'default route'),
             ('worker-port', ['--port', 'missing-ethdev'], None, 125, 'unknown ethdev'),
         ]
+        port_traces = {
+            'rx': ['rx queue allocation injected ENOMEM'],
+            'tx': ['rx queue allocation real ok', 'tx queue allocation injected ENOMEM',
+                   'rx queue allocation released', 'rx queue allocation released before EAL cleanup'],
+            'recovery': ['rx queue allocation real ok', 'tx queue allocation real ok'],
+        }
+        if args.port_allocation:
+            cases = [
+                ('rx', [], None, 125, 'ethdev initialization failed for net_tap0'),
+                ('tx', [], None, 125, 'ethdev initialization failed for net_tap0'),
+                ('recovery', [], None, 0, 'PASS: native interfaces ready'),
+            ]
         for name, options, failure, expected, diagnostic in cases:
             marker, stats, cleanup = [root / (name + suffix) for suffix in ('.app', '.json', '.cleanup')]
             env = environment.copy()
@@ -57,6 +79,9 @@ def main():
             env.pop('KER_TEST_STARTUP_FAILURE', None)
             env.pop('KER_TEST_IF_UP_FAILURE', None)
             env.pop('KER_TEST_IF_UP_TRACE', None)
+            env.pop('KER_TEST_PORT_QUEUE_ALLOCATION', None)
+            if args.port_allocation:
+                env['KER_TEST_PORT_QUEUE_ALLOCATION'] = name
             selected_launcher = list(launcher)
             wrapped = name in ('wrapped-success', 'loopback-up', 'interface-up')
             trace = root / (name + '.trace')
@@ -84,9 +109,9 @@ def main():
             if name in ('native-clock', 'native-route', 'loopback-up', 'interface-up'):
                 require('application did not initialize the native Linux backend' in result.stderr,
                         f'{name}: failed native startup unexpectedly sent READY')
-            if name == 'worker-port':
+            if name == 'worker-port' or (args.port_allocation and expected != 0):
                 require(record['io'] is None and 'native' not in record,
-                        'failed ethdev lookup reached later startup stages')
+                        f'{name}: failed worker reached later startup stages')
             else:
                 require(record['io']['port_count'] == 1, f'{name}: EAL did not initialize')
                 require(('native' in record) == (expected == 0),
@@ -99,6 +124,19 @@ def main():
                     'interface-up': 'loopback real 0\ninterface injected -5\n'}[name]
                 require(trace.is_file() and trace.read_text() == expected_trace,
                         f'{name}: interface activation stage trace mismatch')
+            if args.port_allocation:
+                prefix = 'ker-test: '
+                observed = [line.removeprefix(prefix) for line in result.stderr.splitlines()
+                            if line.startswith(prefix)]
+                require(observed == port_traces[name],
+                        f'{name}: ethdev allocation or rollback trace mismatch: {result.stderr}')
+                require('kerpeer' not in {interface for _, interface in socket.if_nameindex()},
+                        f'{name}: TAP interface still present after worker exit')
+                if expected != 0:
+                    require(f'eth_dev_{name}_queue_config = {-errno.ENOMEM}' in result.stderr,
+                            f'{name}: original DPDK did not report configuration ENOMEM: {result.stderr}')
+                    require('DPDK worker failed before packet I/O became ready' in result.stderr,
+                            f'{name}: expected worker startup failure: {result.stderr}')
             print('PASS: ' + name + ' startup order, application marker and worker/EAL cleanup', flush=True)
     return 0
 

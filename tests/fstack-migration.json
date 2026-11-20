@@ -1587,9 +1587,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_alloc_port_cfgs_calloc_oom_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher rejects deployment when original DPDK cannot allocate an RX or TX queue table for the selected ethdev. Both injected failures return ENOMEM from DPDK and stop startup before worker or native READY. The TX case verifies release of the real RX table before EAL cleanup. A subsequent fault-free launch verifies the original Linux interfaces in the same network namespace. F-Stack allocates its port configuration in the INI loader, while Ker delegates queue configuration to DPDK.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-port-queue-allocation",
+          "provenance_case": "native-fstack-port-queue-allocation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfgs_calloc_oom_returns_error",

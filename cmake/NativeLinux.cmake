@@ -315,6 +315,7 @@ if(BUILD_TESTING)
         --startup-app "$<TARGET_FILE:ker-startup-interface-test>")
     set_tests_properties(native-fstack-startup-lifecycle PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_library(ker-startup-failure-probe SHARED tests/posix/startup-failure-probe.c)
+    target_include_directories(ker-startup-failure-probe SYSTEM PRIVATE ${DPDK_INCLUDE_DIRS})
     target_compile_options(ker-startup-failure-probe PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-startup-failure-probe PRIVATE ${CMAKE_DL_LIBS})
     # Build the same adaptation layer with a link-time failure wrapper. This
@@ -331,13 +332,17 @@ if(BUILD_TESTING)
         "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
     set_property(TARGET ker-posix-if-up-failure APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
     target_link_libraries(ker-posix-if-up-failure PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
-    add_test(NAME native-fstack-startup-failures
-        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/startup-failures.py"
-            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
-            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-startup-interface-test>"
-            --probe "$<TARGET_FILE:ker-startup-failure-probe>"
-            --failure-library "$<TARGET_FILE:ker-posix-if-up-failure>")
+    set(ker_startup_failure_command
+        "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/startup-failures.py"
+        --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+        --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-startup-interface-test>"
+        --probe "$<TARGET_FILE:ker-startup-failure-probe>")
+    add_test(NAME native-fstack-startup-failures COMMAND ${ker_startup_failure_command}
+        --failure-library "$<TARGET_FILE:ker-posix-if-up-failure>")
     set_tests_properties(native-fstack-startup-failures PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-port-queue-allocation COMMAND ${ker_startup_failure_command}
+        --port-allocation)
+    set_tests_properties(native-fstack-port-queue-allocation PROPERTIES TIMEOUT 120 LABELS "fstack;native-dpdk")
     add_executable(ker-environment-test tests/posix/fstack-environment.c)
     target_compile_options(ker-environment-test PRIVATE -Wall -Wextra -Werror)
     target_compile_definitions(ker-environment-test PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
