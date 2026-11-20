@@ -1638,6 +1638,16 @@
       ],
       "adaptation": "The original fixture decodes the kernel coexistence mode in the parsed document. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_ff_load_config_stack_absent_defaults_disabled": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_stack_absent_defaults_disabled"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_stack_absent_defaults_disabled"
+      ],
+      "adaptation": "The original fixture keeps legacy coexistence disabled when the stack setting is absent. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
