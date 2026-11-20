@@ -15,13 +15,13 @@
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | scenario-adapted | 229 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 9 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 125 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| partial | 10 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 124 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **134 项**（125 blocked + 9 partial）。
+当前待完成 **134 项**（124 blocked + 10 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -56,7 +56,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 - KNI、RSS/源端口调整、完整设备注册、generation/epoch/热重载：需要实际适配器与运行环境；本地 FIFO 或 borrowed ethdev 用例只覆盖各自明确的子集。
 - FreeBSD TLS、callout 和 mbuf 镜像：迁移必须尊重原始 Linux 结构和协议实现，不能为通过白盒测试复制 FreeBSD 协议算法。
 - reload Python 工具自测：源文件保留，不自动导入/执行，不把工具链断言记为网络协议覆盖。
-- `test_mtu.sh` 实际只打印手工步骤及无条件 ALL PASS 摘要；执行它不构成 jumbo、动态 MTU 或 IPv6 互通证据。
+- `test_mtu.sh` 的固定 MTU 场景由 `native-fstack-icmp-mtu` 验证。仍需在运行中切换 MTU，并核对 Linux 接口及 DPDK 端口的配置和实际流量。
 
 后续每完成一项，先提供真正的适配和测试证据，再修改该项状态；完整迁移门禁
 继续显示未完成，直至全部阻塞都有明确实现或经过审阅的架构处置。
@@ -70,7 +70,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_ff_kni_integration.c](../tests/upstream/fstack/tests/integration/test_ff_kni_integration.c) | 8 | 0 | 0 | 8 | 0 | 0 |
 | [integration/test_ff_reload_integration.c](../tests/upstream/fstack/tests/integration/test_ff_reload_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
-| [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
+| [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 0 | 1 | 0 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
 | [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 92 | 0 | 4 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 0 | 2 | 0 |
@@ -226,7 +226,13 @@ IPv6 仅覆盖回环，不宣称外部 IPv6 部署完成。
 设备不支持请求的 MTU 时启动失败，需由调用方预先配置对端链路 MTU。
 `native-fstack-jumbo-mtu` 用真实 net_tap/veth 和独立宿主验证 9000 MTU、双角色 TCP/UDP、
 8972 字节 DF UDP 有效载荷、8973 字节报文 EMSGSIZE、双向完整 9014 字节抓包及零 outstanding。
-IPv6 jumbo 外部互通尚未验证；1280 下限保证默认双栈接口的配置范围。
+1280 下限保证默认双栈接口的配置范围。
+`native-fstack-icmp-mtu` 自动执行 `test_mtu.sh` 中的四个固定 MTU 场景。
+独立宿主和 Ker 中的原始 Linux 分别发送 IPv4/IPv6 ICMP echo，覆盖默认 1500，
+以及 9000 MTU 下的 large 和 scatter 模式。双方验证空负载、1 字节负载、
+达到 MTU 的完整回包和超出 1 字节时的 EMSGSIZE。双向抓包核对
+1514/9014 字节 Ethernet 帧、IPv4 首部和 ICMP 校验和及负载，worker 计数验证
+scatter 模式的多段收发和各模式的 mbuf 回收。整份清单仍为部分覆盖，尚需验证运行中切换 MTU。
 `[network] max_mtu` / `--max-mtu` 提供独立部署上限（默认 9000，范围 1280–9000），请求 MTU 不得超过它。
 9000 请求对 2000 上限在启动前拒绝；CLI 覆盖上限到 9000 后执行同一真实 jumbo 互通测试。
 `test_mtu_port_over_max_fails` 已从部分覆盖转为场景适配；此上限不是硬件能力探测或 mbuf pool 大小设置。

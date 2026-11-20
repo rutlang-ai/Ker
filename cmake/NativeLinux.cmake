@@ -575,6 +575,13 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-mbuf-scatter COMMAND ${ker_native_test_command}
         --jumbo-app "$<TARGET_FILE:ker-posix-fstack-jumbo-test>" --mbuf-scatter)
     set_tests_properties(native-fstack-mbuf-scatter PROPERTIES TIMEOUT 90 LABELS "native-dpdk;fstack")
+    add_executable(ker-icmp-mtu-test tests/posix/icmp-mtu.c)
+    target_compile_options(ker-icmp-mtu-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-icmp-mtu
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/icmp-mtu.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-icmp-mtu-test>")
+    set_tests_properties(native-fstack-icmp-mtu PROPERTIES TIMEOUT 120 LABELS "native-dpdk;fstack")
     add_executable(ker-worker-mbuf-test tests/posix/worker-mbuf.c src/posix/worker-mbuf.c)
     target_include_directories(ker-worker-mbuf-test PRIVATE src/posix)
     target_compile_options(ker-worker-mbuf-test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
