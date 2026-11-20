@@ -128,6 +128,12 @@ set_tests_properties(fstack-config-source-test_parse_lcore_mask_proc_id_in_range
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_parse_lcore_mask_proc_id_over_count_fails)
+add_test(NAME fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails COMMAND ker-test_parse_lcore_mask_proc_id_over_count_fails)
+set_tests_properties(fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")
