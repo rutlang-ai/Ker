@@ -74,12 +74,12 @@ def sysctl_setting(text):
 
 
 CONFIG_DEFAULTS = dict(vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
-    all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
+    all_multicast=False, live_mtu=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
 CONFIG_SCHEMA = {
     'network': {'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
-                'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
+                'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'live_mtu': ('live_mtu', bool), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
     'dpdk': {'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'all_multicast': ('all_multicast', bool)},
@@ -143,6 +143,8 @@ def parse_arguments(argv=None):
     parser.add_argument('--mbuf-mode', choices=('large', 'scatter'), help='DPDK packet storage; scatter uses chained standard-size mbufs')
     parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
     parser.add_argument('--max-mtu', type=int, help='deployment MTU ceiling, 1280..9000 (default 9000)')
+    parser.add_argument('--live-mtu', action=argparse.BooleanOptionalAction,
+        help='coordinate native SIOCSIFMTU with the DPDK port and size buffers for --max-mtu')
     parser.add_argument('--tcp-ecn', choices=tuple(TCP_ECN),
         help='off, passive acceptance, or active/passive ECN; default preserves Linux policy')
     parser.add_argument('--sysctl', dest='sysctls', action='append', type=sysctl_setting,
@@ -258,7 +260,7 @@ def main():
     control_read, control_write = os.pipe2(os.O_CLOEXEC)
     startup_read, startup_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
     signal.signal(signal.SIGTERM, interrupted)
-    worker = app = None
+    worker = app = mtu_app = mtu_io = None
     exit_code = 125
     stats = None
     info = None
@@ -278,10 +280,18 @@ def main():
                 '--pcap-snaplen', str(args.pcap_snaplen), '--pcap-max-bytes', str(args.pcap_max_bytes)]
             if args.pcap_nsec:
                 capture_options.append('--pcap-nsec')
+        worker_fds = (channel_io.fileno(), control_read)
+        mtu_options = []
+        if args.live_mtu:
+            mtu_app, mtu_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+            worker_fds += (mtu_io.fileno(),)
+            mtu_options = ['--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu)]
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--control-fd', str(control_read), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, *multicast_options, *capture_options, *log_options, '--', *args.eal_args],
-            pass_fds=(channel_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
+            '--control-fd', str(control_read), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, *mtu_options, *multicast_options, *capture_options, *log_options, '--', *args.eal_args],
+            pass_fds=worker_fds, stdout=subprocess.PIPE, text=True)
         channel_io.close()
+        if mtu_io is not None:
+            mtu_io.close()
         os.close(control_read)
         control_read = -1
         with selectors.DefaultSelector() as selector:
@@ -325,9 +335,15 @@ def main():
         if args.gateway:
             env['LKL_HIJACK_NET_GATEWAY'] = str(args.gateway)
         app_guard = worker_path.parent / 'ker-app'
+        app_fds = (channel_app.fileno(), startup_write)
+        if mtu_app is not None:
+            app_fds += (mtu_app.fileno(),)
+            env.update(KER_PACKET_MTU_FD=str(mtu_app.fileno()), KER_PACKET_MAX_MTU=str(args.max_mtu))
         app = subprocess.Popen([str(app_guard), *args.command], env=env,
-            pass_fds=(channel_app.fileno(), startup_write))
+            pass_fds=app_fds)
         channel_app.close()
+        if mtu_app is not None:
+            mtu_app.close()
         os.close(startup_write)
         startup_write = -1
         with selectors.DefaultSelector() as selector:
@@ -377,6 +393,10 @@ def main():
                 app.wait()
         channel_app.close()
         channel_io.close()
+        if mtu_app is not None:
+            mtu_app.close()
+        if mtu_io is not None:
+            mtu_io.close()
         if control_read >= 0:
             os.close(control_read)
         os.close(control_write)

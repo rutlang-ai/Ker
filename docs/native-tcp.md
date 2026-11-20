@@ -434,7 +434,16 @@ launcher 清除 ambient `KER_NATIVE_VIP_ADDRESSES`，仅传递最终验证过的
 
 `--max-mtu 2000` 或 `[network] max_mtu=2000` 将当前 launcher 的 MTU 上限限制为 2000；默认 9000，合法范围 1280–9000。
 `mtu` 大于 `max_mtu` 在设备/库初始化前返回 2；CLI 可分别覆盖 INI 中的请求值或上限。
-此值仅是启动配置策略。实际 MTU 仍传给原始 Linux 与 DPDK，设备能力不足仍由运行时报告；不按 max_mtu 额外扩大缓冲池。
+固定 MTU 部署按 `--mtu` 分配缓冲区。通过 `--live-mtu` 或
+`[network] live_mtu=true` 启用运行时切换时，large 模式按 `--max-mtu`
+预留容量，scatter 模式使用标准大小的 mbuf。对端链路也需支持请求的 MTU。
+
+原生数据接口的 `SIOCSIFMTU` 由 Linux 校验并应用。DPDK worker 随后暂停端口、
+重配 RX 队列、重启并读回实际 MTU。该接口的 `SIOCGIFMTU` 等待正在执行的事务。
+worker 持有未交付报文时返回 `EBUSY`，应用可重试。端口重启期间可能丢帧。
+若设备拒绝请求，Ker 恢复两端原值并返回该错误；无法确认状态时，launcher 以 125
+结束。运行时协调适用于通过该 ioctl 修改直接承载数据的原生接口。
+`native-fstack-live-mtu` 用单队列 `net_tap` 验证切换、流量和失败恢复。
 
 
 ### DPDK mbuf 存储模式
