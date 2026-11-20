@@ -123,7 +123,8 @@ jobs:
           KER_DPDK_JOBS: '2'
         run: |
           set -euo pipefail
-          tools/build-dpdk.sh 2>&1 | tee "$RUNNER_TEMP/dpdk-build.log"
+          KER_DPDK_DRIVERS=mempool/ring,net/ring,net/null \
+            tools/build-dpdk.sh 2>&1 | tee "$RUNNER_TEMP/dpdk-build.log"
 
       - name: Export pinned DPDK libraries
         shell: bash
@@ -140,6 +141,24 @@ jobs:
           fi
           echo "LD_LIBRARY_PATH=$runtime_path" >> "$GITHUB_ENV"
           printf 'Pinned DPDK runtime path: %s\n' "$runtime_path"
+          null_pmd="$(find "$prefix" -path '*/dpdk/pmds-*/librte_net_null.so' -print -quit)"
+          test -f "$null_pmd"
+          printf 'Pinned DPDK null PMD: %s\n' "$null_pmd"
+
+      - name: Provision hugetlbfs for real EAL multiprocess coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          huge_dir="$RUNNER_TEMP/ker-hugepages"
+          sudo sh -c 'echo 192 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages'
+          free_pages="$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/free_hugepages)"
+          if (( free_pages < 192 )); then
+            echo "Could not reserve 192 free 2 MiB hugepages for the A14 EAL test (found $free_pages)" >&2
+            exit 1
+          fi
+          mkdir -p "$huge_dir"
+          sudo mount -t hugetlbfs -o "pagesize=2M,uid=$(id -u),gid=$(id -g),mode=0700" none "$huge_dir"
+          echo "KER_FSTACK_HUGEPAGE_DIR=$huge_dir" >> "$GITHUB_ENV"
 
       - name: Configure DPDK-enabled Ker tests
         shell: bash

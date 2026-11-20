@@ -192,11 +192,12 @@ if(KER_BUILD_EXAMPLES)
     target_link_libraries(ker-checksum PRIVATE ker::ker)
 endif()
 
+if(KER_WITH_DPDK AND (KER_BUILD_EXAMPLES OR BUILD_TESTING))
+    include(cmake/OwnedFrameExample.cmake)
+    include(cmake/ReloadFrameExample.cmake)
+endif()
+
 if(BUILD_TESTING)
-    if(KER_WITH_DPDK)
-        include(cmake/OwnedFrameExample.cmake)
-        include(cmake/ReloadFrameExample.cmake)
-    endif()
     add_subdirectory(tests)
 endif()
 
