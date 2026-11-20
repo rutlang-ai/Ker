@@ -4471,15 +4471,9 @@
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_basic",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Real host thread creation, identity and joining are verified, together with actual LKL pthread TLS isolation.",
-      "ker_tests": [
-        {
-          "ctest": "native-fstack-thread-runtime",
-          "provenance_case": "native-fstack-thread-runtime"
-        }
-      ],
-      "remaining": "F-Stack inherits the opaque FreeBSD pcurthread pointer; LKL does not expose that contract. Child pthread TLS is intentionally empty, so this is not equivalent context propagation."
+      "status": "architecture-specific",
+      "reason": "The source requires the child to observe the same opaque pcurthread pointer as its parent. Original Linux/LKL owns its thread context and Ker uses host pthread TLS for the adaptation. The existing thread-runtime tests continue to cover real creation, joining, and TLS. This source pointer-identity assertion belongs to FreeBSD.",
+      "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_arg_passed",
