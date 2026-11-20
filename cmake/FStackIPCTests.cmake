@@ -54,3 +54,7 @@ set_tests_properties(fstack-ipc-foreign-live PROPERTIES TIMEOUT 30 LABELS fstack
 add_test(NAME fstack-ipc-foreign-no-send
     COMMAND ker-ipc-ownership-test foreign-no-send)
 set_tests_properties(fstack-ipc-foreign-no-send PROPERTIES TIMEOUT 30 LABELS fstack)
+
+add_test(NAME fstack-ipc-orphan-reply
+    COMMAND ker-ipc-ownership-test orphan-reply)
+set_tests_properties(fstack-ipc-orphan-reply PROPERTIES TIMEOUT 30 LABELS fstack)

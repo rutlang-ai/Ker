@@ -215,6 +215,16 @@
       ],
       "adaptation": "Call the original receiver without an accepted send. A live foreign reply remains queued with its identity and bytes intact, caller output remains unchanged, and the fixture verifies that the input ring is empty."
     },
+    "fstack-ipc-orphan-reply": {
+      "source_file": "tests/unit/test_ff_ipc.c",
+      "source_case": [
+        "test_p4_recv_orphan_dead_owner"
+      ],
+      "ker_ctests": [
+        "fstack-ipc-orphan-reply"
+      ],
+      "adaptation": "Tag a real queued reply with a child PID after reaping that child. The original receiver reclaims the orphan exactly once. Verify the untouched caller output and exact ring, pool and counter state."
+    },
     "fstack-ipc-process-coordinate": {
       "source_file": "tests/unit/test_ff_ipc.c",
       "source_case": [

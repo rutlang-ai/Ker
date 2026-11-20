@@ -4357,9 +4357,14 @@
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_orphan_dead_owner",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Tag a real queued reply with a child PID after reaping that child. The original receiver reclaims the orphan exactly once. Verify the untouched caller output and exact ring, pool and counter state.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-orphan-reply",
+          "provenance_case": "fstack-ipc-orphan-reply"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_probe_is_non_destructive",

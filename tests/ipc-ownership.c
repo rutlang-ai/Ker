@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <rte_mempool.h>
 #include <rte_ring.h>
 
@@ -126,6 +127,29 @@ static void foreign_live(void)
     rte_mempool_put(pool, request);
 }
 
+
+static void orphan_reply(void)
+{
+    pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0)
+        _exit(0);
+    int status;
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    ker_ipc_message *other = foreign_reply(child);
+    CHECK(rte_ring_enqueue(output_ring, other) == 0);
+
+    ker_ipc_message *reply = (void *)(uintptr_t)1;
+    CHECK(ker_ipc_recv(&reply, FF_SYSCTL) < 0 && reply == (void *)(uintptr_t)1);
+    uint64_t requeued = 1, reclaimed = 0, lost = 1;
+    ker_ipc_reply_stats(&requeued, &reclaimed, &lost);
+    /* The original receiver confirms the dead owner across observations. */
+    CHECK(requeued >= 1 && reclaimed == 1 && lost == 0);
+    CHECK(rte_ring_empty(output_ring) && rte_mempool_avail_count(pool) == MESSAGE_COUNT);
+}
+
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
@@ -138,6 +162,8 @@ int main(int argc, char **argv)
         expect_foreign_requeue();
         CHECK(rte_ring_empty(input_ring));
     }
+    else if (strcmp(argv[1], "orphan-reply") == 0)
+        orphan_reply();
     else
         CHECK(0);
     teardown();
