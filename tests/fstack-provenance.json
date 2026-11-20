@@ -135,6 +135,16 @@
       ],
       "adaptation": "The original parser selects generation 0 from the process coordinate, preserves the unspecified epoch, and resolves the exact slot-zero ring name ff_msg_ring_in_1_g0."
     },
+    "fstack-ipc-process-epoch": {
+      "source_file": "tests/unit/test_ff_ipc.c",
+      "source_case": [
+        "test_ff_ipc_proc_id_gen_epoch"
+      ],
+      "ker_ctests": [
+        "fstack-ipc-process-epoch"
+      ],
+      "adaptation": "The original parser preserves process 1, generation 0 and epoch 3 and resolves slot 3 to ff_msg_ring_in_1_e3_g0."
+    },
     "fstack-ipc-process-coordinate": {
       "source_file": "tests/unit/test_ff_ipc.c",
       "source_case": [
