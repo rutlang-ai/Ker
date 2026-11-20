@@ -1508,6 +1508,16 @@
       ],
       "adaptation": "The original fixture is accepted when the primary process owns a selected KNI lcore. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_ff_check_config_kni_primary_lcore_missing_fails": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_check_config_kni_primary_lcore_missing_fails"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_check_config_kni_primary_lcore_missing_fails"
+      ],
+      "adaptation": "The original fixture returns an error when the primary process lacks the required KNI lcore. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [

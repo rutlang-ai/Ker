@@ -170,6 +170,12 @@ set_tests_properties(fstack-config-source-test_ff_check_config_kni_primary_lcore
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_ff_check_config_kni_primary_lcore_missing_fails)
+add_test(NAME fstack-config-source-test_ff_check_config_kni_primary_lcore_missing_fails COMMAND ker-test_ff_check_config_kni_primary_lcore_missing_fails)
+set_tests_properties(fstack-config-source-test_ff_check_config_kni_primary_lcore_missing_fails PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")
