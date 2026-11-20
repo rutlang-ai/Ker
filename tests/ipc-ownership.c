@@ -132,10 +132,14 @@ int main(int argc, char **argv)
     setup();
     if (strcmp(argv[1], "own-reply") == 0)
         own_reply();
-    else {
-        CHECK(strcmp(argv[1], "foreign-live") == 0);
+    else if (strcmp(argv[1], "foreign-live") == 0)
         foreign_live();
+    else if (strcmp(argv[1], "foreign-no-send") == 0) {
+        expect_foreign_requeue();
+        CHECK(rte_ring_empty(input_ring));
     }
+    else
+        CHECK(0);
     teardown();
     return 0;
 }
