@@ -1,0 +1,31 @@
+{
+  "repository": "https://github.com/F-Stack/f-stack",
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "files": {
+    "third_party/fstack-config/ff_config.c": {
+      "source_file": "lib/ff_config.c",
+      "sha256": "8d84ca758a3e917fcf28eb5a0ea9512e9e0eee1dcf93aded83df11bc0fd3f29d",
+      "git_blob": "c1eb7b8436d1bfafab64483bde67c690e6168e2a"
+    },
+    "third_party/fstack-reload/ff_config.h": {
+      "source_file": "lib/ff_config.h",
+      "sha256": "66f42cc8075c4cf30a983e7712079f63afa3a7f24ebd74fac763496bea95fdf3",
+      "git_blob": "f05e1b50838196507f245c30bf2a8e56b9b7037d"
+    },
+    "third_party/fstack-reload/ff_log.h": {
+      "source_file": "lib/ff_log.h",
+      "sha256": "243b0018e7458045831ee7b6ef734112d0790c20856d9470af3ede302013f8a4",
+      "git_blob": "b1106755d215c1068968999d63beba6b392dfeca"
+    },
+    "third_party/fstack-ipc/ff_reload.h": {
+      "source_file": "lib/ff_reload.h",
+      "sha256": "f89125af9be0158168de3467e2f40845124194dea4e0c6e2eecc345293599194",
+      "git_blob": "6c1259b332cce54ac54621cf4632da50513a3797"
+    },
+    "third_party/fstack-reload/LICENSE": {
+      "source_file": "LICENSE",
+      "sha256": "2d663af37353eebc435c03b97bfaebc0c358a7df82d5767802cf27e30a4dc544",
+      "git_blob": "604ef9762695864bc4b2b35f50d9ea6c8a10cb53"
+    }
+  }
+}

@@ -706,6 +706,9 @@ endif()
 
 # Inventory integrity is distinct from migrated networking behavior.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+if(KER_WITH_DPDK)
+    include("${PROJECT_SOURCE_DIR}/cmake/FStackConfigSource.cmake")
+endif()
 foreach(ini_case multiline no-section handler-rejection null-file long-section user-data)
     add_executable(ker-ini-${ini_case}-test ini-${ini_case}.c)
     target_link_libraries(ker-ini-${ini_case}-test PRIVATE ker::ini)
