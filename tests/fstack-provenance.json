@@ -1348,6 +1348,16 @@
       ],
       "adaptation": "The original repeated-key fixture checks the final IPv4 address, netmask, and gateway after replacements. Leak detection covers repeated parse and unload in the fixture. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_ff_load_config_dpdk_extra_keys": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_dpdk_extra_keys"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_dpdk_extra_keys"
+      ],
+      "adaptation": "The source fixture preserves its base virtual address, file prefix, virtual-device queue field, and bond delay as inspection data. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [

@@ -1593,9 +1593,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_extra_keys",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The source fixture preserves its base virtual address, file prefix, virtual-device queue field, and bond delay as inspection data. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_dpdk_extra_keys",
+          "provenance_case": "fstack-config-source-test_ff_load_config_dpdk_extra_keys"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
