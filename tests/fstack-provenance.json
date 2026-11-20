@@ -49,6 +49,390 @@
     }
   },
   "cases": {
+    "fstack-rss-table-test_ff_rss_tbl_set_portrange_no_cfg": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_set_portrange_no_cfg"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_set_portrange_no_cfg"
+      ],
+      "adaptation": "Run the complete pinned software RSS table assertions against the imported table and hash logic to reject setting a range when configuration is absent."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_set_portrange_disabled"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled"
+      ],
+      "adaptation": "Run the complete pinned software RSS table assertions against the imported table and hash logic to preserve the disabled table and port-range policy."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_set_portrange_inverted_range"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range"
+      ],
+      "adaptation": "Run the complete pinned software RSS table assertions against the imported table and hash logic to reject inverted port bounds on a configured table."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_no_cfg": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_no_cfg"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_no_cfg"
+      ],
+      "adaptation": "Run the complete pinned software RSS table assertions against the imported table and hash logic to report absent configuration on lookup."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_disabled": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_disabled"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_disabled"
+      ],
+      "adaptation": "Run the complete pinned software RSS table assertions against the imported table and hash logic to report a miss when lookup is disabled."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_smoke"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke"
+      ],
+      "adaptation": "Run the complete pinned software RSS table assertions against the imported table and hash logic to exercise a lookup with RSS enabled and no configured table entries."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_hit": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_hit"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_hit"
+      ],
+      "adaptation": "Run the complete pinned software RSS table assertions against the imported table and hash logic to match IPv4 tuple keys and land on the expected software queue."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_rotation"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation"
+      ],
+      "adaptation": "Run the complete pinned software RSS table assertions against the imported table and hash logic to return a stable candidate window containing distinct IPv4 ports on the expected queue."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_miss": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_miss"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_miss"
+      ],
+      "adaptation": "Run the complete pinned software RSS table assertions against the imported table and hash logic to reject an unconfigured IPv4 tuple."
+    },
+    "fstack-rss-table-test_ff_rss_check6_landing": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_check6_landing"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_check6_landing"
+      ],
+      "adaptation": "Run the complete pinned software RSS table assertions against the imported table and hash logic to match the independent IPv6 Toeplitz queue oracle."
+    },
+    "fstack-rss-table-test_ff_rss_check6_single_queue": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_check6_single_queue"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_check6_single_queue"
+      ],
+      "adaptation": "Run the complete pinned software RSS table assertions against the imported table and hash logic to accept IPv6 ownership in the single-queue profile."
+    },
+    "fstack-rss-table-test_ff_rss_tbl6_set_get": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl6_set_get"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl6_set_get"
+      ],
+      "adaptation": "Run the complete pinned software RSS table assertions against the imported table and hash logic to set and retrieve IPv6 bounds and candidate ports."
+    },
+    "fstack-rss-adjust-test_ff_rss_adjust_sport_null": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_null"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_adjust_sport_null"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to decline null context and output arguments."
+    },
+    "fstack-rss-adjust-test_ff_rss_adjust_sport_degraded": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_degraded"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_adjust_sport_degraded"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to decline when the original adjustment context is unready."
+    },
+    "fstack-rss-adjust-test_ff_rss_adjust_sport_single_queue": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_single_queue"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_adjust_sport_single_queue"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to decline an IPv4 suggestion on a single queue."
+    },
+    "fstack-rss-adjust-test_ff_rss_adjust_sport6_guard": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport6_guard"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_adjust_sport6_guard"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to decline invalid or unavailable IPv6 adjustments."
+    },
+    "fstack-rss-adjust-test_ff_rss_adjust_sport_recheck_off": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_recheck_off"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_adjust_sport_recheck_off"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to preserve the disabled IPv4 recheck path."
+    },
+    "fstack-rss-adjust-test_ff_rss_adjust_sport_recheck_on": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_recheck_on"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_adjust_sport_recheck_on"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to observe the enabled IPv4 recheck predicate."
+    },
+    "fstack-rss-adjust-test_ff_rss_adjust_sport6_recheck_off": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport6_recheck_off"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_adjust_sport6_recheck_off"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to preserve the disabled IPv6 recheck path."
+    },
+    "fstack-rss-adjust-test_ff_rss_adjust_sport6_recheck_on": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport6_recheck_on"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_adjust_sport6_recheck_on"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to observe the enabled IPv6 recheck predicate."
+    },
+    "fstack-rss-adjust-test_ff_rss_adjust_sport_thash_adjust_off": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_thash_adjust_off"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_adjust_sport_thash_adjust_off"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to decline IPv4 suggestions when adjustment is disabled."
+    },
+    "fstack-rss-adjust-test_ff_rss_adjust_sport6_thash_adjust_off": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport6_thash_adjust_off"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_adjust_sport6_thash_adjust_off"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to decline IPv6 suggestions when adjustment is disabled."
+    },
+    "fstack-rss-adjust-test_ff_rss_thash_ctx_init_thash_adjust_off": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_thash_ctx_init_thash_adjust_off"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_thash_ctx_init_thash_adjust_off"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to keep disabled initialization from building adjustment contexts."
+    },
+    "fstack-rss-adjust-test_ff_rss_adjust_sport_range_params": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_range_params"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_adjust_sport_range_params"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to reject inverted and undersized IPv4 ranges without changing the output."
+    },
+    "fstack-rss-adjust-test_ff_rss_adjust_sport6_range_params": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport6_range_params"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-test_ff_rss_adjust_sport6_range_params"
+      ],
+      "adaptation": "Run the complete pinned caller-side adjustment assertions to reject inverted and undersized IPv6 ranges without changing the output."
+    },
+    "fstack-rss-thash-ipv4": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_thash_equivalence_hitrate"
+      ],
+      "ker_ctests": [
+        "fstack-rss-thash-ipv4"
+      ],
+      "adaptation": "Run the pinned IPv4 equivalence and hit-rate assertions with real DPDK EAL and thash contexts for the 128 and 512 entry profiles. Verify the independent software queue oracle and context cleanup."
+    },
+    "fstack-rss-thash-ipv6": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_thash6_equivalence_hitrate"
+      ],
+      "ker_ctests": [
+        "fstack-rss-thash-ipv6"
+      ],
+      "adaptation": "Run the pinned IPv6 equivalence and hit-rate assertions with real DPDK EAL and thash contexts for the 128 and 512 entry profiles. Verify the independent software queue oracle and context cleanup."
+    },
+    "fstack-rss-adjust-microbench": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_microbench"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-microbench"
+      ],
+      "adaptation": "Run the complete pinned microbenchmark in the ready DPDK profile. The original unready fixture is a skip control. Verify candidate bounds and owner queue independently, then run the original strict comparison on EAL thread CPU time in a serial CTest."
+    },
+    "fstack-flow-map-basic": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ut_nr_23_flow_map"
+      ],
+      "ker_ctests": [
+        "fstack-flow-map-basic"
+      ],
+      "adaptation": "Run the complete pinned caller flow-map assertions using the original metadata implementation and reload attachment gate. Verify key layout, disabled and detached gates, IPv4/IPv6 identity, duplicate insertion, and reopening."
+    },
+    "fstack-flow-map-single-phase": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_a1_flow_map_single_phase"
+      ],
+      "ker_ctests": [
+        "fstack-flow-map-single-phase"
+      ],
+      "adaptation": "Run the complete pinned caller flow-map assertions using the original metadata implementation and reload attachment gate. Verify immediate membership visibility, idempotent duplicates, and independent keys."
+    },
+    "fstack-flow-map-admission": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_a1_flow_map_admission_rule"
+      ],
+      "ker_ctests": [
+        "fstack-flow-map-admission"
+      ],
+      "adaptation": "Run the complete pinned caller flow-map assertions using the original metadata implementation and reload attachment gate. Verify untracked admission, capacity refusal, and unchanged lookup on failure."
+    },
+    "fstack-flow-map-revoke": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_a1_flow_map_revoke"
+      ],
+      "ker_ctests": [
+        "fstack-flow-map-revoke"
+      ],
+      "adaptation": "Run the complete pinned caller flow-map assertions using the original metadata implementation and reload attachment gate. Verify deletion across probe collisions, reinsertion, and absence."
+    },
+    "fstack-flow-map-growth": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p3_flow_map_bounded_growth"
+      ],
+      "ker_ctests": [
+        "fstack-flow-map-growth"
+      ],
+      "adaptation": "Run the complete pinned caller flow-map assertions using the original metadata implementation and reload attachment gate. Verify bounded doubling, saturation and full counters, and rejection of invalid capacity."
+    },
+    "fstack-rss-adjust-ready": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_single_queue",
+        "test_ff_rss_adjust_sport_recheck_off",
+        "test_ff_rss_adjust_sport_recheck_on",
+        "test_ff_rss_adjust_sport6_recheck_off",
+        "test_ff_rss_adjust_sport6_recheck_on",
+        "test_ff_rss_adjust_sport_thash_adjust_off",
+        "test_ff_rss_adjust_sport6_thash_adjust_off",
+        "test_ff_rss_thash_ctx_init_thash_adjust_off",
+        "test_ff_rss_adjust_sport_range_params",
+        "test_ff_rss_adjust_sport6_range_params"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-ready"
+      ],
+      "adaptation": "Exercise the late guard and recheck branches with real caller-side DPDK thash contexts, an independent IPv4 and IPv6 Toeplitz oracle, predicate counters, and context reset and reinitialization."
+    },
+    "fstack-rss-caller-routing": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_set_portrange_no_cfg",
+        "test_ff_rss_tbl_set_portrange_disabled",
+        "test_ff_rss_tbl_set_portrange_inverted_range",
+        "test_ff_rss_tbl_get_portrange_no_cfg",
+        "test_ff_rss_tbl_get_portrange_disabled",
+        "test_ff_rss_tbl_get_portrange_smoke",
+        "test_ff_rss_tbl_get_portrange_hit",
+        "test_ff_rss_tbl_get_portrange_rotation",
+        "test_ff_rss_tbl_get_portrange_miss",
+        "test_ff_rss_check6_landing",
+        "test_ff_rss_check6_single_queue",
+        "test_ff_rss_tbl6_set_get"
+      ],
+      "ker_ctests": [
+        "fstack-rss-caller-routing"
+      ],
+      "adaptation": "Exercise the caller-side IPv4 and IPv6 RSS rules with real net_ring ports and independently computed software queue expectations. Reclaim every mbuf after routing."
+    },
+    "fstack-flow-map-caller-routing": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ut_nr_23_flow_map",
+        "test_a1_flow_map_single_phase",
+        "test_a1_flow_map_admission_rule",
+        "test_a1_flow_map_revoke",
+        "test_p3_flow_map_bounded_growth"
+      ],
+      "ker_ctests": [
+        "fstack-flow-map-caller-routing"
+      ],
+      "adaptation": "Use the original flow table and reload ownership gate to exercise caller-selected IPv4 and IPv6 UDP metadata in real net_ring queues. Verify local and peer selection through reopen and revoke, pending input on denied polling, and retained ownership on enqueue failure."
+    },
     "native-fstack-live-mtu": {
       "source_file": "tests/integration/test_mtu.sh",
       "source_case": [

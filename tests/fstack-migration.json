@@ -2437,198 +2437,426 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_no_cfg",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned software RSS table assertions against the imported table and hash logic to reject setting a range when configuration is absent.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_set_portrange_no_cfg",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_set_portrange_no_cfg"
+        },
+        {
+          "ctest": "fstack-rss-caller-routing",
+          "provenance_case": "fstack-rss-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_disabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned software RSS table assertions against the imported table and hash logic to preserve the disabled table and port-range policy.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled"
+        },
+        {
+          "ctest": "fstack-rss-caller-routing",
+          "provenance_case": "fstack-rss-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_inverted_range",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned software RSS table assertions against the imported table and hash logic to reject inverted port bounds on a configured table.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range"
+        },
+        {
+          "ctest": "fstack-rss-caller-routing",
+          "provenance_case": "fstack-rss-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_no_cfg",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned software RSS table assertions against the imported table and hash logic to report absent configuration on lookup.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_no_cfg",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_get_portrange_no_cfg"
+        },
+        {
+          "ctest": "fstack-rss-caller-routing",
+          "provenance_case": "fstack-rss-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_disabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned software RSS table assertions against the imported table and hash logic to report a miss when lookup is disabled.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_disabled",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_get_portrange_disabled"
+        },
+        {
+          "ctest": "fstack-rss-caller-routing",
+          "provenance_case": "fstack-rss-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_smoke",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned software RSS table assertions against the imported table and hash logic to exercise a lookup with RSS enabled and no configured table entries.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke"
+        },
+        {
+          "ctest": "fstack-rss-caller-routing",
+          "provenance_case": "fstack-rss-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_hit",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned software RSS table assertions against the imported table and hash logic to match IPv4 tuple keys and land on the expected software queue.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_hit",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_get_portrange_hit"
+        },
+        {
+          "ctest": "fstack-rss-caller-routing",
+          "provenance_case": "fstack-rss-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_rotation",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned software RSS table assertions against the imported table and hash logic to return a stable candidate window containing distinct IPv4 ports on the expected queue.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation"
+        },
+        {
+          "ctest": "fstack-rss-caller-routing",
+          "provenance_case": "fstack-rss-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_miss",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned software RSS table assertions against the imported table and hash logic to reject an unconfigured IPv4 tuple.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_miss",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_get_portrange_miss"
+        },
+        {
+          "ctest": "fstack-rss-caller-routing",
+          "provenance_case": "fstack-rss-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_null",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to decline null context and output arguments.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_adjust_sport_null",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_adjust_sport_null"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_degraded",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to decline when the original adjustment context is unready.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_adjust_sport_degraded",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_adjust_sport_degraded"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_single_queue",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to decline an IPv4 suggestion on a single queue.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_adjust_sport_single_queue",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_adjust_sport_single_queue"
+        },
+        {
+          "ctest": "fstack-rss-adjust-ready",
+          "provenance_case": "fstack-rss-adjust-ready"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash_equivalence_hitrate",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned IPv4 equivalence and hit-rate assertions with real DPDK EAL and thash contexts for the 128 and 512 entry profiles. Verify the independent software queue oracle and context cleanup.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-thash-ipv4",
+          "provenance_case": "fstack-rss-thash-ipv4"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_landing",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned software RSS table assertions against the imported table and hash logic to match the independent IPv6 Toeplitz queue oracle.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_check6_landing",
+          "provenance_case": "fstack-rss-table-test_ff_rss_check6_landing"
+        },
+        {
+          "ctest": "fstack-rss-caller-routing",
+          "provenance_case": "fstack-rss-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_single_queue",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned software RSS table assertions against the imported table and hash logic to accept IPv6 ownership in the single-queue profile.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_check6_single_queue",
+          "provenance_case": "fstack-rss-table-test_ff_rss_check6_single_queue"
+        },
+        {
+          "ctest": "fstack-rss-caller-routing",
+          "provenance_case": "fstack-rss-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl6_set_get",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned software RSS table assertions against the imported table and hash logic to set and retrieve IPv6 bounds and candidate ports.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl6_set_get",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl6_set_get"
+        },
+        {
+          "ctest": "fstack-rss-caller-routing",
+          "provenance_case": "fstack-rss-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_guard",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to decline invalid or unavailable IPv6 adjustments.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_adjust_sport6_guard",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_adjust_sport6_guard"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash6_equivalence_hitrate",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned IPv6 equivalence and hit-rate assertions with real DPDK EAL and thash contexts for the 128 and 512 entry profiles. Verify the independent software queue oracle and context cleanup.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-thash-ipv6",
+          "provenance_case": "fstack-rss-thash-ipv6"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_recheck_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to preserve the disabled IPv4 recheck path.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_adjust_sport_recheck_off",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_adjust_sport_recheck_off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-ready",
+          "provenance_case": "fstack-rss-adjust-ready"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_recheck_on",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to observe the enabled IPv4 recheck predicate.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_adjust_sport_recheck_on",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_adjust_sport_recheck_on"
+        },
+        {
+          "ctest": "fstack-rss-adjust-ready",
+          "provenance_case": "fstack-rss-adjust-ready"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_recheck_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to preserve the disabled IPv6 recheck path.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_adjust_sport6_recheck_off",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_adjust_sport6_recheck_off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-ready",
+          "provenance_case": "fstack-rss-adjust-ready"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_recheck_on",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to observe the enabled IPv6 recheck predicate.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_adjust_sport6_recheck_on",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_adjust_sport6_recheck_on"
+        },
+        {
+          "ctest": "fstack-rss-adjust-ready",
+          "provenance_case": "fstack-rss-adjust-ready"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_microbench",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned microbenchmark in the ready DPDK profile. The original unready fixture is a skip control. Verify candidate bounds and owner queue independently, then run the original strict comparison on EAL thread CPU time in a serial CTest.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-microbench",
+          "provenance_case": "fstack-rss-adjust-microbench"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_thash_adjust_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to decline IPv4 suggestions when adjustment is disabled.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_adjust_sport_thash_adjust_off",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_adjust_sport_thash_adjust_off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-ready",
+          "provenance_case": "fstack-rss-adjust-ready"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_thash_adjust_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to decline IPv6 suggestions when adjustment is disabled.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_adjust_sport6_thash_adjust_off",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_adjust_sport6_thash_adjust_off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-ready",
+          "provenance_case": "fstack-rss-adjust-ready"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash_ctx_init_thash_adjust_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to keep disabled initialization from building adjustment contexts.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_thash_ctx_init_thash_adjust_off",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_thash_ctx_init_thash_adjust_off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-ready",
+          "provenance_case": "fstack-rss-adjust-ready"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_range_params",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to reject inverted and undersized IPv4 ranges without changing the output.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_adjust_sport_range_params",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_adjust_sport_range_params"
+        },
+        {
+          "ctest": "fstack-rss-adjust-ready",
+          "provenance_case": "fstack-rss-adjust-ready"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_range_params",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller-side adjustment assertions to reject inverted and undersized IPv6 ranges without changing the output.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-test_ff_rss_adjust_sport6_range_params",
+          "provenance_case": "fstack-rss-adjust-test_ff_rss_adjust_sport6_range_params"
+        },
+        {
+          "ctest": "fstack-rss-adjust-ready",
+          "provenance_case": "fstack-rss-adjust-ready"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_register_if_returns_ctx",
@@ -2706,9 +2934,18 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_23_flow_map",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller flow-map assertions using the original metadata implementation and reload attachment gate. Verify key layout, disabled and detached gates, IPv4/IPv6 identity, duplicate insertion, and reopening.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-flow-map-basic",
+          "provenance_case": "fstack-flow-map-basic"
+        },
+        {
+          "ctest": "fstack-flow-map-caller-routing",
+          "provenance_case": "fstack-flow-map-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_24_unregist_dispatcher",
@@ -2825,30 +3062,66 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_single_phase",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller flow-map assertions using the original metadata implementation and reload attachment gate. Verify immediate membership visibility, idempotent duplicates, and independent keys.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-flow-map-single-phase",
+          "provenance_case": "fstack-flow-map-single-phase"
+        },
+        {
+          "ctest": "fstack-flow-map-caller-routing",
+          "provenance_case": "fstack-flow-map-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_admission_rule",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller flow-map assertions using the original metadata implementation and reload attachment gate. Verify untracked admission, capacity refusal, and unchanged lookup on failure.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-flow-map-admission",
+          "provenance_case": "fstack-flow-map-admission"
+        },
+        {
+          "ctest": "fstack-flow-map-caller-routing",
+          "provenance_case": "fstack-flow-map-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_revoke",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller flow-map assertions using the original metadata implementation and reload attachment gate. Verify deletion across probe collisions, reinsertion, and absence.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-flow-map-revoke",
+          "provenance_case": "fstack-flow-map-revoke"
+        },
+        {
+          "ctest": "fstack-flow-map-caller-routing",
+          "provenance_case": "fstack-flow-map-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p3_flow_map_bounded_growth",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned caller flow-map assertions using the original metadata implementation and reload attachment gate. Verify bounded doubling, saturation and full counters, and rejection of invalid capacity.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-flow-map-growth",
+          "provenance_case": "fstack-flow-map-growth"
+        },
+        {
+          "ctest": "fstack-flow-map-caller-routing",
+          "provenance_case": "fstack-flow-map-caller-routing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_rx15_primary_purges_orphaned_rings",
