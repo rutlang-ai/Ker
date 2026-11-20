@@ -347,6 +347,19 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 
 这是固定 F-Stack host shutdown/dup/readiness 桥接场景的 Ker/Linux 扩展，不是上游测试或等价声明。仅增加测试，不修改协议或适配代码。未覆盖并发读者、ET/ONESHOT rearm、信号中断或低水位性能；TCP 和 UDP 的低水位语义须分别验证。
 
+## 原生发送缓冲区
+
+`<ker/posix.h>` 的 `ker_posix_buffer_alloc`、`ker_posix_buffer_write`、
+`ker_posix_buffer_realloc` 和 `ker_posix_buffer_free` 操作内嵌 Linux 分配的 VMA。
+普通缓冲区的大小范围是 1 到 `INT_MAX`，释放使用原始分配地址，零尺寸 resize
+返回输入指针。写入和 resize 失败时保留原缓冲区，应用负责同步访问与释放。
+
+`ker_posix_buffer_writer_*` 提供有界追加、借用视图和显式销毁。单段 writer 可用
+`ker_posix_buffer_writer_send` 发送已写入的非空范围。分段 writer 通过各段视图组织
+`sendmsg` 的 iovec。启用 `SO_ZEROCOPY` 后，带 `MSG_ZEROCOPY` 的非空 iovec 必须完整
+落在注册 VMA 内。应用应读完对应的 `MSG_ERRQUEUE` 完成区间，再改写或释放内存。
+关闭统计记录 VMA 的分配、释放及关闭时回收数量。原生 worker 继续在进程间复制帧。
+
 ## Worker 日志文件
 
 可传入 `--log-dir DIR`，在现存目录中追加 `ker-io-<worker-PID>.log`。

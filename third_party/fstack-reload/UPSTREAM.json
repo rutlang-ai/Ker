@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/F-Stack/f-stack",
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
-  "mode": "Unmodified reload message implementation and private configuration layout. The message and reload header dependencies are recorded in ../fstack-ipc/UPSTREAM.json.",
+  "mode": "Unchanged original reload, generation-directory and drain-ring sources; caller runtime and minimal test compatibility headers isolate the original ring lifecycle from FreeBSD packet processing.",
   "files": {
     "ff_reload.c": {
       "source_file": "lib/ff_reload.c",
@@ -12,6 +12,27 @@
       "source_file": "lib/ff_config.h",
       "sha256": "66f42cc8075c4cf30a983e7712079f63afa3a7f24ebd74fac763496bea95fdf3",
       "git_blob": "f05e1b50838196507f245c30bf2a8e56b9b7037d"
+    },
+    "ff_reload_gendir.c": {
+      "source_file": "lib/ff_reload_gendir.c",
+      "sha256": "88b44c623e2adc4b850dccf151d74cab0d2f19e3576346d929ec3c826a0803a5",
+      "git_blob": "d27bf9b118542396b5189429cec20662b6e381ba"
+    },
+    "ff_log.h": {
+      "source_file": "lib/ff_log.h",
+      "sha256": "243b0018e7458045831ee7b6ef734112d0790c20856d9470af3ede302013f8a4",
+      "git_blob": "b1106755d215c1068968999d63beba6b392dfeca"
+    },
+    "ff_drain_ring.c": {
+      "source_file": "lib/ff_drain_ring.c",
+      "sha256": "acf28ff7a26710ccfefa64989907628f1117271d9a758f5237b5fafa24bb1680",
+      "git_blob": "eee86726e4f949f457c7bdc6bee1a71ff3d83b0b"
+    },
+    "ff_drain_ring.h": {
+      "source_file": "lib/ff_drain_ring.h",
+      "sha256": "fafaa691d240b21bf5b178c71c424c40b9c02d22d2725b32fa0314d1fdd57602",
+      "git_blob": "26e30b86f47ac01c28c7f4eddcd02dc2b6876e13"
     }
-  }
+  },
+  "headers": "ff_reload.h and ff_msg.h are the unchanged shared dependencies in ../fstack-ipc/UPSTREAM.json"
 }

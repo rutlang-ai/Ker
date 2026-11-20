@@ -54,6 +54,10 @@
     "tests/unit/test_ff_dpdk_kni.c": {
       "sha256": "109a4dd1cc37efd674c322f948a4e1289b45ca328f585fb512df52a34c43b730",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_dpdk_kni.c"
+    },
+    "tests/unit/test_ff_zc_send.c": {
+      "sha256": "c5f1a31344c9c55d8c253fa1838694c1cd6976bc37ad9a39fd624d37b110946d",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_zc_send.c"
     }
   },
   "cases": {
@@ -3037,6 +3041,343 @@
         "native-fstack-exception-filter"
       ],
       "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-reload-fsm-transitions": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_10_reload_fsm_transitions"
+      ],
+      "ker_ctests": [
+        "fstack-reload-fsm-transitions"
+      ],
+      "adaptation": "Run the unchanged legal chain, re-entry and jump rejection, failure events, reset, and state-name assertions against the pinned application header."
+    },
+    "fstack-reload-fsm-legal": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_10_all_legal_transitions"
+      ],
+      "ker_ctests": [
+        "fstack-reload-fsm-legal"
+      ],
+      "adaptation": "Run all twelve listed legal transitions and two consecutive full rounds directly against the pinned application header."
+    },
+    "fstack-reload-fsm-illegal": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_10_illegal_combinations_exhaustive"
+      ],
+      "ker_ctests": [
+        "fstack-reload-fsm-illegal"
+      ],
+      "adaptation": "Run the original seven-state and eleven-event matrix, including the three invalid states, against the pinned application header."
+    },
+    "fstack-reload-fsm-recovery": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_10_error_recovery_and_abort"
+      ],
+      "ker_ctests": [
+        "fstack-reload-fsm-recovery"
+      ],
+      "adaptation": "Run the five original failure entries, reset and forbidden-exit assertions, and a full legal round after each recovery."
+    },
+    "test_ff_regist_packet_dispatcher_smoke": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_regist_packet_dispatcher_smoke"
+      ],
+      "ker_ctests": [
+        "fstack-packet-dispatcher-plain",
+        "fstack-packet-dispatcher-pmd",
+        "fstack-packet-dispatcher-lifetime"
+      ],
+      "adaptation": "Run the complete original plain registration assertions through the public adapter. A real net_ring caller checks precedence, borrowed bytes and length, queue parameters, and pool reclamation."
+    },
+    "test_ff_regist_packet_dispatcher_context_smoke": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_regist_packet_dispatcher_context_smoke"
+      ],
+      "ker_ctests": [
+        "fstack-packet-dispatcher-context",
+        "fstack-packet-dispatcher-pmd",
+        "fstack-packet-dispatcher-lifetime"
+      ],
+      "adaptation": "Run the complete context registration assertions. Original net_ring traffic verifies stripped VLAN metadata and network-order TCI, replacement, payload bytes, and caller ownership of mbufs."
+    },
+    "test_ut_nr_24_unregist_dispatcher": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ut_nr_24_unregist_dispatcher"
+      ],
+      "ker_ctests": [
+        "fstack-packet-dispatcher-unregister",
+        "fstack-packet-dispatcher-pmd",
+        "fstack-packet-dispatcher-lifetime"
+      ],
+      "adaptation": "Run the complete unregister assertions. The software PMD caller verifies return to the default queue; the concurrent CTest checks quiescence, reentrant EDEADLK and cancellation."
+    },
+    "fstack-drain-full-visible": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_f_m4_1_drain_ring_full_visible"
+      ],
+      "ker_ctests": [
+        "fstack-drain-full-visible"
+      ],
+      "adaptation": "Run the complete source watermark case on original DPDK rings and pool. Check full-ring rejection, exact full and drop counters, TX peak and zero RX peak, then explicitly free all accepted objects."
+    },
+    "fstack-drain-queue-owner": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_drain_queue_ownership"
+      ],
+      "ker_ctests": [
+        "fstack-drain-queue-owner"
+      ],
+      "adaptation": "Run mode 0 of the original P1 fixture. A real mbuf is seeded in each of eight rings; unregister may drain only RX q0/gen0 and TX q1/gen0, and must preserve lookup identity."
+    },
+    "fstack-drain-queue-nonowner": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_drain_nonowner_tx"
+      ],
+      "ker_ctests": [
+        "fstack-drain-queue-nonowner"
+      ],
+      "adaptation": "Run mode 1 of the original P1 fixture with another generation owning TX. Check retention of all TX objects and exact pool balance on real DPDK rings."
+    },
+    "fstack-drain-peer-tx": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_drain_peer_tx"
+      ],
+      "ker_ctests": [
+        "fstack-drain-peer-tx"
+      ],
+      "adaptation": "Run mode 2 of the original P1 fixture with a live draining peer in the directory. Check that TX is retained for the peer and that eligible RX is reclaimed."
+    },
+    "fstack-drain-foreign-epoch": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_drain_foreign_epoch_tx"
+      ],
+      "ker_ctests": [
+        "fstack-drain-foreign-epoch"
+      ],
+      "adaptation": "Run mode 3 of the original P1 fixture. The first epoch retains foreign-owner TX; a later owner selection drains the exact pointer and bytes through original net_ring and recovers the pool."
+    },
+    "fstack-drain-empty-qconf": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_drain_empty_qconf"
+      ],
+      "ker_ctests": [
+        "fstack-drain-empty-qconf"
+      ],
+      "adaptation": "Run mode 4 of the original P1 fixture. Empty local queue configuration retains all eight ring objects across unregister and reattach, and teardown restores the pool."
+    },
+    "fstack-directory-live-slot": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_directory_live_slot"
+      ],
+      "ker_ctests": [
+        "fstack-directory-live-slot"
+      ],
+      "adaptation": "Run both original refusal attempts with a live target slot, another free slot, a real directory memzone and role/fatal test seams. The saved early owner and slot bytes survive."
+    },
+    "fstack-directory-full": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_directory_full"
+      ],
+      "ker_ctests": [
+        "fstack-directory-full"
+      ],
+      "adaptation": "Populate every live directory slot and run the original repeated-failure and owner-preservation assertions against the real memzone and pinned attach implementation."
+    },
+    "fstack-directory-missing": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_directory_missing"
+      ],
+      "ker_ctests": [
+        "fstack-directory-missing"
+      ],
+      "adaptation": "Inject absence of the named directory lookup in the original secondary-role case. The pinned attach implementation must take its fatal exit without installing a directory."
+    },
+    "fstack-directory-invalid": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_directory_invalid"
+      ],
+      "ker_ctests": [
+        "fstack-directory-invalid"
+      ],
+      "adaptation": "Alter the real memzone header version and run the pinned secondary-role case. Original attach rejects the incompatible directory before publishing."
+    },
+    "fstack-directory-success": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_directory_success"
+      ],
+      "ker_ctests": [
+        "fstack-directory-success"
+      ],
+      "adaptation": "Use a real memzone and the original attach implementation to verify disabled behavior, nonzero epoch admission, repeat-attach idempotence and exact directory epoch."
+    },
+    "fstack-directory-primary-busy": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_directory_primary_slot_busy"
+      ],
+      "ker_ctests": [
+        "fstack-directory-primary-busy"
+      ],
+      "adaptation": "Run the original busy-slot-zero fixture against original primary attach and real DPDK reserve/lookup. Check refusal, epoch retention and unchanged RX owner."
+    },
+    "fstack-directory-slot-window": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p2_slot_transient_window"
+      ],
+      "ker_ctests": [
+        "fstack-directory-slot-window"
+      ],
+      "adaptation": "Run the original fork/reap and monotonic timestamp fixture. Admission waits for the dead owner stamp to expire, takes the exact slot and leaves neighboring slots untouched."
+    },
+    "fstack-directory-slot-exhausted": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p2_slot_transient_exhausted"
+      ],
+      "ker_ctests": [
+        "fstack-directory-slot-exhausted"
+      ],
+      "adaptation": "Run the original 50 ms retry-budget refusal against a freshly stamped dead master. Check the refusal counter, preserved slot owner and untouched neighbors."
+    },
+    "native-fstack-buffer-resize": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_realloc_zero_size_returns_p"
+      ],
+      "ker_ctests": [
+        "native-fstack-buffer-resize"
+      ],
+      "adaptation": "Boot the pinned Linux and check zero-size resize returns the exact pointer and preserves bytes and errno, including the source stack sentinel, a registered mapping, NULL and inactive runtime. Force allocation and unmap failures during nonzero resize and verify cleanup."
+    },
+    "test_ff_zc_mbuf_get_negative_len_returns_error": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_mbuf_get_negative_len_returns_error"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Reject negative lengths converted to size_t at original-Linux VMA allocation and verify a separate live extent survives."
+    },
+    "test_ff_zc_mbuf_get_zero_len_returns_minimal_chain": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_mbuf_get_zero_len_returns_minimal_chain"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Create a zero-capacity owner with one-byte original-Linux VMA backing, verify a nonnull borrowed view, zero logical length and exact release."
+    },
+    "test_ff_zc_mbuf_write_accumulates_pkthdr_len": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_mbuf_write_accumulates_pkthdr_len"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Append ab and cd to a native VMA owner and verify the exact aggregate bytes and cursor. Rejected writes preserve both."
+    },
+    "test_ff_zc_mbuf_write_overflow_returns_error": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_mbuf_write_overflow_returns_error"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Attempt an out-of-bounds and overflowing length or offset write to a real native mapping, check EINVAL and confirm all original bytes remain readable and sendable."
+    },
+    "test_ff_zc_mbuf_write_null_data_returns_error": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_mbuf_write_null_data_returns_error"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Reject NULL data for nonzero and zero-length writes without changing the original native allocation or payload."
+    },
+    "test_ff_zc_mbuf_write_zero_len_noop": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_mbuf_write_zero_len_noop"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Verify a non-NULL zero-length append leaves both empty and populated original-Linux VMA owners unchanged."
+    },
+    "test_ff_zc_mbuf_write_multi_segment": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_mbuf_write_multi_segment"
+      ],
+      "ker_ctests": [
+        "native-fstack-buffer-segments-layout",
+        "native-fstack-buffer-segments-failures"
+      ],
+      "adaptation": "Append 178 bytes in the source pattern across distinct 128-byte and 50-byte original Linux VMAs. Verify exact per-segment and aggregate content, and allocation and unmap recovery."
+    },
+    "test_ff_zc_send_mb_null_returns_einval": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_send_mb_null_returns_einval"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Verify SO_ZEROCOPY sends with NULL nonempty extent fail EFAULT in the Ker/Linux API, leave the message length unchanged and generate neither receiver data nor a completion."
+    },
+    "test_ff_zc_send_nbytes_overflow_returns_einval": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_send_nbytes_overflow_returns_einval"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Verify the oversized single extent is rejected with EFAULT by the native send and sendmsg range guard while keeping data, completion IDs and owned bytes unchanged."
+    },
+    "test_ff_zc_send_zero_nbytes_returns_einval": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_send_zero_nbytes_returns_einval"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Verify the explicit writer send rejects an empty payload and out-of-range writes before the original Linux syscall. An ordinary zero-byte UDP send remains valid."
+    },
+    "test_ff_zc_send_valid_args_proceeds": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_send_valid_args_proceeds"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Send a registered 16-byte extent through original Linux, verify exact peer bytes and consume the real MSG_ERRQUEUE completion range starting from ID zero."
     }
   }
 }

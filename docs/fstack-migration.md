@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 296 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 329 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 9 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 58 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 25 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **67 项**（58 blocked + 9 partial）。
+当前待完成 **34 项**（25 blocked + 9 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -72,19 +72,19 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 1 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 92 | 0 | 4 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 96 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 39 | 1 | 27 | 0 | 0 |
+| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 56 | 1 | 10 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 25 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 31 | 1 | 2 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 32 | 1 | 1 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 25 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 5 | 1 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 12 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 0 | 0 | 3 | 0 |
-| [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 0 | 0 | 11 | 2 | 0 |
+| [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 11 | 0 | 0 | 2 | 0 |
 | [unit/test_hello.c](../tests/upstream/fstack/tests/unit/test_hello.c) | 2 | 0 | 0 | 0 | 0 | 2 |
 | [unit/test_reload_harness.py](../tests/upstream/fstack/tests/unit/test_reload_harness.py) | 53 | 0 | 0 | 0 | 0 | 53 |
 
@@ -1323,3 +1323,18 @@ DPDK 构建提供独立的 `ker::ipc`，复用固定 F-Stack 的 IPC 实现与�
 
 运行验证覆盖单进程 EAL、Linux TAP 和 DPDK 软件 PMD。旧 KNI/virtio 热插拔 ABI、
 真实 EAL 多进程交接及实体网卡属于独立验证范围。 [宿主 TAP 配置](native-tcp.md#宿主-exception-tap)
+
+## 原生缓冲区、回调及 reload 所有权
+
+- **12 项原生缓冲区场景。** 11 项来自 `test_ff_zc_send.c`，另有 1 项来自
+  `test_ff_host_interface.c`。内嵌 Linux 实际分配 VMA。测试验证零尺寸 realloc 保留原指针和
+  errno、分段写入的字节和游标、失败回滚、原生 socket 的数据及 `MSG_ERRQUEUE` 完成回执，
+  以及关闭后所有 VMA 与 mbuf 已回收。空指针和过大发送范围采用 Linux 原生适配接口的 EFAULT。
+  原生发送使用 loopback，DPDK `net_tap` 用于启动完整 launcher 数据面。
+- **4 项 reload 状态机场景。** 调用方测试编译固定上游 Nginx 头文件和原始断言，覆盖
+  12 种允许的跳转、7 状态 × 11 事件矩阵和 5 个错误入口的恢复路径。
+- **17 项 DPDK 场景。** 3 项回调注册/撤销用例运行原始断言，通过真实 `net_ring`
+  验证队列、VLAN、借用数据和 mbuf 归属，通过并发测试验证撤销等待和取消清理。
+  8 项目录及 6 项 drain-ring 用例编译原始实现和断言，使用真实 memzone、ring、mbuf
+  和 PID 存活状态。目录用例在单进程注入 EAL 角色、缺失查找和预期退出。外部 epoch 的
+  TX 另用实际 PMD 验证保留帧的指针、字节和回收。真实 EAL 多进程交接由独立集成项跟踪。
