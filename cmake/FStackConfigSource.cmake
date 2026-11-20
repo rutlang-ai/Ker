@@ -146,6 +146,12 @@ set_tests_properties(fstack-config-source-test_ipfw_pr_cfg_handler_isolated PROP
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_ff_load_config_bond_full)
+add_test(NAME fstack-config-source-test_ff_load_config_bond_full COMMAND ker-test_ff_load_config_bond_full)
+set_tests_properties(fstack-config-source-test_ff_load_config_bond_full PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")
