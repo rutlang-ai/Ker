@@ -340,6 +340,20 @@ set_tests_properties(fstack-config-source-test_vdev_cfg_handler_no_nb_vdev_retur
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_vdev_cfgs_calloc_oom_returns_error)
+target_sources(ker-test_vdev_cfgs_calloc_oom_returns_error PRIVATE fstack-config-allocation.c)
+target_link_libraries(ker-test_vdev_cfgs_calloc_oom_returns_error PRIVATE PkgConfig::DPDK)
+target_compile_definitions(ker-test_vdev_cfgs_calloc_oom_returns_error PRIVATE
+    FSTACK_CONFIG_CHECK_ALLOCATION
+    FSTACK_CONFIG_ALLOCATED_TYPE=ff_vdev_cfg
+    FSTACK_CONFIG_ALLOCATED_FIELD=vdev_cfgs
+    "FSTACK_CONFIG_RECOVERY_FIXTURE=\"valid_vdev.ini\"")
+target_link_options(ker-test_vdev_cfgs_calloc_oom_returns_error PRIVATE -Wl,--wrap=calloc)
+add_test(NAME fstack-config-source-test_vdev_cfgs_calloc_oom_returns_error COMMAND ker-test_vdev_cfgs_calloc_oom_returns_error)
+set_tests_properties(fstack-config-source-test_vdev_cfgs_calloc_oom_returns_error PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")

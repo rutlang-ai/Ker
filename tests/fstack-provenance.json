@@ -1718,6 +1718,16 @@
       ],
       "adaptation": "The original virtual-device callback rejects its first setting when the device count is absent. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_vdev_cfgs_calloc_oom_returns_error": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_vdev_cfgs_calloc_oom_returns_error"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_vdev_cfgs_calloc_oom_returns_error"
+      ],
+      "adaptation": "The pinned source assertion injects the third calloc failure. The test verifies that the original allocator requested the virtual-device array, checks the result of the failed attempt, and verifies a real recovery load. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
