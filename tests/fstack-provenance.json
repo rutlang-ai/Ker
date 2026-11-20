@@ -1578,6 +1578,16 @@
       ],
       "adaptation": "The original parser rejects an enabled reload configuration that lacks the required slim-primary setting. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_greload_thread_mode_mutex": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_greload_thread_mode_mutex"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_greload_thread_mode_mutex"
+      ],
+      "adaptation": "The source fixture is rejected when the document enables both legacy reload and thread mode. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
