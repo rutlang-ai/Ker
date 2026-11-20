@@ -295,6 +295,21 @@ set_tests_properties(fstack-config-source-test_rss_check_cfg_handler_no_port_no_
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_bond_cfg_handler_no_nb_bond)
+target_sources(ker-test_bond_cfg_handler_no_nb_bond PRIVATE fstack-config-rejection.c)
+target_link_libraries(ker-test_bond_cfg_handler_no_nb_bond PRIVATE PkgConfig::DPDK)
+target_include_directories(ker-test_bond_cfg_handler_no_nb_bond PRIVATE "${PROJECT_SOURCE_DIR}/third_party/inih")
+target_compile_definitions(ker-test_bond_cfg_handler_no_nb_bond PRIVATE
+    FSTACK_CONFIG_VERIFY_REJECTION
+    "FSTACK_CONFIG_REJECTION_FIXTURE=\"fixtures/invalid_bond_no_nb_bond.ini\""
+    "FSTACK_CONFIG_REJECT_SECTION=\"bond0\""
+    "FSTACK_CONFIG_REJECT_KEY=\"mode\"")
+target_link_options(ker-test_bond_cfg_handler_no_nb_bond PRIVATE -Wl,--wrap=example_upstream_ini_parse)
+add_test(NAME fstack-config-source-test_bond_cfg_handler_no_nb_bond COMMAND ker-test_bond_cfg_handler_no_nb_bond)
+set_tests_properties(fstack-config-source-test_bond_cfg_handler_no_nb_bond PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")
