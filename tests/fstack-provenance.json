@@ -1628,6 +1628,16 @@
       ],
       "adaptation": "The original parser accepts the explicit size, uses the default for a negative value, and rejects a non-power-of-two size. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_ff_load_config_stack_coexist_enabled": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_stack_coexist_enabled"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_stack_coexist_enabled"
+      ],
+      "adaptation": "The original fixture decodes the kernel coexistence mode in the parsed document. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
