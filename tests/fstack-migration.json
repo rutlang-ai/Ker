@@ -4490,15 +4490,9 @@
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_join_retval",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Real LKL threads complete work and join successfully; joined results are observed through owned argument storage.",
-      "ker_tests": [
-        {
-          "ctest": "native-fstack-thread-runtime",
-          "provenance_case": "native-fstack-thread-runtime"
-        }
-      ],
-      "remaining": "LKL takes a void start routine and thread_join has no result pointer. The F-Stack-specific assertion that a non-NULL routine return becomes NULL cannot be expressed through this callback API."
+      "status": "architecture-specific",
+      "reason": "The source F-Stack wrapper discards the caller's start routine result and writes NULL into the join result slot. The pinned LKL host API accepts a void-returning start routine and a handle-only join. The FreeBSD wrapper-specific result assertion is architecture-specific.",
+      "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_malloc_failure",
