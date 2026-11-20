@@ -50,6 +50,12 @@ set_tests_properties(fstack-config-source-test_ff_load_config_dpdk_full PROPERTI
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_ff_load_config_freebsd_boot_multi_entries)
+add_test(NAME fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries COMMAND ker-test_ff_load_config_freebsd_boot_multi_entries)
+set_tests_properties(fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")
