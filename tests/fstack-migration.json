@@ -1610,9 +1610,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original fixture checks last-value precedence for repeated bond and virtual device keys. The test repeats parse and unload with leak detection. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak",
+          "provenance_case": "fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_calloc_oom_returns_error",
