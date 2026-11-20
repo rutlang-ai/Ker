@@ -266,6 +266,20 @@ set_tests_properties(fstack-config-source-test_ff_load_config_stack_coexist_disa
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_ff_load_config_portlist_nonint)
+target_sources(ker-test_ff_load_config_portlist_nonint PRIVATE fstack-config-rejection.c)
+target_link_libraries(ker-test_ff_load_config_portlist_nonint PRIVATE PkgConfig::DPDK)
+target_include_directories(ker-test_ff_load_config_portlist_nonint PRIVATE "${PROJECT_SOURCE_DIR}/third_party/inih")
+target_compile_definitions(ker-test_ff_load_config_portlist_nonint PRIVATE
+    FSTACK_CONFIG_VERIFY_REJECTION
+    "FSTACK_CONFIG_REJECTION_FIXTURE=\"fixtures/invalid_portlist_nonint.ini\""
+    FSTACK_CONFIG_REJECT_LIST)
+target_link_options(ker-test_ff_load_config_portlist_nonint PRIVATE -Wl,--wrap=rte_strsplit)
+add_test(NAME fstack-config-source-test_ff_load_config_portlist_nonint COMMAND ker-test_ff_load_config_portlist_nonint)
+set_tests_properties(fstack-config-source-test_ff_load_config_portlist_nonint PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")

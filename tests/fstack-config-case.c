@@ -29,12 +29,23 @@ int load_with_fixture(const char *path)
 #define assert_string_not_equal(actual, unexpected) CHECK(strcmp((actual), (unexpected)) != 0)
 #define QUOTE_INNER(value) #value
 #define QUOTE(value) QUOTE_INNER(value)
+#ifdef FSTACK_CONFIG_VERIFY_REJECTION
+int load_config_rejection_fixture(const char *path);
+#define load_with_fixture load_config_rejection_fixture
+#endif
+#ifdef FSTACK_CONFIG_CHECK_ALLOCATION
+extern int g_calloc_fail_after;
+void verify_config_allocation(void);
+#endif
 #include QUOTE(SOURCE_INCLUDE)
 
 int main(void)
 {
     for (unsigned iteration = 0; iteration < 5; ++iteration) {
         SOURCE_FUNCTION(NULL);
+#ifdef FSTACK_CONFIG_CHECK_ALLOCATION
+        verify_config_allocation();
+#endif
         example_fstack_config_unload();
         CHECK(example_fstack_config_eal_argc() == 0);
     }
