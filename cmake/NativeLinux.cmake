@@ -40,7 +40,7 @@ endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c
     src/posix/lifecycle.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-entropy.c src/posix/realtime-clock.c
-    src/posix/current-time.c src/posix/native-buffer.c)
+    src/posix/current-time.c src/posix/native-buffer.c src/posix/run-loop.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 add_library(ker::posix ALIAS ker-posix)
@@ -55,7 +55,7 @@ target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::
 set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME posix)
 add_executable(ker-app src/posix/app-guard.c)
 add_executable(ker-io-worker src/posix/io-worker.c
-    src/posix/worker-exception.c src/posix/worker-exception-filter.c src/posix/worker-mbuf.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
+    src/posix/worker-offload.c src/posix/worker-exception.c src/posix/worker-exception-filter.c src/posix/worker-mbuf.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
 foreach(native_target ker-posix ker-app ker-io-worker)
     target_compile_features(${native_target} PRIVATE c_std_11)
     target_compile_options(${native_target} PRIVATE -Wall -Wextra -Werror)
@@ -88,6 +88,8 @@ install(FILES "${ker_native_source}/COPYING" "${ker_native_source}/LICENSES/pref
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux)
 if(BUILD_TESTING)
     include(cmake/NativeBufferTests.cmake)
+    include(cmake/FStackRemainingNativeTests.cmake)
+    include(cmake/NativeOffloadTests.cmake)
     add_executable(ker-packet-device-test tests/posix/fstack-packet-device.c src/posix/packet-device.c)
     target_include_directories(ker-packet-device-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-packet-device-test SYSTEM PRIVATE

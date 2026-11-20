@@ -58,6 +58,14 @@
     "tests/unit/test_ff_zc_send.c": {
       "sha256": "c5f1a31344c9c55d8c253fa1838694c1cd6976bc37ad9a39fd624d37b110946d",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_zc_send.c"
+    },
+    "tests/integration/test_ff_gendir_mp_integration.c": {
+      "sha256": "9fa32d1e63fedf5e692f0f360fcbb65916d4b3bc3c411d9ad4b291e1ac946534",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/integration/test_ff_gendir_mp_integration.c"
+    },
+    "tests/integration/test_ff_reload_integration.c": {
+      "sha256": "09a9e44777c012bcb1c4ef1f95f3f43c8577c554ff9c140656d18dadfea4487c",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/integration/test_ff_reload_integration.c"
     }
   },
   "cases": {
@@ -3378,6 +3386,354 @@
         "native-fstack-zc-validation"
       ],
       "adaptation": "Send a registered 16-byte extent through original Linux, verify exact peer bytes and consume the real MSG_ERRQUEUE completion range starting from ID zero."
+    },
+    "remaining-fstack-test_ff_dpdk_if_send_ip_csum": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_ip_csum"
+      ],
+      "ker_ctests": [
+        "native-fstack-tx-offload-metadata",
+        "native-fstack-tx-offloads"
+      ],
+      "adaptation": "Check the adapter passes IPv4 checksum flags to an advertised DPDK path and independently validate every IPv4 wire header checksum after Linux-to-TAP transmission."
+    },
+    "remaining-fstack-test_ff_dpdk_if_send_tcp_csum": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_tcp_csum"
+      ],
+      "ker_ctests": [
+        "native-fstack-tx-offload-metadata",
+        "native-fstack-tx-offloads"
+      ],
+      "adaptation": "Translate real original-Linux virtio TCP checksum metadata to original DPDK flags, require positive PMD offload counters, and validate independent IPv4/IPv6 TCP wire checksums and payload."
+    },
+    "remaining-fstack-test_ff_dpdk_if_send_tso": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_tso"
+      ],
+      "ker_ctests": [
+        "native-fstack-tx-offload-metadata",
+        "native-fstack-tx-offloads"
+      ],
+      "adaptation": "Translate positive original Linux IPv4 TSO metadata; the original TAP DPDK GSO path emits MTU-bounded TCP segments in large and scatter mbuf modes. Independently validate checksums and complete stream delivery."
+    },
+    "remaining-fstack-test_ff_dpdk_if_send_udp_csum": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_udp_csum"
+      ],
+      "ker_ctests": [
+        "native-fstack-tx-offload-metadata",
+        "native-fstack-tx-offloads"
+      ],
+      "adaptation": "Exercise original Linux UDP boundary datagrams with positive DPDK checksum flags and independent address-family checksum verification on real TAP."
+    },
+    "remaining-fstack-test_ff_dpdk_if_send_copydata_fail": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_copydata_fail"
+      ],
+      "ker_ctests": [
+        "fstack-owned-send-copy-failure",
+        "fstack-owned-send-false-copy-control",
+        "fstack-owned-send-consumer"
+      ],
+      "adaptation": "Use the unchanged source failure assertion and original sender with an explicitly failed caller copy. Real input and conversion mbufs return to the pool with no TX; the false-success control is rejected and an actual subsequent frame transfers bytes."
+    },
+    "remaining-fstack-test_main_loop_one_iteration_then_stop": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_main_loop_one_iteration_then_stop"
+      ],
+      "ker_ctests": [
+        "native-fstack-run-stop-one"
+      ],
+      "adaptation": "Run one real callback under the launcher, exchange exact host UDP through the original Linux and net_tap, request stop, then require actual DPDK cleanup acknowledgement and inactive sockets before callback runner returns."
+    },
+    "remaining-fstack-test_it_a14_primary_precreates_all_slots": {
+      "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
+      "source_case": [
+        "test_it_a14_primary_precreates_all_slots"
+      ],
+      "ker_ctests": [
+        "fstack-a14-original-multiprocess"
+      ],
+      "adaptation": "The original source verifies all slot, generation and process ring lookups after real primary EAL, shared directory memzone and original drain-ring creation."
+    },
+    "remaining-fstack-test_it_a14_secondary_looks_up_own_slot": {
+      "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
+      "source_case": [
+        "test_it_a14_secondary_looks_up_own_slot"
+      ],
+      "ker_ctests": [
+        "fstack-a14-original-multiprocess"
+      ],
+      "adaptation": "The unmodified worker and assertions run in a real secondary under a distinct parent master; original lookup validates the epoch-specific message and drain rings."
+    },
+    "remaining-fstack-test_it_a14_two_masters_single_consumer": {
+      "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
+      "source_case": [
+        "test_it_a14_two_masters_single_consumer"
+      ],
+      "ker_ctests": [
+        "fstack-a14-original-multiprocess"
+      ],
+      "adaptation": "Both original worker processes remain attached across the barrier. The original assertions cover distinct epochs and rings, exact tokens, one hardware gate winner, and matching KNI ownership."
+    },
+    "remaining-fstack-test_it_a14_epoch_liveness_after_exit": {
+      "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
+      "source_case": [
+        "test_it_a14_epoch_liveness_after_exit"
+      ],
+      "ker_ctests": [
+        "fstack-a14-original-multiprocess"
+      ],
+      "adaptation": "The retained assertions reap earlier real master processes and wait for their directory stamps to expire while primary epoch zero remains live."
+    },
+    "remaining-fstack-test_it_a14_probe_roundtrip_tools_contract": {
+      "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
+      "source_case": [
+        "test_it_a14_probe_roundtrip_tools_contract"
+      ],
+      "ker_ctests": [
+        "fstack-a14-original-multiprocess"
+      ],
+      "adaptation": "The original worker enqueues a typed QUERY on slot zero; the Ker caller pumps the actual shared ring while parked and fills the response through the original reload message codec. Original assertions verify the live epoch and generation and a distinct proc-one ring lookup."
+    },
+    "remaining-fstack-test_it_a14_usr2_drain_peer_semantics": {
+      "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
+      "source_case": [
+        "test_it_a14_usr2_drain_peer_semantics"
+      ],
+      "ker_ctests": [
+        "fstack-a14-original-multiprocess"
+      ],
+      "adaptation": "A real old master exits while its original secondary refreshes the directory. The new worker observes a drain peer before release and its loss after the real stale interval."
+    },
+    "remaining-fstack-test_it_a14_usr2_chain_slot_recycle": {
+      "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
+      "source_case": [
+        "test_it_a14_usr2_chain_slot_recycle"
+      ],
+      "ker_ctests": [
+        "fstack-a14-original-multiprocess"
+      ],
+      "adaptation": "The original source checks that another real secondary obtains a nonzero correct slot after previous masters exit without retiring their slots."
+    },
+    "remaining-fstack-test_it_a09_boot_state": {
+      "source_file": "tests/integration/test_ff_reload_integration.c",
+      "source_case": [
+        "test_it_a09_boot_state"
+      ],
+      "ker_ctests": [
+        "fstack-reload-boot-source",
+        "fstack-reload-boot-consumer"
+      ],
+      "adaptation": "Execute the exact source boot assertions through a caller using actual EAL, the original reload gate, ring lookup and a net_ring TX callback. Check owner zero, enabled polling, zero baseline traffic and pool reclamation."
+    },
+    "remaining-fstack-test_it_a09_tx_divert_no_hw": {
+      "source_file": "tests/integration/test_ff_reload_integration.c",
+      "source_case": [
+        "test_it_a09_tx_divert_no_hw"
+      ],
+      "ker_ctests": [
+        "fstack-parked-tx-divert"
+      ],
+      "adaptation": "Exercise eight copied and four owned packets. Their exact bytes remain in the drain ring while the previous worker is parked, then make one actual PMD burst as the selected owner."
+    },
+    "remaining-fstack-test_it_a09_drain_ring_tx_watermark": {
+      "source_file": "tests/integration/test_ff_reload_integration.c",
+      "source_case": [
+        "test_it_a09_drain_ring_tx_watermark"
+      ],
+      "ker_ctests": [
+        "fstack-parked-tx-watermark"
+      ],
+      "adaptation": "Exercise four rounds of 64, then fill a 255-entry ring and observe the extra overflow. Verify exact PMD burst counts, queue peaks, byte order and reclamation."
+    },
+    "remaining-fstack-test_it_a09_send_burst_guard": {
+      "source_file": "tests/integration/test_ff_reload_integration.c",
+      "source_case": [
+        "test_it_a09_send_burst_guard"
+      ],
+      "ker_ctests": [
+        "fstack-parked-tx-guard"
+      ],
+      "adaptation": "Queue 32 actual callback responses while parked and ensure the final PMD gate drops them with exact reclamation. Verify the owner can transmit through the same path."
+    },
+    "remaining-fstack-test_it_a10_halfopen_dispatch": {
+      "source_file": "tests/integration/test_ff_reload_integration.c",
+      "source_case": [
+        "test_it_a10_halfopen_dispatch"
+      ],
+      "ker_ctests": [
+        "fstack-a10-halfopen-dispatch"
+      ],
+      "adaptation": "Use the exact source ACK-shaped fixture and classifier in a real net_ring caller. A missing marked tuple transfers the original pointer to the peer; admitted metadata selects local delivery. The source classifier test models tuple admission without a TCP protocol implementation."
+    },
+    "remaining-fstack-test_it_a10_halfopen_window_mechanism": {
+      "source_file": "tests/integration/test_ff_reload_integration.c",
+      "source_case": [
+        "test_it_a10_halfopen_window_mechanism"
+      ],
+      "ker_ctests": [
+        "fstack-a10-window-mechanism"
+      ],
+      "adaptation": "Forward and consume two same-tuple source fixtures through the parked input path exactly once, verify original gate and no classifier recirculation, then abort and check the next miss is disposed and counted."
+    },
+    "remaining-fstack-test_it_a09_main_loop_parked_pass": {
+      "source_file": "tests/integration/test_ff_reload_integration.c",
+      "source_case": [
+        "test_it_a09_main_loop_parked_pass"
+      ],
+      "ker_ctests": [
+        "fstack-parked-tx-pass"
+      ],
+      "adaptation": "Stage five real mbufs before a quiescent ownership change, run the actual caller adapter while parked, and ensure only the later owner transmits exact FIFO bytes."
+    },
+    "remaining-fstack-test_ff_regist_pcblddr_fun_smoke": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_regist_pcblddr_fun_smoke"
+      ],
+      "ker_ctests": [
+        "fstack-address-policy-register",
+        "fstack-address-policy-lifetime",
+        "native-fstack-address-policy-sockets"
+      ],
+      "adaptation": "Run the complete pinned registration and lifetime assertions. A caller uses the adapter to select and bind the explicit local address for real original Linux IPv4/IPv6 TCP connections."
+    },
+    "remaining-fstack-test_ff_in_pcbladdr_no_callback": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_in_pcbladdr_no_callback"
+      ],
+      "ker_ctests": [
+        "fstack-address-policy-default",
+        "native-fstack-address-policy-sockets"
+      ],
+      "adaptation": "Run the exact NULL callback assertions and require the real dual-stack connections to fall back to original Linux after unregister."
+    },
+    "remaining-fstack-test_ff_in_pcbladdr_af_inet_dispatches": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_in_pcbladdr_af_inet_dispatches"
+      ],
+      "ker_ctests": [
+        "fstack-address-policy-ipv4",
+        "native-fstack-address-policy-sockets"
+      ],
+      "adaptation": "Verify exact IPv4 arguments and callback result, connect from the selected 127.0.0.2 source and compare real payload and peer socket coordinates."
+    },
+    "remaining-fstack-test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap"
+      ],
+      "ker_ctests": [
+        "fstack-address-policy-ipv6",
+        "native-fstack-address-policy-sockets"
+      ],
+      "adaptation": "Verify the pinned FreeBSD family-28 to Linux family-10 remap with unchanged assertions and actual original Linux IPv6 TCP traffic."
+    },
+    "remaining-fstack-test_ff_dpdk_if_send_null_ctx_with_mbuf": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_null_ctx_with_mbuf"
+      ],
+      "ker_ctests": [
+        "fstack-owned-send-null",
+        "fstack-owned-send-no-free-control",
+        "fstack-owned-send-consumer"
+      ],
+      "adaptation": "Run the exact original NULL-context send assertion with a real caller-owned DPDK mbuf. Verify input disposal, no PMD work or copy and pool recovery. A no-free negative control fails the conservation assertion."
+    },
+    "remaining-fstack-test_ut_nr_17_hardclock_interval": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ut_nr_17_hardclock_interval"
+      ],
+      "ker_ctests": [
+        "fstack-caller-clock-source"
+      ],
+      "adaptation": "Run complete unchanged rounding, legacy-equivalence and invalid-frequency assertions against the byte-pinned pure caller interval helper. Linux scheduler and timekeeping stay outside the fixture."
+    },
+    "remaining-fstack-test_ut_nr_18_gen_pool_config": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ut_nr_18_gen_pool_config"
+      ],
+      "ker_ctests": [
+        "fstack-pool-generation",
+        "fstack-pool-legacy-consumer"
+      ],
+      "adaptation": "Run the complete original selection, naming and bounds assertions against the imported generation selector and actual legacy cache-enabled EAL pools."
+    },
+    "remaining-fstack-test_ut_nr_21_shared_pool_cache_size": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ut_nr_21_shared_pool_cache_size"
+      ],
+      "ker_ctests": [
+        "fstack-pool-cache",
+        "fstack-pool-legacy-consumer"
+      ],
+      "adaptation": "Run the exact shared-zero and legacy cache-policy assertions. Real legacy mbuf, message and reference pools consume original net_ring traffic, exercise their caches and restore all objects."
+    },
+    "remaining-fstack-test_ut_nr_19_drain_ring_sp_sc": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ut_nr_19_drain_ring_sp_sc"
+      ],
+      "ker_ctests": [
+        "fstack-drain-source-pair"
+      ],
+      "adaptation": "Run the complete original source test with actual DPDK generation rings. Verify exact names and RX MP/SC and TX SP/SC flags, ownership and rejection, queue isolation, overflow counters and idempotent detach/reattach."
+    },
+    "remaining-fstack-test_ut_nr_27_dispatch_peer_boundary": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ut_nr_27_dispatch_peer_boundary"
+      ],
+      "ker_ctests": [
+        "fstack-peer-dispatch-ownership"
+      ],
+      "adaptation": "With actual net_ring and a live original reload round, a borrowed callback transfers the original mbuf to the chosen peer. Full and closed paths dispose exactly once; non-PEER remains caller-owned. Verify exact counters, pointer and bytes."
+    },
+    "remaining-fstack-test_rx15_primary_purges_orphaned_rings": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_rx15_primary_purges_orphaned_rings"
+      ],
+      "ker_ctests": [
+        "fstack-drain-rx15-orphans"
+      ],
+      "adaptation": "Run the byte-retained original RX-15 assertions with real DPDK rings, pool, cross-slot/user metadata and actual fork/reap PIDs. Verify retention while active, exclusive purge/reset, and full reclamation."
+    },
+    "remaining-fstack-test_ff_mmap_failure_exits": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_mmap_failure_exits"
+      ],
+      "ker_ctests": [
+        "native-fstack-host-mmap-fatal"
+      ],
+      "adaptation": "Run the complete source assertion and original non-page-array wrapper inside an actual native launcher. Real mmap returns EINVAL on conflicting flags and the wrapper must log and exit exactly 1."
+    },
+    "remaining-fstack-test_ff_run_and_stop_forward": {
+      "source_file": "tests/unit/test_ff_init.c",
+      "source_case": [
+        "test_ff_run_and_stop_forward"
+      ],
+      "ker_ctests": [
+        "native-fstack-run-stop-one",
+        "native-fstack-run-stop-repeat",
+        "native-fstack-run-stop-wait"
+      ],
+      "adaptation": "Exercise exact argument identity and thread, synchronous callbacks, ignored return, explicit stop and idempotent idle stop, nested-run rejection and wakeup of a NULL callback by another thread. Actual worker cleanup is acknowledged before returning."
     }
   }
 }

@@ -92,6 +92,14 @@ KER_API const void *ker_posix_buffer_writer_segment(struct ker_posix_buffer_writ
  * retains Linux empty-datagram behavior; this explicit owned-payload API rejects 0. */
 KER_API int ker_posix_buffer_writer_send(struct ker_posix_buffer_writer *writer, int fd,
     size_t offset, size_t length, int flags);
+/* Run callbacks synchronously on the calling thread until requested to stop.
+ * A NULL callback waits for a stop from another thread. Callback results
+ * are ignored. Only one run may own the native instance. A successful run
+ * closes native sockets, halts Linux and waits for the launcher to reap
+ * its DPDK worker. The application may continue using host resources. */
+typedef int (*ker_posix_loop_func)(void *argument);
+KER_API int ker_posix_run(ker_posix_loop_func callback, void *argument);
+KER_API void ker_posix_stop_run(void);
 /* Read the active original Linux CLOCK_REALTIME. Each output is optional.
  * Returns 0 on success or -1 with errno and leaves outputs intact on failure.
  * An inactive instance reports ENETDOWN. Quiesce callers before shutdown. */

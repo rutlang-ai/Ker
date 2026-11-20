@@ -419,3 +419,166 @@ test_f_m4_1_drain_ring_full_visible(void **state)
     ff_global_cfg.dpdk.port_cfgs = NULL;
     ff_global_cfg.dpdk.drain_ring_size = 0;
 }
+
+static void
+test_ut_nr_19_drain_ring_sp_sc(void **state)
+{
+    static uint16_t port_list[1] = { 0 };
+    /* Two queues = two independent stack instances. Without a queue
+     * dimension a packet would be handed to a stack that has no PCB for it
+     * (it would answer RST), and two workers would share one SP/SC ring. */
+    static struct ff_port_cfg port_cfgs[1];
+    struct rte_mbuf *pkts[MAX_PKT_BURST];
+    struct rte_mempool *pool = NULL;
+    struct rte_mbuf *m;
+    struct rte_ring *r, *r_q1;
+    char name[RTE_RING_NAMESIZE];
+    int g, q;
+
+    (void)state;
+    if (equiv_eal_init_once() < 0) {
+        printf("[INFO] rte_eal_init failed; UT-NR-19 skipped\n");
+        skip();
+        return;
+    }
+
+    pool = rte_pktmbuf_pool_create("ut_nr_19_pool", 128, 0, 0, 256,
+        SOCKET_ID_ANY);
+    if (pool == NULL) {
+        printf("[INFO] mbuf pool failed; UT-NR-19 skipped\n");
+        skip();
+        return;
+    }
+
+    /* graceful_reload=0: no rings at all (zero-regression) */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    assert_int_equal(ff_drain_ring_init(), 0);
+    assert_int_equal(ff_drain_ring_ready(), 0);
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_global_cfg.dpdk.nb_ports = 1;
+    ff_global_cfg.dpdk.portid_list = port_list;
+    memset(port_cfgs, 0, sizeof(port_cfgs));
+    port_cfgs[0].nb_lcores = 2;
+    ff_global_cfg.dpdk.port_cfgs = port_cfgs;
+    /* smaller than the pool so the fill loop below can actually overflow it */
+    ff_global_cfg.dpdk.drain_ring_size = 64;    /* power of two */
+    lcore_conf[0].socket_id = 0;
+    ff_reload_set_gen(0);
+
+    assert_int_equal(ff_drain_ring_init(), 0);
+    assert_int_equal(ff_drain_ring_ready(), 1);
+
+    /* one pair per (queue, generation). P1-a: drain_rx is multi-producer —
+     * the same-queue miss forwarder and the ARP/NDP clone fan-out (any
+     * peer worker, nb_queues >= 2) can race one ring — but stays
+     * single-consumer; drain_tx keeps SP/SC (its only producer is the
+     * parked generation's own queue worker). */
+    for (q = 0; q < 2; q++) {
+        for (g = 0; g < FF_RELOAD_GEN_MAX; g++) {
+            snprintf(name, sizeof(name), "drain_rx_p0_q%d_g%d", q, g);
+            r = rte_ring_lookup(name);
+            assert_non_null(r);
+            assert_int_equal(rte_ring_is_prod_single(r), 0);
+            assert_int_equal(rte_ring_is_cons_single(r), 1);
+
+            snprintf(name, sizeof(name), "drain_tx_p0_q%d_g%d", q, g);
+            r = rte_ring_lookup(name);
+            assert_non_null(r);
+            assert_int_equal(rte_ring_is_prod_single(r), 1);
+            assert_int_equal(rte_ring_is_cons_single(r), 1);
+        }
+    }
+
+    /* We are gen0. rx_enqueue takes the DESTINATION generation, so a
+     * flow-map miss here goes to gen1's ring; our own gen would be a
+     * self-loop and is rejected outright. */
+    m = rte_pktmbuf_alloc(pool);
+    assert_non_null(m);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, 0, m), -1);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, 1, m), 0);
+    r = rte_ring_lookup("drain_rx_p0_q0_g1");
+    r_q1 = rte_ring_lookup("drain_rx_p0_q1_g1");
+    assert_non_null(r_q1);
+    assert_int_equal((int)rte_ring_count(r), 1);
+    /* queue isolation: a queue-0 flow must not land in queue 1's ring. */
+    assert_int_equal((int)rte_ring_count(r_q1), 0);
+    /* our own inbound ring (gen0) is untouched by that enqueue */
+    assert_int_equal(ff_drain_ring_rx_dequeue(0, 0, pkts, NULL), 0);
+    assert_int_equal((int)rte_ring_count(r), 1);
+
+    /* seen from gen1 it is ours to consume: ctx == NULL frees instead of
+     * leaking, and the ring is drained either way. */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_drain_ring_rx_dequeue(0, 1, pkts, NULL), 0);
+    assert_int_equal(ff_drain_ring_rx_dequeue(0, 0, pkts, NULL), 0);
+    assert_int_equal((int)rte_ring_count(r), 0);
+    assert_int_equal((int)rte_mempool_avail_count(pool), 128);
+    ff_reload_set_gen(0);
+
+    /* tx_enqueue takes the SOURCE generation, i.e. our own; gen1 reads it
+     * and is the only side allowed to call rte_eth_tx_burst. */
+    m = rte_pktmbuf_alloc(pool);
+    assert_non_null(m);
+    assert_int_equal(ff_drain_ring_tx_enqueue(0, 0, 1, m), -1);
+    assert_int_equal(ff_drain_ring_tx_enqueue(0, 0, 0, m), 0);
+    assert_int_equal((int)rte_ring_count(
+        rte_ring_lookup("drain_tx_p0_q0_g0")), 1);
+    assert_int_equal((int)rte_ring_count(
+        rte_ring_lookup("drain_tx_p0_q1_g0")), 0);
+
+    /* tx_drain on an empty peer ring returns 0 without touching ethdev */
+    assert_int_equal(ff_drain_ring_tx_drain(0, 0, pkts, MAX_PKT_BURST), 0);
+
+    /* out-of-range gen / queue / port / not-ready are rejected, mbuf stays
+     * owned by the caller (R-303-1: the dispatcher must free it itself) */
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, FF_RELOAD_GEN_MAX, m), -1);
+    assert_int_equal(ff_drain_ring_tx_enqueue(0, 0, -1, m), -1);
+    assert_int_equal(ff_drain_ring_rx_enqueue(RTE_MAX_ETHPORTS, 0, 0, m), -1);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 99, 0, m), -1);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, 0, NULL), -1);
+
+    /* fill the rx ring: enqueue fails (counted, never a silent drop) and the
+     * caller keeps the mbuf. */
+    {
+        uint64_t rx_full_before, rx_full_after, tx_full, tx_drop;
+        int i;
+
+        ff_drain_ring_stats(&rx_full_before, &tx_full, &tx_drop);
+        for (i = 0; i < 200; i++) {
+            struct rte_mbuf *mm = rte_pktmbuf_alloc(pool);
+            if (mm == NULL)
+                break;
+            if (ff_drain_ring_rx_enqueue(0, 0, 1, mm) != 0) {
+                rte_pktmbuf_free(mm);
+                break;
+            }
+        }
+        ff_drain_ring_stats(&rx_full_after, &tx_full, &tx_drop);
+        assert_int_equal((int)(rx_full_after - rx_full_before), 1);
+    }
+
+    /* R-310-1: unregister detaches without destroying — the rings stay
+     * lookup-able so the next reload round can reuse them. */
+    ff_drain_ring_unregist();
+    assert_int_equal(ff_drain_ring_ready(), 0);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, 1, m), -1);
+    assert_int_equal(ff_drain_ring_tx_enqueue(0, 0, 0, m), -1);
+    assert_int_equal(ff_drain_ring_rx_dequeue(0, 0, pkts, NULL), 0);
+    assert_int_equal(ff_drain_ring_tx_drain(0, 0, pkts, MAX_PKT_BURST), 0);
+    assert_non_null(rte_ring_lookup("drain_rx_p0_q0_g0"));
+    ff_drain_ring_unregist();    /* idempotent */
+    /* re-init reuses the pointer arrays instead of leaking a new block */
+    assert_int_equal(ff_drain_ring_init(), 0);
+    assert_int_equal(ff_drain_ring_ready(), 1);
+    assert_non_null(rte_ring_lookup("drain_rx_p0_q1_g1"));
+    ff_drain_ring_unregist();
+
+    /* mbufs still sitting in the rings stay owned by the rings; the pool is
+     * never freed (it stays registered with the EAL for the process). */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_global_cfg.dpdk.nb_ports = 0;
+    ff_global_cfg.dpdk.portid_list = NULL;
+    ff_global_cfg.dpdk.port_cfgs = NULL;
+    ff_global_cfg.dpdk.drain_ring_size = 0;
+}

@@ -711,6 +711,7 @@ if(KER_WITH_DPDK)
     include("${PROJECT_SOURCE_DIR}/cmake/FStackIPCTests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/FStackReloadMessageTests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/FStackPacketPolicyTests.cmake")
+    include("${PROJECT_SOURCE_DIR}/cmake/FStackReloadDataTests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/FStackKNISourceTests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/FStackDrainTests.cmake")
 endif()
@@ -742,4 +743,10 @@ add_test(NAME fstack-migration-audit-guards
 set_tests_properties(fstack-migration-inventory fstack-migration-audit-guards
     PROPERTIES TIMEOUT 30 LABELS "provenance")
 
+add_test(NAME fstack-reload-pidfd-adapter
+    COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/fstack-reload-kill.py")
+set_tests_properties(fstack-reload-pidfd-adapter PROPERTIES TIMEOUT 15 LABELS "fstack")
+
 include("${PROJECT_SOURCE_DIR}/cmake/FStackCallerTests.cmake")
+
+include("${PROJECT_SOURCE_DIR}/cmake/FStackRemainingUnitTests.cmake")

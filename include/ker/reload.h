@@ -1,17 +1,81 @@
 #ifndef KER_RELOAD_H
 #define KER_RELOAD_H
-
 #include <ker/ipc.h>
 
-/* Fill the native FF_RELOAD message fields using the original F-Stack
- * implementation. This API does not start a reload or modify IPC ownership.
- * There is no reload state attached by these message-only entry points. */
+/* Optional ker::reload component. The original F-Stack reload runtime is
+ * isolated from Ker's authenticated resident sessions. It does not implement
+ * any network protocol or execute a FreeBSD control command. The caller owns
+ * the state storage and all coordination. Serialize these process-global APIs;
+ * stop all users before unbind/free. No EAL lifetime is owned here. */
+KER_API size_t ker_reload_state_size(void);
+/* Initialize aligned caller storage to the original valid block layout.
+ * active_generation must be0 or1. Existing live storage must be quiesced. */
+KER_API int ker_reload_state_init(void *storage, size_t size, int active_generation);
+/* Borrow a valid original block. The epoch/generation identify this process;
+ * no directory is installed by this entrypoint. Rebinding requires unbind. */
+KER_API int ker_reload_bind_state(void *storage, size_t size, uint32_t epoch, int generation);
+KER_API void ker_reload_unbind_state(void);
+/* Original message fill/parse contract, including NULL fill no-op, NULL parse
+ * failure and independently optional outputs. Fill samples the bound runtime's
+ * coherent active coordinate. Without a bound state, original directory-less
+ * defaults apply. It changes only type/result/reload fields, preserving the
+ * transport's PID/cookie and payload ownership. Parse returns0 or original-1;
+ * it validates the message type and known subcommand, not command support. */
 KER_API void ker_reload_message_fill(ker_ipc_message *message, int command,
     int generation, int status, uint64_t heartbeat);
-
-/* Return 0 for an FF_RELOAD message with a recognized command or -1 for
- * invalid input. Output pointers are optional and untouched on failure. */
 KER_API int ker_reload_message_parse(const ker_ipc_message *message, int *command,
     int *generation, int *status, uint64_t *heartbeat);
-
+/* Polls admitted by the original same-master RX gate. Select a worker
+ * slot before polling, serialize worker/control calls, and quiesce callers
+ * before changing or releasing borrowed state. Denied passes acknowledge
+ * the current park epoch. Callback return values pass through unchanged. */
+typedef int (*ker_reload_poll_fn)(void *argument);
+KER_API int ker_reload_poll(ker_reload_poll_fn poll, void *argument);
+/* Select the process's generation and worker slot (0..127). Changing either
+ * requires a quiescent worker. This is not an authenticated registration. */
+KER_API int ker_reload_worker_select(int generation, unsigned slot);
+/* Actual selected process generation (0 or1), distinct from the round's
+ * target/active generation. Observation only; grants no RX permission. */
+KER_API int ker_reload_selected_generation(void);
+/* Legacy enabled=0 preserves original always-poll behavior. Configure before
+ * the first poll after bind; cannot change it during a polling lifetime. */
+KER_API int ker_reload_set_enabled(int enabled);
+KER_API int ker_reload_rx_owner(void);
+KER_API int ker_reload_rx_stopped(void);
+/* Observe the original same-master ownership gate. */
+KER_API int ker_reload_rx_allowed(void);
+/* Controller-only marker restoration: all affected callbacks must already be
+ * quiescent. Ordinary handover uses arm, exact acknowledgements, release/claim.
+ * These original marker primitives do not themselves prove quiescence. */
+KER_API int ker_reload_rx_mark(int owner, int stopped);
+enum ker_reload_handover_result {
+    KER_RELOAD_HANDOVER_OK = 0,
+    KER_RELOAD_HANDOVER_INVAL = -1,
+    KER_RELOAD_HANDOVER_BUSY = -2,
+    KER_RELOAD_HANDOVER_TIMEOUT = -3
+};
+KER_API int ker_reload_rx_release(int to_generation);
+KER_API int ker_reload_rx_claim(int from_generation, int to_generation, unsigned timeout_ms);
+KER_API int ker_reload_park_arm(uint32_t *epoch);
+KER_API int ker_reload_parked(unsigned slot, uint32_t epoch);
+/* Manual acknowledgement only after the caller has quiesced its RX callback
+ * and will keep it stopped until release. Normal workers use poll's denied
+ * pass instead. Acknowledgement is epoch-tagged, not an authorization token. */
+KER_API int ker_reload_park_ack(void);
+/* Original shared-block validation and read-only observations. View fields are
+ * individually atomic; quiesce the controller for a coherent round snapshot. */
+KER_API int ker_reload_state_valid(const void *storage, size_t size);
+struct ker_reload_runtime {
+    int attached, active_generation, target_generation, worker_generation;
+    int reload_active, observation_owner_generation, rx_owner, rx_stopped;
+    uint32_t round_epoch;
+    uint64_t heartbeat, heartbeat_stalls;
+};
+KER_API int ker_reload_runtime_view(struct ker_reload_runtime *view);
+/* Controller primitives retain original begin/commit/abort behavior. Commit
+ * and abort can change RX ownership: first quiesce every affected callback and
+ * obtain the required park proof. They do not replace that proof or supervise
+ * processes. Re-entry into an open round is rejected. */
+KER_API int ker_reload_round_begin(uint32_t *epoch, uint32_t *target_generation);
+KER_API int ker_reload_round_finish(int commit);
 #endif

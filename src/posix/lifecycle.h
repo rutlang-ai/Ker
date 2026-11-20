@@ -3,4 +3,5 @@
 /* Observe the native procfs send queues while Linux's scheduler and timers
  * continue to run. Returns zero after queues drain, or a negative errno. */
 int ker_native_drain(unsigned int timeout_ms);
+int ker_native_finalize(void);
 #endif

@@ -3,6 +3,7 @@
 #include "diagnostics.h"
 #include "lifecycle.h"
 #include "native-buffer.h"
+#include "run-loop.h"
 #include "host-memory.h"
 #include "host-thread.h"
 #include "host-clock.h"
@@ -36,6 +37,8 @@
 
 _Static_assert(sizeof(struct ker_packet_header) == sizeof(struct lkl_virtio_net_hdr_v1),
     "packet channel must match the imported virtio-net ABI");
+_Static_assert(LKL_VIRTIO_NET_F_CSUM == 0 && LKL_VIRTIO_NET_F_HOST_TSO4 == 11,
+    "native TX capability bits must match the pinned virtio UAPI");
 static atomic_bool ready;
 static struct lkl_netdev *device;
 static int startup_fd = -1;
@@ -81,6 +84,9 @@ __attribute__((constructor)) static void initialize(void)
     if (syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_TYPE, &type, &length) || type != SOCK_DGRAM)
         fail("packet descriptor is not a datagram channel", -EINVAL);
     if (syscall(SYS_fcntl, fd, F_SETFD, FD_CLOEXEC) < 0) fail("packet descriptor flags", -errno);
+    const char *run_fd = getenv("KER_RUN_FD");
+    if (run_fd && ker_run_control_init((int)parse_number(run_fd, INT_MAX)))
+        fail("run supervisor channel", -EINVAL);
     unsigned int parts[6];
     char extra;
     if (sscanf(required("LKL_HIJACK_NET_MAC"), "%x:%x:%x:%x:%x:%x%c",
@@ -118,10 +124,13 @@ __attribute__((constructor)) static void initialize(void)
     device = ker_packet_device_create(fd);
     if (!device) fail("packet device allocation", -ENOMEM);
     /* Jumbo RX, including live growth, needs multiple virtio buffers. The original LKL transport
-     * implements mergeable buffers, including num_buffers accounting; this
-     * does not enable checksum or segmentation offloads. */
-    struct lkl_netdev_args args = {.mac = mac, .offload = maximum_mtu > 1500 ?
-        (1U << LKL_VIRTIO_NET_F_MRG_RXBUF) : 0};
+     * supports mergeable buffers independently of negotiated TX features. */
+    const char *offload_text = getenv("KER_NATIVE_TX_FEATURES");
+    unsigned features = offload_text ? (unsigned)parse_number(offload_text, 8191) : 0;
+    if ((features & ~0x801U) || ((features & 0x800U) && !(features & 1U)))
+        fail("unsupported TX features", -EINVAL);
+    struct lkl_netdev_args args = {.mac = mac, .offload = features |
+        (maximum_mtu > 1500 ? (1U << LKL_VIRTIO_NET_F_MRG_RXBUF) : 0)};
     result = lkl_netdev_add(device, &args);
     if (result < 0) fail("packet device registration", result);
     device->id = result;
@@ -269,9 +278,9 @@ __attribute__((constructor)) static void initialize(void)
         fail("startup acknowledgement", -EIO);
 
 }
-__attribute__((destructor)) static void finalize(void)
+int ker_native_finalize(void)
 {
-    if (!atomic_exchange_explicit(&ready, false, memory_order_acq_rel)) return;
+    if (!atomic_exchange_explicit(&ready, false, memory_order_acq_rel)) return 0;
     ker_fd_close_all();
     int drained = ker_native_drain(drain_timeout);
     if (drained) {
@@ -316,10 +325,19 @@ __attribute__((destructor)) static void finalize(void)
     }
     lkl_netdev_remove(device->id);
     lkl_netdev_free(device);
-    lkl_sys_halt();
+    long halted = lkl_sys_halt();
     lkl_cleanup();
+    if (!drained && halted) drained = halted < 0 ? (int)halted : -EIO;
     ker_mtu_control_close();
     const char *status = drained ? "KER_NATIVE_INCOMPLETE\n" : "KER_NATIVE_DONE\n";
     (void)syscall(SYS_write, startup_fd, status, strlen(status));
     syscall(SYS_close, startup_fd);
+    startup_fd = -1;
+    return drained;
+}
+
+__attribute__((destructor)) static void finalize(void)
+{
+    (void)ker_native_finalize();
+    ker_run_control_close();
 }

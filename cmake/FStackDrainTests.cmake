@@ -20,6 +20,8 @@ add_test(NAME fstack-drain-peer-tx COMMAND ker-fstack-drain-source-test drain-pe
 add_test(NAME fstack-drain-foreign-epoch COMMAND ker-fstack-drain-source-test drain-foreign)
 add_test(NAME fstack-drain-empty-qconf COMMAND ker-fstack-drain-source-test drain-empty)
 add_test(NAME fstack-drain-full-visible COMMAND ker-fstack-drain-source-test drain-full-ring)
+add_test(NAME fstack-drain-source-pair COMMAND ker-fstack-drain-source-test drain-pair)
+add_test(NAME fstack-drain-rx15-orphans COMMAND ker-fstack-drain-source-test purge-orphans)
 add_test(NAME fstack-directory-live-slot COMMAND ker-fstack-drain-source-test directory-live)
 add_test(NAME fstack-directory-full COMMAND ker-fstack-drain-source-test directory-full)
 add_test(NAME fstack-directory-missing COMMAND ker-fstack-drain-source-test directory-missing)
@@ -30,8 +32,30 @@ add_test(NAME fstack-directory-slot-window COMMAND ker-fstack-drain-source-test 
 add_test(NAME fstack-directory-slot-exhausted COMMAND ker-fstack-drain-source-test slot-exhausted)
 set_tests_properties(fstack-drain-queue-owner fstack-drain-queue-nonowner fstack-drain-peer-tx
     fstack-drain-foreign-epoch fstack-drain-empty-qconf fstack-drain-full-visible
+    fstack-drain-source-pair fstack-drain-rx15-orphans
     fstack-directory-live-slot fstack-directory-full fstack-directory-missing
     fstack-directory-invalid fstack-directory-success fstack-directory-primary-busy
     fstack-directory-slot-window fstack-directory-slot-exhausted PROPERTIES TIMEOUT 30 LABELS fstack)
 add_test(NAME fstack-drain-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-drain-import.py")
 set_tests_properties(fstack-drain-import PROPERTIES TIMEOUT 15 LABELS provenance)
+
+set(ker_a14_include "${CMAKE_CURRENT_BINARY_DIR}/fstack-a14-source.inc")
+add_custom_command(OUTPUT "${ker_a14_include}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-a14-source.py" "${ker_a14_include}"
+    DEPENDS fstack-a14-source.py fstack-migration.json upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c
+    VERBATIM)
+add_executable(ker-fstack-a14-multiprocess-test fstack-a14-multiprocess.c "${ker_a14_include}")
+target_include_directories(ker-fstack-a14-multiprocess-test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-drain-compat"
+    "${PROJECT_SOURCE_DIR}/third_party/fstack-reload" "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
+    "${PROJECT_SOURCE_DIR}/third_party/fstack-rss-table")
+target_link_libraries(ker-fstack-a14-multiprocess-test PRIVATE ker::ipc)
+target_compile_options(ker-fstack-a14-multiprocess-test PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter
+    $<$<C_COMPILER_ID:GNU>:-Wno-format-truncation>)
+target_link_options(ker-fstack-a14-multiprocess-test PRIVATE -Wl,--disable-new-dtags)
+set_target_properties(ker-fstack-a14-multiprocess-test PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
+list(GET DPDK_LIBRARY_DIRS 0 ker_a14_pmd_root)
+add_test(NAME fstack-a14-original-multiprocess COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-a14.py" --app "$<TARGET_FILE:ker-fstack-a14-multiprocess-test>"
+    --pmd-root "${ker_a14_pmd_root}")
+set_tests_properties(fstack-a14-original-multiprocess PROPERTIES TIMEOUT 155 SKIP_RETURN_CODE 77 LABELS "fstack;dpdk")
