@@ -4285,9 +4285,14 @@
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_gen_str_epoch",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The generation-only option preserves the default process 0 and parses generation 1 and epoch 2 through the original parser, yielding ff_msg_ring_in_0_e2_g1.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-generation-epoch",
+          "provenance_case": "fstack-ipc-generation-epoch"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_gen_str_plain",
