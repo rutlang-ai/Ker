@@ -1278,6 +1278,16 @@
       ],
       "adaptation": "Ker [vlan.ID] addresses / --vlan ID=IPv4/PREFIX,... configure original Linux 802.1Q children via rtnetlink, not F-Stack vlan_cfgs or DPDK VLAN stripping/filter offloads. Real DPDK net_tap and independent host VLAN interfaces exercise VLAN100/200 and three additional VIPs on VLAN100 using device-bound TCP/UDP sockets. Full 1518-byte captures verify both tags, IPv4/UDP checksums, no fragmentation and negative VLAN200/300/untagged probes before valid UDP; IP_PKTINFO verifies the Linux child interface and local destination. CLI replacement, strict invalid configuration, ambient environment scrubbing, kernel counters and zero outstanding mbufs are checked. Linux owns VLAN tagging/demultiplexing and weak-host semantics; no QinQ, VLAN-specific gateway, IPv6 VLAN, VLAN hardware-offload or hardware qualification claim."
     },
+    "fstack-config-source-test_ff_load_config_unknown_section": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_unknown_section"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_unknown_section"
+      ],
+      "adaptation": "The original fixture still populates lcore and KNI document fields when an unknown section is present. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
