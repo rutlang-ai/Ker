@@ -16,12 +16,12 @@
 |---|---:|---|
 | scenario-adapted | 199 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 11 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 154 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
-| architecture-specific | 14 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
+| blocked | 153 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| architecture-specific | 15 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **165 项**（154 blocked + 11 partial）。
+当前待完成 **164 项**（153 blocked + 11 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -84,7 +84,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 0 | 0 | 3 | 0 |
-| [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 0 | 0 | 12 | 1 | 0 |
+| [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 0 | 0 | 11 | 2 | 0 |
 | [unit/test_hello.c](../tests/upstream/fstack/tests/unit/test_hello.c) | 2 | 0 | 0 | 0 | 0 | 2 |
 | [unit/test_reload_harness.py](../tests/upstream/fstack/tests/unit/test_reload_harness.py) | 53 | 0 | 0 | 0 | 0 | 53 |
 
@@ -1177,3 +1177,4 @@ promiscuous、NUMA、idle sleep 和 TX delay 等解析结果。
 - `test_ff_pthread_join_retval`。固定 LKL 的线程入口返回 void，join 只接收线程句柄。FreeBSD wrapper 的返回值槽属于原架构。
 - `test_ff_pthread_create_failfast`。原函数体清空 FreeBSD TLS 指针后检查 PCPU_GET mirror 的 panic，属于 FreeBSD 私有 accessor 合同。
 - `test_ff_zc_mbuf_get_pkthdr_flag_set`。原用例断言 FreeBSD mbuf 链头的 M_PKTHDR 位，属于 FreeBSD 布局。
+- `test_ff_zc_mbuf_get_initial_pkthdr_len_zero`。原用例断言 FreeBSD mbuf 的 m_pkthdr.len 初值，记录为布局特有合同。

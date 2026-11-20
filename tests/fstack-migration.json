@@ -4523,8 +4523,8 @@
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "status": "architecture-specific",
+      "reason": "The source checks the initial m_pkthdr.len field in a mirrored FreeBSD mbuf. The exact field is part of the FreeBSD layout. The inventory records that source assertion as architecture-specific and tracks behavior of native zero-copy buffer ownership separately.",
       "ker_tests": []
     },
     {
