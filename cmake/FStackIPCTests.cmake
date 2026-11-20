@@ -35,3 +35,14 @@ set_tests_properties(fstack-ipc-generation-option PROPERTIES TIMEOUT 30 LABELS f
 add_test(NAME fstack-ipc-malformed-coordinate
     COMMAND ker-ipc-coordinate-test --malformed)
 set_tests_properties(fstack-ipc-malformed-coordinate PROPERTIES TIMEOUT 30 LABELS fstack)
+
+
+add_executable(ker-ipc-ownership-test ipc-ownership.c)
+target_compile_options(ker-ipc-ownership-test PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ker-ipc-ownership-test PRIVATE ker::ipc)
+target_link_options(ker-ipc-ownership-test PRIVATE -Wl,--disable-new-dtags)
+set_target_properties(ker-ipc-ownership-test PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
+
+add_test(NAME fstack-ipc-own-reply
+    COMMAND ker-ipc-ownership-test own-reply)
+set_tests_properties(fstack-ipc-own-reply PROPERTIES TIMEOUT 30 LABELS fstack)

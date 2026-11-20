@@ -4321,9 +4321,14 @@
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_own_reply",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the exported IPC adapter with a real DPDK EAL, typed message pool, and MPMC rings. A provider fixture returns the exact owned message, and the caller verifies payload, pending ownership, counters, and complete pool cleanup.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-own-reply",
+          "provenance_case": "fstack-ipc-own-reply"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_live_owner",

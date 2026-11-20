@@ -185,6 +185,16 @@
       ],
       "adaptation": "Run every malformed input from the pinned unit test in a separate child and verify the original parser exits with status 1. Also cover process and generation overflow and require a valid complete coordinate to succeed afterwards."
     },
+    "fstack-ipc-own-reply": {
+      "source_file": "tests/unit/test_ff_ipc.c",
+      "source_case": [
+        "test_p4_recv_own_reply"
+      ],
+      "ker_ctests": [
+        "fstack-ipc-own-reply"
+      ],
+      "adaptation": "Run the exported IPC adapter with a real DPDK EAL, typed message pool, and MPMC rings. A provider fixture returns the exact owned message, and the caller verifies payload, pending ownership, counters, and complete pool cleanup."
+    },
     "fstack-ipc-process-coordinate": {
       "source_file": "tests/unit/test_ff_ipc.c",
       "source_case": [
