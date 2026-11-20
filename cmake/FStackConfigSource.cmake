@@ -218,6 +218,12 @@ set_tests_properties(fstack-config-source-test_greload_thread_mode_mutex PROPERT
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_greload_off_no_new_checks)
+add_test(NAME fstack-config-source-test_greload_off_no_new_checks COMMAND ker-test_greload_off_no_new_checks)
+set_tests_properties(fstack-config-source-test_greload_off_no_new_checks PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")
