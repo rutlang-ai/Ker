@@ -2248,8 +2248,8 @@
     {
       "id": "tests/unit/test_ff_config_pa.c::test_page_array_keeps_graceful_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack page-array/graceful-reload build configuration is not implemented in Ker.",
+      "status": "architecture-specific",
+      "reason": "The source requires that the FF_USE_PAGE_ARRAY build accepts its minimal fixture with legacy reload disabled. This build flag controls FreeBSD mbuf-table layout. Ker's packet ownership is defined by its Linux and DPDK adapters, so the inventory records the assertion as architecture-specific.",
       "ker_tests": []
     },
     {
