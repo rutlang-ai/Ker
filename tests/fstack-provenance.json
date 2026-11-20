@@ -235,6 +235,16 @@
       ],
       "adaptation": "The original probe publishes a real QUERY even when it finds a live foreign reply. Failed probing preserves that reply and both caller outputs, and an independent provider thread then returns a successful generation and epoch reply."
     },
+    "fstack-ipc-epoch-ring-names": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_m5_epoch_slot_and_ring_name"
+      ],
+      "ker_ctests": [
+        "fstack-ipc-epoch-ring-names"
+      ],
+      "adaptation": "The pinned formatter preserves legacy and slot-zero names, wraps epochs 4 and onwards to nonzero slots, and reports the original maximum output name, truncation and invalid argument results."
+    },
     "fstack-ipc-process-coordinate": {
       "source_file": "tests/unit/test_ff_ipc.c",
       "source_case": [
