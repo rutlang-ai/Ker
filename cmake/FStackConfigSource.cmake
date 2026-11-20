@@ -260,6 +260,12 @@ set_tests_properties(fstack-config-source-test_ff_load_config_stack_garbage_defa
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_ff_load_config_stack_coexist_disabled_explicit)
+add_test(NAME fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit COMMAND ker-test_ff_load_config_stack_coexist_disabled_explicit)
+set_tests_properties(fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")

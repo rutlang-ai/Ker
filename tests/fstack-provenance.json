@@ -1658,6 +1658,16 @@
       ],
       "adaptation": "Unknown stack configuration leaves the legacy coexistence flag disabled in the pinned parser. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_stack_coexist_disabled_explicit"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit"
+      ],
+      "adaptation": "The explicit disabled form leaves coexistence off in the parsed legacy document. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
