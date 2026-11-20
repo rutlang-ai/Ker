@@ -3792,9 +3792,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_section_name",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker rejects unknown section names instead of silently truncating names to the F-Stack fixed buffer size.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Use the pinned parser through Ker's exported API and verify that a 60-character section reaches the callback as exactly its first 49 characters. The key and value remain intact.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-long-section",
+          "provenance_case": "fstack-ini-long-section"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_key_name",
