@@ -1332,9 +1332,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_rss_tbl_cfg_handler_bad_tuple",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The malformed RSS tuple fixture is inspected with the retained parser and must leave the parsed RSS table empty as asserted by the pinned case. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple",
+          "provenance_case": "fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rss_check_thash_adjust_off_parses",
