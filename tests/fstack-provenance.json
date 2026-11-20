@@ -1358,6 +1358,16 @@
       ],
       "adaptation": "The source fixture preserves its base virtual address, file prefix, virtual-device queue field, and bond delay as inspection data. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_ff_load_config_vdev_full": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_vdev_full"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_vdev_full"
+      ],
+      "adaptation": "The source test checks that the original parser retains the virtual device configuration fields in the pinned fixture. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
