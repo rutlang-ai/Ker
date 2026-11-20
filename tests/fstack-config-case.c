@@ -2,6 +2,24 @@
 #include "fstack-config-policy.h"
 #include <string.h>
 
+#ifdef FSTACK_CONFIG_RELOAD_GENERATION
+#include <ker/ipc.h>
+#include "ff_reload.h"
+
+static int reload_ring_name(char *buffer, unsigned size, const char *base,
+    unsigned process, int type, int generation, int enabled)
+{
+    int output = strcmp(base, FF_MSG_RING_OUT) == 0;
+    CHECK(output || strcmp(base, FF_MSG_RING_IN) == 0);
+    CHECK(process <= UINT16_MAX);
+    const struct ker_ipc_address address = {
+        .process = process, .generation = generation, .epoch = 0,
+    };
+    return ker_ipc_format_ring(buffer, size, &address, output, (enum FF_MSG_TYPE)type, enabled);
+}
+#define ff_reload_msg_ring_name reload_ring_name
+#endif
+
 #define FIXTURE_PATH(name) "fixtures/" name
 
 int load_with_proc(const char *path, const char *type, const char *id)

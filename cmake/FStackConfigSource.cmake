@@ -368,6 +368,21 @@ set_tests_properties(fstack-config-source-test_bond_cfgs_calloc_oom_returns_erro
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_ut_nr_12_generation_mapping)
+# The source case observes the same private generation state used by ker::reload.
+target_include_directories(ker-test_ut_nr_12_generation_mapping PRIVATE
+    "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
+target_compile_definitions(ker-test_ut_nr_12_generation_mapping PRIVATE
+    FSTACK_CONFIG_RELOAD_GENERATION
+    ff_reload_set_gen=ker_reload_upstream_reload_set_gen
+    ff_reload_gen=ker_reload_upstream_reload_gen
+    ff_reload_attach_state=ker_reload_upstream_reload_attach_state)
+target_link_libraries(ker-test_ut_nr_12_generation_mapping PRIVATE ker_reload_objects ker::ipc)
+add_test(NAME fstack-reload-generation-mapping COMMAND ker-test_ut_nr_12_generation_mapping)
+set_tests_properties(fstack-reload-generation-mapping PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")

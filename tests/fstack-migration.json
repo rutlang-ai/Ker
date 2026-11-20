@@ -2060,9 +2060,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_12_generation_mapping",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertions with the original legacy fixture and parser, the private generation state from the same compiled objects used by ker::reload, and the public ker::ipc ring formatter. Verify isolated process and generation names, legacy input and typed reply names, truncation, both generations, and invalid selections while preserving the parsed three-entry process-to-lcore map.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-generation-mapping",
+          "provenance_case": "fstack-reload-generation-mapping"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_14_reload_msg_serdes",
@@ -2091,9 +2096,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_22_heartbeat_and_rx_return",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source case against the original reload object. Verify state block validation, heartbeat threshold and stall rebasing, target generation ticks, READY correlation by epoch and PID, the active generation flip, abort without a flip, and detach. This is a single-process control-state test.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-heartbeat",
+          "provenance_case": "fstack-reload-heartbeat"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_25_drain_ring_size_config",
@@ -2110,16 +2120,26 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_26_rx_handover_markers",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source case against the original reload object. Verify detached behavior, invalid arguments, bounded timeout without taking ownership, release and acquisition, repeated acquisition, RX return to the original generation, and legacy-mode behavior. This exercises ownership markers in memory.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-rx-handover",
+          "provenance_case": "fstack-reload-rx-handover"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_11_handover_barrier",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source case against the original reload object. Verify per-slot, epoch-tagged park acknowledgements, stale acknowledgements, and exclusive RX eligibility during transfer and return. This exercises the in-memory barrier and markers in one process.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-handover-barrier",
+          "provenance_case": "fstack-reload-handover-barrier"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_epoch_slot_and_ring_name",
@@ -2136,16 +2156,26 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_gendir_arbitration",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Execute the pinned generation-directory case with the original reload implementation. Verify header and slot layout checks, RX and KNI ownership, QUERY coordinates, handoff, reclaim, and peer selection using a reaped child PID and a real monotonic freshness stamp.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-gendir-arbitration",
+          "provenance_case": "fstack-reload-gendir-arbitration"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_probe_epoch_fallback",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Execute the pinned resident QUERY reply case. Verify that an absent active word reports the newest live epoch and its generation, retiring slots falls back to the older or slot-zero coordinate, and an explicit active word takes precedence.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-probe-epoch-fallback",
+          "provenance_case": "fstack-reload-probe-epoch-fallback"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_name_isolation",
@@ -2174,44 +2204,74 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_handover_sequence",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Execute the pinned handover sequence against the original reload implementation. Two private state blocks share one local directory; verify park before claim, reclaim refusal while the new epoch is live, and restoration of the old epoch after reclaim and abort.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-cross-master-handover",
+          "provenance_case": "fstack-reload-cross-master-handover"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_p2_hw_user_proof",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Execute the pinned hardware-user table case with a real parent PID and a reaped child PID. Verify coordinate isolation, idempotent registration, stop acknowledgement, and release using the original reload implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-hardware-user-proof",
+          "provenance_case": "fstack-reload-hardware-user-proof"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_p2_reclaim_needs_user_proof",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Execute the pinned RX reclaim case. Verify that a reaped master with an active worker still blocks takeover, the refusal count increments once, and a worker stop acknowledgement permits the ownership transfer.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-reclaim-user-proof",
+          "provenance_case": "fstack-reload-reclaim-user-proof"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_p2_release_epoch_needs_proof",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Execute the pinned RX release case. Verify that release remains blocked after the bounded wait while a live worker is active, retains the old generation, and succeeds after a stop acknowledgement.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-release-user-proof",
+          "provenance_case": "fstack-reload-release-user-proof"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_p2_orphan_workers_keep_epoch_live",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Execute the pinned orphan-worker liveness case. Verify that a fresh monotonic stamp protects the epoch after its master is reaped, a stale stamp allows reclaim, and a live master and a retired slot follow their respective liveness rules.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-orphan-epoch-liveness",
+          "provenance_case": "fstack-reload-orphan-epoch-liveness"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rx15_ring_user_census_and_purge_lock",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Execute the pinned drain-ring user table and purge lock assertions. Verify census by slot and generation, marker retention and clearing, capacity with a full master census, lock contention by a live PID, and recovery from a reaped holder.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-ring-user-census",
+          "provenance_case": "fstack-reload-ring-user-census"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_enabled",
