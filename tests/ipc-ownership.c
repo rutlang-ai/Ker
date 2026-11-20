@@ -83,11 +83,59 @@ static void own_reply(void)
     CHECK(requeued == 0 && orphaned == 0 && lost == 0);
 }
 
+
+static const char foreign_payload[] = "foreign-owned";
+
+static ker_ipc_message *foreign_reply(pid_t owner)
+{
+    ker_ipc_message *message = allocate();
+    message->ipc_owner_pid = (uint32_t)owner;
+    memcpy(message->buf_addr, foreign_payload, sizeof(foreign_payload));
+    return message;
+}
+
+static void expect_foreign_requeue(void)
+{
+    ker_ipc_message *other = foreign_reply(getppid());
+    CHECK(ker_ipc_free(other) == -EINVAL);
+    CHECK(rte_ring_enqueue(output_ring, other) == 0);
+
+    ker_ipc_message *reply = (void *)(uintptr_t)1;
+    CHECK(ker_ipc_recv(&reply, FF_SYSCTL) < 0 && reply == (void *)(uintptr_t)1);
+    uint64_t requeued = 0, orphaned = 1, lost = 1;
+    ker_ipc_reply_stats(&requeued, &orphaned, &lost);
+    CHECK(requeued >= 1 && orphaned == 0 && lost == 0);
+    CHECK(rte_ring_count(output_ring) == 1 && ker_ipc_detach() == -EBUSY);
+
+    void *object;
+    CHECK(rte_ring_dequeue(output_ring, &object) == 0 && object == other);
+    CHECK(memcmp(other->buf_addr, foreign_payload, sizeof(foreign_payload)) == 0);
+    rte_mempool_put(pool, other);
+}
+
+static void foreign_live(void)
+{
+    ker_ipc_message *request = allocate();
+    request->msg_type = FF_SYSCTL;
+    CHECK(ker_ipc_send(request) == 0);
+    expect_foreign_requeue();
+
+    /* The provider retains ownership of the queued request after timeout. */
+    void *object;
+    CHECK(rte_ring_dequeue(input_ring, &object) == 0 && object == request);
+    rte_mempool_put(pool, request);
+}
+
 int main(int argc, char **argv)
 {
-    CHECK(argc == 2 && strcmp(argv[1], "own-reply") == 0);
+    CHECK(argc == 2);
     setup();
-    own_reply();
+    if (strcmp(argv[1], "own-reply") == 0)
+        own_reply();
+    else {
+        CHECK(strcmp(argv[1], "foreign-live") == 0);
+        foreign_live();
+    }
     teardown();
     return 0;
 }

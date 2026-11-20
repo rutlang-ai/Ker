@@ -4333,9 +4333,14 @@
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_live_owner",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "With an accepted request outstanding, the original receive path requeues a reply with a different live PID and preserves the caller output, exact object and bytes. The provider fixture reclaims the exact original request; all shared objects return to the pool.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-foreign-live",
+          "provenance_case": "fstack-ipc-foreign-live"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_without_send",
