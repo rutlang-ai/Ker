@@ -4516,8 +4516,8 @@
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_pkthdr_flag_set",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "status": "architecture-specific",
+      "reason": "The source tests the M_PKTHDR bit on a mirrored FreeBSD mbuf head. Linux skb and DPDK mbuf ownership are governed by their respective native layouts. The FreeBSD head field assertion is architecture-specific.",
       "ker_tests": []
     },
     {
