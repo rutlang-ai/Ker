@@ -1,6 +1,6 @@
 {
     global:
-        ker_posix_capabilities; ker_posix_kernel_release;
+        ker_posix_capabilities; ker_posix_kernel_release; ker_posix_get_current_time;
         socket; bind; connect; listen; accept; accept4; shutdown;
         getsockname; getpeername; getsockopt; setsockopt; sockatmark;
         send; recv; sendto; recvfrom; sendmsg; recvmsg; sendmmsg; recvmmsg;

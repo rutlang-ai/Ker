@@ -1,4 +1,6 @@
 #define _GNU_SOURCE
+#include <ker/posix.h>
+#include "fd-table.h"
 #include "realtime-clock.h"
 #include "host-clock.h"
 #include "host-memory.h"
@@ -15,8 +17,33 @@
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s (errno=%d)\n", __FILE__, __LINE__, #x, errno); exit(1); } } while (0)
 static atomic_int fault;
 static atomic_uint realtime_reads;
+static bool active;
+static _Thread_local unsigned native_realtime_reads;
+static _Thread_local bool fail_native_read;
 enum { VALID, HOST_ERROR, INVALID_NSEC };
 int __real_clock_gettime(clockid_t clock, struct timespec *value);
+long __real_lkl_syscall(long number, long *parameters);
+
+/* This fixture boots original Linux and controls the adapter's lifetime at
+ * the same boundary that the launcher owns during normal startup. */
+bool ker_native_ready(void)
+{
+    return active;
+}
+
+long __wrap_lkl_syscall(long number, long *parameters)
+{
+    if (number == __lkl__NR_clock_gettime && parameters[0] == LKL_CLOCK_REALTIME) {
+        native_realtime_reads++;
+        if (fail_native_read) {
+            fail_native_read = false;
+            struct __lkl__kernel_timespec *value = (void *)parameters[1];
+            *value = (struct __lkl__kernel_timespec){.tv_sec = 7, .tv_nsec = 8};
+            return -EIO;
+        }
+    }
+    return __real_lkl_syscall(number, parameters);
+}
 int __wrap_clock_gettime(clockid_t clock, struct timespec *value)
 {
     if (clock != CLOCK_REALTIME) return __real_clock_gettime(clock, value);
@@ -128,22 +155,60 @@ static void current_time_updates(void)
     failed_sync(INVALID_NSEC, EINVAL); native_wait_advance("native EINVAL retains advancing old epoch");
     successful_sync(); native_wait_advance("recovered synchronization");
 }
+static void inactive_realtime(void)
+{
+    long nanoseconds = -1;
+    unsigned reads = native_realtime_reads;
+    CHECK(ker_posix_get_current_time(NULL, &nanoseconds) == -1 && errno == ENETDOWN);
+    CHECK(nanoseconds == -1 && native_realtime_reads == reads);
+}
+static void optional_seconds(void)
+{
+    obsolete_epoch();
+    struct __lkl__kernel_timespec before = native_clock(LKL_CLOCK_REALTIME);
+    unsigned reads = native_realtime_reads;
+    long nanoseconds = -1;
+    CHECK(ker_posix_get_current_time(NULL, &nanoseconds) == 0);
+    CHECK(native_realtime_reads == reads + 1);
+    struct __lkl__kernel_timespec after = native_clock(LKL_CLOCK_REALTIME);
+    CHECK(nanoseconds >= 0 && nanoseconds < 1000000000L);
+    if (before.tv_sec == after.tv_sec)
+        CHECK(nanoseconds >= before.tv_nsec && nanoseconds <= after.tv_nsec);
+    else if (after.tv_sec == before.tv_sec + 1)
+        CHECK(nanoseconds >= before.tv_nsec || nanoseconds <= after.tv_nsec);
+
+    reads = native_realtime_reads;
+    nanoseconds = -1;
+    fail_native_read = true;
+    CHECK(ker_posix_get_current_time(NULL, &nanoseconds) == -1 && errno == EIO);
+    CHECK(!fail_native_read && nanoseconds == -1 && native_realtime_reads == reads + 1);
+    CHECK(ker_posix_get_current_time(NULL, &nanoseconds) == 0);
+    CHECK(nanoseconds >= 0 && nanoseconds < 1000000000L);
+    puts("PASS: original Linux realtime nanoseconds with seconds omitted");
+}
 int main(int argc, char **argv)
 {
-    CHECK(argc == 1 || (argc == 2 && !strcmp(argv[1], "--updates")));
+    bool updates = argc == 2 && !strcmp(argv[1], "--updates");
+    bool null_seconds = argc == 2 && !strcmp(argv[1], "--null-seconds");
+    CHECK(argc == 1 || updates || null_seconds);
+    if (null_seconds) inactive_realtime();
     ker_native_host_memory_init(&lkl_host_ops);
     ker_native_host_clock_init(&lkl_host_ops);
     lkl_host_ops.print = NULL;
     CHECK(lkl_init(&lkl_host_ops) == 0);
     CHECK(lkl_start_kernel("%s", "mem=64M") == 0);
-    if (argc == 2) current_time_updates();
+    active = true;
+    if (updates) current_time_updates();
+    else if (null_seconds) optional_seconds();
     else {
         failed_sync(HOST_ERROR, EIO);
         /* Host read succeeds, but original Linux must reject invalid nanoseconds. */
         failed_sync(INVALID_NSEC, EINVAL);
         successful_sync(); successful_sync();
     }
+    active = false;
     CHECK(lkl_sys_halt() == 0); lkl_cleanup();
-    puts("PASS: host EIO/native EINVAL propagate without epoch mutation; recovery and repeat sync succeed");
+    if (null_seconds) inactive_realtime();
+    else puts("PASS: host EIO/native EINVAL propagate without epoch mutation; recovery and repeat sync succeed");
     return 0;
 }

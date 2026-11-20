@@ -39,7 +39,8 @@ foreach(artifact config library)
 endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/posix-poll.c src/posix/posix-stat.c
-    src/posix/lifecycle.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-entropy.c src/posix/realtime-clock.c)
+    src/posix/lifecycle.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-entropy.c src/posix/realtime-clock.c
+    src/posix/current-time.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 add_library(ker::posix ALIAS ker-posix)
@@ -223,17 +224,21 @@ if(BUILD_TESTING)
     target_compile_options(ker-entropy-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-entropy COMMAND ker-entropy-test)
     set_tests_properties(native-fstack-entropy PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
-    add_executable(ker-realtime-test tests/posix/fstack-realtime.c src/posix/realtime-clock.c src/posix/host-memory.c src/posix/host-clock.c)
-    target_include_directories(ker-realtime-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    add_executable(ker-realtime-test tests/posix/fstack-realtime.c src/posix/realtime-clock.c
+        src/posix/current-time.c src/posix/host-memory.c src/posix/host-clock.c)
+    target_include_directories(ker-realtime-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix"
+        "${PROJECT_SOURCE_DIR}/include")
     target_include_directories(ker-realtime-test SYSTEM PRIVATE
         "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
     target_link_libraries(ker-realtime-test PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
-    target_link_options(ker-realtime-test PRIVATE -Wl,--wrap=clock_gettime)
+    target_link_options(ker-realtime-test PRIVATE -Wl,--wrap=clock_gettime -Wl,--wrap=lkl_syscall)
     target_compile_options(ker-realtime-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-realtime COMMAND ker-realtime-test)
     set_tests_properties(native-fstack-realtime PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-realtime-updates COMMAND ker-realtime-test --updates)
     set_tests_properties(native-fstack-realtime-updates PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-current-time-null-seconds COMMAND ker-realtime-test --null-seconds)
+    set_tests_properties(native-fstack-current-time-null-seconds PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-host-runtime-test tests/posix/fstack-host-runtime.c src/posix/host-memory.c src/posix/host-clock.c)
     target_include_directories(ker-host-runtime-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-host-runtime-test SYSTEM PRIVATE
