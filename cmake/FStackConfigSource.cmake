@@ -62,6 +62,12 @@ set_tests_properties(fstack-config-source-test_ff_load_config_tcp_ecn_default_of
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_ff_load_config_inet6_fixture_ignored)
+add_test(NAME fstack-config-source-test_ff_load_config_inet6_fixture_ignored COMMAND ker-test_ff_load_config_inet6_fixture_ignored)
+set_tests_properties(fstack-config-source-test_ff_load_config_inet6_fixture_ignored PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")

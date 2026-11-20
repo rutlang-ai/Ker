@@ -1460,9 +1460,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_inet6_fixture_ignored",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker now supports explicit native Linux IPv6 address/prefix configuration and on-link and routed TCP/UDP/NDP with global/link-local default gateways, but this F-Stack case asserts that IPv6 directives are ignored in an INET6-disabled build. That conditional-build behavior, plus IPv6 VIP/VLAN fixture handling, is not adapted; enabled-stack IPv6 interop is not evidence for this case.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The retained parser is built without the upstream INET6 flag, and the source assertions verify the expected IPv4 data survives the IPv6 fixture. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_inet6_fixture_ignored",
+          "provenance_case": "fstack-config-source-test_ff_load_config_inet6_fixture_ignored"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_argv_t_override",
