@@ -2081,30 +2081,50 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_reload_fsm_transitions",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-fsm-transitions",
+          "provenance_case": "fstack-reload-fsm-transitions"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_all_legal_transitions",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-fsm-legal",
+          "provenance_case": "fstack-reload-fsm-legal"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_illegal_combinations_exhaustive",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-fsm-illegal",
+          "provenance_case": "fstack-reload-fsm-illegal"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_error_recovery_and_abort",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-fsm-recovery",
+          "provenance_case": "fstack-reload-fsm-recovery"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_12_generation_mapping",
@@ -2430,16 +2450,42 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_smoke",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-packet-dispatcher-plain",
+          "provenance_case": "test_ff_regist_packet_dispatcher_smoke"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-pmd",
+          "provenance_case": "test_ff_regist_packet_dispatcher_smoke"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-lifetime",
+          "provenance_case": "test_ff_regist_packet_dispatcher_smoke"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_context_smoke",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-packet-dispatcher-context",
+          "provenance_case": "test_ff_regist_packet_dispatcher_context_smoke"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-pmd",
+          "provenance_case": "test_ff_regist_packet_dispatcher_context_smoke"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-lifetime",
+          "provenance_case": "test_ff_regist_packet_dispatcher_context_smoke"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_get_tsc_ns_basic",
@@ -2990,9 +3036,22 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_24_unregist_dispatcher",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-packet-dispatcher-unregister",
+          "provenance_case": "test_ut_nr_24_unregist_dispatcher"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-pmd",
+          "provenance_case": "test_ut_nr_24_unregist_dispatcher"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-lifetime",
+          "provenance_case": "test_ut_nr_24_unregist_dispatcher"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_27_dispatch_peer_boundary",
@@ -3004,100 +3063,170 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_f_m4_1_drain_ring_full_visible",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-drain-full-visible",
+          "provenance_case": "fstack-drain-full-visible"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_queue_ownership",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-drain-queue-owner",
+          "provenance_case": "fstack-drain-queue-owner"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_nonowner_tx",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-drain-queue-nonowner",
+          "provenance_case": "fstack-drain-queue-nonowner"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_peer_tx",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-drain-peer-tx",
+          "provenance_case": "fstack-drain-peer-tx"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_foreign_epoch_tx",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-drain-foreign-epoch",
+          "provenance_case": "fstack-drain-foreign-epoch"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_empty_qconf",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-drain-empty-qconf",
+          "provenance_case": "fstack-drain-empty-qconf"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_live_slot",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-directory-live-slot",
+          "provenance_case": "fstack-directory-live-slot"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_full",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-directory-full",
+          "provenance_case": "fstack-directory-full"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_missing",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-directory-missing",
+          "provenance_case": "fstack-directory-missing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_invalid",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-directory-invalid",
+          "provenance_case": "fstack-directory-invalid"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_success",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-directory-success",
+          "provenance_case": "fstack-directory-success"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_primary_slot_busy",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-directory-primary-busy",
+          "provenance_case": "fstack-directory-primary-busy"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_window",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-directory-slot-window",
+          "provenance_case": "fstack-directory-slot-window"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_exhausted",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the complete pinned source assertion through a caller fixture for the original implementation.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-directory-slot-exhausted",
+          "provenance_case": "fstack-directory-slot-exhausted"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_single_phase",
@@ -3992,9 +4121,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_realloc_zero_size_returns_p",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the named native Linux memory and socket scenario with real VMAs and adapter lifetime checks.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-buffer-resize",
+          "provenance_case": "native-fstack-buffer-resize"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_panic_aborts",
@@ -5131,79 +5265,138 @@
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_negative_len_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the named native Linux memory and socket scenario with real VMAs and adapter lifetime checks.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "test_ff_zc_mbuf_get_negative_len_returns_error"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the named native Linux memory and socket scenario with real VMAs and adapter lifetime checks.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "test_ff_zc_mbuf_get_zero_len_returns_minimal_chain"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_accumulates_pkthdr_len",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the named native Linux memory and socket scenario with real VMAs and adapter lifetime checks.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "test_ff_zc_mbuf_write_accumulates_pkthdr_len"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_overflow_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the named native Linux memory and socket scenario with real VMAs and adapter lifetime checks.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "test_ff_zc_mbuf_write_overflow_returns_error"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_null_data_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the named native Linux memory and socket scenario with real VMAs and adapter lifetime checks.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "test_ff_zc_mbuf_write_null_data_returns_error"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_zero_len_noop",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the named native Linux memory and socket scenario with real VMAs and adapter lifetime checks.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "test_ff_zc_mbuf_write_zero_len_noop"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_multi_segment",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the named native Linux memory and socket scenario with real VMAs and adapter lifetime checks.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-buffer-segments-layout",
+          "provenance_case": "test_ff_zc_mbuf_write_multi_segment"
+        },
+        {
+          "ctest": "native-fstack-buffer-segments-failures",
+          "provenance_case": "test_ff_zc_mbuf_write_multi_segment"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_mb_null_returns_einval",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the named native Linux memory and socket scenario with real VMAs and adapter lifetime checks.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "test_ff_zc_send_mb_null_returns_einval"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_nbytes_overflow_returns_einval",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the named native Linux memory and socket scenario with real VMAs and adapter lifetime checks.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "test_ff_zc_send_nbytes_overflow_returns_einval"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_zero_nbytes_returns_einval",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the named native Linux memory and socket scenario with real VMAs and adapter lifetime checks.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "test_ff_zc_send_zero_nbytes_returns_einval"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_valid_args_proceeds",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the named native Linux memory and socket scenario with real VMAs and adapter lifetime checks.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "test_ff_zc_send_valid_args_proceeds"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_hello.c::test_hello_world",

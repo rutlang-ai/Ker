@@ -712,6 +712,7 @@ if(KER_WITH_DPDK)
     include("${PROJECT_SOURCE_DIR}/cmake/FStackReloadMessageTests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/FStackPacketPolicyTests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/FStackKNISourceTests.cmake")
+    include("${PROJECT_SOURCE_DIR}/cmake/FStackDrainTests.cmake")
 endif()
 foreach(ini_case multiline no-section handler-rejection null-file long-section user-data)
     add_executable(ker-ini-${ini_case}-test ini-${ini_case}.c)
@@ -740,3 +741,5 @@ add_test(NAME fstack-migration-audit-guards
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_fstack_migration.py")
 set_tests_properties(fstack-migration-inventory fstack-migration-audit-guards
     PROPERTIES TIMEOUT 30 LABELS "provenance")
+
+include("${PROJECT_SOURCE_DIR}/cmake/FStackCallerTests.cmake")

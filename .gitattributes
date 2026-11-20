@@ -18,3 +18,12 @@ tests/fstack-rss-*.inc -text -filter -ident -whitespace
 tests/fstack-rss-source/** -text -filter -ident -whitespace
 third_party/fstack-kni-bridge/** -text -filter -ident -whitespace
 tests/fstack-kni-*-source.inc -text -filter -ident -whitespace
+third_party/fstack-address-policy/ff_api.h -text -filter -ident -whitespace
+third_party/fstack-dispatcher/** -text -filter -ident -whitespace
+third_party/fstack-nginx/** -text -filter -ident -whitespace
+third_party/fstack-reload/ff_reload_gendir.c -whitespace
+third_party/fstack-reload/ff_drain_ring.* -whitespace
+include/ker/detail/fstack-dispatch-api.inc -text -filter -ident -whitespace
+tests/fstack-dispatch-source.inc -text -filter -ident -whitespace
+tests/fstack-drain-*.inc -text -filter -ident -whitespace
+tests/fstack-reload-fsm-source.inc -text -filter -ident -whitespace

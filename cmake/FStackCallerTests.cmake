@@ -1,0 +1,37 @@
+# The reload state machine belongs to the calling application.
+add_executable(ker-fstack-reload-fsm-test fstack-reload-fsm.c)
+target_include_directories(ker-fstack-reload-fsm-test PRIVATE "${PROJECT_SOURCE_DIR}/third_party/fstack-nginx")
+target_compile_options(ker-fstack-reload-fsm-test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME fstack-reload-fsm-transitions COMMAND ker-fstack-reload-fsm-test transitions)
+add_test(NAME fstack-reload-fsm-legal COMMAND ker-fstack-reload-fsm-test legal)
+add_test(NAME fstack-reload-fsm-illegal COMMAND ker-fstack-reload-fsm-test illegal)
+add_test(NAME fstack-reload-fsm-recovery COMMAND ker-fstack-reload-fsm-test recovery)
+set_tests_properties(fstack-reload-fsm-transitions fstack-reload-fsm-legal fstack-reload-fsm-illegal
+    fstack-reload-fsm-recovery PROPERTIES TIMEOUT 10 LABELS fstack)
+add_test(NAME fstack-reload-fsm-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/reload-controller-import.py")
+add_test(NAME fstack-packet-dispatcher-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/packet-dispatcher-import.py")
+set_tests_properties(fstack-reload-fsm-import fstack-packet-dispatcher-import
+    PROPERTIES TIMEOUT 15 LABELS provenance)
+
+if(KER_WITH_DPDK)
+    find_library(ker_dispatch_vdev_bus NAMES rte_bus_vdev HINTS ${DPDK_LIBRARY_DIRS} NO_DEFAULT_PATH REQUIRED)
+    add_executable(ker-fstack-dispatcher-test fstack-packet-dispatcher.c)
+    add_executable(ker-packet-dispatcher-pmd-test packet-dispatcher-pmd.c)
+    add_executable(ker-packet-dispatcher-lifetime-test packet-dispatcher-lifetime.c)
+    foreach(target ker-fstack-dispatcher-test ker-packet-dispatcher-pmd-test ker-packet-dispatcher-lifetime-test)
+        target_link_libraries(${target} PRIVATE ker::packet_dispatcher)
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Werror)
+        target_link_options(${target} PRIVATE -Wl,--disable-new-dtags)
+        set_target_properties(${target} PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
+    endforeach()
+    target_link_libraries(ker-packet-dispatcher-pmd-test PRIVATE "${KER_NET_RING_PMD}" "${ker_dispatch_vdev_bus}")
+    target_link_libraries(ker-packet-dispatcher-lifetime-test PRIVATE Threads::Threads)
+    add_test(NAME fstack-packet-dispatcher-plain COMMAND ker-fstack-dispatcher-test plain)
+    add_test(NAME fstack-packet-dispatcher-context COMMAND ker-fstack-dispatcher-test context)
+    add_test(NAME fstack-packet-dispatcher-unregister COMMAND ker-fstack-dispatcher-test unregister)
+    add_test(NAME fstack-packet-dispatcher-lifetime COMMAND ker-packet-dispatcher-lifetime-test)
+    add_test(NAME fstack-packet-dispatcher-pmd COMMAND ker-packet-dispatcher-pmd-test)
+    set_tests_properties(fstack-packet-dispatcher-plain fstack-packet-dispatcher-context
+        fstack-packet-dispatcher-unregister fstack-packet-dispatcher-lifetime fstack-packet-dispatcher-pmd
+        PROPERTIES TIMEOUT 25 LABELS fstack)
+endif()

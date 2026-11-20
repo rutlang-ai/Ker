@@ -40,7 +40,7 @@ endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c
     src/posix/lifecycle.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-entropy.c src/posix/realtime-clock.c
-    src/posix/current-time.c)
+    src/posix/current-time.c src/posix/native-buffer.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 add_library(ker::posix ALIAS ker-posix)
@@ -87,6 +87,7 @@ endif()
 install(FILES "${ker_native_source}/COPYING" "${ker_native_source}/LICENSES/preferred/GPL-2.0"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux)
 if(BUILD_TESTING)
+    include(cmake/NativeBufferTests.cmake)
     add_executable(ker-packet-device-test tests/posix/fstack-packet-device.c src/posix/packet-device.c)
     target_include_directories(ker-packet-device-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-packet-device-test SYSTEM PRIVATE
