@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 221 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 229 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 9 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 133 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 125 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **142 项**（133 blocked + 9 partial）。
+当前待完成 **134 项**（125 blocked + 9 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -72,7 +72,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 84 | 0 | 12 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 92 | 0 | 4 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 6 | 1 | 60 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
@@ -1256,3 +1256,20 @@ DPDK 构建提供独立的 `ker::ipc`，复用固定 F-Stack 的 IPC 实现与�
 三个用例使用独立进程运行完整原始断言，与 `ker::reload` 复用相同编译对象。
 测试在内存中切换 generation。跨进程共享、真实 DPDK 队列交接及热重载互通
 由清单中的集成用例跟踪。
+
+## F-Stack generation directory、接管证明与 ring 使用者清点
+
+- `fstack-reload-gendir-arbitration` 验证目录布局校验、RX/KNI 所有权、跨
+  epoch 的 peer 选择和 QUERY 回复坐标。
+- `fstack-reload-probe-epoch-fallback` 验证 QUERY 优先采用已公布的 active
+  坐标，否则跟随最新存活 epoch，并在其退出后逐级退回 slot 0。
+- `fstack-reload-cross-master-handover` 使用两份控制状态和同一目录验证先
+  park 再 claim，以及接管方退出后由原所有者恢复。
+- 四项使用者证明用例验证重复注册、停止确认、活跃使用者阻止 reclaim/release，
+  以及 master 退出后 orphan worker 时间戳对 epoch 存活判定的影响。
+- `fstack-reload-ring-user-census` 验证按 slot 和 generation 清点，空闲 slot
+  的死亡记录清理、容量边界、活跃锁持有者的排斥和退出后重新获取锁。
+
+每个 CTest 在独立进程运行固定上游原始断言和原始 reload 编译对象。用例使用
+真实父进程和已回收子进程 PID，并在内存中构造目录和使用者表。DPDK 多进程目录
+映射、实际队列清理和热重载流量仍由独立集成用例验收。

@@ -1,4 +1,4 @@
-"""Verify the byte-identical source used by the reload message adapter."""
+"""Verify the pinned reload implementation and retained source cases."""
 import hashlib
 import json
 from pathlib import Path
@@ -15,9 +15,16 @@ for name, record in manifest['files'].items():
     assert hashlib.sha1(blob).hexdigest() == record['git_blob'], name
 
 source = (root / 'tests/upstream/fstack/tests/unit/test_ff_config.c').read_bytes()
-cases = sorted((root / 'tests/fstack-reload-source').glob('*.inc'))
+cases_dir = root / 'tests/fstack-reload-source'
+cases = sorted(cases_dir.glob('test_*.inc'))
 assert cases
 for case in cases:
     start = source.index(b'static void\n' + case.stem.encode() + b'(')
     end = source.index(b'\n}', start) + 2
     assert case.read_bytes() == source[start:end] + b'\n', case.name
+
+proof_cases = cases_dir / 'user-proof-cases.inc'
+start = source.index(b'static uint32_t\np2_dead_pid(')
+last = source.index(b'static void\ntest_rx15_ring_user_census_and_purge_lock(', start)
+end = source.index(b'\n}', last) + 2
+assert proof_cases.read_bytes() == source[start:end] + b'\n', proof_cases.name
