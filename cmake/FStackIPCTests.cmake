@@ -23,3 +23,7 @@ set_tests_properties(fstack-ipc-process-epoch PROPERTIES TIMEOUT 30 LABELS fstac
 add_test(NAME fstack-ipc-full-coordinate
     COMMAND ker-ipc-coordinate-test 2:1:1 - 2 1 1 ff_msg_ring_in_2_e1_g1 1)
 set_tests_properties(fstack-ipc-full-coordinate PROPERTIES TIMEOUT 30 LABELS fstack)
+
+add_test(NAME fstack-ipc-generation-epoch
+    COMMAND ker-ipc-coordinate-test - 1:2 0 1 2 ff_msg_ring_in_0_e2_g1 2)
+set_tests_properties(fstack-ipc-generation-epoch PROPERTIES TIMEOUT 30 LABELS fstack)

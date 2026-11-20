@@ -155,6 +155,16 @@
       ],
       "adaptation": "The original parser retains all three explicitly supplied fields from 2:1:1 and resolves the exact generation 1, slot 1 input ring name."
     },
+    "fstack-ipc-generation-epoch": {
+      "source_file": "tests/unit/test_ff_ipc.c",
+      "source_case": [
+        "test_ff_ipc_gen_str_epoch"
+      ],
+      "ker_ctests": [
+        "fstack-ipc-generation-epoch"
+      ],
+      "adaptation": "The generation-only option preserves the default process 0 and parses generation 1 and epoch 2 through the original parser, yielding ff_msg_ring_in_0_e2_g1."
+    },
     "fstack-ipc-process-coordinate": {
       "source_file": "tests/unit/test_ff_ipc.c",
       "source_case": [
