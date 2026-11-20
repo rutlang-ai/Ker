@@ -2145,9 +2145,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_name_isolation",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Sweep the pinned process IDs, both generations, and every reply type with epochs 1 and 2. Names are distinct and fit the source ring-name limit, and explicit epoch 0 and unspecified epoch address the same slot-zero input ring.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-cross-master-ring-names",
+          "provenance_case": "fstack-ipc-cross-master-ring-names"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_graceful_zero_epoch_invariance",

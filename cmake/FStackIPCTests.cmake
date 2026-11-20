@@ -77,3 +77,7 @@ set_tests_properties(fstack-ipc-epoch-ring-names PROPERTIES TIMEOUT 30 LABELS fs
 add_test(NAME fstack-ipc-legacy-ring-names
     COMMAND ker-ipc-ring-name-test legacy-ring-names)
 set_tests_properties(fstack-ipc-legacy-ring-names PROPERTIES TIMEOUT 30 LABELS fstack)
+
+add_test(NAME fstack-ipc-cross-master-ring-names
+    COMMAND ker-ipc-ring-name-test cross-master-ring-names)
+set_tests_properties(fstack-ipc-cross-master-ring-names PROPERTIES TIMEOUT 30 LABELS fstack)

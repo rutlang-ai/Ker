@@ -62,14 +62,49 @@ static void legacy_ring_names(void)
     }
 }
 
+
+static void expect_distinct_epochs(struct ker_ipc_address address, int output, enum FF_MSG_TYPE type)
+{
+    char first[RTE_RING_NAMESIZE], second[RTE_RING_NAMESIZE];
+    address.epoch = 1;
+    CHECK(ker_ipc_format_ring(first, sizeof(first), &address, output, type, 1) == 0);
+    address.epoch = 2;
+    CHECK(ker_ipc_format_ring(second, sizeof(second), &address, output, type, 1) == 0);
+    CHECK(strcmp(first, second) != 0);
+    CHECK(strstr(first, "_e1_") != NULL && strstr(second, "_e2_") != NULL);
+    CHECK(strlen(first) <= 28 && strlen(second) <= 28);
+}
+
+static void cross_master_ring_names(void)
+{
+    static const unsigned processes[] = {0, 1, 7, 127};
+    char zero[RTE_RING_NAMESIZE], unspecified[RTE_RING_NAMESIZE];
+
+    for (size_t i = 0; i < sizeof(processes) / sizeof(processes[0]); ++i) {
+        for (int generation = 0; generation < 2; ++generation) {
+            struct ker_ipc_address address = {.process = processes[i], .generation = generation};
+            expect_distinct_epochs(address, 0, FF_UNKNOWN);
+            for (int type = FF_SYSCTL; type < FF_MSG_NUM; ++type)
+                expect_distinct_epochs(address, 1, type);
+
+            CHECK(ker_ipc_format_ring(zero, sizeof(zero), &address, 0, FF_UNKNOWN, 1) == 0);
+            address.epoch = KER_IPC_EPOCH_NONE;
+            CHECK(ker_ipc_format_ring(unspecified, sizeof(unspecified), &address, 0, FF_UNKNOWN, 1) == 0);
+            CHECK(strcmp(zero, unspecified) == 0);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
     if (strcmp(argv[1], "epoch-ring-names") == 0)
         epoch_ring_names();
-    else {
-        CHECK(strcmp(argv[1], "legacy-ring-names") == 0);
+    else if (strcmp(argv[1], "legacy-ring-names") == 0)
         legacy_ring_names();
+    else {
+        CHECK(strcmp(argv[1], "cross-master-ring-names") == 0);
+        cross_master_ring_names();
     }
     return 0;
 }
