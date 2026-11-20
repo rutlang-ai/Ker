@@ -1418,6 +1418,16 @@
       ],
       "adaptation": "The malformed RSS tuple fixture is inspected with the retained parser and must leave the parsed RSS table empty as asserted by the pinned case. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_rss_check_thash_adjust_off_parses": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_rss_check_thash_adjust_off_parses"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_rss_check_thash_adjust_off_parses"
+      ],
+      "adaptation": "The source fixture keeps the RSS section enabled while setting its hash adjustment flag to zero. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
