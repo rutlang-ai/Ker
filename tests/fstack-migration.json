@@ -1970,9 +1970,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_greload_off_no_new_checks",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original full DPDK fixture loads with the reload and slim-primary flags disabled. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_greload_off_no_new_checks",
+          "provenance_case": "fstack-config-source-test_greload_off_no_new_checks"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_greload_bad_value_atoi",
