@@ -110,6 +110,12 @@ set_tests_properties(fstack-config-source-test_port_cfg_handler_id_over_max_retu
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_rss_tbl_cfg_handler_bad_tuple)
+add_test(NAME fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple COMMAND ker-test_rss_tbl_cfg_handler_bad_tuple)
+set_tests_properties(fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")
