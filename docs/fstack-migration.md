@@ -55,7 +55,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 - 配置/INI、日志、IPC 的覆盖以逐项来源映射为准。兼容接口和生产启动配置的验证范围各见对应条目。
 - 完整 Nginx 热重载入口仍有集成缺口。generation/epoch 多进程、软件 KNI、RSS 和 flow map 的运行边界见对应章节。
 - FreeBSD TLS、callout 和 mbuf 镜像：迁移必须尊重原始 Linux 结构和协议实现，不能为通过白盒测试复制 FreeBSD 协议算法。
-- reload Python 工具自测：源文件保留，不自动导入/执行，不把工具链断言记为网络协议覆盖。
+- reload Python 工具自测：源文件保留。pidfd 适配器在 CTest 中执行其中 3 项原始断言，工具链自测仍不计入网络协议覆盖。
 - `test_mtu.sh` 的固定 MTU 和运行中切换场景分别由 `native-fstack-icmp-mtu` 和 `native-fstack-live-mtu` 验证。
 
 后续每完成一项，先提供真正的适配和测试证据，再修改该项状态；完整迁移门禁
@@ -1353,7 +1353,24 @@ DPDK 构建提供独立的 `ker::ipc`，复用固定 F-Stack 的 IPC 实现与�
 - **13 项单元场景。** 覆盖源地址选择、generation pool、时钟换算、drain-ring 和孤儿回收、
   PEER 归属、空发送上下文，以及原始 mmap 失败退出和运行停止。
 
-唯一待完成入口是 `integration/test_graceful_reload.sh::entrypoint`。它还需要原始
-Nginx 的完整 HUP、USR2、故障注入与性能矩阵，远端探针证据、资源趋势及清理断言。
-同进程 reload、目录多进程和软件 PMD 检查已独立通过。历史两轮 Nginx 接续验证仅
-覆盖脚本的一部分。迁移门禁仍返回 2，保留这一项待验收。
+## 原始热重载入口
+
+原脚本要求被测机和 SSH 客户端在 `/data/workspace/kill_process.sh` 提供字节一致的
+`pidfd-identity-v1` 接口。隔离测试环境可以将
+[`tools/fstack-reload-kill.sh`](../tools/fstack-reload-kill.sh) 安装到两端的这个位置。
+它核对进程启动时间、可执行文件路径、设备号和 inode，再通过 Linux pidfd 发送指定信号。
+等待超时返回 3，由原始监督器决定后续操作。原始 shell 和监督器保持固定版本。
+
+```sh
+ctest --test-dir build -R '^fstack-reload-pidfd-adapter$' --output-on-failure
+```
+
+原脚本的 `--cases precheck` 已在隔离命名空间通过。该次运行使用实际 SSH 连接、
+固定版本 Nginx 构建清单和原始探针包，监督器确认子进程全部回收。另外，编译原始
+`reload_process_fixture.c` 后运行了 53 项原始 Python 工具链自测，全部通过。
+
+唯一待完成入口是 `integration/test_graceful_reload.sh::entrypoint`。同一脚本进入
+`rt01` 后，归档的 Ker-backed Nginx 构建在启动时拒绝脚本生成的监听器配置
+（`C22 profile validation: listener structure/options`），因此未触发 HUP。
+完整 HUP、USR2、故障注入和性能矩阵仍需验证远端流量、资源趋势及清理。
+迁移门禁仍返回 2。
