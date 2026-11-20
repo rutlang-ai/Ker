@@ -1581,9 +1581,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_in_range",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original lcore-mask fixture accepts the final valid process index and constructs its process mask. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_parse_lcore_mask_proc_id_in_range",
+          "provenance_case": "fstack-config-source-test_parse_lcore_mask_proc_id_in_range"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_over_count_fails",

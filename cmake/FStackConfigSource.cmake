@@ -122,6 +122,12 @@ set_tests_properties(fstack-config-source-test_rss_check_thash_adjust_off_parses
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_parse_lcore_mask_proc_id_in_range)
+add_test(NAME fstack-config-source-test_parse_lcore_mask_proc_id_in_range COMMAND ker-test_parse_lcore_mask_proc_id_in_range)
+set_tests_properties(fstack-config-source-test_parse_lcore_mask_proc_id_in_range PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")
