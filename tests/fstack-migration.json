@@ -963,58 +963,98 @@
     {
       "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_basic",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production exception adapter exercised with real Linux TAP and original DPDK rings; this is a Linux TAP scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "fstack-kni-test_kni_process_tx_basic"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_kernel_ratelimit",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production exception adapter exercised with real Linux TAP and original DPDK rings; this is a Linux TAP scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "fstack-kni-test_kni_process_tx_kernel_ratelimit"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_kernel_ratelimit_exceeded",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production exception adapter exercised with real Linux TAP and original DPDK rings; this is a Linux TAP scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "fstack-kni-test_kni_process_tx_kernel_ratelimit_exceeded"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_partial_drop",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production exception adapter exercised with real Linux TAP and original DPDK rings; this is a Linux TAP scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "fstack-kni-test_kni_process_tx_partial_drop"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_rx_forward",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production exception adapter exercised with real Linux TAP and original DPDK rings; this is a Linux TAP scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "fstack-kni-test_kni_process_rx_forward"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_rx_partial_drop",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production exception adapter exercised with real Linux TAP and original DPDK rings; this is a Linux TAP scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "fstack-kni-test_kni_process_rx_partial_drop"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_kni_integration.c::test_kni_enqueue_full_ring_drops",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production exception adapter exercised with real Linux TAP and original DPDK rings; this is a Linux TAP scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "fstack-kni-test_kni_enqueue_full_ring_drops"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_kni_integration.c::test_kni_alloc_primary_happy_path",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production exception adapter exercised with real Linux TAP and original DPDK rings; this is a Linux TAP scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "fstack-kni-test_kni_alloc_primary_happy_path"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_boot_state",
@@ -3133,177 +3173,310 @@
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_no_ratelimit",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production exception adapter exercised with real Linux TAP and original DPDK rings; this is a Linux TAP scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "fstack-kni-test_ff_kni_enqueue_no_ratelimit"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_console_ratelimit_over",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production exception adapter exercised with real Linux TAP and original DPDK rings; this is a Linux TAP scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "fstack-kni-test_ff_kni_enqueue_console_ratelimit_over"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_general_ratelimit_over",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production exception adapter exercised with real Linux TAP and original DPDK rings; this is a Linux TAP scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "fstack-kni-test_ff_kni_enqueue_general_ratelimit_over"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_filter_classification",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production exception adapter exercised with real Linux TAP and original DPDK rings; this is a Linux TAP scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "fstack-kni-test_ff_kni_enqueue_filter_classification"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_short",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_proto_filter_ipv4_short"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_non_ip_frame",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_proto_filter_non_ip_frame"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_disabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_proto_filter_ipv4_tcp_kni_disabled"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_disabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_proto_filter_ipv4_udp_kni_disabled"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_oversized_ihl",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_proto_filter_ipv4_oversized_ihl"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_ipip_recurse",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_proto_filter_ipv4_ipip_recurse"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_init_tcp_udp_port_bitmaps",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_init_tcp_udp_port_bitmaps"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_ospf_returns_ospf",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_proto_filter_ipv4_ospf_returns_ospf"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_short",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_short"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_enabled_short",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_proto_filter_ipv4_udp_kni_enabled_short"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_match_returns_kni",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_match_returns_kni"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_miss_returns_unknown",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_miss_returns_unknown"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_enabled_match_returns_kni",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_proto_filter_ipv4_udp_kni_enabled_match_returns_kni"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_init_null_port_lists",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_ff_kni_init_null_port_lists"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_owner",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned source assertions with explicit test seams and real DPDK runtime checks.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-kni-owner-source",
+          "provenance_case": "fstack-kni-test_p1_future_kni_owner"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_short_tx",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned source assertions with explicit test seams and real DPDK runtime checks.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-kni-short-tx-source",
+          "provenance_case": "fstack-kni-test_p1_future_kni_short_tx"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_full_ring",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned source assertions with explicit test seams and real DPDK runtime checks.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-kni-full-ring-source",
+          "provenance_case": "fstack-kni-test_p1_future_kni_full_ring"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_nonowner",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned source assertions with explicit test seams and real DPDK runtime checks.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-kni-nonowner-source",
+          "provenance_case": "fstack-kni-test_p1_kni_nonowner"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_stats_oom",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned source assertions with explicit test seams and real DPDK runtime checks.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-kni-stats-oom-source",
+          "provenance_case": "fstack-kni-test_p1_kni_stats_oom"
+        },
+        {
+          "ctest": "fstack-kni-stats-real-exit",
+          "provenance_case": "fstack-kni-test_p1_kni_stats_oom"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_slot_oom",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned source assertions with explicit test seams and real DPDK runtime checks.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-kni-slot-oom-source",
+          "provenance_case": "fstack-kni-test_p1_kni_slot_oom"
+        },
+        {
+          "ctest": "fstack-kni-slot-real-panic",
+          "provenance_case": "fstack-kni-test_p1_kni_slot_oom"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p3_ndp_classification",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The named classifier fixture and real Linux transport interop cover this packet-ownership scenario.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "fstack-kni-test_p3_ndp_classification"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_enable_pcap_basic",

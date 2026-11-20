@@ -365,7 +365,7 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 | Section | 支持的键 |
 |---|---|
 | network | address、gateway（IPv4） |
-| dpdk | port、eal、all_multicast |
+| dpdk | port、eal、all_multicast，以及下方的 exception_* |
 | logging | directory、level |
 | capture | directory、snaplen、max_bytes、nsec |
 | runtime | shutdown_timeout_ms、stats |
@@ -386,13 +386,34 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 多个选中 lcore 不会增加 Ker 的 RX/TX 队列或创建多进程数据面；目前仍由 worker 主线程处理报文。
 READY/关闭统计的 `io` 对象包含 `lcore_count`、`main_lcore` 以及采样时主线程实际所在的 `main_cpu`。
 
+### 宿主 exception TAP
+
+在 `[dpdk]` 设置 `exception_iface=kerexcept` 启用宿主 TAP。worker 在同一网络命名空间
+创建独占、非持久接口，使用 DPDK 端口的 MAC 和 MTU。运行环境需要可访问 `/dev/net/tun`
+并有配置网络接口的权限。需要宿主 IP 服务时，由部署方给 TAP 配置地址和路由。
+
+- 默认 `exception_mode=ethertype`。设置 `exception_type` 为 1536 到 65535 的十进制外层
+  EtherType，匹配的帧流向 TAP。
+- `exception_mode=ports` 使用 `exception_tcp_ports` 和 `exception_udp_ports`。
+  列表以逗号分隔，支持闭区间，例如 `53,8000-8002`。`exception_policy=accept` 将匹配流量交给
+  TAP，`reject` 将未匹配流量交给 TAP。ARP、IPv6 邻居发现及选定的 ICMP 错误同时送往两端。
+  此模式丢弃 IP 分片并记录 `exception_fragment_dropped`。
+- `exception_queue` 默认为 256，接受 4 到 65536 的 2 次幂。DPDK ring 保留一个槽位。
+  `exception_console_rate` 和 `exception_general_rate` 分别限制每秒控制帧与普通帧的入队尝试。
+  `exception_rate` 在每个批次开始前按已出队数量检查 TAP 发送额度，所以首个获准批次可以
+  超出额度。速率默认都是 0，表示禁用该限制。
+
+CLI 使用对应的连字符选项，例如 `--exception-iface` 和 `--exception-type`。
+启用 `live_mtu` 后，worker 也协调 TAP 的 MTU。关闭统计的 `exception_*` 字段记录
+TAP 转发、限流和丢弃，`wire_rx` 记录来自 DPDK 端口的总帧数。
+
 ### Worker 流量快照
 
 关闭统计新增 `tx_bytes`、`rx_bytes`、`tx_dropped`、`rx_dropped`，原有 `tx`、`rx`、`dropped` 字段保留。
 `KER_IO_DONE` 还报告 `stop_requests`（已读取的控制字节数）和 `control_eof`（控制通道是否已观察到 EOF）。
 `tx`/`tx_bytes` 在 PMD 接受完整帧后增加；`rx`/`rx_bytes` 在完整帧成功送入原生 packet channel 后增加，重试不会重复计数。
 字节数包含 Ethernet 头和负载，不含 virtio channel 头或 Ethernet FCS。
-分方向 dropped 只统计适配层拒绝的帧长度/元数据，聚合 `dropped=tx_dropped+rx_dropped`；不包含硬件丢包或关闭时丢弃的排队 RX 帧。
+分方向 dropped 统计适配层拒绝的帧。聚合值为 `dropped=tx_dropped+rx_dropped`，关闭时丢弃的排队 RX 帧和 TAP 单独统计。
 `outstanding` 继续表示 ethdev 关闭后仍被占用的 mbuf 数，成功关闭必须为零。
 
 ### 原生内核熵初始化

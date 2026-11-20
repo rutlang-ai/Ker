@@ -21,6 +21,7 @@
 #include "worker-log.h"
 #include "worker-clock.h"
 #include "worker-mbuf.h"
+#include "worker-exception.h"
 #include "worker-scatter.h"
 #include <rte_log.h>
 #include <rte_lcore.h>
@@ -101,18 +102,26 @@ static int start_with_mtu(uint16_t port, int mtu, uint16_t descriptors,
 /* Only the worker owns the ethdev and queue descriptors. A failed restart
  * must restore the old device configuration before we reply to Linux. */
 static int change_worker_mtu(uint16_t port, int requested, int previous,
-    uint16_t descriptors, struct rte_mempool *pool, bool *started, int *status)
+    uint16_t descriptors, struct rte_mempool *pool, bool *started, int *status,
+    struct ker_worker_exception *exception)
 {
     if (rte_eth_dev_stop(port))
         return -1;
     *started = false;
 
     *status = start_with_mtu(port, requested, descriptors, pool, started);
+    if (!*status && exception->pending) {
+        unsigned tap_mtu = (unsigned)requested;
+        *status = ker_worker_exception_mtu(exception, &tap_mtu, true);
+    }
     if (*status) {
         if (rte_eth_dev_stop(port))
             return -1;
         *started = false;
         if (start_with_mtu(port, previous, descriptors, pool, started))
+            return -1;
+        unsigned tap_mtu = (unsigned)previous;
+        if (exception->pending && ker_worker_exception_mtu(exception, &tap_mtu, true))
             return -1;
     }
 
@@ -124,7 +133,7 @@ static int change_worker_mtu(uint16_t port, int requested, int previous,
 
 static int handle_mtu(int fd, uint16_t port, int maximum, bool scatter, bool busy,
     uint16_t descriptors, struct rte_mempool *pool, bool *started,
-    int *mtu, uint64_t *changes)
+    int *mtu, uint64_t *changes, struct ker_worker_exception *exception)
 {
     struct ker_mtu_message message;
     ssize_t count = recv(fd, &message, sizeof(message), MSG_DONTWAIT | MSG_TRUNC);
@@ -139,6 +148,15 @@ static int handle_mtu(int fd, uint16_t port, int maximum, bool scatter, bool bus
     uint16_t actual;
     if (rte_eth_dev_get_mtu(port, &actual) || actual != *mtu)
         return -1;
+    if (exception->pending) {
+        unsigned tap_mtu = 0;
+        if (ker_worker_exception_mtu(exception, &tap_mtu, false) || tap_mtu != (unsigned)*mtu)
+            return -1;
+        int pending = ker_worker_exception_mtu_busy(exception);
+        if (pending < 0)
+            return -1;
+        busy |= pending != 0;
+    }
     int requested = message.mtu;
     if (requested < KER_NATIVE_MIN_MTU || requested > maximum)
         message.status = -EINVAL;
@@ -148,7 +166,7 @@ static int handle_mtu(int fd, uint16_t port, int maximum, bool scatter, bool bus
         else if (scatter)
             message.status = scatter_mtu_supported(port, requested);
         if (!message.status) {
-            if (change_worker_mtu(port, requested, *mtu, descriptors, pool, started, &message.status))
+            if (change_worker_mtu(port, requested, *mtu, descriptors, pool, started, &message.status, exception))
                 return -1;
             if (!message.status) {
                 *mtu = requested;
@@ -168,7 +186,12 @@ int main(int argc, char **argv)
 {
     int packet_fd = -1, control_fd = -1, mtu_fd = -1, split = 0;
     bool all_multicast = false, pcap_nsec = false, log_level_set = false;
-    const char *pcap_dir = NULL, *log_dir = NULL;
+    const char *pcap_dir = NULL, *log_dir = NULL, *exception_iface = NULL;
+    int exception_type = 0, exception_queue = 256, exception_rate = 0;
+    int exception_console_rate = 0, exception_general_rate = 0;
+    const char *exception_mode = "ethertype", *exception_policy = "accept";
+    const char *exception_tcp = NULL, *exception_udp = NULL;
+    struct ker_exception_filter exception_filter;
     int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU, maximum_mtu = 0;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
     const char *port_name = NULL, *mbuf_mode = "large";
@@ -187,6 +210,16 @@ int main(int argc, char **argv)
             if (mtu_fd < 0) return 2;
         }
         else if (!strcmp(argv[i], "--max-mtu")) maximum_mtu = number(argv[++i]);
+        else if (!strcmp(argv[i], "--exception-mode")) exception_mode = argv[++i];
+        else if (!strcmp(argv[i], "--exception-policy")) exception_policy = argv[++i];
+        else if (!strcmp(argv[i], "--exception-tcp-ports")) exception_tcp = argv[++i];
+        else if (!strcmp(argv[i], "--exception-udp-ports")) exception_udp = argv[++i];
+        else if (!strcmp(argv[i], "--exception-iface")) exception_iface = argv[++i];
+        else if (!strcmp(argv[i], "--exception-type")) exception_type = number(argv[++i]);
+        else if (!strcmp(argv[i], "--exception-queue")) exception_queue = number(argv[++i]);
+        else if (!strcmp(argv[i], "--exception-console-rate")) exception_console_rate = number(argv[++i]);
+        else if (!strcmp(argv[i], "--exception-general-rate")) exception_general_rate = number(argv[++i]);
+        else if (!strcmp(argv[i], "--exception-rate")) exception_rate = number(argv[++i]);
         else if (!strcmp(argv[i], "--log-dir")) log_dir = argv[++i];
         else if (!strcmp(argv[i], "--log-level")) { log_level = number(argv[++i]); log_level_set = true; }
         else if (!strcmp(argv[i], "--pcap-dir")) pcap_dir = argv[++i];
@@ -203,6 +236,17 @@ int main(int argc, char **argv)
         (strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
         (log_level_set && (log_level < (int)RTE_LOG_EMERG || log_level > (int)RTE_LOG_DEBUG))) {
         fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--mtu 1280..9000] [--mtu-fd N --max-mtu 1280..9000] [--mbuf-mode large|scatter] [--all-multicast] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
+        return 2;
+    }
+    bool port_filter = !strcmp(exception_mode, "ports");
+    if ((!port_filter && strcmp(exception_mode, "ethertype")) ||
+        (strcmp(exception_policy, "accept") && strcmp(exception_policy, "reject")) ||
+        (port_filter && (exception_type || !exception_iface || ker_exception_filter_init(&exception_filter, exception_tcp, exception_udp))) ||
+        (!port_filter && (exception_tcp || exception_udp || strcmp(exception_policy, "accept"))) ||
+        (exception_iface && ((!port_filter && (exception_type < 1536 || exception_type > UINT16_MAX)) ||
+        exception_queue < 4 || exception_queue > 65536 || (exception_queue & (exception_queue - 1)) || exception_rate < 0 || exception_console_rate < 0 || exception_general_rate < 0)) ||
+        (!exception_iface && (exception_type || exception_rate || exception_console_rate || exception_general_rate || exception_queue != 256))) {
+        fprintf(stderr, "ker: invalid host exception TAP options\n");
         return 2;
     }
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
@@ -252,6 +296,9 @@ int main(int argc, char **argv)
     struct rte_mempool *pool = NULL;
     struct rte_mbuf *pending_tx = NULL, *rx[BURST] = {0};
     uint16_t rx_count = 0, rx_index = 0;
+    bool rx_shared[BURST] = {0};
+    uint64_t wire_rx = 0, rx_shutdown_discarded = 0;
+    struct ker_worker_exception exception = {.fd = -1};
     struct ker_pcap tx_capture = {0}, rx_capture = {0};
     uint64_t transmitted = 0, received = 0, tx_dropped = 0, rx_dropped = 0, tx_retries = 0, rx_retries = 0;
     uint64_t transmitted_bytes = 0, received_bytes = 0, tx_multiseg = 0, rx_multiseg = 0;
@@ -304,6 +351,20 @@ int main(int argc, char **argv)
     }
     struct rte_ether_addr mac;
     if (rte_eth_macaddr_get(port, &mac)) goto device_error;
+    if (exception_iface) {
+        int result = ker_worker_exception_open(&exception, exception_iface, pool, &mac, (unsigned)mtu,
+            (uint16_t)(port_filter ? RTE_ETHER_TYPE_IPV4 : exception_type), (unsigned)exception_queue,
+            (uint32_t)exception_rate, (uint32_t)exception_console_rate, (uint32_t)exception_general_rate);
+        if (result) {
+            fprintf(stderr, "ker: host exception TAP startup failed: %s\n", strerror(-result));
+            goto cleanup;
+        }
+        if (port_filter) {
+            exception.port_mode = true;
+            exception.reject = !strcmp(exception_policy, "reject");
+            exception.filter = exception_filter;
+        }
+    }
     if (log_dir && ker_worker_log(RTE_LOG_INFO, log.type, "ker.io ready port=%s\n", port_name) < 0) {
         perror("ker: write worker log"); goto cleanup;
     }
@@ -317,6 +378,7 @@ int main(int argc, char **argv)
         rte_eth_dev_socket_id(port), rte_lcore_count(), rte_get_main_lcore(), sched_getcpu(), link_status ? "null" : (link.link_status ? "true" : "false"));
     fflush(stdout);
     status = 0;
+    bool exception_first = false;
     while (!stopping) {
         char commands[256];
         ssize_t control;
@@ -339,7 +401,7 @@ int main(int argc, char **argv)
         if (mtu_fd >= 0 && !draining) {
             int result = handle_mtu(mtu_fd, port, maximum_mtu, scatter,
                 pending_tx || tx_length || rx_index < rx_count, rx_desc, pool,
-                &started, &mtu, &mtu_changes);
+                &started, &mtu, &mtu_changes, &exception);
             if (result < 0) {
                 fprintf(stderr, "ker: MTU device transaction failed\n");
                 status = 1;
@@ -351,6 +413,13 @@ int main(int argc, char **argv)
             }
         }
         bool progress = false;
+        /* Alternate which traffic source gets its TX opportunity first. */
+        if (exception_first && exception.pending && !draining) {
+            int64_t now;
+            if (ker_worker_now_ns(&now)) goto clock_error;
+            int result = ker_worker_exception_poll(&exception, port, (unsigned)mtu, now, pcap_dir ? &tx_capture : NULL, &progress);
+            if (result) { fprintf(stderr, "ker: host exception TAP forwarding failed: %s\n", strerror(-result)); status = 1; break; }
+        }
         int reclaimed = rte_eth_tx_done_cleanup(port, 0, 0);
         if (reclaimed < 0 && reclaimed != -ENOTSUP) { status = 1; break; }
         for (unsigned int budget = 0; budget < BURST; ++budget) {
@@ -396,7 +465,17 @@ int main(int argc, char **argv)
             progress = true;
         }
         if (status) break;
+        /* On native-first turns, attempt its batch before admitting another
+         * exception burst; the next turn gives exception traffic first use. */
+        if (!exception_first && exception.pending && !draining) {
+            int64_t now;
+            if (ker_worker_now_ns(&now)) goto clock_error;
+            int result = ker_worker_exception_poll(&exception, port, (unsigned)mtu, now, pcap_dir ? &tx_capture : NULL, &progress);
+            if (result) { fprintf(stderr, "ker: host exception TAP forwarding failed: %s\n", strerror(-result)); status = 1; break; }
+        }
+        exception_first = !exception_first;
         if (draining) {
+            rx_shutdown_discarded += rx_count - rx_index;
             while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
             int64_t now;
             if (ker_worker_now_ns(&now)) goto clock_error;
@@ -408,7 +487,9 @@ int main(int argc, char **argv)
         }
         if (rx_index == rx_count) {
             rx_count = rte_eth_rx_burst(port, 0, rx, BURST);
+            wire_rx += rx_count;
             rx_index = 0;
+            memset(rx_shared, 0, sizeof(rx_shared));
             /* Each received frame is captured once, even if channel delivery
              * later retries or metadata validation rejects it. */
             if (pcap_dir) for (uint16_t i = 0; i < rx_count; ++i) {
@@ -427,6 +508,30 @@ int main(int argc, char **argv)
             if (length >= RTE_ETHER_HDR_LEN && length <= (uint32_t)mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN && metadata_supported(packet))
                 bytes = rte_pktmbuf_read(packet, 0, length, rx_bytes);
             if (bytes && frame_size_supported(bytes, length, mtu)) {
+                enum ker_exception_route route = ker_worker_exception_route(&exception, packet);
+                if (route == KER_EXCEPTION_DROP) {
+                    exception.fragment_dropped++; rx_dropped++;
+                    rte_pktmbuf_free(rx[rx_index]); rx[rx_index++] = NULL; progress = true; continue;
+                }
+                if (route == KER_EXCEPTION_SHARED && !rx_shared[rx_index]) {
+                    /* Exactly one deep copy even when native channel delivery
+                     * retains this RX suffix under backpressure. */
+                    struct rte_mbuf *copy = rte_pktmbuf_copy(packet, pool, 0, UINT32_MAX);
+                    rx_shared[rx_index] = true;
+                    if (copy) {
+                        int result = ker_worker_exception_enqueue(&exception, &copy);
+                        if (result && result != -ENOBUFS) { rte_pktmbuf_free(copy); status = 1; break; }
+                        exception.shared_selected++;
+                        if (ker_exception_arp(packet)) exception.shared_arp++;
+                        if (!result && ker_exception_classify(&exception.filter, packet) == KER_EXCEPTION_ICMP_ERROR)
+                            exception.shared_icmp_error++;
+                    } else exception.shared_failed++;
+                }
+                if (route == KER_EXCEPTION_HOST) {
+                    int result = ker_worker_exception_enqueue(&exception, &rx[rx_index]);
+                    if (result && result != -ENOBUFS) { status = 1; break; }
+                    rx_index++; progress = true; continue;
+                }
                 struct ker_packet_header header = {0};
                 struct iovec vectors[] = {{&header, sizeof(header)}, {(void *)bytes, length}};
                 struct msghdr message = {.msg_iov = vectors, .msg_iovlen = 2};
@@ -451,7 +556,7 @@ int main(int argc, char **argv)
         }
         if (status) break;
         if (!progress) {
-            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, POLLIN, 0}, {mtu_fd, POLLIN, 0}};
+            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, POLLIN, 0}, {mtu_fd, POLLIN, 0}, {exception.fd, POLLIN, 0}};
             (void)poll(fds, sizeof(fds) / sizeof(fds[0]), 1); /* Bounded idle wait; protocol timers live in Linux. */
         }
     }
@@ -467,7 +572,9 @@ cleanup:
     rx_capture_status = ker_pcap_close(&rx_capture);
     if (tx_capture_status || rx_capture_status) { perror("ker: close packet capture"); status = 1; }
     if (pending_tx) rte_pktmbuf_free(pending_tx);
+    rx_shutdown_discarded += rx_count - rx_index;
     while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
+    if (ker_worker_exception_close(&exception)) status = 1;
     if (started && rte_eth_dev_stop(port)) status = 1;
     if (configured && rte_eth_dev_close(port)) status = 1;
     unsigned int outstanding = pool ? rte_mempool_in_use_count(pool) : 0;
@@ -475,7 +582,25 @@ cleanup:
         fprintf(stderr, "ker: %u packet buffers still owned after ethdev shutdown\n", outstanding);
         status = 1;
     } else if (pool) rte_mempool_free(pool);
-    printf("KER_IO_DONE {\"mtu_final\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
+    printf("KER_IO_DONE {\"exception_console_charged\":%llu,\"exception_general_charged\":%llu,"
+        "\"exception_console_dropped\":%llu,\"exception_general_dropped\":%llu,",
+        (unsigned long long)exception.console_charged, (unsigned long long)exception.general_charged,
+        (unsigned long long)exception.console_dropped, (unsigned long long)exception.general_dropped);
+    printf("\"exception_shared_arp\":%llu,\"exception_shared_selected\":%llu,\"exception_shared_icmp_error\":%llu,\"exception_shared_failed\":%llu,\"exception_fragment_dropped\":%llu,",
+        (unsigned long long)exception.shared_arp, (unsigned long long)exception.shared_selected,
+        (unsigned long long)exception.shared_icmp_error, (unsigned long long)exception.shared_failed,
+        (unsigned long long)exception.fragment_dropped);
+    printf("\"exception_selected\":%llu,\"exception_enqueued\":%llu,"
+        "\"exception_to_host\":%llu,\"exception_to_host_dropped\":%llu,\"exception_host_received\":%llu,"
+        "\"exception_from_host\":%llu,\"exception_wire_dropped\":%llu,\"exception_shutdown_dropped\":%llu,"
+        "\"exception_rate_dropped\":%llu,\"exception_malformed\":%llu,\"wire_rx\":%llu,\"rx_shutdown_discarded\":%llu,",
+        (unsigned long long)exception.selected, (unsigned long long)exception.enqueued,
+        (unsigned long long)exception.to_host, (unsigned long long)exception.to_host_dropped,
+        (unsigned long long)exception.host_received, (unsigned long long)exception.from_host,
+        (unsigned long long)exception.wire_dropped, (unsigned long long)exception.shutdown_dropped,
+        (unsigned long long)exception.rate_dropped, (unsigned long long)exception.malformed,
+        (unsigned long long)wire_rx, (unsigned long long)rx_shutdown_discarded);
+    printf("\"mtu_final\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
         "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u,"
         "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu}\n", mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
         (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
