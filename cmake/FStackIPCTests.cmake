@@ -46,3 +46,7 @@ set_target_properties(ker-ipc-ownership-test PROPERTIES BUILD_RPATH "${DPDK_LIBR
 add_test(NAME fstack-ipc-own-reply
     COMMAND ker-ipc-ownership-test own-reply)
 set_tests_properties(fstack-ipc-own-reply PROPERTIES TIMEOUT 30 LABELS fstack)
+
+add_test(NAME fstack-ipc-foreign-live
+    COMMAND ker-ipc-ownership-test foreign-live)
+set_tests_properties(fstack-ipc-foreign-live PROPERTIES TIMEOUT 30 LABELS fstack)

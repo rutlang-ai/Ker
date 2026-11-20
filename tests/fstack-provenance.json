@@ -195,6 +195,16 @@
       ],
       "adaptation": "Run the exported IPC adapter with a real DPDK EAL, typed message pool, and MPMC rings. A provider fixture returns the exact owned message, and the caller verifies payload, pending ownership, counters, and complete pool cleanup."
     },
+    "fstack-ipc-foreign-live": {
+      "source_file": "tests/unit/test_ff_ipc.c",
+      "source_case": [
+        "test_p4_recv_foreign_live_owner"
+      ],
+      "ker_ctests": [
+        "fstack-ipc-foreign-live"
+      ],
+      "adaptation": "With an accepted request outstanding, the original receive path requeues a reply with a different live PID and preserves the caller output, exact object and bytes. The provider fixture reclaims the exact original request; all shared objects return to the pool."
+    },
     "fstack-ipc-process-coordinate": {
       "source_file": "tests/unit/test_ff_ipc.c",
       "source_case": [
