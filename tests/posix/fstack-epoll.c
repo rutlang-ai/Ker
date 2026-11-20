@@ -108,6 +108,38 @@ static void add_modify_delete(void)
     take(c, "abc");
     finish(c);
 }
+static void replace_listener_registration(void)
+{
+    int listener = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    CHECK(listener >= 0);
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    CHECK(bind(listener, (void *)&address, sizeof(address)) == 0);
+    CHECK(listen(listener, 1) == 0);
+    socklen_t length = sizeof(address);
+    CHECK(getsockname(listener, (void *)&address, &length) == 0);
+
+    int ep = epoll_create1(EPOLL_CLOEXEC);
+    CHECK(ep >= 0);
+    struct epoll_event registration = {.events = EPOLLIN, .data.u64 = 0x40000777};
+    CHECK(epoll_ctl(ep, EPOLL_CTL_ADD, listener, &registration) == 0);
+    registration.data.u64 = 0x40000888;
+    EXPECT_ERROR(epoll_ctl(ep, EPOLL_CTL_ADD, listener, &registration), EEXIST);
+    CHECK(epoll_ctl(ep, EPOLL_CTL_MOD, listener, &registration) == 0);
+
+    struct epoll_event results[2];
+    CHECK(epoll_wait(ep, results, 2, 0) == 0);
+    int client = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    CHECK(client >= 0);
+    CHECK(connect(client, (void *)&address, length) == 0);
+    CHECK(epoll_wait(ep, results, 2, 2000) == 1);
+    CHECK(results[0].events == EPOLLIN && results[0].data.u64 == registration.data.u64);
+
+    CHECK(epoll_ctl(ep, EPOLL_CTL_DEL, listener, NULL) == 0);
+    CHECK(epoll_wait(ep, results, 2, 0) == 0); /* The connection is still queued. */
+    int server = accept4(listener, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
+    CHECK(server >= 0);
+    CHECK(close(server) == 0 && close(client) == 0 && close(ep) == 0 && close(listener) == 0);
+}
 static void level_triggered(void)
 {
     struct connection c = connection();
@@ -343,6 +375,7 @@ int main(void)
         {"null-event-and-registration-recovery", null_event_non_delete},
         {"null-wait-buffer-and-oneshot-recovery", null_wait_recovery},
         {"add-modify-delete-and-u64-data", add_modify_delete},
+        {"repeated-listener-registration-replaces-tag", replace_listener_registration},
         {"level-triggered-unread-data", level_triggered},
         {"edge-triggered-drain-and-new-data", edge_triggered},
         {"oneshot-explicit-rearm", oneshot},
