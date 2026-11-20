@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Apply Linux network sysctls before application startup, using real DPDK and sockets."""
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -53,6 +54,10 @@ def main():
         host_before = [path.read_text() for path in host_paths]
         # The launcher must discard this inherited internal override.
         environment['KER_NATIVE_SYSCTLS'] = 'net.ipv4.ip_default_ttl=99'
+        long_key = 'net.ipv4.' + 'k' * 50 + 'a'
+        long_config = root / 'long-key.ini'
+        long_config.write_text(f'[sysctl]\n{long_key}=1\n')
+        long_path = '/proc/sys/' + long_key.replace('.', '/')
         cases = [
             ('omitted', ['--config', str(empty)], 0,
              'PASS: five native network sysctls effective', 64),
@@ -61,6 +66,8 @@ def main():
              'PASS: five native network sysctls effective', 66),
             ('unknown', ['--sysctl', 'net.ipv4.ker_no_such_sysctl=1'], 125,
              '/proc/sys/net/ipv4/ker_no_such_sysctl', 65),
+            ('long-name-ini', ['--config', str(long_config)], 125,
+             f'{long_path} ({-errno.ENOENT})', 65),
             ('invalid-value', ['--sysctl', 'net.ipv4.ip_default_ttl=0'], 125,
              '/proc/sys/net/ipv4/ip_default_ttl', 65),
         ]

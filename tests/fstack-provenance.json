@@ -352,6 +352,17 @@
       ],
       "adaptation": "Actual Ker launcher starts real DPDK worker and imported Linux before application main; app marker and native interface ioctls prove startup, native DONE plus zero outstanding prove shutdown. Missing configuration exits 2; real EAL argument rejection and missing selected ethdev exit 125 without executing the application, instead of F-Stack exit(1). No mocked successful startup or FreeBSD boot failure; interface activation injection is covered separately by native-fstack-startup-failures. Run/stop mapping remains partial: real worker control-channel stop and native teardown, without the ff_run callback/argument forwarding ABI."
     },
+    "native-fstack-ini-long-key": {
+      "source_file": "tests/unit/test_ff_ini_parser.c",
+      "source_case": [
+        "test_ini_parse_stream_long_key_name"
+      ],
+      "ker_ctests": [
+        "native-fstack-launcher-config",
+        "native-fstack-network-sysctl"
+      ],
+      "adaptation": "The production typed INI loader preserves two distinct 60-character net.* names with the same 59-character prefix. An explicit CLI override matches only the full selected key. Ker accepts its 128-character boundary and rejects an overlong key. A real native launch receives an unknown 60-character key from an INI file and reports ENOENT from the exact original Linux procfs path before application entry, then verifies DPDK cleanup. The F-Stack source observes a full key through its callback, while the Ker loader returns typed settings."
+    },
     "native-fstack-launcher-config": {
       "source_file": "tests/unit/test_ff_ini_parser.c",
       "source_case": [
