@@ -1502,9 +1502,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_argv_t_override",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original command-line case yields secondary process type and process index zero in the parsed document. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_argv_t_override",
+          "provenance_case": "fstack-config-source-test_ff_load_config_argv_t_override"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_blank_and_multibit",
