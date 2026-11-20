@@ -1436,9 +1436,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_port_cfg_handler_id_over_max_returns_one",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original source fixture checks that the out-of-range port section is skipped and the selected port remains available in the parsed document. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_port_cfg_handler_id_over_max_returns_one",
+          "provenance_case": "fstack-config-source-test_port_cfg_handler_id_over_max_returns_one"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_repeat_keys_no_leak",

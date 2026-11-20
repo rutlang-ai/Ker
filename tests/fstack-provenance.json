@@ -1398,6 +1398,16 @@
       ],
       "adaptation": "The retained parser runs the original assertions for a VLAN referring to a port beyond the fixture's limit. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_port_cfg_handler_id_over_max_returns_one": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_port_cfg_handler_id_over_max_returns_one"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_port_cfg_handler_id_over_max_returns_one"
+      ],
+      "adaptation": "The original source fixture checks that the out-of-range port section is skipped and the selected port remains available in the parsed document. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
