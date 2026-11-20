@@ -1982,9 +1982,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_greload_bad_value_atoi",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original parser keeps reload disabled when the legacy value is nonnumeric. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_greload_bad_value_atoi",
+          "provenance_case": "fstack-config-source-test_greload_bad_value_atoi"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_reload_fsm_transitions",

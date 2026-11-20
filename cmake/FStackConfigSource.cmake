@@ -224,6 +224,12 @@ set_tests_properties(fstack-config-source-test_greload_off_no_new_checks PROPERT
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_greload_bad_value_atoi)
+add_test(NAME fstack-config-source-test_greload_bad_value_atoi COMMAND ker-test_greload_bad_value_atoi)
+set_tests_properties(fstack-config-source-test_greload_bad_value_atoi PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")
