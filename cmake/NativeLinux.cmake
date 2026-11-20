@@ -332,20 +332,25 @@ if(BUILD_TESTING)
     target_include_directories(ker-startup-failure-probe SYSTEM PRIVATE ${DPDK_INCLUDE_DIRS})
     target_compile_options(ker-startup-failure-probe PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-startup-failure-probe PRIVATE ${CMAKE_DL_LIBS})
-    # Build the same adaptation layer with a link-time failure wrapper. This
-    # target is test-only and is never installed or used by the production CLI.
+    # Use the production sources and kernel for test-only link wrappers.
     get_target_property(ker_posix_sources ker-posix SOURCES)
-    add_library(ker-posix-if-up-failure SHARED ${ker_posix_sources} tests/posix/interface-up-failure.c)
-    target_include_directories(ker-posix-if-up-failure PRIVATE "${PROJECT_SOURCE_DIR}/include")
-    target_include_directories(ker-posix-if-up-failure SYSTEM PRIVATE
-        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
-    target_compile_definitions(ker-posix-if-up-failure PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
-    target_compile_features(ker-posix-if-up-failure PRIVATE c_std_11)
-    target_compile_options(ker-posix-if-up-failure PRIVATE -Wall -Wextra -Werror)
-    target_link_options(ker-posix-if-up-failure PRIVATE -Wl,--no-undefined -Wl,--wrap=lkl_if_up
-        "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
-    set_property(TARGET ker-posix-if-up-failure APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
-    target_link_libraries(ker-posix-if-up-failure PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
+    function(ker_startup_test_preload target probe)
+        add_library(${target} SHARED ${ker_posix_sources} ${probe})
+        target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/include")
+        target_include_directories(${target} SYSTEM PRIVATE
+            "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+        target_compile_definitions(${target} PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
+        target_compile_features(${target} PRIVATE c_std_11)
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Werror)
+        target_link_options(${target} PRIVATE -Wl,--no-undefined ${ARGN}
+            "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
+        set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
+        target_link_libraries(${target} PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
+    endfunction()
+    ker_startup_test_preload(ker-posix-if-up-failure tests/posix/interface-up-failure.c
+        -Wl,--wrap=lkl_if_up)
+    ker_startup_test_preload(ker-posix-netdev-probe tests/posix/native-netdev-probe.c
+        -Wl,--wrap=lkl_netdev_add -Wl,--wrap=lkl_netdev_remove -Wl,--wrap=lkl_netdev_free)
     set(ker_startup_failure_command
         "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/startup-failures.py"
         --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
@@ -357,6 +362,10 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-interface-activation-recovery COMMAND ${ker_startup_failure_command}
         --failure-library "$<TARGET_FILE:ker-posix-if-up-failure>" --interface-recovery)
     set_tests_properties(native-fstack-interface-activation-recovery PROPERTIES
+        TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-netdev-registration COMMAND ${ker_startup_failure_command}
+        --device-lifecycle-library "$<TARGET_FILE:ker-posix-netdev-probe>")
+    set_tests_properties(native-fstack-netdev-registration PROPERTIES
         TIMEOUT 90 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-port-queue-allocation COMMAND ${ker_startup_failure_command}
         --port-allocation)

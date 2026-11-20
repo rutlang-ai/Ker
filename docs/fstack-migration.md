@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 200 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 10 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| scenario-adapted | 201 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 9 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
 | blocked | 153 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **163 项**（153 blocked + 10 partial）。
+当前待完成 **162 项**（153 blocked + 9 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -65,7 +65,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 
 | 上游入口 | 总数 | 场景适配 | 部分覆盖 | 阻塞 | 架构特有 | 工具自测 |
 |---|---:|---:|---:|---:|---:|---:|
-| [integration/test_ff_dpdk_if_integration.c](../tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c) | 20 | 12 | 8 | 0 | 0 | 0 |
+| [integration/test_ff_dpdk_if_integration.c](../tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c) | 20 | 14 | 6 | 0 | 0 | 0 |
 | [integration/test_ff_gendir_mp_integration.c](../tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
 | [integration/test_ff_kni_integration.c](../tests/upstream/fstack/tests/integration/test_ff_kni_integration.c) | 8 | 0 | 0 | 8 | 0 | 0 |
 | [integration/test_ff_reload_integration.c](../tests/upstream/fstack/tests/integration/test_ff_reload_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
@@ -1186,3 +1186,11 @@ promiscuous、NUMA、idle sleep 和 TX delay 等解析结果。
 调用注入一次 EIO。检查精确调用顺序、launcher 状态 125、应用未执行、
 EAL 清理成功、mbuf 计数归零和 TAP 消失。随后在同一网络命名空间使用相同端口名
 和 TAP 名无故障启动，验证原始 Linux 接口并再次清理。
+
+## 原生网络设备注册和释放
+
+`native-fstack-netdev-registration` 补齐 `test_ff_dpdk_register_deregister_roundtrip`。
+在同一个 namespace 进行两次实际 DPDK 和原始 Linux 启停。测试记录原始
+LKL add、remove、free 的顺序和身份，检查 free 返回时数据通道描述符
+已经关闭。每次都用原生 socket ioctl 检查接口，结束时验证 EAL 清理、
+mbuf 归零以及 TAP 移除。
