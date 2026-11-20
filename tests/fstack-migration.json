@@ -1632,9 +1632,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_invalid_fails",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The retained configuration path rejects the pinned fixture's unsupported KNI method. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_check_config_kni_method_invalid_fails",
+          "provenance_case": "fstack-config-source-test_ff_check_config_kni_method_invalid_fails"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_check_config_kni_primary_lcore_present_ok",
