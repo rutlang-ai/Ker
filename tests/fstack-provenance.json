@@ -1438,6 +1438,16 @@
       ],
       "adaptation": "The original lcore-mask fixture accepts the final valid process index and constructs its process mask. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_parse_lcore_mask_proc_id_over_count_fails"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails"
+      ],
+      "adaptation": "The retained parser rejects a process index outside the selected core count. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [

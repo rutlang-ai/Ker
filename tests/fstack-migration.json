@@ -1593,9 +1593,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_over_count_fails",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The retained parser rejects a process index outside the selected core count. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails",
+          "provenance_case": "fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_reject_ok",
