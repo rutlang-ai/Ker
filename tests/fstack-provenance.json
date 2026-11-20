@@ -1708,6 +1708,16 @@
       ],
       "adaptation": "The pinned parser reads the bond count and rejects the malformed section. The original assertions verify that the first bond has no assigned mode. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_vdev_cfg_handler_no_nb_vdev_returns_zero": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_vdev_cfg_handler_no_nb_vdev_returns_zero"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_vdev_cfg_handler_no_nb_vdev_returns_zero"
+      ],
+      "adaptation": "The original virtual-device callback rejects its first setting when the device count is absent. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [

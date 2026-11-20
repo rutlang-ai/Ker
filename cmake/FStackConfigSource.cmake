@@ -325,6 +325,21 @@ set_tests_properties(fstack-config-source-test_bond_cfg_handler_bad_section PROP
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_vdev_cfg_handler_no_nb_vdev_returns_zero)
+target_sources(ker-test_vdev_cfg_handler_no_nb_vdev_returns_zero PRIVATE fstack-config-rejection.c)
+target_link_libraries(ker-test_vdev_cfg_handler_no_nb_vdev_returns_zero PRIVATE PkgConfig::DPDK)
+target_include_directories(ker-test_vdev_cfg_handler_no_nb_vdev_returns_zero PRIVATE "${PROJECT_SOURCE_DIR}/third_party/inih")
+target_compile_definitions(ker-test_vdev_cfg_handler_no_nb_vdev_returns_zero PRIVATE
+    FSTACK_CONFIG_VERIFY_REJECTION
+    "FSTACK_CONFIG_REJECTION_FIXTURE=\"fixtures/invalid_vdev_no_nb_vdev.ini\""
+    "FSTACK_CONFIG_REJECT_SECTION=\"vdev0\""
+    "FSTACK_CONFIG_REJECT_KEY=\"iface\"")
+target_link_options(ker-test_vdev_cfg_handler_no_nb_vdev_returns_zero PRIVATE -Wl,--wrap=example_upstream_ini_parse)
+add_test(NAME fstack-config-source-test_vdev_cfg_handler_no_nb_vdev_returns_zero COMMAND ker-test_vdev_cfg_handler_no_nb_vdev_returns_zero)
+set_tests_properties(fstack-config-source-test_vdev_cfg_handler_no_nb_vdev_returns_zero PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")
