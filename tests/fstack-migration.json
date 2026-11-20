@@ -2055,9 +2055,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_25_drain_ring_size_config",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original parser accepts the explicit size, uses the default for a negative value, and rejects a non-power-of-two size. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ut_nr_25_drain_ring_size_config",
+          "provenance_case": "fstack-config-source-test_ut_nr_25_drain_ring_size_config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_26_rx_handover_markers",
