@@ -15,13 +15,13 @@
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | scenario-adapted | 199 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 13 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| partial | 12 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
 | blocked | 156 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
-| architecture-specific | 10 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
+| architecture-specific | 11 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **169 项**（156 blocked + 13 partial）。
+当前待完成 **168 项**（156 blocked + 12 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -83,7 +83,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 4 | 2 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
-| [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 2 | 1 | 0 | 0 |
+| [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 1 | 1 | 1 | 0 |
 | [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 0 | 0 | 13 | 0 | 0 |
 | [unit/test_hello.c](../tests/upstream/fstack/tests/unit/test_hello.c) | 2 | 0 | 0 | 0 | 0 | 2 |
 | [unit/test_reload_harness.py](../tests/upstream/fstack/tests/unit/test_reload_harness.py) | 53 | 0 | 0 | 0 | 0 | 53 |
@@ -1173,3 +1173,4 @@ promiscuous、NUMA、idle sleep 和 TX delay 等解析结果。
 
 - `test_page_array_rejects_graceful_reload`。原测试针对 FF_USE_PAGE_ARRAY 下进程私有的 TX 页数组，Ker 的数据包适配使用 Linux socket 和 skb 生命周期。
 - `test_page_array_keeps_graceful_off`。原断言以 FreeBSD mbuf table 的编译模式为前提，记录该模式中的 reload 缺省值合同。
+- `test_ff_pthread_create_basic`。原断言要求子线程继承父线程的同一个 FreeBSD pcurthread 指针。既有线程测试继续覆盖 Linux/LKL 的创建、join 和 TLS。
