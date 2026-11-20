@@ -165,6 +165,16 @@
       ],
       "adaptation": "The generation-only option preserves the default process 0 and parses generation 1 and epoch 2 through the original parser, yielding ff_msg_ring_in_0_e2_g1."
     },
+    "fstack-ipc-generation-option": {
+      "source_file": "tests/unit/test_ff_ipc.c",
+      "source_case": [
+        "test_ff_ipc_gen_str_plain"
+      ],
+      "ker_ctests": [
+        "fstack-ipc-generation-option"
+      ],
+      "adaptation": "The original generation-only option selects generation 0 for the default process, preserves the absent-epoch sentinel, and resolves ff_msg_ring_in_0_g0."
+    },
     "fstack-ipc-process-coordinate": {
       "source_file": "tests/unit/test_ff_ipc.c",
       "source_case": [
