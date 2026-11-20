@@ -1369,8 +1369,17 @@ ctest --test-dir build -R '^fstack-reload-pidfd-adapter$' --output-on-failure
 固定版本 Nginx 构建清单和原始探针包，监督器确认子进程全部回收。另外，编译原始
 `reload_process_fixture.c` 后运行了 53 项原始 Python 工具链自测，全部通过。
 
-唯一待完成入口是 `integration/test_graceful_reload.sh::entrypoint`。同一脚本进入
-`rt01` 后，归档的 Ker-backed Nginx 构建在启动时拒绝脚本生成的监听器配置
-（`C22 profile validation: listener structure/options`），因此未触发 HUP。
-完整 HUP、USR2、故障注入和性能矩阵仍需验证远端流量、资源趋势及清理。
+带原始 shell 监听器适配的 Nginx 构建通过了 `rt01` 配置检查。检查直接调用固定上游
+脚本的 `gen_fstack_ini` 和 `gen_nginx_conf` 后执行 `nginx -t`。同一个构建在关闭
+适配时拒绝该配置，启用适配时继续拒绝端口 81。可在提供匹配的 Nginx、原始
+`mime.types`、正在运行的 Ker broker 和对应 F-Stack 模板的隔离环境中复验。
+
+```sh
+bash tests/fstack-reload-nginx-profile.sh "$NGINX" "$BROKER_SOCKET" "$FSTACK_TEMPLATE" /tmp/ker-rt01-config
+```
+
+原始 `precheck,rt01` 使用同一匹配构建、实际 Ker broker、DPDK `net_tap` 和 SSH
+推进到 daemon 启动请求。观察端核对了内核凭据、原启动进程和子进程的两个 pidfd，
+以及原脚本生成的配置和 INI 摘要。观察端未发送启动确认，原始监督器确认子进程回收。
+完整入口仍需验证正式监督器的启动确认、HUP、USR2、故障注入、远端流量和资源趋势，
 迁移门禁仍返回 2。
