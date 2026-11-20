@@ -1,0 +1,24 @@
+"""Verify original bytes for the retained config parser and source cases."""
+import hashlib
+import json
+from pathlib import Path
+
+root = Path(__file__).resolve().parents[1]
+directory = root / 'third_party/fstack-config'
+manifest = json.loads((directory / 'UPSTREAM.json').read_text())
+assert manifest['revision'] == '646a641cfff77f4815e1e29829a09e1ed15a2999'
+for name, record in manifest['files'].items():
+    data = (root / name).read_bytes()
+    assert hashlib.sha256(data).hexdigest() == record['sha256'], name
+    blob = b'blob ' + str(len(data)).encode() + b'\0' + data
+    assert hashlib.sha1(blob).hexdigest() == record['git_blob'], name
+
+source = (root / 'tests/upstream/fstack/tests/unit/test_ff_config.c').read_bytes()
+cases = sorted((root / 'tests/fstack-config-source').glob('*.inc'))
+assert cases
+for case in cases:
+    name = case.stem.encode()
+    start = source.index(b'static void\n' + name + b'(')
+    end = source.index(b'\n}', start) + 2
+    assert case.read_bytes() == source[start:end] + b'\n', case.name
+print(f'Pinned original configuration parser and {len(cases)} retained source cases verified')

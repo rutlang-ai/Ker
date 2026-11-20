@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 152 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| scenario-adapted | 153 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 17 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
 | blocked | 200 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **218 项**（200 blocked + 18 partial）。
+当前待完成 **217 项**（200 blocked + 17 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -72,7 +72,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 19 | 2 | 75 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 30 | 4 | 62 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 6 | 1 | 60 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
@@ -1068,3 +1068,11 @@ NULL FILE 返回 -1 且不触发回调，随后可以从有效文件正常解析
 
 `fstack-ini-user-data` 适配 `test_ini_parse_stream_user_data_passed`。
 验证回调收到调用方传入的原始上下文指针，且保留该上下文中的标记。
+
+## Legacy 配置文档最小场景
+
+`fstack-config-source-test_ff_load_config_valid_minimal_ini` 使用只随测试构建
+的文档检查适配器，运行固定版本的原断言和输入。它检查 lcore mask、channel、
+promiscuous、NUMA、idle sleep 和 TX delay 等解析结果。
+每例执行五次加载和释放，并检查 EAL 参数计划清空。配置解析器、所需头文件
+和断言片段均有来源校验。测试证据限于 legacy 文档解析和计划构建。

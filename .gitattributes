@@ -1,3 +1,10 @@
 # Preserve the pinned upstream test snapshot byte-for-byte.
 tests/upstream/fstack/** -text -filter -ident
 third_party/inih/** -text -filter -ident
+third_party/fstack-config/** -text -filter -ident
+third_party/fstack-reload/** -text -filter -ident
+third_party/fstack-ipc/** -text -filter -ident
+tests/fstack-config-source/** -text -filter -ident
+# These pinned files end with blank lines.
+third_party/fstack-reload/LICENSE whitespace=-blank-at-eof
+third_party/fstack-reload/ff_log.h whitespace=-blank-at-eof
