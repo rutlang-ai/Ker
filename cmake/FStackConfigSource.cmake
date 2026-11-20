@@ -104,6 +104,12 @@ set_tests_properties(fstack-config-source-test_vlan_cfg_handler_portid_over_max_
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_port_cfg_handler_id_over_max_returns_one)
+add_test(NAME fstack-config-source-test_port_cfg_handler_id_over_max_returns_one COMMAND ker-test_port_cfg_handler_id_over_max_returns_one)
+set_tests_properties(fstack-config-source-test_port_cfg_handler_id_over_max_returns_one PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")
