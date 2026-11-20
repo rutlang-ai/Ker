@@ -73,7 +73,30 @@ def sysctl_setting(text):
     return key, value
 
 
-CONFIG_DEFAULTS = dict(vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+def exception_ports(value):
+    if value is None:
+        return None
+    if len(value) > 4096:
+        raise ValueError('exception port list exceeds 4096 characters')
+    if not value.strip():
+        return ''
+    result = []
+    for item in value.split(','):
+        item = item.strip()
+        if not re.fullmatch(r'[0-9]+(?:-[0-9]+)?', item):
+            raise ValueError('exception ports require decimal numbers or inclusive ranges')
+        bounds = [int(part) for part in item.split('-')]
+        if any(port > 65535 for port in bounds) or (len(bounds) == 2 and bounds[0] > bounds[1]):
+            raise ValueError('exception port range must be ascending within 0..65535')
+        result.append('-'.join(map(str, bounds)))
+    return ','.join(result)
+
+
+CONFIG_DEFAULTS = dict(
+    exception_mode='ethertype', exception_policy='accept', exception_tcp_ports=None, exception_udp_ports=None,
+    exception_iface=None, exception_type=0, exception_queue=256, exception_rate=0,
+    exception_console_rate=0, exception_general_rate=0,
+    vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, live_mtu=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -81,7 +104,12 @@ CONFIG_SCHEMA = {
     'network': {'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'live_mtu': ('live_mtu', bool), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
-    'dpdk': {'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
+    'dpdk': {'exception_mode': ('exception_mode', str), 'exception_policy': ('exception_policy', str),
+             'exception_tcp_ports': ('exception_tcp_ports', str), 'exception_udp_ports': ('exception_udp_ports', str),
+             'exception_iface': ('exception_iface', str), 'exception_type': ('exception_type', int),
+             'exception_queue': ('exception_queue', int), 'exception_rate': ('exception_rate', int),
+             'exception_console_rate': ('exception_console_rate', int), 'exception_general_rate': ('exception_general_rate', int),
+             'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'all_multicast': ('all_multicast', bool)},
     'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
     'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
@@ -141,6 +169,16 @@ def parse_arguments(argv=None):
     parser.add_argument('--vlan', dest='vlans', action='append', type=vlan_setting,
         help='802.1Q ID=IPv4/PREFIX[,IPv4/PREFIX...]; repeat up to 16 VLANs; replaces INI VLAN sections')
     parser.add_argument('--mbuf-mode', choices=('large', 'scatter'), help='DPDK packet storage; scatter uses chained standard-size mbufs')
+    parser.add_argument('--exception-mode', choices=('ethertype', 'ports'))
+    parser.add_argument('--exception-policy', choices=('accept', 'reject'))
+    parser.add_argument('--exception-tcp-ports', help='destination ports/ranges for unfragmented IP service steering')
+    parser.add_argument('--exception-udp-ports', help='destination ports/ranges for unfragmented IP service steering')
+    parser.add_argument('--exception-iface', help='new exclusive host TAP for EtherType or destination-port selection')
+    parser.add_argument('--exception-type', type=int, help='outer EtherType in decimal, 1536..65535')
+    parser.add_argument('--exception-queue', type=int)
+    parser.add_argument('--exception-console-rate', type=int, help='control admission attempts per second; zero disables')
+    parser.add_argument('--exception-general-rate', type=int, help='ordinary admission attempts per second; zero disables')
+    parser.add_argument('--exception-rate', type=int, help='host-bound batch gate per second; zero disables')
     parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
     parser.add_argument('--max-mtu', type=int, help='deployment MTU ceiling, 1280..9000 (default 9000)')
     parser.add_argument('--live-mtu', action=argparse.BooleanOptionalAction,
@@ -214,6 +252,30 @@ def parse_arguments(argv=None):
         parser.error('--vlan addresses must not duplicate primary, VIP, or other VLAN addresses')
     if args.mbuf_mode not in ('large', 'scatter'):
         parser.error('--mbuf-mode must be large or scatter')
+    if args.exception_mode not in ('ethertype', 'ports') or args.exception_policy not in ('accept', 'reject'):
+        parser.error('invalid exception mode or accept/reject policy')
+    try:
+        args.exception_tcp_ports = exception_ports(args.exception_tcp_ports)
+        args.exception_udp_ports = exception_ports(args.exception_udp_ports)
+    except ValueError as error:
+        parser.error(str(error))
+    if args.exception_mode == 'ports':
+        if args.exception_type or args.exception_iface is None:
+            parser.error('port mode requires an exception interface and no exception-type')
+    elif args.exception_tcp_ports is not None or args.exception_udp_ports is not None or args.exception_policy != 'accept':
+        parser.error('port lists and accept/reject policy require exception-mode=ports')
+    if args.exception_iface is not None:
+        if args.exception_iface in ('.', '..') or not re.fullmatch(r'[A-Za-z0-9_.-]{1,15}', args.exception_iface):
+            parser.error('--exception-iface must be a Linux interface name of at most 15 characters')
+        if args.exception_mode == 'ethertype' and not 1536 <= args.exception_type <= 65535:
+            parser.error('--exception-type must be in 1536..65535 with --exception-iface')
+        if not 4 <= args.exception_queue <= 65536 or args.exception_queue & (args.exception_queue - 1):
+            parser.error('--exception-queue must be a power of two in 4..65536')
+        for field in ('exception_rate', 'exception_console_rate', 'exception_general_rate'):
+            if not 0 <= getattr(args, field) <= 2147483647:
+                parser.error('--' + field.replace('_', '-') + ' must be in 0..2147483647')
+    elif args.exception_type or args.exception_rate or args.exception_console_rate or args.exception_general_rate or args.exception_queue != 256:
+        parser.error('exception options require --exception-iface')
     if not 1280 <= args.mtu <= 9000:
         parser.error('--mtu must be in 1280..9000')
     if not 1280 <= args.max_mtu <= 9000:
@@ -280,6 +342,16 @@ def main():
                 '--pcap-snaplen', str(args.pcap_snaplen), '--pcap-max-bytes', str(args.pcap_max_bytes)]
             if args.pcap_nsec:
                 capture_options.append('--pcap-nsec')
+        exception_options = []
+        if args.exception_iface is not None:
+            exception_options = ['--exception-iface', args.exception_iface, '--exception-mode', args.exception_mode,
+                '--exception-policy', args.exception_policy, '--exception-type', str(args.exception_type),
+                '--exception-queue', str(args.exception_queue), '--exception-rate', str(args.exception_rate),
+                '--exception-console-rate', str(args.exception_console_rate), '--exception-general-rate', str(args.exception_general_rate)]
+            for name in ('tcp', 'udp'):
+                value = getattr(args, 'exception_' + name + '_ports')
+                if value is not None:
+                    exception_options += ['--exception-' + name + '-ports', value]
         worker_fds = (channel_io.fileno(), control_read)
         mtu_options = []
         if args.live_mtu:
@@ -287,7 +359,7 @@ def main():
             worker_fds += (mtu_io.fileno(),)
             mtu_options = ['--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu)]
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--control-fd', str(control_read), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, *mtu_options, *multicast_options, *capture_options, *log_options, '--', *args.eal_args],
+            '--control-fd', str(control_read), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, *mtu_options, *exception_options, *multicast_options, *capture_options, *log_options, '--', *args.eal_args],
             pass_fds=worker_fds, stdout=subprocess.PIPE, text=True)
         channel_io.close()
         if mtu_io is not None:

@@ -16,3 +16,5 @@ third_party/fstack-rss-table/** -text -filter -ident -whitespace
 tests/fstack-flow-map-source.inc -text -filter -ident -whitespace
 tests/fstack-rss-*.inc -text -filter -ident -whitespace
 tests/fstack-rss-source/** -text -filter -ident -whitespace
+third_party/fstack-kni-bridge/** -text -filter -ident -whitespace
+tests/fstack-kni-*-source.inc -text -filter -ident -whitespace

@@ -54,7 +54,8 @@ set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
 set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME posix)
 add_executable(ker-app src/posix/app-guard.c)
-add_executable(ker-io-worker src/posix/io-worker.c src/posix/worker-mbuf.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
+add_executable(ker-io-worker src/posix/io-worker.c
+    src/posix/worker-exception.c src/posix/worker-exception-filter.c src/posix/worker-mbuf.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
 foreach(native_target ker-posix ker-app ker-io-worker)
     target_compile_features(${native_target} PRIVATE c_std_11)
     target_compile_options(${native_target} PRIVATE -Wall -Wextra -Werror)
@@ -575,6 +576,49 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-mbuf-scatter COMMAND ${ker_native_test_command}
         --jumbo-app "$<TARGET_FILE:ker-posix-fstack-jumbo-test>" --mbuf-scatter)
     set_tests_properties(native-fstack-mbuf-scatter PROPERTIES TIMEOUT 90 LABELS "native-dpdk;fstack")
+    file(GLOB ker_exception_ring_pmds "${KER_DPDK_PKGCONFIG_DIR}/../dpdk/pmds-*/librte_net_ring.so")
+    if(NOT ker_exception_ring_pmds)
+        message(FATAL_ERROR "Exception ownership acceptance requires original net_ring PMD")
+    endif()
+    list(GET ker_exception_ring_pmds 0 ker_exception_ring_pmd)
+    add_executable(ker-exception-tap-test tests/posix/exception-tap.c
+        src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/worker-mbuf.c src/posix/pcap.c)
+    target_include_directories(ker-exception-tap-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_link_libraries(ker-exception-tap-test PRIVATE PkgConfig::DPDK "${ker_exception_ring_pmd}")
+    target_link_options(ker-exception-tap-test PRIVATE -Wl,--wrap=writev)
+    target_compile_options(ker-exception-tap-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-exception-filter-test tests/posix/exception-filter.c
+        src/posix/worker-exception-filter.c src/posix/worker-mbuf.c)
+    target_include_directories(ker-exception-filter-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_link_libraries(ker-exception-filter-test PRIVATE PkgConfig::DPDK)
+    target_compile_options(ker-exception-filter-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-exception-probe tests/posix/exception-probe.c)
+    target_compile_options(ker-exception-probe PRIVATE -Wall -Wextra -Werror)
+    add_library(ker-exception-backpressure SHARED tests/posix/exception-backpressure.c)
+    target_include_directories(ker-exception-backpressure PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_link_libraries(ker-exception-backpressure PRIVATE ${CMAKE_DL_LIBS})
+    target_compile_options(ker-exception-backpressure PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-exception-services-test tests/posix/exception-services.c)
+    target_compile_options(ker-exception-services-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-exception-filter
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/exception-services.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-exception-services-test>"
+            --classifier "$<TARGET_FILE:ker-exception-filter-test>" --backpressure "$<TARGET_FILE:ker-exception-backpressure>")
+    set_tests_properties(native-fstack-exception-filter PROPERTIES TIMEOUT 100 LABELS "native-dpdk;fstack")
+    add_test(NAME native-fstack-exception-tap
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/exception-tap.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-exception-probe>"
+            --ownership "$<TARGET_FILE:ker-exception-tap-test>")
+    set_tests_properties(native-fstack-exception-tap PROPERTIES TIMEOUT 75 LABELS "native-dpdk;fstack")
+    add_test(NAME native-fstack-exception-config
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_exception_config.py")
+    set_tests_properties(native-fstack-exception-config PROPERTIES TIMEOUT 30 LABELS "fstack")
+    foreach(target ker-exception-tap-test ker-exception-filter-test)
+        target_link_options(${target} PRIVATE -Wl,--disable-new-dtags)
+        set_target_properties(${target} PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
+    endforeach()
     add_executable(ker-icmp-mtu-test tests/posix/icmp-mtu.c)
     target_compile_options(ker-icmp-mtu-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-icmp-mtu

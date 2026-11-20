@@ -46,6 +46,14 @@
     "adapter/syscall/main_stack_udp.c": {
       "sha256": "3bc1d65402321c5fae7f166a8e644533c0e69b062e2fded255e946b7d2261de5",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/adapter/syscall/main_stack_udp.c"
+    },
+    "tests/integration/test_ff_kni_integration.c": {
+      "sha256": "73b02718c9ac006f7c69158e257e8de81a74e66f4887b70e589954d4f2267a8e",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/integration/test_ff_kni_integration.c"
+    },
+    "tests/unit/test_ff_dpdk_kni.c": {
+      "sha256": "109a4dd1cc37efd674c322f948a4e1289b45ca328f585fb512df52a34c43b730",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_dpdk_kni.c"
     }
   },
   "cases": {
@@ -2697,6 +2705,338 @@
         "native-fstack-config-vlan-allocation"
       ],
       "adaptation": "Adapt VLAN configuration allocation-failure rejection to actual Ker typed VLAN address-list construction and INI loading, without emulating the F-Stack third-calloc array layout. A test-only vip_addresses provider raises MemoryError on the first or second VLAN; all earlier successful calls forward to the real provider. CLI and INI paths must report status 2 with a VLAN diagnostic before library/worker resolution or process creation. Failure of the second VLAN must not publish the already-parsed first VLAN; defaults remain unchanged and a later real parse recovers exactly two VLANs and their addresses. A separate read_configuration MemoryError tests the INI storage/loading boundary. All five cases escaped as MemoryError before the fix. No source allocation ordinal, whole-process natural OOM recovery, kernel allocation or injected NIC-fault claim."
+    },
+    "fstack-kni-test_kni_process_tx_basic": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": [
+        "test_kni_process_tx_basic"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Forward four owned mbufs through real Linux TAP and check byte-exact AF_PACKET delivery, counters and reclamation."
+    },
+    "fstack-kni-test_kni_process_tx_kernel_ratelimit": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": [
+        "test_kni_process_tx_kernel_ratelimit"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Allow the first five-packet TAP burst with a two-packet batch gate and check the dequeued count and deliveries."
+    },
+    "fstack-kni-test_kni_process_tx_kernel_ratelimit_exceeded": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": [
+        "test_kni_process_tx_kernel_ratelimit_exceeded"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Drop the next batch after the gate is exhausted, free all its mbufs, and check admission in a later monotonic window."
+    },
+    "fstack-kni-test_kni_process_tx_partial_drop": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": [
+        "test_kni_process_tx_partial_drop"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Inject EAGAIN after two actual TAP writes and check exact delivery of the prefix and reclamation of the suffix."
+    },
+    "fstack-kni-test_kni_process_rx_forward": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": [
+        "test_kni_process_rx_forward"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Forward three real AF_PACKET/TAP frames through the original DPDK net_ring TX path and check bytes, counters and pool balance."
+    },
+    "fstack-kni-test_kni_process_rx_partial_drop": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": [
+        "test_kni_process_rx_partial_drop"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Leave one slot in the real DPDK TX ring and check that one TAP frame is retained while the remaining four mbufs are freed."
+    },
+    "fstack-kni-test_kni_enqueue_full_ring_drops": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": [
+        "test_kni_enqueue_full_ring_drops"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Fill the owned DPDK ring, check ENOBUFS and reclamation of the rejected mbuf, then check that shutdown releases the queued prefix."
+    },
+    "fstack-kni-test_kni_alloc_primary_happy_path": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": [
+        "test_kni_alloc_primary_happy_path"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Start the primary worker with an exclusive host Linux TAP, check interface kind, UP, MAC and MTU, forward real traffic and verify teardown."
+    },
+    "fstack-kni-test_ff_kni_enqueue_no_ratelimit": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_enqueue_no_ratelimit"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Queue and deliver real frames with admission limits disabled and check counters and reclamation."
+    },
+    "fstack-kni-test_ff_kni_enqueue_console_ratelimit_over": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_enqueue_console_ratelimit_over"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Accept the configured console quota and check that excess real mbufs are consumed, dropped and counted."
+    },
+    "fstack-kni-test_ff_kni_enqueue_general_ratelimit_over": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_enqueue_general_ratelimit_over"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Accept the configured general quota and check that excess real mbufs are consumed, dropped and counted."
+    },
+    "fstack-kni-test_ff_kni_enqueue_filter_classification": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_enqueue_filter_classification"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Exercise the separate console and general admission counters and verify independent delivery and drop decisions."
+    },
+    "fstack-kni-test_ff_kni_proto_filter_ipv4_short": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_proto_filter_ipv4_short"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_proto_filter_non_ip_frame": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_proto_filter_non_ip_frame"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_proto_filter_ipv4_tcp_kni_disabled": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_proto_filter_ipv4_tcp_kni_disabled"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_proto_filter_ipv4_udp_kni_disabled": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_proto_filter_ipv4_udp_kni_disabled"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_proto_filter_ipv4_oversized_ihl": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_proto_filter_ipv4_oversized_ihl"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_proto_filter_ipv4_ipip_recurse": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_proto_filter_ipv4_ipip_recurse"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_init_tcp_udp_port_bitmaps": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_init_tcp_udp_port_bitmaps"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_proto_filter_ipv4_ospf_returns_ospf": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_proto_filter_ipv4_ospf_returns_ospf"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_short": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_short"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_proto_filter_ipv4_udp_kni_enabled_short": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_proto_filter_ipv4_udp_kni_enabled_short"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_match_returns_kni": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_match_returns_kni"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_miss_returns_unknown": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_miss_returns_unknown"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_proto_filter_ipv4_udp_kni_enabled_match_returns_kni": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_proto_filter_ipv4_udp_kni_enabled_match_returns_kni"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_ff_kni_init_null_port_lists": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_ff_kni_init_null_port_lists"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
+    },
+    "fstack-kni-test_p1_future_kni_owner": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_p1_future_kni_owner"
+      ],
+      "ker_ctests": [
+        "fstack-kni-owner-source"
+      ],
+      "adaptation": "Run the pinned owner assertions and verify that the original reload gate holds a queued frame until the active generation is selected, then sends the exact frame using a real net_ring PMD."
+    },
+    "fstack-kni-test_p1_future_kni_short_tx": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_p1_future_kni_short_tx"
+      ],
+      "ker_ctests": [
+        "fstack-kni-short-tx-source"
+      ],
+      "adaptation": "Run the pinned short-TX assertions and repeat with a real capacity-limited net_ring PMD, checking exact accepted frames, original drop counts and full pool recovery."
+    },
+    "fstack-kni-test_p1_future_kni_full_ring": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_p1_future_kni_full_ring"
+      ],
+      "ker_ctests": [
+        "fstack-kni-full-ring-source"
+      ],
+      "adaptation": "Run the pinned full-ring assertions and repeat with an actual full DPDK ring, checking the queued prefix, disposal of the rejected mbuf and full pool recovery."
+    },
+    "fstack-kni-test_p1_kni_nonowner": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_p1_kni_nonowner"
+      ],
+      "ker_ctests": [
+        "fstack-kni-nonowner-source"
+      ],
+      "adaptation": "Run the pinned non-owner assertions with the original reload gate and verify that the non-owner leaves the ring and mbuf ownership intact."
+    },
+    "fstack-kni-test_p1_kni_stats_oom": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_p1_kni_stats_oom"
+      ],
+      "ker_ctests": [
+        "fstack-kni-stats-oom-source",
+        "fstack-kni-stats-real-exit"
+      ],
+      "adaptation": "Fail the named stats allocation, verify the original fatal error and absence of later allocation or hotplug, then confirm that real DPDK rte_exit ends the subprocess with failure."
+    },
+    "fstack-kni-test_p1_kni_slot_oom": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_p1_kni_slot_oom"
+      ],
+      "ker_ctests": [
+        "fstack-kni-slot-oom-source",
+        "fstack-kni-slot-real-panic"
+      ],
+      "adaptation": "Fail the named slot allocation after successful real stats allocation, verify the original panic and absence of hotplug, then confirm that real DPDK panic terminates the subprocess with SIGABRT."
+    },
+    "fstack-kni-test_p3_ndp_classification": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": [
+        "test_p3_ndp_classification"
+      ],
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Verify the named classifier assertion with original DPDK header geometry and real mbufs. The same CTest checks host and embedded Linux IPv4/IPv6 TCP and UDP destination-port selection for accept and reject profiles."
     }
   }
 }

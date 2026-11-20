@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 263 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 296 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 9 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 91 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 58 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **100 项**（91 blocked + 9 partial）。
+当前待完成 **67 项**（58 blocked + 9 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -53,7 +53,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 ## 阻塞分类与边界
 
 - 配置/INI、日志、IPC 的覆盖以逐项来源映射为准。兼容接口和生产启动配置的验证范围各见对应条目。
-- KNI、RSS/源端口调整、完整设备注册、generation/epoch/热重载：需要实际适配器与运行环境；本地 FIFO 或 borrowed ethdev 用例只覆盖各自明确的子集。
+- 设备注册和 generation/epoch 热重载仍有集成缺口。软件 KNI、RSS 和 flow map 的运行边界见对应章节。
 - FreeBSD TLS、callout 和 mbuf 镜像：迁移必须尊重原始 Linux 结构和协议实现，不能为通过白盒测试复制 FreeBSD 协议算法。
 - reload Python 工具自测：源文件保留，不自动导入/执行，不把工具链断言记为网络协议覆盖。
 - `test_mtu.sh` 的固定 MTU 和运行中切换场景分别由 `native-fstack-icmp-mtu` 和 `native-fstack-live-mtu` 验证。
@@ -67,7 +67,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 |---|---:|---:|---:|---:|---:|---:|
 | [integration/test_ff_dpdk_if_integration.c](../tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c) | 20 | 14 | 6 | 0 | 0 | 0 |
 | [integration/test_ff_gendir_mp_integration.c](../tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
-| [integration/test_ff_kni_integration.c](../tests/upstream/fstack/tests/integration/test_ff_kni_integration.c) | 8 | 0 | 0 | 8 | 0 | 0 |
+| [integration/test_ff_kni_integration.c](../tests/upstream/fstack/tests/integration/test_ff_kni_integration.c) | 8 | 8 | 0 | 0 | 0 | 0 |
 | [integration/test_ff_reload_integration.c](../tests/upstream/fstack/tests/integration/test_ff_reload_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 1 | 0 | 0 | 0 | 0 |
@@ -75,7 +75,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 92 | 0 | 4 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 39 | 1 | 27 | 0 | 0 |
-| [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
+| [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 25 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 31 | 1 | 2 | 0 | 0 |
@@ -1306,3 +1306,20 @@ DPDK 构建提供独立的 `ker::ipc`，复用固定 F-Stack 的 IPC 实现与�
 这些用例覆盖调用方软件策略和原始 DPDK 软件队列。硬件 RSS/RETA、Linux
 端口分配和 TCP 半连接数据路径有各自的验证边界。Linux socket 和 TCP 状态
 继续由导入的原始 Linux 实现负责。
+
+## F-Stack KNI 与宿主 TAP
+
+本批适配 8 项 KNI 集成用例和 25 项单元用例。每项都在机器清单中关联源断言和可执行 CTest。
+
+- `native-fstack-exception-tap` 校验 8 项集成用例和 4 项入队用例的独立通过标记。
+  真实 Linux TAP、AF_PACKET 和 DPDK `net_ring` 验证字节一致性、短收发、队列满、限流、关闭和
+  mbuf 回收。另用实际 launcher 和 `net_tap` 验证双向流量、独占建链及运行中的 MTU 切换。
+- `native-fstack-exception-filter` 校验 15 项分类用例的独立通过标记，并通过两个网络命名空间
+  验证 IPv4/IPv6 TCP 和 UDP 服务在宿主 Linux 与 Ker 内嵌 Linux 间的选择。原始 DPDK 解析
+  报头，两个 Linux 栈各自处理协议状态。测试检查重试时共享控制报文只复制一次，以及分片丢弃计数。
+- 6 项 generation 所有权、短发送、队列满和分配失败用例直接运行固定上游断言。原始
+  reload 对象提供所有权判定，原始 DPDK 软件队列验证字节与 mbuf 回收。原始断言保留
+  进程角色和故障注入接点，两项分配失败也分别在子进程中验证真实 DPDK 退出状态和 SIGABRT。
+
+运行验证覆盖单进程 EAL、Linux TAP 和 DPDK 软件 PMD。旧 KNI/virtio 热插拔 ABI、
+真实 EAL 多进程交接及实体网卡属于独立验证范围。 [宿主 TAP 配置](native-tcp.md#宿主-exception-tap)
