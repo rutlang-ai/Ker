@@ -1440,9 +1440,13 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_freebsd_boot_multi_entries",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Ker supports multiple Linux network sysctl settings through INI/CLI and verifies five effective socket defaults in the original kernel.",
+      "status": "scenario-adapted",
+      "reason": "The source test inspects the original FreeBSD boot and sysctl document lists and verifies multiple records with the original parser. This verifies legacy document inspection using the original parser and fixture.",
       "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries",
+          "provenance_case": "fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries"
+        },
         {
           "ctest": "native-fstack-network-sysctl",
           "provenance_case": "native-fstack-network-sysctl"
@@ -1451,8 +1455,7 @@
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-network-sysctl"
         }
-      ],
-      "remaining": "FreeBSD boot hz/physmem/fd_reserve/mem_size/panicstr, FreeBSD sysctl names and boot/sysctl linked-list layout are not implemented; Linux settings are explicit names, not automatic FreeBSD translations."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_inet6_fixture_ignored",

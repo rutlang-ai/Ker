@@ -1308,6 +1308,16 @@
       ],
       "adaptation": "The original full DPDK fixture checks the lcore and port arrays, bond settings, RSS entries, and port VIP and lcore lists. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_freebsd_boot_multi_entries"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries"
+      ],
+      "adaptation": "The source test inspects the original FreeBSD boot and sysctl document lists and verifies multiple records with the original parser. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
