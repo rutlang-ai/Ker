@@ -8,3 +8,11 @@ tests/fstack-config-source/** -text -filter -ident
 # These pinned files end with blank lines.
 third_party/fstack-reload/LICENSE whitespace=-blank-at-eof
 third_party/fstack-reload/ff_log.h whitespace=-blank-at-eof
+
+# Preserve byte-audited F-Stack packet policy code and source assertions.
+third_party/fstack-flow-map/** -text -filter -ident -whitespace
+third_party/fstack-rss-adjust/** -text -filter -ident -whitespace
+third_party/fstack-rss-table/** -text -filter -ident -whitespace
+tests/fstack-flow-map-source.inc -text -filter -ident -whitespace
+tests/fstack-rss-*.inc -text -filter -ident -whitespace
+tests/fstack-rss-source/** -text -filter -ident -whitespace

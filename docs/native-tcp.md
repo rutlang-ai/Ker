@@ -60,7 +60,7 @@ IPv6 VIP/VLAN、RA/SLAAC 部署、路由更新/故障切换及物理网卡过滤
 ```sh
 git submodule update --init --recursive --depth 1
 KER_DPDK_DRIVERS=mempool/ring,net/ring,net/tap \
-KER_DPDK_LIBS=eal,ring,mempool,mbuf,ethdev,gso \
+KER_DPDK_LIBS=eal,ring,mempool,mbuf,ethdev,gso,hash \
   bash tools/build-dpdk.sh
 python3 tools/build-native-linux.py --build "$PWD/build-native-linux" --jobs 16
 cmake -S . -B build-native-tcp \
