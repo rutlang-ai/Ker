@@ -3720,9 +3720,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_handler_returns_zero",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker validates its typed settings directly; arbitrary caller handlers and handler-return-zero semantics are not exposed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Verify that a callback returning zero stops the real INI reader at line 2. The next key is neither delivered nor consumed and the caller can still read it from the open file.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-handler-rejection",
+          "provenance_case": "fstack-ini-handler-rejection"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_bom_utf8",
