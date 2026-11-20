@@ -4509,8 +4509,8 @@
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_failfast",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The source case clears FreeBSD pcurthread/pcpup and expects curcpu lookup to panic. LKL has no equivalent FreeBSD per-CPU TLS lookup ABI; pthread creation/allocation failure tests do not satisfy this contract.",
+      "status": "architecture-specific",
+      "reason": "The source clears the FreeBSD pcurthread and pcpup pointers and requires the test-local PCPU_GET mirror to panic. Original Linux/LKL has its own task and per-CPU runtime. The inventory records this exact accessor assertion as architecture-specific.",
       "ker_tests": []
     },
     {
