@@ -4237,9 +4237,14 @@
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_plain",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported adapter calls the pinned original IPC coordinate parser, preserves process 1 and AUTO/unspecified epoch for a process-only argument, and leaves detached ring-name output intact until a provider can resolve AUTO.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-process-coordinate",
+          "provenance_case": "fstack-ipc-process-coordinate"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_gen",
