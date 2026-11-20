@@ -175,6 +175,16 @@
       ],
       "adaptation": "The original generation-only option selects generation 0 for the default process, preserves the absent-epoch sentinel, and resolves ff_msg_ring_in_0_g0."
     },
+    "fstack-ipc-malformed-coordinate": {
+      "source_file": "tests/unit/test_ff_ipc.c",
+      "source_case": [
+        "test_ff_ipc_rejects_malformed"
+      ],
+      "ker_ctests": [
+        "fstack-ipc-malformed-coordinate"
+      ],
+      "adaptation": "Run every malformed input from the pinned unit test in a separate child and verify the original parser exits with status 1. Also cover process and generation overflow and require a valid complete coordinate to succeed afterwards."
+    },
     "fstack-ipc-process-coordinate": {
       "source_file": "tests/unit/test_ff_ipc.c",
       "source_case": [

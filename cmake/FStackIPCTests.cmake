@@ -31,3 +31,7 @@ set_tests_properties(fstack-ipc-generation-epoch PROPERTIES TIMEOUT 30 LABELS fs
 add_test(NAME fstack-ipc-generation-option
     COMMAND ker-ipc-coordinate-test - 0 0 0 4294967295 ff_msg_ring_in_0_g0 0)
 set_tests_properties(fstack-ipc-generation-option PROPERTIES TIMEOUT 30 LABELS fstack)
+
+add_test(NAME fstack-ipc-malformed-coordinate
+    COMMAND ker-ipc-coordinate-test --malformed)
+set_tests_properties(fstack-ipc-malformed-coordinate PROPERTIES TIMEOUT 30 LABELS fstack)
