@@ -2119,9 +2119,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_epoch_slot_and_ring_name",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The pinned formatter preserves legacy and slot-zero names, wraps epochs 4 and onwards to nonzero slots, and reports the original maximum output name, truncation and invalid argument results.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-epoch-ring-names",
+          "provenance_case": "fstack-ipc-epoch-ring-names"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_gendir_arbitration",

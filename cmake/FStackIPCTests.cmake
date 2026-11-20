@@ -62,3 +62,14 @@ set_tests_properties(fstack-ipc-orphan-reply PROPERTIES TIMEOUT 30 LABELS fstack
 add_test(NAME fstack-ipc-probe-ownership
     COMMAND ker-ipc-ownership-test probe-ownership)
 set_tests_properties(fstack-ipc-probe-ownership PROPERTIES TIMEOUT 30 LABELS fstack)
+
+
+add_executable(ker-ipc-ring-name-test ipc-ring-name.c)
+target_compile_options(ker-ipc-ring-name-test PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ker-ipc-ring-name-test PRIVATE ker::ipc)
+target_link_options(ker-ipc-ring-name-test PRIVATE -Wl,--disable-new-dtags)
+set_target_properties(ker-ipc-ring-name-test PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
+
+add_test(NAME fstack-ipc-epoch-ring-names
+    COMMAND ker-ipc-ring-name-test epoch-ring-names)
+set_tests_properties(fstack-ipc-epoch-ring-names PROPERTIES TIMEOUT 30 LABELS fstack)
