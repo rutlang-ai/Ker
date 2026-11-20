@@ -55,12 +55,121 @@ static bool metadata_supported(const struct rte_mbuf *packet)
         (packet->ol_flags & RTE_MBUF_F_RX_L4_CKSUM_MASK) != RTE_MBUF_F_RX_L4_CKSUM_NONE;
 }
 
+static int scatter_mtu_supported(uint16_t port, int mtu)
+{
+    struct rte_eth_dev_info info;
+    int result = rte_eth_dev_info_get(port, &info);
+    if (result || !(info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_SCATTER) ||
+        !(info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MULTI_SEGS)) {
+        fprintf(stderr, "ker: ethdev cannot support scatter RX and multi-segment TX\n");
+        return -EOPNOTSUPP;
+    }
+    uint32_t rx_overhead = ker_worker_rx_eth_overhead(&info);
+    uint64_t required_rx_segments = ker_worker_rx_required_segments((uint32_t)mtu,
+        rx_overhead);
+    uint16_t rx_segment_limit = info.rx_desc_lim.nb_mtu_seg_max;
+    if (!ker_worker_rx_limits_support(required_rx_segments, rx_segment_limit)) {
+        fprintf(stderr, "ker: scatter MTU %d requires %llu RX segments with %u-byte device overhead, ethdev rx_desc_lim.nb_mtu_seg_max=%u\n",
+            mtu, (unsigned long long)required_rx_segments, rx_overhead,
+            rx_segment_limit);
+        return -EOPNOTSUPP;
+    }
+    uint16_t required_segments = ker_worker_scatter_required_segments((uint32_t)mtu);
+    if (!ker_worker_scatter_limits_support(required_segments,
+            info.tx_desc_lim.nb_seg_max, info.tx_desc_lim.nb_mtu_seg_max)) {
+        fprintf(stderr, "ker: scatter MTU %d with VLAN header requires %u TX segments, ethdev limits are nb_seg_max=%u nb_mtu_seg_max=%u\n",
+            mtu, required_segments, info.tx_desc_lim.nb_seg_max,
+            info.tx_desc_lim.nb_mtu_seg_max);
+        return -EOPNOTSUPP;
+    }
+    return 0;
+}
+
+static int start_with_mtu(uint16_t port, int mtu, uint16_t descriptors,
+    struct rte_mempool *pool, bool *started)
+{
+    int result = rte_eth_dev_set_mtu(port, (uint16_t)mtu);
+    if (!result)
+        result = rte_eth_rx_queue_setup(port, 0, descriptors, rte_socket_id(), NULL, pool);
+    if (!result) {
+        *started = true;
+        result = rte_eth_dev_start(port);
+    }
+    return result;
+}
+
+/* Only the worker owns the ethdev and queue descriptors. A failed restart
+ * must restore the old device configuration before we reply to Linux. */
+static int change_worker_mtu(uint16_t port, int requested, int previous,
+    uint16_t descriptors, struct rte_mempool *pool, bool *started, int *status)
+{
+    if (rte_eth_dev_stop(port))
+        return -1;
+    *started = false;
+
+    *status = start_with_mtu(port, requested, descriptors, pool, started);
+    if (*status) {
+        if (rte_eth_dev_stop(port))
+            return -1;
+        *started = false;
+        if (start_with_mtu(port, previous, descriptors, pool, started))
+            return -1;
+    }
+
+    /* A failed readback still leaves a started PMD for cleanup to stop. */
+    uint16_t actual;
+    return rte_eth_dev_get_mtu(port, &actual) ||
+        actual != (*status ? previous : requested) ? -1 : 0;
+}
+
+static int handle_mtu(int fd, uint16_t port, int maximum, bool scatter, bool busy,
+    uint16_t descriptors, struct rte_mempool *pool, bool *started,
+    int *mtu, uint64_t *changes)
+{
+    struct ker_mtu_message message;
+    ssize_t count = recv(fd, &message, sizeof(message), MSG_DONTWAIT | MSG_TRUNC);
+    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+        return 0;
+    if (count == 0)
+        return 1;
+    if (count != sizeof(message) || message.magic != KER_MTU_MAGIC || message.status ||
+        message.previous != *mtu)
+        return -1;
+
+    uint16_t actual;
+    if (rte_eth_dev_get_mtu(port, &actual) || actual != *mtu)
+        return -1;
+    int requested = message.mtu;
+    if (requested < KER_NATIVE_MIN_MTU || requested > maximum)
+        message.status = -EINVAL;
+    else if (requested != *mtu) {
+        if (busy)
+            message.status = -EBUSY;
+        else if (scatter)
+            message.status = scatter_mtu_supported(port, requested);
+        if (!message.status) {
+            if (change_worker_mtu(port, requested, *mtu, descriptors, pool, started, &message.status))
+                return -1;
+            if (!message.status) {
+                *mtu = requested;
+                ++*changes;
+            }
+        }
+    }
+
+    message.mtu = *mtu;
+    do {
+        count = send(fd, &message, sizeof(message), MSG_DONTWAIT | MSG_NOSIGNAL);
+    } while (count < 0 && errno == EINTR);
+    return count == sizeof(message) ? 0 : -1;
+}
+
 int main(int argc, char **argv)
 {
-    int packet_fd = -1, control_fd = -1, split = 0;
+    int packet_fd = -1, control_fd = -1, mtu_fd = -1, split = 0;
     bool all_multicast = false, pcap_nsec = false, log_level_set = false;
     const char *pcap_dir = NULL, *log_dir = NULL;
-    int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU;
+    int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU, maximum_mtu = 0;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
     const char *port_name = NULL, *mbuf_mode = "large";
     for (int i = 1; i < argc; ++i) {
@@ -73,6 +182,11 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--port")) port_name = argv[++i];
         else if (!strcmp(argv[i], "--mbuf-mode")) mbuf_mode = argv[++i];
         else if (!strcmp(argv[i], "--mtu")) mtu = number(argv[++i]);
+        else if (!strcmp(argv[i], "--mtu-fd")) {
+            mtu_fd = number(argv[++i]);
+            if (mtu_fd < 0) return 2;
+        }
+        else if (!strcmp(argv[i], "--max-mtu")) maximum_mtu = number(argv[++i]);
         else if (!strcmp(argv[i], "--log-dir")) log_dir = argv[++i];
         else if (!strcmp(argv[i], "--log-level")) { log_level = number(argv[++i]); log_level_set = true; }
         else if (!strcmp(argv[i], "--pcap-dir")) pcap_dir = argv[++i];
@@ -80,13 +194,28 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--pcap-max-bytes")) pcap_maximum = number(argv[++i]);
         else break;
     }
-    if ((strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
+    if ((mtu_fd >= 0) != (maximum_mtu != 0)) {
+        fprintf(stderr, "ker: --mtu-fd and --max-mtu must be supplied together\n");
+        return 2;
+    }
+    if (!maximum_mtu) maximum_mtu = mtu;
+    if (maximum_mtu < mtu || maximum_mtu > KER_NATIVE_MAX_MTU ||
+        (strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
         (log_level_set && (log_level < (int)RTE_LOG_EMERG || log_level > (int)RTE_LOG_DEBUG))) {
-        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--mtu 1280..9000] [--mbuf-mode large|scatter] [--all-multicast] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
+        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--mtu 1280..9000] [--mtu-fd N --max-mtu 1280..9000] [--mbuf-mode large|scatter] [--all-multicast] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
         return 2;
     }
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
         perror("ker packet/control channel"); return 1;
+    }
+    if (mtu_fd >= 0) {
+        int type;
+        socklen_t length = sizeof(type);
+        if (getsockopt(mtu_fd, SOL_SOCKET, SO_TYPE, &type, &length) || type != SOCK_SEQPACKET ||
+            fcntl(mtu_fd, F_SETFD, FD_CLOEXEC) < 0) {
+            fprintf(stderr, "ker: invalid MTU control socket\n");
+            return 2;
+        }
     }
     struct sigaction action = {.sa_handler = stop_worker};
     sigemptyset(&action.sa_mask);
@@ -130,7 +259,7 @@ int main(int argc, char **argv)
     size_t tx_length = 0;
     int status = 1, tx_capture_status, rx_capture_status;
     bool draining = false;
-    uint64_t stop_requests = 0;
+    uint64_t stop_requests = 0, mtu_changes = 0;
     bool control_eof = false;
     int64_t drain_started = 0, drain_progress = 0;
     if (rte_eth_dev_get_port_by_name(port_name, &port)) {
@@ -139,31 +268,7 @@ int main(int argc, char **argv)
     struct rte_eth_conf conf = {0}; /* No checksum, VLAN, LRO, or TSO offloads. */
     bool scatter = !strcmp(mbuf_mode, "scatter");
     if (scatter) {
-        struct rte_eth_dev_info info;
-        int result = rte_eth_dev_info_get(port, &info);
-        if (result || !(info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_SCATTER) ||
-            !(info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MULTI_SEGS)) {
-            fprintf(stderr, "ker: ethdev cannot support scatter RX and multi-segment TX\n");
-            goto cleanup;
-        }
-        uint32_t rx_overhead = ker_worker_rx_eth_overhead(&info);
-        uint64_t required_rx_segments = ker_worker_rx_required_segments((uint32_t)mtu,
-            rx_overhead);
-        uint16_t rx_segment_limit = info.rx_desc_lim.nb_mtu_seg_max;
-        if (!ker_worker_rx_limits_support(required_rx_segments, rx_segment_limit)) {
-            fprintf(stderr, "ker: scatter MTU %d requires %llu RX segments with %u-byte device overhead, ethdev rx_desc_lim.nb_mtu_seg_max=%u\n",
-                mtu, (unsigned long long)required_rx_segments, rx_overhead,
-                rx_segment_limit);
-            goto cleanup;
-        }
-        uint16_t required_segments = ker_worker_scatter_required_segments((uint32_t)mtu);
-        if (!ker_worker_scatter_limits_support(required_segments,
-                info.tx_desc_lim.nb_seg_max, info.tx_desc_lim.nb_mtu_seg_max)) {
-            fprintf(stderr, "ker: scatter MTU %d with VLAN header requires %u TX segments, ethdev limits are nb_seg_max=%u nb_mtu_seg_max=%u\n",
-                mtu, required_segments, info.tx_desc_lim.nb_seg_max,
-                info.tx_desc_lim.nb_mtu_seg_max);
-            goto cleanup;
-        }
+        if (scatter_mtu_supported(port, mtu)) goto cleanup;
         conf.rxmode.offloads = RTE_ETH_RX_OFFLOAD_SCATTER;
         conf.txmode.offloads = RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
     }
@@ -173,7 +278,7 @@ int main(int argc, char **argv)
     uint16_t rx_desc = 256, tx_desc = 256;
     if (rte_eth_dev_adjust_nb_rx_tx_desc(port, &rx_desc, &tx_desc)) goto device_error;
     pool = rte_pktmbuf_pool_create("ker_native_packets", 4095, 0, 0,
-        (uint16_t)(scatter ? RTE_MBUF_DEFAULT_BUF_SIZE : RTE_MAX(RTE_MBUF_DEFAULT_BUF_SIZE, mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN + RTE_PKTMBUF_HEADROOM)), rte_socket_id());
+        (uint16_t)(scatter ? RTE_MBUF_DEFAULT_BUF_SIZE : RTE_MAX(RTE_MBUF_DEFAULT_BUF_SIZE, maximum_mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN + RTE_PKTMBUF_HEADROOM)), rte_socket_id());
     if (!pool) { fprintf(stderr, "ker packet pool: %s\n", rte_strerror(rte_errno)); goto cleanup; }
     if (rte_eth_rx_queue_setup(port, 0, rx_desc, rte_socket_id(), NULL, pool) ||
         rte_eth_tx_queue_setup(port, 0, tx_desc, rte_socket_id(), NULL) ||
@@ -230,6 +335,20 @@ int main(int argc, char **argv)
             draining = true;
             if (ker_worker_now_ns(&drain_started)) goto clock_error;
             drain_progress = drain_started;
+        }
+        if (mtu_fd >= 0 && !draining) {
+            int result = handle_mtu(mtu_fd, port, maximum_mtu, scatter,
+                pending_tx || tx_length || rx_index < rx_count, rx_desc, pool,
+                &started, &mtu, &mtu_changes);
+            if (result < 0) {
+                fprintf(stderr, "ker: MTU device transaction failed\n");
+                status = 1;
+                break;
+            }
+            if (result > 0) {
+                close(mtu_fd);
+                mtu_fd = -1;
+            }
         }
         bool progress = false;
         int reclaimed = rte_eth_tx_done_cleanup(port, 0, 0);
@@ -332,8 +451,8 @@ int main(int argc, char **argv)
         }
         if (status) break;
         if (!progress) {
-            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, POLLIN, 0}};
-            (void)poll(fds, 2, 1); /* Bounded idle wait; protocol timers live in Linux. */
+            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, POLLIN, 0}, {mtu_fd, POLLIN, 0}};
+            (void)poll(fds, sizeof(fds) / sizeof(fds[0]), 1); /* Bounded idle wait; protocol timers live in Linux. */
         }
     }
     goto cleanup;
@@ -356,9 +475,9 @@ cleanup:
         fprintf(stderr, "ker: %u packet buffers still owned after ethdev shutdown\n", outstanding);
         status = 1;
     } else if (pool) rte_mempool_free(pool);
-    printf("KER_IO_DONE {\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
+    printf("KER_IO_DONE {\"mtu_final\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
         "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u,"
-        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu}\n", (unsigned long long)transmitted,
+        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu}\n", mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
         (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
         (unsigned long long)tx_retries, (unsigned long long)rx_retries,
         (unsigned long long)transmitted_bytes, (unsigned long long)received_bytes,
@@ -371,5 +490,6 @@ cleanup:
     if (rte_eal_cleanup()) status = 1;
     close(packet_fd);
     close(control_fd);
+    if (mtu_fd >= 0) close(mtu_fd);
     return status;
 }

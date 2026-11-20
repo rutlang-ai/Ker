@@ -1075,15 +1075,18 @@
     {
       "id": "tests/integration/test_mtu.sh::entrypoint",
       "kind": "manual-checklist",
-      "status": "partial",
-      "reason": "The static checklist scenarios run as real bidirectional IPv4 and IPv6 ICMP echo against independent host and native Linux peers over DPDK net_tap/veth. Test the implicit MTU 1500 and explicit MTU 9000 with large and scatter mbufs. Verify byte-exact replies, EMSGSIZE at one byte over each MTU, complete Ethernet captures with valid checksums, and worker mbuf accounting.",
+      "status": "scenario-adapted",
+      "reason": "Automate all five manual checklist scenarios against the native Linux backend and a real DPDK TAP peer. Static IPv4/IPv6 probes exercise default MTU 1500 and jumbo large/scatter profiles. Live SIOCSIFMTU changes from 1500 to 9000 and back in one deployment in both buffer modes, with Linux and TAP readback, byte-exact traffic and wire checks at each phase. Exercise ceiling enforcement, recovery from a partially applied PMD change and shutdown on failed rollback.",
       "ker_tests": [
         {
           "ctest": "native-fstack-icmp-mtu",
           "provenance_case": "native-fstack-icmp-mtu"
+        },
+        {
+          "ctest": "native-fstack-live-mtu",
+          "provenance_case": "native-fstack-live-mtu"
         }
-      ],
-      "remaining": "Verify a live MTU change from 1500 to 9000 and back within one Ker deployment, with Linux and DPDK readback and traffic before and after each transition."
+      ]
     },
     {
       "id": "tests/unit/test_ff_callout.c::test_callout_when_relative_hardclock",

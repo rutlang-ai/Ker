@@ -49,6 +49,16 @@
     }
   },
   "cases": {
+    "native-fstack-live-mtu": {
+      "source_file": "tests/integration/test_mtu.sh",
+      "source_case": [
+        "entrypoint"
+      ],
+      "ker_ctests": [
+        "native-fstack-live-mtu"
+      ],
+      "adaptation": "Coordinate original Linux MTU ioctls with the DPDK worker via a private control socket. Loopback ioctls stay in Linux. Test live 1500/9000/1500 in large and scatter mode, with real TAP readback and fresh neighbor resolution, bidirectional byte-level IPv4/IPv6 ICMP, size errors, captures and zero outstanding mbufs. Check invalid/over-ceiling requests, recover after the PMD changed MTU before reporting EIO, and require status 125 and reclamation if PMD rollback fails."
+    },
     "native-fstack-icmp-mtu": {
       "source_file": "tests/integration/test_mtu.sh",
       "source_case": [
