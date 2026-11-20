@@ -146,6 +146,16 @@
       ],
       "adaptation": "The source rejects deployment after port-configuration allocation fails. Ker exercises the same failure scenario at the actual DPDK ethdev queue-table allocation boundary for its selected port. A test-only interposer fails the tagged RX or TX rte_zmalloc call in separate launches and forwards other allocations and frees to pinned DPDK. The RX failure must precede TX allocation. A TX failure must release the specific successfully allocated RX table before EAL cleanup. Both failures must report DPDK ENOMEM, make ker-run exit 125 before worker or native READY, leave no application marker, and remove the TAP with successful EAL cleanup and zero outstanding packet buffers. A later launch without an injected failure reuses the same port and TAP names in the same namespace and verifies original Linux interface configuration. The source uses an INI port-config array and a calloc ordinal. Ker stages allocation inside the DPDK worker and exercises an injected allocator failure."
     },
+    "native-fstack-null-packet-context": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_null_ctx_safe"
+      ],
+      "ker_ctests": [
+        "native-fstack-null-packet-context"
+      ],
+      "adaptation": "The production LKL packet-device TX callback rejects NULL context, NULL vector and zero count with -1/EINVAL. The RX callback shares the guard. The test calls both through the real device operations and verifies unchanged allocation and descriptor counts plus byte-exact TX/RX through the still-live datagram channel. The separate F-Stack case targets disposal of an owned mbuf, outside this borrowed-vector API."
+    },
     "native-fstack-packet-device": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": [

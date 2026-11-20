@@ -2323,9 +2323,14 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_safe",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker packet-device TX/RX callbacks reject a NULL context and empty vector with -1/EINVAL and preserve the live datagram channel and its allocations for subsequent successful transfer.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-null-packet-context",
+          "provenance_case": "native-fstack-null-packet-context"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_with_mbuf",
