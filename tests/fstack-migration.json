@@ -564,15 +564,18 @@
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_register_deregister_roundtrip",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "Two real DPDK and native Linux launches verify the actual registration, deregistration, and release calls with exact device identity, packet-channel closure before process exit, and full DPDK cleanup.",
       "ker_tests": [
+        {
+          "ctest": "native-fstack-netdev-registration",
+          "provenance_case": "native-fstack-netdev-registration"
+        },
         {
           "ctest": "ethdev-rebind",
           "provenance_case": "ethdev-rebind"
         }
-      ],
-      "remaining": "Borrowed Ker ethdev rebind does not implement full F-Stack interface registration/deregistration."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_get_tsc_ns_monotonic",

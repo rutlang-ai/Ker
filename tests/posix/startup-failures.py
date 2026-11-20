@@ -25,6 +25,7 @@ def main():
     mode.add_argument('--failure-library', type=Path)
     mode.add_argument('--port-allocation', action='store_true')
     mode.add_argument('--realtime-clock', action='store_true')
+    mode.add_argument('--device-lifecycle-library', type=Path)
     parser.add_argument('--interface-recovery', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
@@ -38,6 +39,8 @@ def main():
             command += ['--port-allocation']
         elif args.realtime_clock:
             command += ['--realtime-clock']
+        elif args.device_lifecycle_library:
+            command += ['--device-lifecycle-library', str(args.device_lifecycle_library.resolve())]
         else:
             command += ['--failure-library', str(args.failure_library.resolve())]
         if args.interface_recovery:
@@ -89,6 +92,9 @@ def main():
         if args.interface_recovery:
             startup_cases = {case[0]: case for case in cases}
             cases = [startup_cases['interface-up'], startup_cases['wrapped-success']]
+        if args.device_lifecycle_library:
+            cases = [(name, [], None, 0, 'PASS: native interfaces ready')
+                     for name in ('first-registration', 'second-registration')]
         for name, options, failure, expected, diagnostic in cases:
             marker, stats, cleanup = [root / (name + suffix) for suffix in ('.app', '.json', '.cleanup')]
             env = environment.copy()
@@ -103,6 +109,11 @@ def main():
             if args.realtime_clock:
                 env['KER_TEST_STARTUP_REALTIME_TRACE'] = '1'
             selected_launcher = list(launcher)
+            env.pop('KER_TEST_NETDEV_TRACE', None)
+            netdev_trace = root / (name + '.netdev')
+            if args.device_lifecycle_library:
+                selected_launcher[selected_launcher.index('--library') + 1] = str(args.device_lifecycle_library)
+                env['KER_TEST_NETDEV_TRACE'] = str(netdev_trace)
             wrapped = name in ('wrapped-success', 'loopback-up', 'interface-up')
             trace = root / (name + '.trace')
             if wrapped:
@@ -145,9 +156,17 @@ def main():
                     'interface-up': 'loopback real 0\ninterface injected -5\n'}[name]
                 require(trace.is_file() and trace.read_text() == expected_trace,
                         f'{name}: interface activation stage trace mismatch')
-            if args.port_allocation or args.interface_recovery:
+            if args.port_allocation or args.interface_recovery or args.device_lifecycle_library:
                 require('kerpeer' not in {interface for _, interface in socket.if_nameindex()},
                         f'{name}: TAP interface still present after worker exit')
+            if args.device_lifecycle_library:
+                require(netdev_trace.is_file(), f'{name}: missing original LKL device trace')
+                steps = netdev_trace.read_text().splitlines()
+                require(len(steps) == 3, f'{name}: unexpected original LKL device operations {steps}')
+                operation, _, index = steps[0].partition(' ')
+                require(operation == 'add' and index.isascii() and index.isdecimal() and
+                        steps[1:] == [f'remove {index}', f'free {index}'],
+                        f'{name}: original LKL device identity or order mismatch {steps}')
             if args.port_allocation:
                 prefix = 'ker-test: '
                 observed = [line.removeprefix(prefix) for line in result.stderr.splitlines()
