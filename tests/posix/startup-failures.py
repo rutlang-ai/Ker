@@ -107,8 +107,9 @@ def main():
                 env['KER_TEST_IF_UP_TRACE'] = str(trace)
             if failure:
                 env['KER_TEST_STARTUP_FAILURE'] = failure
+            app_options = ['--check-realtime'] if name == 'clock-recovery' else []
             result = subprocess.run([*selected_launcher, *options, '--stats', str(stats), '--',
-                                     str(args.app), str(marker)], env=env,
+                                     str(args.app), str(marker), *app_options], env=env,
                                     capture_output=True, text=True, timeout=40)
             require(result.returncode == expected, f'{name}: status={result.returncode} {result.stderr}')
             require(diagnostic in result.stdout + result.stderr, f'{name}: missing diagnostic {result.stderr}')
@@ -153,8 +154,12 @@ def main():
                 prefix = 'ker-test: startup realtime '
                 observed = [line.removeprefix(prefix) for line in result.stderr.splitlines()
                             if line.startswith(prefix)]
-                require(observed == ['injected EIO' if failure else 'real ok'],
+                expected_reads = ['injected EIO'] if failure else ['real ok'] * 3
+                require(observed == expected_reads,
                         f'{name}: unexpected realtime clock trace: {result.stderr}')
+                if name == 'clock-recovery':
+                    require('PASS: native realtime seconds available to the application' in result.stdout,
+                            f'{name}: native realtime API was not exercised: {result.stdout}')
             print('PASS: ' + name + ' startup order, application marker and worker/EAL cleanup', flush=True)
     return 0
 

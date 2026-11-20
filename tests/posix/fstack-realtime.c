@@ -186,11 +186,33 @@ static void optional_seconds(void)
     CHECK(nanoseconds >= 0 && nanoseconds < 1000000000L);
     puts("PASS: original Linux realtime nanoseconds with seconds omitted");
 }
+static void optional_nanoseconds(void)
+{
+    obsolete_epoch();
+    struct __lkl__kernel_timespec before = native_clock(LKL_CLOCK_REALTIME);
+    unsigned reads = native_realtime_reads;
+    int64_t seconds = -1;
+    CHECK(ker_posix_get_current_time(&seconds, NULL) == 0);
+    CHECK(native_realtime_reads == reads + 1);
+    struct __lkl__kernel_timespec after = native_clock(LKL_CLOCK_REALTIME);
+    CHECK(seconds >= before.tv_sec && seconds <= after.tv_sec && seconds < 1577836800);
+
+    CHECK(ker_native_sync_realtime() == 0);
+    seconds = -1;
+    fail_native_read = true;
+    CHECK(ker_posix_get_current_time(&seconds, NULL) == -1 && errno == EIO);
+    CHECK(!fail_native_read && seconds == -1);
+    CHECK(ker_posix_get_current_time(&seconds, NULL) == 0 && seconds > 1577836800);
+    reads = native_realtime_reads;
+    CHECK(ker_posix_get_current_time(NULL, NULL) == 0 && native_realtime_reads == reads + 1);
+    puts("PASS: original Linux realtime seconds with nanoseconds omitted");
+}
 int main(int argc, char **argv)
 {
     bool updates = argc == 2 && !strcmp(argv[1], "--updates");
     bool null_seconds = argc == 2 && !strcmp(argv[1], "--null-seconds");
-    CHECK(argc == 1 || updates || null_seconds);
+    bool null_nanoseconds = argc == 2 && !strcmp(argv[1], "--null-nanoseconds");
+    CHECK(argc == 1 || updates || null_seconds || null_nanoseconds);
     if (null_seconds) inactive_realtime();
     ker_native_host_memory_init(&lkl_host_ops);
     ker_native_host_clock_init(&lkl_host_ops);
@@ -200,6 +222,7 @@ int main(int argc, char **argv)
     active = true;
     if (updates) current_time_updates();
     else if (null_seconds) optional_seconds();
+    else if (null_nanoseconds) optional_nanoseconds();
     else {
         failed_sync(HOST_ERROR, EIO);
         /* Host read succeeds, but original Linux must reject invalid nanoseconds. */
@@ -209,6 +232,7 @@ int main(int argc, char **argv)
     active = false;
     CHECK(lkl_sys_halt() == 0); lkl_cleanup();
     if (null_seconds) inactive_realtime();
-    else puts("PASS: host EIO/native EINVAL propagate without epoch mutation; recovery and repeat sync succeed");
+    else if (!null_nanoseconds)
+        puts("PASS: host EIO/native EINVAL propagate without epoch mutation; recovery and repeat sync succeed");
     return 0;
 }
