@@ -1776,9 +1776,13 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_tcp_ecn_default_off",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Ker ECN policy configuration and real original-Linux handshake scenarios; Linux numeric policy values and defaults differ from FreeBSD and are explicitly documented.",
+      "status": "scenario-adapted",
+      "reason": "The retained legacy configuration parser preserves the source fixture's ECN default. Linux owns the native runtime policy. This verifies legacy document inspection using the original parser and fixture.",
       "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_tcp_ecn_default_off",
+          "provenance_case": "fstack-config-source-test_ff_load_config_tcp_ecn_default_off"
+        },
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-tcp-ecn"
@@ -1787,8 +1791,7 @@
           "ctest": "native-fstack-tcp-ecn",
           "provenance_case": "native-fstack-tcp-ecn"
         }
-      ],
-      "remaining": "Omission preserves original Linux tcp_ecn=2 (passive acceptance), whereas F-Stack defaults to0/off. Explicit off is supported and tested; the default-off source assertion is intentionally not matched."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_tcp_ecn_enabled",
