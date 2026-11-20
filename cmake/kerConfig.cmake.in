@@ -10,6 +10,8 @@ if(@KER_WITH_DPDK@)
     foreach(ker_dpdk_libdir IN LISTS DPDK_LIBRARY_DIRS)
         set_property(TARGET ker::ker APPEND PROPERTY INTERFACE_LINK_OPTIONS
             "LINKER:-rpath-link,${ker_dpdk_libdir}")
+        set_property(TARGET ker::ipc APPEND PROPERTY INTERFACE_LINK_OPTIONS
+            "LINKER:-rpath-link,${ker_dpdk_libdir}")
     endforeach()
 endif()
 check_required_components(ker)
