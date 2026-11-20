@@ -1328,6 +1328,16 @@
       ],
       "adaptation": "The retained legacy configuration parser preserves the source fixture's ECN default. Linux owns the native runtime policy. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_ff_load_config_inet6_fixture_ignored": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_inet6_fixture_ignored"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_inet6_fixture_ignored"
+      ],
+      "adaptation": "The retained parser is built without the upstream INET6 flag, and the source assertions verify the expected IPv4 data survives the IPv6 fixture. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
