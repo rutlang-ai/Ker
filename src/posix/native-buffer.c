@@ -295,11 +295,20 @@ struct ker_native_option_guard {
     unsigned users;
     pthread_rwlock_t lock;
 };
-struct ker_native_option_lease {
-    struct ker_native_option_guard *guard;
-};
 static pthread_mutex_t guards_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct ker_native_option_guard *guards;
+static void option_guard_put(struct ker_native_option_guard *guard)
+{
+    pthread_mutex_lock(&guards_lock);
+    if (!--guard->users) {
+        struct ker_native_option_guard **slot = &guards;
+        while (*slot != guard) slot = &(*slot)->next;
+        *slot = guard->next;
+        pthread_rwlock_destroy(&guard->lock);
+        free(guard);
+    }
+    pthread_mutex_unlock(&guards_lock);
+}
 static int option_lease_begin(int native, struct ker_native_option_guard **token, bool exclusive)
 {
     *token = NULL;
@@ -322,21 +331,9 @@ static int option_lease_begin(int native, struct ker_native_option_guard **token
     }
     guard->users++;
     pthread_mutex_unlock(&guards_lock);
-    struct ker_native_option_lease *lease = malloc(sizeof(*lease));
-    if (!lease) {
-        pthread_mutex_lock(&guards_lock);
-        if (!--guard->users) {
-            struct ker_native_option_guard **slot = &guards;
-            while (*slot != guard) slot = &(*slot)->next;
-            *slot = guard->next; pthread_rwlock_destroy(&guard->lock); free(guard);
-        }
-        pthread_mutex_unlock(&guards_lock);
-        return -ENOMEM;
-    }
-    lease->guard = guard;
-    if (exclusive) pthread_rwlock_wrlock(&guard->lock);
-    else pthread_rwlock_rdlock(&guard->lock);
-    *token = (struct ker_native_option_guard *)lease;
+    int error = exclusive ? pthread_rwlock_wrlock(&guard->lock) : pthread_rwlock_rdlock(&guard->lock);
+    if (error) { option_guard_put(guard); return -error; }
+    *token = guard;
     return 0;
 }
 int ker_native_buffer_option_begin(int native, struct ker_native_option_guard **token)
@@ -346,19 +343,8 @@ int ker_native_buffer_option_begin(int native, struct ker_native_option_guard **
 void ker_native_buffer_send_end(struct ker_native_option_guard *token)
 {
     if (!token) return;
-    struct ker_native_option_lease *lease = (struct ker_native_option_lease *)token;
-    struct ker_native_option_guard *guard = lease->guard;
-    pthread_rwlock_unlock(&guard->lock);
-    free(lease);
-    pthread_mutex_lock(&guards_lock);
-    if (!--guard->users) {
-        struct ker_native_option_guard **slot = &guards;
-        while (*slot != guard) slot = &(*slot)->next;
-        *slot = guard->next;
-        pthread_rwlock_destroy(&guard->lock);
-        free(guard);
-    }
-    pthread_mutex_unlock(&guards_lock);
+    (void)pthread_rwlock_unlock(&token->lock);
+    option_guard_put(token);
 }
 int ker_native_buffer_send_begin(int native, const struct iovec *iov, size_t count, int flags,
     struct ker_native_option_guard **token)
