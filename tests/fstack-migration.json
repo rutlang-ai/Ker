@@ -4345,9 +4345,14 @@
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_without_send",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Call the original receiver without an accepted send. A live foreign reply remains queued with its identity and bytes intact, caller output remains unchanged, and the fixture verifies that the input ring is empty.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-foreign-no-send",
+          "provenance_case": "fstack-ipc-foreign-no-send"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_orphan_dead_owner",
