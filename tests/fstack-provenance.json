@@ -393,6 +393,16 @@
       ],
       "adaptation": "Verify that a callback returning zero stops the real INI reader at line 2. The next key is neither delivered nor consumed and the caller can still read it from the open file. This uses the byte-identical F-Stack/inih parser in ker::ini."
     },
+    "fstack-ini-null-file": {
+      "source_file": "tests/unit/test_ff_ini_parser.c",
+      "source_case": [
+        "test_ini_parse_file_null"
+      ],
+      "ker_ctests": [
+        "fstack-ini-null-file"
+      ],
+      "adaptation": "Call the exported INI file reader with a NULL file and require a return of -1 without invoking the handler. A real subsequent file parse supplies the positive control and confirms the caller still owns the stream. This uses the byte-identical F-Stack/inih parser in ker::ini."
+    },
     "fstack-ini-multiline": {
       "source_file": "tests/unit/test_ff_ini_parser.c",
       "source_case": [

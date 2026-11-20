@@ -3756,9 +3756,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_file_null",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker opens configuration paths and reads valid text streams; no F-Stack C NULL FILE-pointer entrypoint is provided.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Call the exported INI file reader with a NULL file and require a return of -1 without invoking the handler. A real subsequent file parse supplies the positive control and confirms the caller still owns the stream.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-null-file",
+          "provenance_case": "fstack-ini-null-file"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_filename_not_exist",
