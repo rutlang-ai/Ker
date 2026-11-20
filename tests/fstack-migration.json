@@ -2241,8 +2241,8 @@
     {
       "id": "tests/unit/test_ff_config_pa.c::test_page_array_rejects_graceful_reload",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack page-array/graceful-reload build configuration is not implemented in Ker.",
+      "status": "architecture-specific",
+      "reason": "The source enables FF_USE_PAGE_ARRAY and requires rejection of graceful reload because staged TX owns process-private FreeBSD page-array references. Ker uses Linux socket and skb lifetimes across its packet adapters. The inventory records this build-specific source assertion as architecture-specific.",
       "ker_tests": []
     },
     {
