@@ -373,6 +373,16 @@
       ],
       "adaptation": "Actual Ker launcher starts real DPDK worker and imported Linux before application main; app marker and native interface ioctls prove startup, native DONE plus zero outstanding prove shutdown. Missing configuration exits 2; real EAL argument rejection and missing selected ethdev exit 125 without executing the application, instead of F-Stack exit(1). No mocked successful startup or FreeBSD boot failure; interface activation injection is covered separately by native-fstack-startup-failures. Run/stop mapping remains partial: real worker control-channel stop and native teardown, without the ff_run callback/argument forwarding ABI."
     },
+    "fstack-ini-no-section": {
+      "source_file": "tests/unit/test_ff_ini_parser.c",
+      "source_case": [
+        "test_ini_parse_stream_no_section"
+      ],
+      "ker_ctests": [
+        "fstack-ini-no-section"
+      ],
+      "adaptation": "Exercise a sectionless record through the exported INI reader. The application callback receives exactly one record with an empty section and the original key and value. This uses the byte-identical F-Stack/inih parser in ker::ini."
+    },
     "fstack-ini-multiline": {
       "source_file": "tests/unit/test_ff_ini_parser.c",
       "source_case": [
