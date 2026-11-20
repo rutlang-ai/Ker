@@ -706,7 +706,7 @@ endif()
 
 # Inventory integrity is distinct from migrated networking behavior.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
-foreach(ini_case multiline no-section handler-rejection null-file long-section)
+foreach(ini_case multiline no-section handler-rejection null-file long-section user-data)
     add_executable(ker-ini-${ini_case}-test ini-${ini_case}.c)
     target_link_libraries(ker-ini-${ini_case}-test PRIVATE ker::ini)
     target_compile_options(ker-ini-${ini_case}-test PRIVATE -Wall -Wextra -Werror)
@@ -721,6 +721,8 @@ add_test(NAME fstack-ini-null-file COMMAND ker-ini-null-file-test)
 set_tests_properties(fstack-ini-null-file PROPERTIES TIMEOUT 30 LABELS fstack)
 add_test(NAME fstack-ini-long-section COMMAND ker-ini-long-section-test)
 set_tests_properties(fstack-ini-long-section PROPERTIES TIMEOUT 30 LABELS fstack)
+add_test(NAME fstack-ini-user-data COMMAND ker-ini-user-data-test)
+set_tests_properties(fstack-ini-user-data PROPERTIES TIMEOUT 30 LABELS fstack)
 add_test(NAME fstack-ini-original-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ini-import.py")
 set_tests_properties(fstack-ini-original-import PROPERTIES
