@@ -225,6 +225,16 @@
       ],
       "adaptation": "Tag a real queued reply with a child PID after reaping that child. The original receiver reclaims the orphan exactly once. Verify the untouched caller output and exact ring, pool and counter state."
     },
+    "fstack-ipc-probe-ownership": {
+      "source_file": "tests/unit/test_ff_ipc.c",
+      "source_case": [
+        "test_p4_probe_is_non_destructive"
+      ],
+      "ker_ctests": [
+        "fstack-ipc-probe-ownership"
+      ],
+      "adaptation": "The original probe publishes a real QUERY even when it finds a live foreign reply. Failed probing preserves that reply and both caller outputs, and an independent provider thread then returns a successful generation and epoch reply."
+    },
     "fstack-ipc-process-coordinate": {
       "source_file": "tests/unit/test_ff_ipc.c",
       "source_case": [

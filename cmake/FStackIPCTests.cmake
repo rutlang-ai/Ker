@@ -39,7 +39,7 @@ set_tests_properties(fstack-ipc-malformed-coordinate PROPERTIES TIMEOUT 30 LABEL
 
 add_executable(ker-ipc-ownership-test ipc-ownership.c)
 target_compile_options(ker-ipc-ownership-test PRIVATE -Wall -Wextra -Werror)
-target_link_libraries(ker-ipc-ownership-test PRIVATE ker::ipc)
+target_link_libraries(ker-ipc-ownership-test PRIVATE ker::ipc Threads::Threads)
 target_link_options(ker-ipc-ownership-test PRIVATE -Wl,--disable-new-dtags)
 set_target_properties(ker-ipc-ownership-test PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
 
@@ -58,3 +58,7 @@ set_tests_properties(fstack-ipc-foreign-no-send PROPERTIES TIMEOUT 30 LABELS fst
 add_test(NAME fstack-ipc-orphan-reply
     COMMAND ker-ipc-ownership-test orphan-reply)
 set_tests_properties(fstack-ipc-orphan-reply PROPERTIES TIMEOUT 30 LABELS fstack)
+
+add_test(NAME fstack-ipc-probe-ownership
+    COMMAND ker-ipc-ownership-test probe-ownership)
+set_tests_properties(fstack-ipc-probe-ownership PROPERTIES TIMEOUT 30 LABELS fstack)

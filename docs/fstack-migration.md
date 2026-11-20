@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 212 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 213 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 9 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 142 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 141 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **151 项**（142 blocked + 9 partial）。
+当前待完成 **150 项**（141 blocked + 9 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -81,7 +81,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 31 | 1 | 2 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 25 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 5 | 1 | 0 | 0 | 0 |
-| [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 11 | 0 | 1 | 0 | 0 |
+| [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 12 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 0 | 0 | 3 | 0 |
 | [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 0 | 0 | 11 | 2 | 0 |
@@ -1222,3 +1222,5 @@ DPDK 构建提供独立的 `ker::ipc`，复用固定 F-Stack 的 IPC 实现与�
 `fstack-ipc-foreign-no-send` 没有发送请求时也保留其他存活 PID 的回复、输出参数和对象字节。
 
 `fstack-ipc-orphan-reply` 回收已退出子进程的孤儿回复一次，验证原始对象池计数、回复计数和输出参数。
+
+`fstack-ipc-probe-ownership` 探测超时保留其他进程的回复和输出参数，独立 provider 线程随后通过真实 QUERY 返回 generation 与 epoch。

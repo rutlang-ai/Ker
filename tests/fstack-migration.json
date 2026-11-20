@@ -4369,9 +4369,14 @@
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_probe_is_non_destructive",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original probe publishes a real QUERY even when it finds a live foreign reply. Failed probing preserves that reply and both caller outputs, and an independent provider thread then returns a successful generation and epoch reply.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-probe-ownership",
+          "provenance_case": "fstack-ipc-probe-ownership"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_open_set_normal",
