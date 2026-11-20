@@ -1333,9 +1333,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_bond_cfg_handler_bad_section",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The pinned parser reads the bond count and rejects the malformed section. The original assertions verify that the first bond has no assigned mode. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_bond_cfg_handler_bad_section",
+          "provenance_case": "fstack-config-source-test_bond_cfg_handler_bad_section"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rss_check_cfg_handler_no_port_no_vlan",
