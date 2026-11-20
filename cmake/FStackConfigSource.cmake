@@ -280,6 +280,21 @@ set_tests_properties(fstack-config-source-test_ff_load_config_portlist_nonint PR
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_rss_check_cfg_handler_no_port_no_vlan)
+target_sources(ker-test_rss_check_cfg_handler_no_port_no_vlan PRIVATE fstack-config-rejection.c)
+target_link_libraries(ker-test_rss_check_cfg_handler_no_port_no_vlan PRIVATE PkgConfig::DPDK)
+target_include_directories(ker-test_rss_check_cfg_handler_no_port_no_vlan PRIVATE "${PROJECT_SOURCE_DIR}/third_party/inih")
+target_compile_definitions(ker-test_rss_check_cfg_handler_no_port_no_vlan PRIVATE
+    FSTACK_CONFIG_VERIFY_REJECTION
+    "FSTACK_CONFIG_REJECTION_FIXTURE=\"fixtures/invalid_rss_check_no_port.ini\""
+    "FSTACK_CONFIG_REJECT_SECTION=\"rss_check\""
+    "FSTACK_CONFIG_REJECT_KEY=\"enable\"")
+target_link_options(ker-test_rss_check_cfg_handler_no_port_no_vlan PRIVATE -Wl,--wrap=example_upstream_ini_parse)
+add_test(NAME fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan COMMAND ker-test_rss_check_cfg_handler_no_port_no_vlan)
+set_tests_properties(fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")

@@ -1335,9 +1335,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_rss_check_cfg_handler_no_port_no_vlan",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original callback sees the RSS section without a port or VLAN and rejects the enable key. The source assertions verify the RSS configuration stays unallocated. This verifies legacy document inspection using the original parser and fixture.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan",
+          "provenance_case": "fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rss_tbl_cfg_handler_bad_tuple",
