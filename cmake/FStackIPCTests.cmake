@@ -22,3 +22,7 @@ endforeach()
 add_test(NAME fstack-ipc-original-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ipc-import.py")
 set_tests_properties(fstack-ipc-original-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")
+
+add_test(NAME fstack-ipc-process-generation
+    COMMAND ker-ipc-coordinate-test 1:0 - 1 0 4294967295 ff_msg_ring_in_1_g0 0)
+set_tests_properties(fstack-ipc-process-generation PROPERTIES TIMEOUT 30 LABELS fstack)
