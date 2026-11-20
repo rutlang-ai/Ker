@@ -354,6 +354,10 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-startup-failures COMMAND ${ker_startup_failure_command}
         --failure-library "$<TARGET_FILE:ker-posix-if-up-failure>")
     set_tests_properties(native-fstack-startup-failures PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-interface-activation-recovery COMMAND ${ker_startup_failure_command}
+        --failure-library "$<TARGET_FILE:ker-posix-if-up-failure>" --interface-recovery)
+    set_tests_properties(native-fstack-interface-activation-recovery PROPERTIES
+        TIMEOUT 90 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-port-queue-allocation COMMAND ${ker_startup_failure_command}
         --port-allocation)
     set_tests_properties(native-fstack-port-queue-allocation PROPERTIES TIMEOUT 120 LABELS "fstack;native-dpdk")

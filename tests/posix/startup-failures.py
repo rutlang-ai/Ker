@@ -25,8 +25,11 @@ def main():
     mode.add_argument('--failure-library', type=Path)
     mode.add_argument('--port-allocation', action='store_true')
     mode.add_argument('--realtime-clock', action='store_true')
+    parser.add_argument('--interface-recovery', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
+    if args.interface_recovery and not args.failure_library:
+        parser.error('--interface-recovery requires --failure-library')
     if not args.inside:
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
         for name in paths:
@@ -37,6 +40,8 @@ def main():
             command += ['--realtime-clock']
         else:
             command += ['--failure-library', str(args.failure_library.resolve())]
+        if args.interface_recovery:
+            command += ['--interface-recovery']
         return subprocess.run(command).returncode
     for scope in ('all', 'default'):
         Path('/proc/sys/net/ipv6/conf/' + scope + '/disable_ipv6').write_text('1\n')
@@ -81,6 +86,9 @@ def main():
                  f'native realtime clock initialization ({-errno.EIO})'),
                 ('clock-recovery', [], None, 0, 'PASS: native interfaces ready'),
             ]
+        if args.interface_recovery:
+            startup_cases = {case[0]: case for case in cases}
+            cases = [startup_cases['interface-up'], startup_cases['wrapped-success']]
         for name, options, failure, expected, diagnostic in cases:
             marker, stats, cleanup = [root / (name + suffix) for suffix in ('.app', '.json', '.cleanup')]
             env = environment.copy()
@@ -137,14 +145,15 @@ def main():
                     'interface-up': 'loopback real 0\ninterface injected -5\n'}[name]
                 require(trace.is_file() and trace.read_text() == expected_trace,
                         f'{name}: interface activation stage trace mismatch')
+            if args.port_allocation or args.interface_recovery:
+                require('kerpeer' not in {interface for _, interface in socket.if_nameindex()},
+                        f'{name}: TAP interface still present after worker exit')
             if args.port_allocation:
                 prefix = 'ker-test: '
                 observed = [line.removeprefix(prefix) for line in result.stderr.splitlines()
                             if line.startswith(prefix)]
                 require(observed == port_traces[name],
                         f'{name}: ethdev allocation or rollback trace mismatch: {result.stderr}')
-                require('kerpeer' not in {interface for _, interface in socket.if_nameindex()},
-                        f'{name}: TAP interface still present after worker exit')
                 if expected != 0:
                     require(f'eth_dev_{name}_queue_config = {-errno.ENOMEM}' in result.stderr,
                             f'{name}: original DPDK did not report configuration ENOMEM: {result.stderr}')
