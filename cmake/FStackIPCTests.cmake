@@ -8,6 +8,17 @@ add_test(NAME fstack-ipc-process-coordinate
     COMMAND ker-ipc-coordinate-test 1 - 1 -1 4294967295 - 0)
 set_tests_properties(fstack-ipc-process-coordinate PROPERTIES TIMEOUT 30 LABELS fstack)
 
+add_executable(ker-ipc-reply-ownership-test ipc-reply-ownership.c)
+target_compile_options(ker-ipc-reply-ownership-test PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ker-ipc-reply-ownership-test PRIVATE ker::ipc)
+target_link_options(ker-ipc-reply-ownership-test PRIVATE
+    -Wl,--disable-new-dtags -Wl,--export-dynamic-symbol=kill)
+set_target_properties(ker-ipc-reply-ownership-test PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
+foreach(mode orphan receive probe)
+    add_test(NAME fstack-ipc-reply-${mode} COMMAND ker-ipc-reply-ownership-test "${mode}")
+    set_tests_properties(fstack-ipc-reply-${mode} PROPERTIES TIMEOUT 30 LABELS fstack)
+endforeach()
+
 add_test(NAME fstack-ipc-original-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ipc-import.py")
 set_tests_properties(fstack-ipc-original-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")

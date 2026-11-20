@@ -6,12 +6,42 @@
 #include <errno.h>
 #include <limits.h>
 #include <rte_errno.h>
+#include <rte_mempool.h>
 #include <rte_ring.h>
+static void ker_ipc_mempool_put(struct rte_mempool *pool, void *object);
+static int ker_ipc_ring_dequeue_with_stash_space(struct rte_ring *ring, void **object);
 static int ker_ipc_ring_enqueue_tracked(struct rte_ring *ring, void *object);
-/* Interpose only this imported translation unit; the wrapper calls real DPDK. */
+/* Interpose only this imported translation unit. */
+#define rte_mempool_put ker_ipc_mempool_put
+#define rte_ring_dequeue ker_ipc_ring_dequeue_with_stash_space
 #define rte_ring_enqueue ker_ipc_ring_enqueue_tracked
 #include "ff_ipc.c"
 #undef rte_ring_enqueue
+#undef rte_ring_dequeue
+#undef rte_mempool_put
+
+static void ker_ipc_mempool_put(struct rte_mempool *pool, void *object)
+{
+    struct rte_mempool *owner = rte_mempool_from_obj(object);
+    if (owner != pool) {
+        /* Upstream resets an orphan using the attached pool's element size.
+         * A shared reply ring can contain messages from other typed pools. */
+        struct ff_msg *message = object;
+        message->buf_len = owner->elt_size - sizeof(*message);
+    }
+    rte_mempool_put(owner, object);
+}
+
+static int ker_ipc_ring_dequeue_with_stash_space(struct rte_ring *ring, void **object)
+{
+    if (ff_ipc_stash_n == FF_IPC_STASH_MAX) {
+        /* A producer can take the slot opened by a dequeue. Reserve stash
+         * space first so a failed requeue never evicts a retained reply. */
+        ff_ipc_stash_flush(NULL);
+        if (ff_ipc_stash_n == FF_IPC_STASH_MAX) return -ENOBUFS;
+    }
+    return rte_ring_dequeue(ring, object);
+}
 
 #define KER_IPC_STASH_ORIGINS (FF_IPC_STASH_MAX + 1)
 static struct {
@@ -205,7 +235,7 @@ int ker_ipc_detach(void)
     if (ff_pending_msg) return -EBUSY;
     /* Best effort only: a retained foreign reply still belongs to its live
      * owner, and remains in-use until that owner reclaims it. */
-    (void)ff_ipc_stash_flush(NULL);
+    ff_ipc_stash_flush(NULL);
     if (ff_ipc_stash_n || rte_mempool_in_use_count(message_pool)) return -EBUSY;
     inited = 0;
     message_pool = NULL;
@@ -251,11 +281,11 @@ int ker_ipc_probe(uint32_t *epoch, int *generation)
     if (ff_pending_msg) return -EBUSY;
     /* Probe uses its own dequeue loop, so service replies retained by an
      * earlier probe/receive before treating the bounded stash as busy. */
-    (void)ff_ipc_stash_flush(NULL);
+    ff_ipc_stash_flush(NULL);
     if (ff_ipc_stash_n) return -EBUSY;
     int result = ff_ipc_probe_coord(epoch, generation);
     /* Probe itself can encounter foreign replies on several candidate rings. */
-    (void)ff_ipc_stash_flush(NULL);
+    ff_ipc_stash_flush(NULL);
     return result;
 }
 void ker_ipc_reply_stats(uint64_t *requeued, uint64_t *orphan, uint64_t *lost)

@@ -49,7 +49,8 @@ KER_API int ker_ipc_ring_name(char *buffer, size_t size, int output, enum FF_MSG
  * requires explicit generation unless an actual legacy proc0 input ring exists;
  * AUTO then uses original legacy detection. Probe requires process0.
  * Attach accepts only cache0 typed pools. No implicit root-only EAL initialization or cleanup occurs in this adapter.
- * Pool/ring destruction remains the caller's responsibility after reclamation.
+ * Shared rings may carry messages from several typed pools. Keep each pool
+ * and ring alive until its outstanding messages are reclaimed.
  * DPDK creation failures return NULL/rte_errno; guards return negative errno. */
 KER_API struct rte_mempool *ker_ipc_pool_create(const char *name, unsigned count, unsigned payload);
 KER_API int ker_ipc_attach(struct rte_mempool *pool);
@@ -64,6 +65,8 @@ KER_API int ker_ipc_detach(void);
 KER_API ker_ipc_message *ker_ipc_alloc(void);
 KER_API int ker_ipc_free(ker_ipc_message *message);
 KER_API int ker_ipc_send(const ker_ipc_message *message);
+/* Receive pauses dequeueing when it has no space to retain a foreign reply.
+ * The usual bounded wait still applies. */
 KER_API int ker_ipc_recv(ker_ipc_message **message, enum FF_MSG_TYPE type);
 /* Bounded source QUERY probe of existing primary ring coordinates. A timed
  * out accepted request may still belong to the input ring/provider; drain it
