@@ -2067,9 +2067,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_14_reload_msg_serdes",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The ker::reload API compiles the pinned original reload message helpers against the exact IPC message layout. Test the complete command range, original round trip and invalid values, and require ownership, payload and failure outputs to stay unchanged.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-message-serdes",
+          "provenance_case": "fstack-reload-message-serdes"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_20_queue_mapping_config",
