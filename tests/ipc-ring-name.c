@@ -34,9 +34,42 @@ static void epoch_ring_names(void)
     CHECK(ker_ipc_format_ring(NULL, sizeof(name), &address, 0, FF_UNKNOWN, 1) == -EINVAL);
 }
 
+
+static void legacy_ring_names(void)
+{
+    static const uint32_t epochs[] = {0, 1, 2, 3, 4, KER_IPC_EPOCH_NONE};
+    static const unsigned processes[] = {0, 1, 127, 999};
+    char actual[RTE_RING_NAMESIZE], expected[RTE_RING_NAMESIZE];
+
+    for (size_t i = 0; i < sizeof(epochs) / sizeof(epochs[0]); ++i) {
+        for (size_t j = 0; j < sizeof(processes) / sizeof(processes[0]); ++j) {
+            for (int generation = 0; generation < 2; ++generation) {
+                unsigned process = processes[j];
+                struct ker_ipc_address address = {
+                    .process = process, .generation = generation, .epoch = epochs[i],
+                };
+                CHECK(ker_ipc_format_ring(actual, sizeof(actual), &address, 0, FF_UNKNOWN, 0) == 0);
+                CHECK(snprintf(expected, sizeof(expected), "ff_msg_ring_in_%u", process) > 0);
+                CHECK(strcmp(actual, expected) == 0);
+
+                for (int type = FF_SYSCTL; type < FF_MSG_NUM; ++type) {
+                    CHECK(ker_ipc_format_ring(actual, sizeof(actual), &address, 1, type, 0) == 0);
+                    CHECK(snprintf(expected, sizeof(expected), "ff_msg_ring_out_%u_%d", process, type) > 0);
+                    CHECK(strcmp(actual, expected) == 0);
+                }
+            }
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
-    CHECK(argc == 2 && strcmp(argv[1], "epoch-ring-names") == 0);
-    epoch_ring_names();
+    CHECK(argc == 2);
+    if (strcmp(argv[1], "epoch-ring-names") == 0)
+        epoch_ring_names();
+    else {
+        CHECK(strcmp(argv[1], "legacy-ring-names") == 0);
+        legacy_ring_names();
+    }
     return 0;
 }

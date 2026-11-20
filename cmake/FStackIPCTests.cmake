@@ -73,3 +73,7 @@ set_target_properties(ker-ipc-ring-name-test PROPERTIES BUILD_RPATH "${DPDK_LIBR
 add_test(NAME fstack-ipc-epoch-ring-names
     COMMAND ker-ipc-ring-name-test epoch-ring-names)
 set_tests_properties(fstack-ipc-epoch-ring-names PROPERTIES TIMEOUT 30 LABELS fstack)
+
+add_test(NAME fstack-ipc-legacy-ring-names
+    COMMAND ker-ipc-ring-name-test legacy-ring-names)
+set_tests_properties(fstack-ipc-legacy-ring-names PROPERTIES TIMEOUT 30 LABELS fstack)

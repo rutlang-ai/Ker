@@ -2152,9 +2152,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_graceful_zero_epoch_invariance",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Sweep the source process IDs, generations, epochs and every reply message type. Legacy mode emits the exact original unsuffixed input and reply names for every coordinate.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-legacy-ring-names",
+          "provenance_case": "fstack-ipc-legacy-ring-names"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_handover_sequence",
