@@ -1488,6 +1488,16 @@
       ],
       "adaptation": "The legacy document accepts the KNI reject method and exposes its value to the caller. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_ff_check_config_kni_method_invalid_fails": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_check_config_kni_method_invalid_fails"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_check_config_kni_method_invalid_fails"
+      ],
+      "adaptation": "The retained configuration path rejects the pinned fixture's unsupported KNI method. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
