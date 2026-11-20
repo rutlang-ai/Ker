@@ -1288,6 +1288,16 @@
       ],
       "adaptation": "The original fixture still populates lcore and KNI document fields when an unknown section is present. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_ff_load_config_all_sections": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_all_sections"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_all_sections"
+      ],
+      "adaptation": "The pinned all-sections fixture exercises the source assertions for DPDK, KNI, PCAP, and FreeBSD document settings. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
