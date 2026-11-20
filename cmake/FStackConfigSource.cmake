@@ -200,6 +200,12 @@ set_tests_properties(fstack-config-source-test_graceful_reload_default_off PROPE
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
     TIMEOUT 30 LABELS fstack)
 
+fstack_config_case(test_graceful_reload_parse)
+add_test(NAME fstack-config-source-test_graceful_reload_parse COMMAND ker-test_graceful_reload_parse)
+set_tests_properties(fstack-config-source-test_graceful_reload_parse PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit"
+    TIMEOUT 30 LABELS fstack)
+
 add_test(NAME fstack-config-source-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
 set_tests_properties(fstack-config-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;provenance")

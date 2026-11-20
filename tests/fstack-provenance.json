@@ -1558,6 +1558,16 @@
       ],
       "adaptation": "The original parser retains the disabled defaults for graceful reload and the slim primary. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
     },
+    "fstack-config-source-test_graceful_reload_parse": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_graceful_reload_parse"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_graceful_reload_parse"
+      ],
+      "adaptation": "The source test verifies the retained parser's fields for the explicit graceful-reload topology. This CTest uses the original assertion body and pinned parser through the caller-side inspection adapter. Five load and unload cycles check cleanup of the argument plan."
+    },
     "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
