@@ -706,6 +706,14 @@ endif()
 
 # Inventory integrity is distinct from migrated networking behavior.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_executable(ker-ini-multiline-test ini-multiline.c)
+target_link_libraries(ker-ini-multiline-test PRIVATE ker::ini)
+target_compile_options(ker-ini-multiline-test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME fstack-ini-multiline COMMAND ker-ini-multiline-test)
+add_test(NAME fstack-ini-original-import
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ini-import.py")
+set_tests_properties(fstack-ini-multiline fstack-ini-original-import PROPERTIES
+    TIMEOUT 30 LABELS "provenance;fstack")
 add_test(NAME fstack-migration-inventory
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack_migration.py")
 add_test(NAME fstack-migration-audit-guards
