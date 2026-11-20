@@ -265,6 +265,46 @@
       ],
       "adaptation": "Sweep the pinned process IDs, both generations, and every reply type with epochs 1 and 2. Names are distinct and fit the source ring-name limit, and explicit epoch 0 and unspecified epoch address the same slot-zero input ring."
     },
+    "fstack-reload-generation-mapping": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_12_generation_mapping"
+      ],
+      "ker_ctests": [
+        "fstack-reload-generation-mapping"
+      ],
+      "adaptation": "Run the complete pinned source assertions with the original legacy fixture and parser, the private generation state from the same compiled objects used by ker::reload, and the public ker::ipc ring formatter. Verify isolated process and generation names, legacy input and typed reply names, truncation, both generations, and invalid selections while preserving the parsed three-entry process-to-lcore map."
+    },
+    "fstack-reload-heartbeat": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_22_heartbeat_and_rx_return"
+      ],
+      "ker_ctests": [
+        "fstack-reload-heartbeat"
+      ],
+      "adaptation": "Run the complete pinned source case against the original reload object. Verify state block validation, heartbeat threshold and stall rebasing, target generation ticks, READY correlation by epoch and PID, the active generation flip, abort without a flip, and detach. This is a single-process control-state test."
+    },
+    "fstack-reload-rx-handover": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_26_rx_handover_markers"
+      ],
+      "ker_ctests": [
+        "fstack-reload-rx-handover"
+      ],
+      "adaptation": "Run the complete pinned source case against the original reload object. Verify detached behavior, invalid arguments, bounded timeout without taking ownership, release and acquisition, repeated acquisition, RX return to the original generation, and legacy-mode behavior. This exercises ownership markers in memory."
+    },
+    "fstack-reload-handover-barrier": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_11_handover_barrier"
+      ],
+      "ker_ctests": [
+        "fstack-reload-handover-barrier"
+      ],
+      "adaptation": "Run the complete pinned source case against the original reload object. Verify per-slot, epoch-tagged park acknowledgements, stale acknowledgements, and exclusive RX eligibility during transfer and return. This exercises the in-memory barrier and markers in one process."
+    },
     "fstack-reload-message-serdes": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [

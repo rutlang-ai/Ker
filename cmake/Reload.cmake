@@ -1,12 +1,11 @@
 # Borrow the original message ABI from ker::ipc. Keep every upstream symbol private.
-add_library(ker-reload src/compat/reload.c third_party/fstack-reload/ff_reload.c)
-add_library(ker::reload ALIAS ker-reload)
-target_compile_features(ker-reload PUBLIC c_std_11)
-target_link_libraries(ker-reload PUBLIC ker::ipc)
-target_include_directories(ker-reload PRIVATE
+add_library(ker_reload_objects OBJECT src/compat/reload.c third_party/fstack-reload/ff_reload.c)
+target_compile_features(ker_reload_objects PRIVATE c_std_11)
+target_link_libraries(ker_reload_objects PRIVATE ker::ipc)
+target_include_directories(ker_reload_objects PRIVATE
     "${PROJECT_SOURCE_DIR}/third_party/fstack-reload"
     "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
-target_compile_definitions(ker-reload PRIVATE
+target_compile_definitions(ker_reload_objects PRIVATE
     ff_global_cfg=ker_reload_upstream_configuration
     ff_is_drain_generation=ker_reload_upstream_is_drain_generation
     ff_no_hw_mode=ker_reload_upstream_no_hw_mode
@@ -96,8 +95,15 @@ target_compile_definitions(ker-reload PRIVATE
     ff_reload_state_valid=ker_reload_upstream_reload_state_valid
     ff_reload_target_gen=ker_reload_upstream_reload_target_gen
     ff_reload_worker_gen=ker_reload_upstream_reload_worker_gen)
+set_target_properties(ker_reload_objects PROPERTIES
+    POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+
+add_library(ker-reload $<TARGET_OBJECTS:ker_reload_objects>)
+add_library(ker::reload ALIAS ker-reload)
+target_compile_features(ker-reload PUBLIC c_std_11)
+target_link_libraries(ker-reload PUBLIC ker::ipc)
 set_target_properties(ker-reload PROPERTIES
-    VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME reload C_VISIBILITY_PRESET hidden)
+    VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME reload)
 install(TARGETS ker-reload EXPORT kerTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
