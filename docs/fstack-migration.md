@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 215 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 216 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 9 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 139 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 138 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **148 项**（139 blocked + 9 partial）。
+当前待完成 **147 项**（138 blocked + 9 partial）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -72,7 +72,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 78 | 0 | 18 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 79 | 0 | 17 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 6 | 1 | 60 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
@@ -1228,3 +1228,5 @@ DPDK 构建提供独立的 `ker::ipc`，复用固定 F-Stack 的 IPC 实现与�
 `fstack-ipc-epoch-ring-names` 验证 epoch 轮转、slot 0、兼容名称、最长回复 ring 名称和缓冲区不足。
 
 `fstack-ipc-legacy-ring-names` 遍历原始进程号、generation、epoch 和回复类型矩阵，验证兼容模式始终生成无后缀的原始名称。
+
+`fstack-ipc-cross-master-ring-names` 验证相同进程与 generation 下各回复类型在 epoch 1 和 2 的名称互不冲突，并核对 slot 0 的名称一致性。
