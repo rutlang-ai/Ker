@@ -684,155 +684,86 @@
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_ip_csum",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
       "ker_tests": [
         {
-          "ctest": "fstack-offload-metadata-rejection",
-          "provenance_case": "offload-metadata-rejection"
+          "ctest": "native-fstack-tx-offload-metadata",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_ip_csum"
         },
         {
-          "ctest": "fstack-software-checksum-completion",
-          "provenance_case": "software-checksum-completion"
-        },
-        {
-          "ctest": "fstack-ipv4-ingress-validation",
-          "provenance_case": "ipv4-ingress-validation"
+          "ctest": "native-fstack-tx-offloads",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_ip_csum"
         }
-      ],
-      "remaining": "Software checksum/rejection coverage does not validate positive hardware IP checksum-offload metadata."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tcp_csum",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
       "ker_tests": [
         {
-          "ctest": "ethdev-tx",
-          "provenance_case": "ethdev-tx"
+          "ctest": "native-fstack-tx-offload-metadata",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_tcp_csum"
         },
         {
-          "ctest": "fstack-tcp-ingress-validation",
-          "provenance_case": "tcp-ingress-validation"
-        },
-        {
-          "ctest": "transport-receive",
-          "provenance_case": "transport-receive"
-        },
-        {
-          "ctest": "icmp-echo",
-          "provenance_case": "icmp-echo"
-        },
-        {
-          "ctest": "tcp-create",
-          "provenance_case": "tcp-create"
-        },
-        {
-          "ctest": "tcp-neighbor-create",
-          "provenance_case": "tcp-neighbor-create"
-        },
-        {
-          "ctest": "fstack-concurrent-ring",
-          "provenance_case": "fstack-concurrent-ring"
-        },
-        {
-          "ctest": "tcp-ip-options",
-          "provenance_case": "tcp-ip-options"
-        },
-        {
-          "ctest": "ethdev-duplex",
-          "provenance_case": "ethdev-duplex"
-        },
-        {
-          "ctest": "ethdev-rx-metadata",
-          "provenance_case": "ethdev-rx-metadata"
+          "ctest": "native-fstack-tx-offloads",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_tcp_csum"
         }
-      ],
-      "remaining": "Software TCP checksum and RX validation are not positive hardware TCP checksum-offload coverage."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tso",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
       "ker_tests": [
         {
-          "ctest": "fstack-offload-metadata-rejection",
-          "provenance_case": "offload-metadata-rejection"
+          "ctest": "native-fstack-tx-offload-metadata",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_tso"
+        },
+        {
+          "ctest": "native-fstack-tx-offloads",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_tso"
         }
-      ],
-      "remaining": "The adapter rejects unsupported TSO metadata; positive TSO behavior is not implemented or tested."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_udp_csum",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
       "ker_tests": [
         {
-          "ctest": "ethdev-tx",
-          "provenance_case": "ethdev-tx"
+          "ctest": "native-fstack-tx-offload-metadata",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_udp_csum"
         },
         {
-          "ctest": "fstack-udp-ingress-validation",
-          "provenance_case": "udp-ingress-validation"
-        },
-        {
-          "ctest": "fstack-udp-minimal-boundaries",
-          "provenance_case": "udp-minimal-boundaries"
-        },
-        {
-          "ctest": "transport-receive",
-          "provenance_case": "transport-receive"
-        },
-        {
-          "ctest": "icmp-echo",
-          "provenance_case": "icmp-echo"
-        },
-        {
-          "ctest": "udp-create",
-          "provenance_case": "udp-create"
-        },
-        {
-          "ctest": "udp-neighbor-create",
-          "provenance_case": "udp-neighbor-create"
-        },
-        {
-          "ctest": "fstack-concurrent-ring",
-          "provenance_case": "fstack-concurrent-ring"
-        },
-        {
-          "ctest": "udp-ip-options",
-          "provenance_case": "udp-ip-options"
-        },
-        {
-          "ctest": "ethdev-duplex",
-          "provenance_case": "ethdev-duplex"
-        },
-        {
-          "ctest": "ethdev-rx-metadata",
-          "provenance_case": "ethdev-rx-metadata"
-        },
-        {
-          "ctest": "native-fstack-udp-interop",
-          "provenance_case": "native-fstack-udp-interop"
+          "ctest": "native-fstack-tx-offloads",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_udp_csum"
         }
-      ],
-      "remaining": "Software UDP checksum and packet tests do not validate positive hardware UDP checksum-offload metadata."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_copydata_fail",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
       "ker_tests": [
         {
-          "ctest": "fstack-export-exhaustion-retry",
-          "provenance_case": "export-exhaustion-retry"
+          "ctest": "fstack-owned-send-copy-failure",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_copydata_fail"
+        },
+        {
+          "ctest": "fstack-owned-send-false-copy-control",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_copydata_fail"
+        },
+        {
+          "ctest": "fstack-owned-send-consumer",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_copydata_fail"
         }
-      ],
-      "remaining": "Pool exhaustion/retry tests do not inject a failure in the upstream FreeBSD m_copydata path."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_raw_packet_send_basic",
@@ -893,72 +824,98 @@
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
       "ker_tests": [
         {
-          "ctest": "ethdev-rx",
-          "provenance_case": "ethdev-rx"
-        },
-        {
-          "ctest": "ethdev-duplex",
-          "provenance_case": "ethdev-duplex"
-        },
-        {
-          "ctest": "ethdev-rx-fanout",
-          "provenance_case": "ethdev-rx-fanout"
+          "ctest": "native-fstack-run-stop-one",
+          "provenance_case": "remaining-fstack-test_main_loop_one_iteration_then_stop"
         }
-      ],
-      "remaining": "Borrowed worker RX/budget tests do not implement the complete F-Stack run/stop callback lifecycle."
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_primary_precreates_all_slots",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-a14-original-multiprocess",
+          "provenance_case": "remaining-fstack-test_it_a14_primary_precreates_all_slots"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_secondary_looks_up_own_slot",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-a14-original-multiprocess",
+          "provenance_case": "remaining-fstack-test_it_a14_secondary_looks_up_own_slot"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_two_masters_single_consumer",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-a14-original-multiprocess",
+          "provenance_case": "remaining-fstack-test_it_a14_two_masters_single_consumer"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-a14-original-multiprocess",
+          "provenance_case": "remaining-fstack-test_it_a14_epoch_liveness_after_exit"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_probe_roundtrip_tools_contract",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-a14-original-multiprocess",
+          "provenance_case": "remaining-fstack-test_it_a14_probe_roundtrip_tools_contract"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_drain_peer_semantics",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-a14-original-multiprocess",
+          "provenance_case": "remaining-fstack-test_it_a14_usr2_drain_peer_semantics"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_chain_slot_recycle",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-a14-original-multiprocess",
+          "provenance_case": "remaining-fstack-test_it_a14_usr2_chain_slot_recycle"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_basic",
@@ -1059,51 +1016,90 @@
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_boot_state",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-boot-source",
+          "provenance_case": "remaining-fstack-test_it_a09_boot_state"
+        },
+        {
+          "ctest": "fstack-reload-boot-consumer",
+          "provenance_case": "remaining-fstack-test_it_a09_boot_state"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_tx_divert_no_hw",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-parked-tx-divert",
+          "provenance_case": "remaining-fstack-test_it_a09_tx_divert_no_hw"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_drain_ring_tx_watermark",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-parked-tx-watermark",
+          "provenance_case": "remaining-fstack-test_it_a09_drain_ring_tx_watermark"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_send_burst_guard",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-parked-tx-guard",
+          "provenance_case": "remaining-fstack-test_it_a09_send_burst_guard"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a10_halfopen_dispatch",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-a10-halfopen-dispatch",
+          "provenance_case": "remaining-fstack-test_it_a10_halfopen_dispatch"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a10_halfopen_window_mechanism",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-a10-window-mechanism",
+          "provenance_case": "remaining-fstack-test_it_a10_halfopen_window_mechanism"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_main_loop_parked_pass",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-parked-tx-pass",
+          "provenance_case": "remaining-fstack-test_it_a09_main_loop_parked_pass"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_graceful_reload.sh::entrypoint",
@@ -2443,9 +2439,22 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_pcblddr_fun_smoke",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-address-policy-register",
+          "provenance_case": "remaining-fstack-test_ff_regist_pcblddr_fun_smoke"
+        },
+        {
+          "ctest": "fstack-address-policy-lifetime",
+          "provenance_case": "remaining-fstack-test_ff_regist_pcblddr_fun_smoke"
+        },
+        {
+          "ctest": "native-fstack-address-policy-sockets",
+          "provenance_case": "remaining-fstack-test_ff_regist_pcblddr_fun_smoke"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_smoke",
@@ -2502,23 +2511,50 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_no_callback",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-address-policy-default",
+          "provenance_case": "remaining-fstack-test_ff_in_pcbladdr_no_callback"
+        },
+        {
+          "ctest": "native-fstack-address-policy-sockets",
+          "provenance_case": "remaining-fstack-test_ff_in_pcbladdr_no_callback"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_af_inet_dispatches",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-address-policy-ipv4",
+          "provenance_case": "remaining-fstack-test_ff_in_pcbladdr_af_inet_dispatches"
+        },
+        {
+          "ctest": "native-fstack-address-policy-sockets",
+          "provenance_case": "remaining-fstack-test_ff_in_pcbladdr_af_inet_dispatches"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-address-policy-ipv6",
+          "provenance_case": "remaining-fstack-test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap"
+        },
+        {
+          "ctest": "native-fstack-address-policy-sockets",
+          "provenance_case": "remaining-fstack-test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_no_cfg",
@@ -2971,51 +3007,78 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_with_mbuf",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-owned-send-null",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_null_ctx_with_mbuf"
+        },
+        {
+          "ctest": "fstack-owned-send-no-free-control",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_null_ctx_with_mbuf"
+        },
+        {
+          "ctest": "fstack-owned-send-consumer",
+          "provenance_case": "remaining-fstack-test_ff_dpdk_if_send_null_ctx_with_mbuf"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_17_hardclock_interval",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-caller-clock-source",
+          "provenance_case": "remaining-fstack-test_ut_nr_17_hardclock_interval"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_18_gen_pool_config",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-pool-generation",
+          "provenance_case": "remaining-fstack-test_ut_nr_18_gen_pool_config"
+        },
+        {
+          "ctest": "fstack-pool-legacy-consumer",
+          "provenance_case": "remaining-fstack-test_ut_nr_18_gen_pool_config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_21_shared_pool_cache_size",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-pool-cache",
+          "provenance_case": "remaining-fstack-test_ut_nr_21_shared_pool_cache_size"
+        },
+        {
+          "ctest": "fstack-pool-legacy-consumer",
+          "provenance_case": "remaining-fstack-test_ut_nr_21_shared_pool_cache_size"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_19_drain_ring_sp_sc",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
       "ker_tests": [
         {
-          "ctest": "fstack-queue-isolation",
-          "provenance_case": "queue-isolation"
-        },
-        {
-          "ctest": "fstack-queue-full-ownership",
-          "provenance_case": "queue-full-ownership"
-        },
-        {
-          "ctest": "ethdev-multiqueue",
-          "provenance_case": "ethdev-multiqueue"
+          "ctest": "fstack-drain-source-pair",
+          "provenance_case": "remaining-fstack-test_ut_nr_19_drain_ring_sp_sc"
         }
-      ],
-      "remaining": "Local FIFO/multiqueue isolation does not implement F-Stack generation-aware multiprocess drain rings."
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_23_flow_map",
@@ -3056,9 +3119,14 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_27_dispatch_peer_boundary",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-peer-dispatch-ownership",
+          "provenance_case": "remaining-fstack-test_ut_nr_27_dispatch_peer_boundary"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_f_m4_1_drain_ring_full_visible",
@@ -3295,9 +3363,14 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_rx15_primary_purges_orphaned_rings",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-drain-rx15-orphans",
+          "provenance_case": "remaining-fstack-test_rx15_primary_purges_orphaned_rings"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_no_ratelimit",
@@ -4104,19 +4177,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Partial adaptation of critical mapping failure termination through actual original-Linux boot, not a standalone libc mmap check. The test installs the production Ker memory/thread/clock callbacks and forwards page_alloc to the pinned POSIX host. A test-only mmap64 wrapper fails the first actual 64 MiB boot mapping with ENOMEM; mapping flags are checked and a pipe records size, ENOMEM and page_alloc call count, and a pre-thread forked child must terminate with SIGABRT through Linux bootmem_init BUG_ON and the installed fatal panic callback. A fault-free parent then boots/halts the same original Linux, executes timed poll and a UDP socket lifecycle, and verifies one real page allocation/release plus unmapped first/last pages. Both DEBUG/NDEBUG adapters are exercised; upstream kernel build is unchanged.",
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
       "ker_tests": [
         {
-          "ctest": "native-fstack-boot-memory-debug",
-          "provenance_case": "native-fstack-boot-memory"
-        },
-        {
-          "ctest": "native-fstack-boot-memory-release",
-          "provenance_case": "native-fstack-boot-memory"
+          "ctest": "native-fstack-host-mmap-fatal",
+          "provenance_case": "remaining-fstack-test_ff_mmap_failure_exits"
         }
-      ],
-      "remaining": "The source invokes ff_mmap with conflicting MAP_SHARED|MAP_PRIVATE flags and expects its exit branch. Ker has no equivalent flag-taking ff_mmap wrapper; exact-address host mmap still reports NULL to its caller. Only unrecoverable kernel-boot mapping failure is covered here, not F-Stack flag translation, its exit ABI, arbitrary application mapping failure or naturally exhausted memory."
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_realloc_zero_size_returns_p",
@@ -4865,15 +4933,22 @@
     {
       "id": "tests/unit/test_ff_init.c::test_ff_run_and_stop_forward",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Real Ker launcher/DPDK/imported Linux startup and shutdown scenario; distinct APIs and exit codes are documented in provenance.",
+      "status": "scenario-adapted",
+      "reason": "Run the pinned assertion or its corresponding runtime behavior through verified Ker CTests.",
       "ker_tests": [
         {
-          "ctest": "native-fstack-startup-lifecycle",
-          "provenance_case": "native-fstack-startup-lifecycle-init"
+          "ctest": "native-fstack-run-stop-one",
+          "provenance_case": "remaining-fstack-test_ff_run_and_stop_forward"
+        },
+        {
+          "ctest": "native-fstack-run-stop-repeat",
+          "provenance_case": "remaining-fstack-test_ff_run_and_stop_forward"
+        },
+        {
+          "ctest": "native-fstack-run-stop-wait",
+          "provenance_case": "remaining-fstack-test_ff_run_and_stop_forward"
         }
-      ],
-      "remaining": "Worker control-channel stop and clean native teardown are exercised; F-Stack ff_run callback/argument forwarding and ff_stop_run ABI are not implemented."
+      ]
     },
     {
       "id": "tests/unit/test_ff_init.c::test_ff_init_fail_freebsd_init",

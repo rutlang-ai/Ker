@@ -18,7 +18,6 @@ tests/fstack-rss-*.inc -text -filter -ident -whitespace
 tests/fstack-rss-source/** -text -filter -ident -whitespace
 third_party/fstack-kni-bridge/** -text -filter -ident -whitespace
 tests/fstack-kni-*-source.inc -text -filter -ident -whitespace
-third_party/fstack-address-policy/ff_api.h -text -filter -ident -whitespace
 third_party/fstack-dispatcher/** -text -filter -ident -whitespace
 third_party/fstack-nginx/** -text -filter -ident -whitespace
 third_party/fstack-reload/ff_reload_gendir.c -whitespace
@@ -27,3 +26,16 @@ include/ker/detail/fstack-dispatch-api.inc -text -filter -ident -whitespace
 tests/fstack-dispatch-source.inc -text -filter -ident -whitespace
 tests/fstack-drain-*.inc -text -filter -ident -whitespace
 tests/fstack-reload-fsm-source.inc -text -filter -ident -whitespace
+third_party/fstack-address-policy/** -text -filter -ident -whitespace
+third_party/fstack-caller-clock/** -text -filter -ident -whitespace
+third_party/fstack-host-readiness/** -text -filter -ident -whitespace
+third_party/fstack-owned-send/** -text -filter -ident -whitespace
+third_party/fstack-pools/** -text -filter -ident -whitespace
+examples/a10-classifier-source.inc -text -filter -ident -whitespace
+tests/fstack-a10-packets-source.inc -text -filter -ident -whitespace
+tests/fstack-address-source.inc -text -filter -ident -whitespace
+tests/fstack-caller-clock-source.inc -text -filter -ident -whitespace
+tests/fstack-host-mmap-source.inc -text -filter -ident -whitespace
+tests/fstack-owned-send-*-source.inc -text -filter -ident -whitespace
+tests/fstack-pool-source.inc -text -filter -ident -whitespace
+tests/fstack-reload-boot-source.inc -text -filter -ident -whitespace

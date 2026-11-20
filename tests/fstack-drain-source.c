@@ -111,6 +111,9 @@ static int equiv_eal_init_once(void)
 
 #include "fstack-drain-create-ring.inc"
 #include "fstack-drain-source.inc"
+#define p1_dead_pid rx15_dead_pid
+#include "fstack-drain-orphans-source.inc"
+#undef p1_dead_pid
 
 void ff_dpdk_process_packets(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **bufs, uint16_t count, struct ff_dpdk_if_context *ctx,
@@ -218,23 +221,24 @@ static void consume_retained_foreign_tx(void)
     sink_tx[0] = sink_tx[1] = NULL;
 }
 
-static void release_full_ring_fixture(void)
+static void release_legacy_rings(const char *pool_name, unsigned queues, unsigned available)
 {
-    void *packet;
-    struct rte_ring *tx = rte_ring_lookup("drain_tx_p0_q0_g0");
-    struct rte_mempool *pool = rte_mempool_lookup("ut_f_m4_1_pool");
-    CHECK(tx && pool);
-    while (!rte_ring_dequeue(tx, &packet))
-        rte_pktmbuf_free(packet);
-    CHECK(rte_mempool_avail_count(pool) == 512);
+    struct rte_mempool *pool = rte_mempool_lookup(pool_name);
+    CHECK(pool != NULL);
+    for (unsigned gen = 0; gen < FF_RELOAD_GEN_MAX; ++gen)
+        for (unsigned q = 0; q < queues; ++q)
+            for (unsigned tx = 0; tx < 2; ++tx) {
+                char name[RTE_RING_NAMESIZE];
+                snprintf(name, sizeof(name), "drain_%s_p0_q%u_g%u", tx ? "tx" : "rx", q, gen);
+                struct rte_ring *ring = rte_ring_lookup(name);
+                CHECK(ring != NULL);
+                void *packet;
+                while (!rte_ring_dequeue(ring, &packet))
+                    rte_pktmbuf_free(packet);
+                rte_ring_free(ring);
+            }
+    CHECK(rte_mempool_avail_count(pool) == available);
     rte_mempool_free(pool);
-    for (unsigned gen = 0; gen < FF_RELOAD_GEN_MAX; ++gen) {
-        char name[RTE_RING_NAMESIZE];
-        snprintf(name, sizeof(name), "drain_tx_p0_q0_g%u", gen);
-        rte_ring_free(rte_ring_lookup(name));
-        snprintf(name, sizeof(name), "drain_rx_p0_q0_g%u", gen);
-        rte_ring_free(rte_ring_lookup(name));
-    }
 }
 
 int main(int argc, char **argv)
@@ -263,7 +267,16 @@ int main(int argc, char **argv)
     ker_test_eal_init();
     if (!strcmp(argv[1], "drain-full-ring")) {
         test_f_m4_1_drain_ring_full_visible(NULL);
-        release_full_ring_fixture();
+        release_legacy_rings("ut_f_m4_1_pool", 1, 512);
+    } else if (!strcmp(argv[1], "drain-pair")) {
+        test_ut_nr_19_drain_ring_sp_sc(NULL);
+        release_legacy_rings("ut_nr_19_pool", 2, 128);
+    } else if (!strcmp(argv[1], "purge-orphans")) {
+        test_rx15_primary_purges_orphaned_rings(NULL);
+        const char *pool_name = "ut_rx15_pool";
+        struct rte_mempool *pool = rte_mempool_lookup(pool_name);
+        CHECK(pool && rte_mempool_avail_count(pool) == 64);
+        rte_mempool_free(pool);
     } else {
         size_t i = 0;
         while (i < sizeof(cases) / sizeof(cases[0]) && strcmp(argv[1], cases[i].name))

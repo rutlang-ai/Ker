@@ -711,6 +711,7 @@ if(KER_WITH_DPDK)
     include("${PROJECT_SOURCE_DIR}/cmake/FStackIPCTests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/FStackReloadMessageTests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/FStackPacketPolicyTests.cmake")
+    include("${PROJECT_SOURCE_DIR}/cmake/FStackReloadDataTests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/FStackKNISourceTests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/FStackDrainTests.cmake")
 endif()
@@ -743,3 +744,5 @@ set_tests_properties(fstack-migration-inventory fstack-migration-audit-guards
     PROPERTIES TIMEOUT 30 LABELS "provenance")
 
 include("${PROJECT_SOURCE_DIR}/cmake/FStackCallerTests.cmake")
+
+include("${PROJECT_SOURCE_DIR}/cmake/FStackRemainingUnitTests.cmake")

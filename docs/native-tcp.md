@@ -347,6 +347,18 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 
 这是固定 F-Stack host shutdown/dup/readiness 桥接场景的 Ker/Linux 扩展，不是上游测试或等价声明。仅增加测试，不修改协议或适配代码。未覆盖并发读者、ET/ONESHOT rearm、信号中断或低水位性能；TCP 和 UDP 的低水位语义须分别验证。
 
+## 发送 offload 与显式停止
+
+`--tx-offloads off|checksum|tso`（INI `[dpdk] tx_offloads`）默认关闭。开启后 launcher
+只向原始 Linux 协商实际 DPDK PMD 支持的位。TAP 测试覆盖 TCP/UDP checksum、IPv4
+checksum 和 IPv4 TCP 分段。互通是在原始 TAP PMD 的软件路径验证的。PCAP TX 抓取在
+offload 之前，验证最终 checksum 请查看对端抓包。TAP 拒绝可能已修改的开启 offload
+报文时 worker 报错终止，避免重发该 mbuf。
+
+`ker_posix_run` 在调用线程反复执行回调，通过 `ker_posix_stop_run` 请求停止。
+它也接受 NULL 回调，等待另一线程发出停止请求。成功返回前，内嵌 Linux 已停机，
+launcher 已回收 DPDK worker。
+
 ## 原生发送缓冲区
 
 `<ker/posix.h>` 的 `ker_posix_buffer_alloc`、`ker_posix_buffer_write`、

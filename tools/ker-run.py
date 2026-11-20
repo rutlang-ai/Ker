@@ -92,7 +92,11 @@ def exception_ports(value):
     return ','.join(result)
 
 
+TX_OFFLOADS = {'off': 0, 'checksum': 1, 'tso': 2}
+
+
 CONFIG_DEFAULTS = dict(
+    tx_offloads='off',
     exception_mode='ethertype', exception_policy='accept', exception_tcp_ports=None, exception_udp_ports=None,
     exception_iface=None, exception_type=0, exception_queue=256, exception_rate=0,
     exception_console_rate=0, exception_general_rate=0,
@@ -104,7 +108,7 @@ CONFIG_SCHEMA = {
     'network': {'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'live_mtu': ('live_mtu', bool), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
-    'dpdk': {'exception_mode': ('exception_mode', str), 'exception_policy': ('exception_policy', str),
+    'dpdk': {'tx_offloads': ('tx_offloads', str), 'exception_mode': ('exception_mode', str), 'exception_policy': ('exception_policy', str),
              'exception_tcp_ports': ('exception_tcp_ports', str), 'exception_udp_ports': ('exception_udp_ports', str),
              'exception_iface': ('exception_iface', str), 'exception_type': ('exception_type', int),
              'exception_queue': ('exception_queue', int), 'exception_rate': ('exception_rate', int),
@@ -168,6 +172,7 @@ def parse_arguments(argv=None):
         help='additional IPv4 address/prefix; repeat up to 32 times; replaces INI vip_addresses')
     parser.add_argument('--vlan', dest='vlans', action='append', type=vlan_setting,
         help='802.1Q ID=IPv4/PREFIX[,IPv4/PREFIX...]; repeat up to 16 VLANs; replaces INI VLAN sections')
+    parser.add_argument('--tx-offloads', choices=TX_OFFLOADS, help='negotiate TX checksum or TCP segmentation with the PMD')
     parser.add_argument('--mbuf-mode', choices=('large', 'scatter'), help='DPDK packet storage; scatter uses chained standard-size mbufs')
     parser.add_argument('--exception-mode', choices=('ethertype', 'ports'))
     parser.add_argument('--exception-policy', choices=('accept', 'reject'))
@@ -250,6 +255,8 @@ def parse_arguments(argv=None):
     vlan_ips = [value.ip for _, entries in args.vlans for value in entries]
     if len(set(addresses + vlan_ips)) != len(addresses + vlan_ips):
         parser.error('--vlan addresses must not duplicate primary, VIP, or other VLAN addresses')
+    if args.tx_offloads not in TX_OFFLOADS:
+        parser.error('--tx-offloads must be off, checksum or tso')
     if args.mbuf_mode not in ('large', 'scatter'):
         parser.error('--mbuf-mode must be large or scatter')
     if args.exception_mode not in ('ethertype', 'ports') or args.exception_policy not in ('accept', 'reject'):
@@ -314,11 +321,29 @@ def parse_arguments(argv=None):
     return args
 
 
+def collect_io_worker(worker, stats):
+    failed = False
+    try:
+        output, _ = worker.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        worker.kill()
+        output, _ = worker.communicate()
+        failed = True
+        print('ker-run: DPDK worker shutdown timed out', file=sys.stderr)
+    for line in output.splitlines():
+        if line.startswith('KER_IO_DONE '):
+            stats = json.loads(line.removeprefix('KER_IO_DONE '))
+    return stats, failed or worker.returncode != 0 or stats is None
+
+
 def main():
     args = parse_arguments()
     library = args.library.resolve(strict=True)
     worker_path = args.io_worker.resolve(strict=True)
     channel_app, channel_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
+    run_parent, run_app = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    run_parent.setblocking(False)
+    worker_collected = False
     control_read, control_write = os.pipe2(os.O_CLOEXEC)
     startup_read, startup_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
     signal.signal(signal.SIGTERM, interrupted)
@@ -359,7 +384,7 @@ def main():
             worker_fds += (mtu_io.fileno(),)
             mtu_options = ['--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu)]
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--control-fd', str(control_read), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, *mtu_options, *exception_options, *multicast_options, *capture_options, *log_options, '--', *args.eal_args],
+            '--control-fd', str(control_read), '--tx-offloads', str(TX_OFFLOADS[args.tx_offloads]), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, *mtu_options, *exception_options, *multicast_options, *capture_options, *log_options, '--', *args.eal_args],
             pass_fds=worker_fds, stdout=subprocess.PIPE, text=True)
         channel_io.close()
         if mtu_io is not None:
@@ -381,7 +406,8 @@ def main():
         info = json.loads(ready.removeprefix('KER_IO_READY '))
         env = {key: value for key, value in os.environ.items() if not key.startswith(('LKL_', 'KER_PACKET_'))}
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
-            KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
+            KER_NATIVE_TX_FEATURES=str(info.get('tx_offload_features', 0)),
+            KER_RUN_FD=str(run_app.fileno()), KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
             KER_PACKET_FD=str(channel_app.fileno()), KER_PACKET_MTU=str(args.mtu), LKL_HIJACK_NET_IFTYPE='ker-channel',
             LKL_HIJACK_NET_IP=str(args.address.ip), LKL_HIJACK_NET_NETMASK_LEN=str(args.address.network.prefixlen),
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
@@ -407,13 +433,14 @@ def main():
         if args.gateway:
             env['LKL_HIJACK_NET_GATEWAY'] = str(args.gateway)
         app_guard = worker_path.parent / 'ker-app'
-        app_fds = (channel_app.fileno(), startup_write)
+        app_fds = (channel_app.fileno(), startup_write, run_app.fileno())
         if mtu_app is not None:
             app_fds += (mtu_app.fileno(),)
             env.update(KER_PACKET_MTU_FD=str(mtu_app.fileno()), KER_PACKET_MAX_MTU=str(args.max_mtu))
         app = subprocess.Popen([str(app_guard), *args.command], env=env,
             pass_fds=app_fds)
         channel_app.close()
+        run_app.close()
         if mtu_app is not None:
             mtu_app.close()
         os.close(startup_write)
@@ -436,6 +463,37 @@ def main():
                     startup_status += os.read(startup_read, 4096)
                 except BlockingIOError:
                     pass
+                try:
+                    request = run_parent.recv(64)
+                except BlockingIOError:
+                    request = None
+                if request:
+                    if request != b'KER_RUN_STOP\n' or worker_collected:
+                        raise RuntimeError('invalid native run shutdown request')
+                    # The native caller writes its final status before requesting
+                    # the EAL acknowledgement, which arrives on a different fd.
+                    while True:
+                        try:
+                            pending = os.read(startup_read, 4096)
+                        except BlockingIOError:
+                            break
+                        if not pending:
+                            break
+                        startup_status += pending
+                    native_ok = b'KER_NATIVE_DONE\n' in startup_status
+                    if not native_ok and b'KER_NATIVE_INCOMPLETE\n' not in startup_status:
+                        raise RuntimeError('run requested EAL shutdown before native teardown')
+                    os.close(control_write)
+                    control_write = -1
+                    stats, failed = collect_io_worker(worker, stats)
+                    worker_collected = True
+                    failed |= not native_ok or stats is None or stats.get('outstanding', 1) != 0
+                    infrastructure_failure |= failed
+                    if stats is not None:
+                        stats['run_shutdown_ack'] = not failed
+                    run_parent.send(b'FAIL\n' if failed else b'OK\n')
+                if worker_collected:
+                    continue
                 if b'KER_NATIVE_STOPPING\n' in startup_status:
                     if stopping_at is None:
                         stopping_at = time.monotonic()
@@ -471,7 +529,10 @@ def main():
             mtu_io.close()
         if control_read >= 0:
             os.close(control_read)
-        os.close(control_write)
+        if control_write >= 0:
+            os.close(control_write)
+        run_parent.close()
+        run_app.close()
         while True:
             try:
                 extra = os.read(startup_read, 1024)
@@ -487,18 +548,9 @@ def main():
         if startup_write >= 0:
             os.close(startup_write)
         if worker:
-            try:
-                output, _ = worker.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                worker.kill()
-                output, _ = worker.communicate()
-                print('ker-run: DPDK worker shutdown timed out', file=sys.stderr)
-                infrastructure_failure = True
-            for line in output.splitlines():
-                if line.startswith('KER_IO_DONE '):
-                    stats = json.loads(line.removeprefix('KER_IO_DONE '))
-            if worker.returncode:
-                infrastructure_failure = True
+            if not worker_collected:
+                stats, failed = collect_io_worker(worker, stats)
+                infrastructure_failure |= failed
             if stats is not None:
                 stats['io'] = info
                 for line in startup_status.splitlines():

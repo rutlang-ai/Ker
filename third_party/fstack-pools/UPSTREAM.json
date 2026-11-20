@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/F-Stack/f-stack",
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "mode": "Full original sources unchanged; only exact memory-policy and pool-selection excerpts compiled, no FreeBSD packet/protocol implementation",
+  "files": {
+    "ff_dpdk_if.c": {
+      "source_file": "lib/ff_dpdk_if.c",
+      "sha256": "6d8800e5ab069a4ede742ec1ec75dfa8fc08ef05999a7528dda8c95d519e3cbe",
+      "git_blob": "4864c63f28051336326dda1df241ab7290a2a72f"
+    },
+    "ff_memory.h": {
+      "source_file": "lib/ff_memory.h",
+      "sha256": "fa5de9de5ba75b127461f3ec70c3f02055646ec59bbc578f297867c0440f193f",
+      "git_blob": "211410fe4e2506bc698c6b9e1fbdfa02be533dad"
+    }
+  },
+  "compiled_excerpt": "pool-runtime.inc",
+  "configuration_layout": "../fstack-reload/ff_config.h is the unchanged shared pinned dependency"
+}

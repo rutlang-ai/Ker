@@ -14,14 +14,14 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 329 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 9 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 25 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 362 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 0 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 1 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
-当前待完成 **34 项**（25 blocked + 9 partial）。
+当前待完成 **1 项**（完整热重载脚本）。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -53,7 +53,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 ## 阻塞分类与边界
 
 - 配置/INI、日志、IPC 的覆盖以逐项来源映射为准。兼容接口和生产启动配置的验证范围各见对应条目。
-- 设备注册和 generation/epoch 热重载仍有集成缺口。软件 KNI、RSS 和 flow map 的运行边界见对应章节。
+- 完整 Nginx 热重载入口仍有集成缺口。generation/epoch 多进程、软件 KNI、RSS 和 flow map 的运行边界见对应章节。
 - FreeBSD TLS、callout 和 mbuf 镜像：迁移必须尊重原始 Linux 结构和协议实现，不能为通过白盒测试复制 FreeBSD 协议算法。
 - reload Python 工具自测：源文件保留，不自动导入/执行，不把工具链断言记为网络协议覆盖。
 - `test_mtu.sh` 的固定 MTU 和运行中切换场景分别由 `native-fstack-icmp-mtu` 和 `native-fstack-live-mtu` 验证。
@@ -65,22 +65,22 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 
 | 上游入口 | 总数 | 场景适配 | 部分覆盖 | 阻塞 | 架构特有 | 工具自测 |
 |---|---:|---:|---:|---:|---:|---:|
-| [integration/test_ff_dpdk_if_integration.c](../tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c) | 20 | 14 | 6 | 0 | 0 | 0 |
-| [integration/test_ff_gendir_mp_integration.c](../tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
+| [integration/test_ff_dpdk_if_integration.c](../tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c) | 20 | 20 | 0 | 0 | 0 | 0 |
+| [integration/test_ff_gendir_mp_integration.c](../tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c) | 7 | 7 | 0 | 0 | 0 | 0 |
 | [integration/test_ff_kni_integration.c](../tests/upstream/fstack/tests/integration/test_ff_kni_integration.c) | 8 | 8 | 0 | 0 | 0 | 0 |
-| [integration/test_ff_reload_integration.c](../tests/upstream/fstack/tests/integration/test_ff_reload_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
+| [integration/test_ff_reload_integration.c](../tests/upstream/fstack/tests/integration/test_ff_reload_integration.c) | 7 | 7 | 0 | 0 | 0 | 0 |
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 1 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
 | [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 96 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 56 | 1 | 10 | 0 | 0 |
+| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 67 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 25 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 32 | 1 | 1 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 34 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 25 | 0 | 0 | 0 | 0 |
-| [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 5 | 1 | 0 | 0 | 0 |
+| [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 6 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 12 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 0 | 0 | 3 | 0 |
@@ -1338,3 +1338,22 @@ DPDK 构建提供独立的 `ker::ipc`，复用固定 F-Stack 的 IPC 实现与�
   8 项目录及 6 项 drain-ring 用例编译原始实现和断言，使用真实 memzone、ring、mbuf
   和 PID 存活状态。目录用例在单进程注入 EAL 角色、缺失查找和预期退出。外部 epoch 的
   TX 另用实际 PMD 验证保留帧的指针、字节和回收。真实 EAL 多进程交接由独立集成项跟踪。
+
+## 最后一批已验证的 33 项
+
+- **7 项 A14 多进程。** 保留固定版本的原始测试断言。独立原始 DPDK 主进程、两个不同
+  master 下的真实从进程、共享 hugepage memzone/ring 和原始目录代码验证预创建、独占
+  消费、QUERY、master 退出后的存活判断、排空和槽位回收。测试可在有可写 hugetlbfs 和
+  `net_null` 的环境运行，已在独立 KVM 内复验。
+- **7 项 A09/A10 reload。** 实际 `net_ring`、原始 reload gate 和调用方流表覆盖初始状态、
+  TX 转移、水位、停放与 PEER 路径。A10 沿用源用例的 TCP 形状夹具检查报文归属。
+- **6 项发送和主循环。** 独立宿主抓包验证 IPv4 头、TCP 和 UDP checksum 以及 IPv4 TSO。
+  原始 `net_tap` 做软件 offload，分别测试单缓冲区与 scatter。另验证 copydata 故障和
+  单次原生回调停止后的真实 DPDK teardown。
+- **13 项单元场景。** 覆盖源地址选择、generation pool、时钟换算、drain-ring 和孤儿回收、
+  PEER 归属、空发送上下文，以及原始 mmap 失败退出和运行停止。
+
+唯一待完成入口是 `integration/test_graceful_reload.sh::entrypoint`。它还需要原始
+Nginx 的完整 HUP、USR2、故障注入与性能矩阵，远端探针证据、资源趋势及清理断言。
+同进程 reload、目录多进程和软件 PMD 检查已独立通过。历史两轮 Nginx 接续验证仅
+覆盖脚本的一部分。迁移门禁仍返回 2，保留这一项待验收。
