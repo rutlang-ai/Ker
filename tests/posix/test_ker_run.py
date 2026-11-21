@@ -1,11 +1,16 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
+import select
 import signal
 import sys
+import struct
+import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -15,6 +20,263 @@ MODULE_PATH = Path(__file__).resolve().parents[2] / 'tools' / 'ker-run.py'
 SPEC = importlib.util.spec_from_file_location('ker_run', MODULE_PATH)
 ker_run = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ker_run)
+
+
+class PrivateC31ShutdownParserTests(unittest.TestCase):
+    def setUp(self):
+        self.nonce = bytes(range(1, 17))
+        self.epoch = 19
+        self.worker = (1234, os.getuid(), os.getgid(), 101)
+        self.supervisor = (5678, os.getuid(), os.getgid(), 202)
+        header = struct.pack('<IHHII16sQQQQ', 0x4b525844, 2, 7, 64, 80,
+            self.nonce, self.epoch, 0, 3, 0)
+        body = struct.pack('<QII', 1, 0, 0)
+        self.record = header + body
+        self.value = {'record_hex': self.record.hex(), 'worker_pid': self.worker[0],
+            'worker_uid': self.worker[1], 'worker_gid': self.worker[2],
+            'worker_start_ticks': self.worker[3], 'supervisor_pid': self.supervisor[0],
+            'supervisor_uid': self.supervisor[1], 'supervisor_gid': self.supervisor[2],
+            'supervisor_start_ticks': self.supervisor[3], 'nonce': self.nonce.hex(),
+            'epoch': self.epoch, 'last_packet_id': 1, 'last_result_id': 1,
+            'outstanding_count': 0, 'status': 0}
+        self.io = {'rx_decision_enabled': True, 'rx_decision_settled': True,
+            'control_eof': True, 'outstanding': 0,
+            'rx_decision_last_settled_packet_id': 1}
+
+    def _status(self, value=None, order=('ready', 'stopping', 'receipt', 'done')):
+        value = self.value if value is None else value
+        encoded = json.dumps(value, separators=(',', ':')).encode()
+        mapping = {'ready': b'KER_NATIVE_READY\n',
+            'stopping': b'KER_NATIVE_STOPPING\n',
+            'receipt': b'KER_C31_SHUTDOWN ' + encoded + b'\n',
+            'done': b'KER_NATIVE_DONE\n'}
+        return b''.join(mapping[key] for key in order)
+
+    def _parse(self, status=None, io=None):
+        return ker_run.private_c31_shutdown_record(
+            self._status() if status is None else status,
+            self.io if io is None else io, worker_identity=self.worker,
+            supervisor_identity=self.supervisor, nonce=self.nonce, epoch=self.epoch)
+
+    def test_private_c31_settled_receipt_joins_wire_actors_and_io_done(self):
+        parsed = self._parse()
+        self.assertEqual(parsed['record_hex'], self.record.hex())
+
+    def test_private_c31_idle_settlement_accepts_zero_packet_ids(self):
+        header = self.record[:64]
+        idle_record = header + struct.pack('<QII', 0, 0, 0)
+        value = dict(self.value, record_hex=idle_record.hex(),
+            last_packet_id=0, last_result_id=0)
+        io = dict(self.io, rx_decision_last_settled_packet_id=0)
+        self.assertEqual(self._parse(status=self._status(value), io=io)['last_packet_id'], 0)
+
+    def test_private_c31_settled_rejects_duplicate_malformed_order_and_mismatch(self):
+        bad_value = dict(self.value, record_hex='00')
+        wrong_wire = bytearray(self.record); wrong_wire[16] ^= 1
+        cases = [
+            self._status(order=('ready', 'stopping', 'receipt', 'receipt', 'done')),
+            self._status(order=('ready', 'receipt', 'stopping', 'done')),
+            self._status(bad_value),
+            self._status(dict(self.value, worker_pid=self.worker[0] + 1)),
+            self._status(dict(self.value, last_result_id=2)),
+            self._status(dict(self.value, record_hex=bytes(wrong_wire).hex())),
+            self._status(dict(self.value, status=1)),
+            self._status(dict(self.value, worker_start_ticks=-1)),
+        ]
+        for status in cases:
+            with self.subTest(status=status[:40]):
+                with self.assertRaises(ValueError):
+                    self._parse(status=status)
+        for io in (dict(self.io, rx_decision_last_settled_packet_id=2),
+                   dict(self.io, rx_decision_settled=False)):
+            with self.subTest(io=io):
+                with self.assertRaises(ValueError):
+                    self._parse(io=io)
+
+    def test_private_c31_rejects_duplicate_json_keys_and_boolean_io_counters(self):
+        line = self._status().splitlines()[2]
+        payload = line[len(b'KER_C31_SHUTDOWN '):]
+        duplicate = payload[:-1] + b',"status":0}'
+        status = b'KER_NATIVE_READY\nKER_NATIVE_STOPPING\nKER_C31_SHUTDOWN ' + duplicate + b'\nKER_NATIVE_DONE\n'
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            self._parse(status=status)
+        for key in ('rx_decision_last_settled_packet_id', 'outstanding'):
+            with self.subTest(key=key):
+                io = dict(self.io, **{key: True})
+                with self.assertRaises(ValueError):
+                    self._parse(io=io)
+
+    def test_actual_c_formatter_max_width_line_is_bounded_and_parseable(self):
+        source = MODULE_PATH.parents[1] / 'tests' / 'posix' / 'c31-shutdown-line-host.c'
+        include = MODULE_PATH.parents[1] / 'src' / 'posix'
+        with tempfile.TemporaryDirectory(prefix='ker-c31-line-') as tmp:
+            binary = Path(tmp) / 'formatter'
+            subprocess.run(['/usr/bin/cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
+                '-I', str(include), str(source), '-o', str(binary)], check=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            output = subprocess.run([str(binary)], check=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE).stdout
+        self.assertLess(len(output), 640)
+        self.assertTrue(output.startswith(b'KER_C31_SHUTDOWN '))
+        self.assertTrue(output.endswith(b'\n'))
+        worker = (2**32 - 1, 2**32 - 1, 2**32 - 1, 2**64 - 1)
+        supervisor = worker
+        nonce = bytes([0xa5]) * 16
+        io = {'rx_decision_enabled': True, 'rx_decision_settled': True,
+            'control_eof': True, 'outstanding': 0,
+            'rx_decision_last_settled_packet_id': 2**64 - 1}
+        status = b'KER_NATIVE_READY\nKER_NATIVE_STOPPING\n' + output + b'KER_NATIVE_DONE\n'
+        parsed = ker_run.private_c31_shutdown_record(status, io,
+            worker_identity=worker, supervisor_identity=supervisor,
+            nonce=nonce, epoch=2**64 - 1)
+        self.assertEqual(parsed['epoch'], 2**64 - 1)
+        self.assertEqual(parsed['worker_pid'], 2**32 - 1)
+
+    def test_actual_c_line_and_io_done_join_over_exited_popen_pipes(self):
+        source = MODULE_PATH.parents[1] / 'tests' / 'posix' / 'c31-shutdown-line-host.c'
+        include = MODULE_PATH.parents[1] / 'src' / 'posix'
+        nonce = bytes(range(16))
+        epoch, packet_id = 19, 7
+        with tempfile.TemporaryDirectory(prefix='ker-c31-streams-') as tmp:
+            binary = Path(tmp) / 'formatter'
+            subprocess.run(['/usr/bin/cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
+                '-I', str(include), str(source), '-o', str(binary)], check=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            worker_code = ("import os,time; os.write(1,b'KER_IO_READY {}\\n"
+                "KER_IO_DONE {\\\"outstanding\\\":0,\\\"rx_decision_last_settled_packet_id\\\":7,"
+                "\\\"rx_decision_enabled\\\":true,\\\"rx_decision_settled\\\":true,"
+                "\\\"control_eof\\\":true}\\n'); time.sleep(.1)")
+            worker = subprocess.Popen([sys.executable, '-u', '-c', worker_code],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            worker_pidfd = os.pidfd_open(worker.pid, 0)
+            worker_ticks = ker_run.process_start_ticks(worker.pid)
+            io_stdout_identity = ker_run._private_pipe_identity(worker.stdout.fileno())
+            supervisor = (os.getpid(), os.getuid(), os.getgid(),
+                ker_run.process_start_ticks(os.getpid()))
+            worker_identity = (worker.pid, os.getuid(), os.getgid(), worker_ticks)
+            formatter = subprocess.run([str(binary), str(worker.pid), str(os.getuid()),
+                str(os.getgid()), str(worker_ticks), str(supervisor[0]),
+                str(supervisor[1]), str(supervisor[2]), str(supervisor[3]),
+                str(epoch), str(packet_id), nonce.hex()], check=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+            native = {'buffer_allocations':0,'buffer_releases':0,
+                'buffer_shutdown_releases':0,'buffers_live':0,'buffer_bytes':0,
+                'buffer_option_guards_live':0}
+            startup_payload = (b'KER_NATIVE_READY\nKER_NATIVE_STOPPING\n' + formatter +
+                b'KER_NATIVE_STATS ' + json.dumps(native,separators=(',',':')).encode() +
+                b'\nKER_NATIVE_DONE\n')
+            startup_read, startup_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+            startup_identity = ker_run._private_pipe_identity(startup_read)
+            producer = subprocess.Popen([sys.executable, '-c',
+                'import os,sys,time; os.write(int(sys.argv[1]),bytes.fromhex(sys.argv[2])); time.sleep(.1)',
+                str(startup_write), startup_payload.hex()], pass_fds=(startup_write,),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            os.close(startup_write)
+            producer_pidfd = os.pidfd_open(producer.pid, 0)
+            try:
+                self.assertGreater(ker_run.process_start_ticks(producer.pid), 0)
+                self.assertEqual(producer.communicate(timeout=3), (b'', b''))
+                self.assertEqual(producer.returncode, 0)
+                self.assertTrue(ker_run._private_pidfd_exited(producer_pidfd))
+                ready = ker_run.read_worker_startup(worker, 'coalesced C31 fixture', timeout=2)
+                self.assertTrue(ready.startswith('KER_IO_READY '))
+                startup, worker_output = ker_run._read_private_shutdown_pipes(
+                    startup_read, worker.stdout.fileno(), b'', startup_identity,
+                    io_stdout_identity, time.monotonic_ns() + 2_000_000_000)
+                self.assertEqual(worker.wait(timeout=2), 0)
+                self.assertTrue(ker_run._private_pidfd_exited(worker_pidfd))
+            finally:
+                os.close(startup_read)
+                os.close(producer_pidfd)
+                os.close(worker_pidfd)
+                if worker.poll() is None:
+                    worker.kill()
+                    worker.wait(timeout=2)
+                worker.stdout.close()
+                worker.stderr.close()
+            io_stats = ker_run._private_io_done_record(worker_output)
+            parsed = ker_run.private_c31_shutdown_record(bytes(startup), io_stats,
+                worker_identity=worker_identity, supervisor_identity=supervisor,
+                nonce=nonce, epoch=epoch)
+            self.assertEqual(parsed['last_packet_id'], packet_id)
+
+    def test_io_ready_and_done_coalesced_write_retains_done_for_single_reader(self):
+        payload = (b'KER_IO_READY {"port_id":0}\n' +
+            b'KER_IO_DONE {"outstanding":0,"rx_decision_last_settled_packet_id":0,'
+            b'"rx_decision_enabled":true,"rx_decision_settled":true,"control_eof":true}\n')
+        code = ('import os,sys,time; os.write(1,bytes.fromhex(sys.argv[1])); time.sleep(.05)')
+        process = subprocess.Popen([sys.executable, '-c', code, payload.hex()],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        pidfd = os.pidfd_open(process.pid, 0)
+        try:
+            pipe_identity = ker_run._private_pipe_identity(process.stdout.fileno())
+            ready = ker_run.read_worker_startup(process, 'coalesced private I/O', timeout=2)
+            self.assertTrue(ready.startswith('KER_IO_READY '))
+            raw = bytearray()
+            fd = process.stdout.fileno()
+            while True:
+                select.select([fd], [], [], 1)
+                chunk = os.read(fd, 4096)
+                if not chunk: break
+                raw.extend(chunk)
+            self.assertEqual(process.wait(timeout=2), 0)
+            self.assertTrue(ker_run._private_pidfd_exited(pidfd))
+            self.assertEqual(ker_run._private_pipe_identity(fd), pipe_identity)
+            stats = ker_run._private_io_done_record(bytes(raw))
+            self.assertEqual(stats['rx_decision_last_settled_packet_id'], 0)
+        finally:
+            os.close(pidfd)
+            process.stdout.close()
+            process.stderr.close()
+
+    def test_private_io_done_requires_unique_final_well_typed_record(self):
+        valid = (b'KER_IO_READY {}\nKER_IO_DONE {"outstanding":0,'
+            b'"rx_decision_last_settled_packet_id":1,"rx_decision_enabled":true,'
+            b'"rx_decision_settled":true,"control_eof":true}\n')
+        self.assertEqual(ker_run._private_io_done_record(valid)['outstanding'], 0)
+        malformed = [
+            valid[:-1] + b'\nKER_IO_DONE {"outstanding":0}\n',
+            valid.replace(b'"outstanding":0',
+                b'"outstanding":0,"outstanding":0'),
+            valid.replace(b'"rx_decision_last_settled_packet_id":1',
+                b'"rx_decision_last_settled_packet_id":true'),
+            valid.replace(b'"outstanding":0', b'"outstanding":-1'),
+            valid + b'KER_IO_ERROR\n',
+            valid[:-1],
+        ]
+        for raw in malformed:
+            with self.subTest(raw=raw[-80:]):
+                with self.assertRaises(ValueError):
+                    ker_run._private_io_done_record(raw)
+
+    def test_private_startup_prefix_cannot_supply_shutdown_authority(self):
+        self.assertTrue(ker_run._validate_private_startup_prefix(
+            b'KER_NATIVE_READY\nKER_RX_DECISION_READY\n'))
+        for suffix in (b'KER_NATIVE_STOPPING\n', b'KER_C31_SHUTDOWN {}\n',
+                b'KER_NATIVE_STATS {}\n', b'KER_NATIVE_DONE\n'):
+            with self.subTest(suffix=suffix), self.assertRaises(PermissionError):
+                ker_run._validate_private_startup_prefix(b'KER_NATIVE_READY\n' + suffix)
+
+    def test_nested_private_receipt_fields_are_recursively_frozen(self):
+        frozen = ker_run._freeze_private_value({'rx_pollers': [{'cpu': 3}]})
+        with self.assertRaises(TypeError):
+            frozen['rx_pollers'][0]['cpu'] = 4
+        with self.assertRaises(AttributeError):
+            frozen['rx_pollers'].append({'cpu': 4})
+
+    def test_private_run_stop_does_not_read_shutdown_pipe_ahead_of_collector(self):
+        prefix = b'KER_NATIVE_READY\nKER_RX_DECISION_READY\n'
+        with mock.patch.object(ker_run.os, 'read', side_effect=AssertionError(
+                'private collector must remain the sole startup-pipe reader')):
+            self.assertEqual(ker_run._validate_run_stop_request(91, prefix, True), prefix)
+
+    def test_legacy_run_stop_still_requires_native_done_from_startup_pipe(self):
+        read_fd, write_fd = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+        self.addCleanup(os.close, read_fd)
+        self.addCleanup(os.close, write_fd)
+        os.write(write_fd, b'KER_NATIVE_DONE\n')
+        result = ker_run._validate_run_stop_request(read_fd, b'', False)
+        self.assertEqual(result, b'KER_NATIVE_DONE\n')
 
 
 WORKER = f'''#!{sys.executable}
@@ -83,6 +345,75 @@ else:
 os.write(int(os.environ['KER_STARTUP_FD']), status)
 os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
 '''
+
+
+class WorkerQueueProofTests(unittest.TestCase):
+    nonce = '0123456789abcdef0123456789abcdef'
+    epoch = 91
+    pid = 4321
+
+    def record(self, **proof_changes):
+        proof = {
+            'version': 1, 'worker_pid': self.pid,
+            'session_nonce': self.nonce, 'session_epoch': self.epoch,
+            'role': 'native-io-owner', 'source_proc_id': 1, 'port_id': 0,
+            'queues': [{'queue_id': 0, 'owner_eal_lcore': 1,
+                'observed_eal_lcore': 1, 'allowed_cpus': [7], 'actual_cpu': 7}],
+        }
+        proof.update(proof_changes)
+        return 'KER_IO_READY ' + json.dumps({
+            'mac': '02:00:00:00:00:01', 'tx_offload_features': 0,
+            'queue_owner_proof': proof})
+
+    def parse(self, line=None, **kwargs):
+        return ker_run.worker_ready_record(line or self.record(),
+            expected_pid=self.pid, expected_session=(self.nonce, self.epoch),
+            require_queue_proof=True, expected_port_id=0,
+            expected_queue_lcores=(1,), expected_source_proc_id=1, **kwargs)
+
+    def test_valid_actual_queue_proof_shape(self):
+        value = self.parse()
+        self.assertEqual(value['queue_owner_proof']['queues'][0]['actual_cpu'], 7)
+
+    def test_legacy_ready_only_allowed_when_proof_is_optional(self):
+        legacy = 'KER_IO_READY ' + json.dumps({'mac': '02:00:00:00:00:01',
+            'tx_offload_features': 0})
+        self.assertEqual(ker_run.worker_ready_record(legacy)['mac'], '02:00:00:00:00:01')
+        with self.assertRaisesRegex(RuntimeError, 'requires native queue-owner'):
+            self.parse(legacy)
+
+    def test_process_session_role_and_port_must_match(self):
+        for changes, expected in (
+                ({'worker_pid': self.pid + 1}, 'process/session mismatch'),
+                ({'session_nonce': 'f' * 32}, 'process/session mismatch'),
+                ({'session_epoch': self.epoch + 1}, 'process/session mismatch'),
+                ({'source_proc_id': 0}, 'source role mismatch'),
+                ({'port_id': 1}, 'port mismatch')):
+            with self.subTest(changes=changes), self.assertRaisesRegex(RuntimeError, expected):
+                self.parse(self.record(**changes))
+
+    def test_schema_queue_coverage_lcore_and_cpu_are_strict(self):
+        proof = json.loads(self.record().removeprefix('KER_IO_READY '))['queue_owner_proof']
+        mutations = (
+            ({'version': True}, 'schema'),
+            ({'session_nonce': '0123456789ABCDEF0123456789ABCDEF'}, 'schema'),
+            ({'queues': []}, 'schema'),
+            ({'queues': [{'queue_id': 0, 'owner_eal_lcore': 1,
+                'observed_eal_lcore': 0, 'allowed_cpus': [7], 'actual_cpu': 7}]}, 'invalid.*entry'),
+            ({'queues': [{'queue_id': 0, 'owner_eal_lcore': 1,
+                'observed_eal_lcore': 1, 'allowed_cpus': [7], 'actual_cpu': -1}]}, 'entry'),
+            ({'queues': [{'queue_id': 0, 'owner_eal_lcore': 1,
+                'observed_eal_lcore': 1, 'allowed_cpus': [8], 'actual_cpu': 7}]}, 'entry'),
+            ({'queues': [{'queue_id': 0, 'owner_eal_lcore': 1,
+                'observed_eal_lcore': 1, 'allowed_cpus': [7, 8], 'actual_cpu': 7}]}, 'single-CPU'),
+            ({'queues': [proof['queues'][0], proof['queues'][0]]}, 'queue count'),
+        )
+        for changes, expected in mutations:
+            proof_value = dict(proof); proof_value.update(changes)
+            line = 'KER_IO_READY ' + json.dumps({'mac': '02:00:00:00:00:01',
+                'tx_offload_features': 0, 'queue_owner_proof': proof_value})
+            with self.subTest(changes=changes), self.assertRaisesRegex(RuntimeError, expected):
+                self.parse(line)
 
 
 class KerRunMainTests(unittest.TestCase):

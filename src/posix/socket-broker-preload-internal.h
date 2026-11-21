@@ -55,6 +55,26 @@ int ker_sb_preload_register_inherited_epoll_locked(int app_fd);
 int ker_sb_preload_duplicate_epoll_locked(int old_fd, int minimum, bool cloexec);
 void ker_sb_preload_remove_epoll_locked(int app_fd);
 bool ker_sb_preload_has_exec_unsafe_epoll_locked(void);
+typedef int (*ker_sb_preload_epoll_fd_close_fn)(void *context, int app_fd,
+    int capability_fd);
+typedef void (*ker_sb_preload_epoll_context_destroy_fn)(void *context);
+struct ker_sb_preload_epoll_context_ref;
+int ker_sb_preload_epoll_context_install_locked(int app_fd, void *context,
+    ker_sb_preload_epoll_fd_close_fn fd_close,
+    ker_sb_preload_epoll_context_destroy_fn destroy);
+int ker_sb_preload_epoll_context_acquire(int app_fd,
+    struct ker_sb_preload_epoll_context_ref **reference, void **context,
+    uint64_t *generation);
+void ker_sb_preload_epoll_context_release(
+    struct ker_sb_preload_epoll_context_ref *reference);
+void ker_sb_preload_event_adapter_fork_child_cleanup(void);
+int ker_sb_preload_event_fd_close_locked(int app_fd, int capability_fd);
+int ker_sb_preload_event_epoll_ctl_locked(int epfd, int operation, int fd,
+    struct epoll_event *event);
+int ker_sb_preload_ff_event_snapshot(int fd,
+    struct ker_socket_event_snapshot *snapshot);
+int ker_sb_preload_usercopy_in(void *local, const void *user, size_t length);
+int ker_sb_preload_usercopy_out(void *user, const void *local, size_t length);
 int ker_sb_preload_close_locked(int fd);
 int ker_sb_preload_duplicate_network_locked(int fd, int minimum, bool cloexec);
 int ker_sb_preload_composite_epoll_locked(int fd, int *broker_fd);
@@ -113,5 +133,8 @@ ssize_t ker_sb_posix_writev(int fd, const struct iovec *vectors, int count);
 int ker_sb_posix_fcntl(int fd, int command, ...);
 int ker_sb_posix_ioctl(int fd, unsigned long request, ...);
 int ker_sb_posix_epoll_ctl(int epfd, int operation, int fd, struct epoll_event *event);
+int ker_sb_posix_epoll_create1(int flags);
+int ker_sb_posix_epoll_wait(int epfd, struct epoll_event *events,
+    int maximum, int timeout);
 
 #endif

@@ -33,6 +33,7 @@
 #include "ff-admission-queue.h"
 #include "ff-ingress-controller.h"
 #include "socket-broker-readiness-wire.h"
+#include "tcp-event-snapshot.h"
 
 #ifndef SO_PEERPIDFD
 #define SO_PEERPIDFD 77
@@ -477,7 +478,8 @@ static uint32_t required_right(uint16_t operation)
     case KER_SB_BIND: case KER_SB_CONNECT: case KER_SB_LISTEN: case KER_SB_ACCEPT4:
     case KER_SB_SHUTDOWN: case KER_SB_SETSOCKOPT: case KER_SB_EPOLL_CTL:
         return KER_SOCKET_BROKER_CONTROL;
-    case KER_SB_FIONREAD: case KER_SB_RECV: return KER_SOCKET_BROKER_READ;
+    case KER_SB_FIONREAD: case KER_SB_RECV:
+    case KER_SB_EVENT_SNAPSHOT: return KER_SOCKET_BROKER_READ;
     case KER_SB_SEND: return KER_SOCKET_BROKER_WRITE;
     case KER_SB_REUSEPORT_GROUP_CREATE: case KER_SB_REUSEPORT_GROUP_MEMBER:
     case KER_SB_REUSEPORT_GROUP_SELECT: return KER_SOCKET_BROKER_CONTROL;
@@ -5174,6 +5176,17 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         struct ker_sb_integer output_value = {.value = available};
         memcpy(output, &output_value, sizeof(output_value));
         *output_length = sizeof(output_value); *result = 0; return 0;
+    }
+    case KER_SB_EVENT_SNAPSHOT: {
+        if (input_length) return -EPROTO;
+        struct sb_object *object = lookup_cap(server, fds[0]);
+        if (!object) return -EBADF;
+        if (object->kind != KER_SOCKET_BROKER_SOCKET) return -ENOTSOCK;
+        struct ker_socket_event_snapshot snapshot = {0};
+        int status = ker_native_socket_event_snapshot(object->native_fd, &snapshot);
+        if (status) return status;
+        memcpy(output, &snapshot, sizeof(snapshot));
+        *output_length = sizeof(snapshot); *result = 0; return 0;
     }
     case KER_SB_SEND: {
         if (input_length < sizeof(struct ker_sb_io)) return -EPROTO;

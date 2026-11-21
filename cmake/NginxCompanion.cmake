@@ -14,6 +14,40 @@ configure_file(tools/nginx_companion_wire.py
     "${PROJECT_BINARY_DIR}/nginx_companion_wire.py" COPYONLY)
 configure_file(tools/ker-nginx-companion.py
     "${PROJECT_BINARY_DIR}/ker-nginx-companion" COPYONLY)
+# Source observers resolve their private adapters beside the launcher.  Keep
+# the source spelling too: the origin observer verifies and imports those
+# exact launcher bytes rather than executing a second launcher process.
+set(ker_source_observer_modules
+    ker-run.py
+    ker-nginx-companion.py
+    source_network_startup.py
+    nginx_companion_attach.py
+    nginx_cycle_control.py
+    nginx_source_bootstrap_supervisor.py
+    nginx_source_c22_provider.py
+    nginx_source_c34_artifact_provider.py
+    nginx_source_c34_profile.py
+    nginx_source_origin.py
+    nginx_source_scope.py
+    nginx_source_shell_controller.py
+    nginx-source-shell-helper.py
+    ker-source-shell-wrapper.py)
+foreach(module IN LISTS ker_source_observer_modules)
+    if(module STREQUAL "ker-run.py")
+        configure_file("tools/${module}"
+            "${PROJECT_BINARY_DIR}/${module}" @ONLY)
+    else()
+        configure_file("tools/${module}"
+            "${PROJECT_BINARY_DIR}/${module}" COPYONLY)
+    endif()
+    if(module STREQUAL "ker-source-shell-wrapper.py")
+        install(PROGRAMS "${PROJECT_BINARY_DIR}/${module}"
+            DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT fstack-nginx-runtime)
+    else()
+        install(FILES "${PROJECT_BINARY_DIR}/${module}"
+            DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT fstack-nginx-runtime)
+    endif()
+endforeach()
 install(FILES
     "${PROJECT_BINARY_DIR}/broker_readiness_supervisor.py"
     "${PROJECT_BINARY_DIR}/broker_readiness_wire.py"

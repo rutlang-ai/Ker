@@ -16,6 +16,8 @@
 #include <rte_lcore.h>
 #include <rte_pause.h>
 
+static int retire(struct ker_worker_rx_lcores *, uint64_t *, struct ker_pcap *, bool);
+
 int ker_worker_rx_lcores_plan(struct ker_worker_rx_lcores *rx, uint16_t port,
     uint16_t queues, const char *selection, bool require_main)
 {
@@ -46,7 +48,10 @@ int ker_worker_rx_lcores_plan(struct ker_worker_rx_lcores *rx, uint16_t port,
     }
     if (require_main && !found) return -EXDEV;
     rx->count=count;
-    for (uint16_t q=0;q<queues;q++) rx->queue[q]=(struct ker_rx_poll_queue){.owner=cores[q%count],.observed=UINT_MAX,.cpu=-1};
+    for (uint16_t q=0;q<queues;q++) {
+        rx->queue[q]=(struct ker_rx_poll_queue){.owner=cores[q%count],.observed=UINT_MAX,.cpu=-1};
+        atomic_init(&rx->queue[q].owner_ready, false);
+    }
     return 0;
 }
 static int poll_queues(void *opaque)
@@ -56,7 +61,9 @@ static int poll_queues(void *opaque)
     unsigned core=rte_lcore_id();
     if (core!=poller->lcore) {atomic_store(&rx->error,-EXDEV);return -EXDEV;}
     for (uint16_t q=0;q<rx->queues;q++) if (rx->queue[q].owner==core) {
-        rx->queue[q].observed=core;rx->queue[q].cpu=sched_getcpu();rx->queue[q].starts++;
+        struct ker_rx_poll_queue *queue=&rx->queue[q];
+        queue->observed=core;queue->cpu=sched_getcpu();queue->starts++;
+        atomic_store_explicit(&queue->owner_ready, true, memory_order_release);
     }
     while (!atomic_load_explicit(&rx->stopping,memory_order_acquire)) {
         bool progress=false;
@@ -91,10 +98,16 @@ int ker_worker_rx_lcores_start(struct ker_worker_rx_lcores *rx)
     if (!rx || !rx->count || rte_lcore_id()!=rx->main) return -EINVAL;
     if (rx->notify_fd>=0) return -EBUSY;
     for (unsigned i=0;i<rx->count;i++) if (rx->poller[i].launched) return -EBUSY;
+    for (uint16_t q=0;q<rx->queues;q++)
+        atomic_store_explicit(&rx->queue[q].owner_ready, false, memory_order_relaxed);
     atomic_store_explicit(&rx->stopping,false,memory_order_release);
     atomic_store(&rx->error,0);
     if (!rx->remote) {
-        for (uint16_t q=0;q<rx->queues;q++) rx->queue[q].starts++;
+        for (uint16_t q=0;q<rx->queues;q++) {
+            struct ker_rx_poll_queue *queue=&rx->queue[q];
+            queue->observed=rx->main;queue->cpu=sched_getcpu();queue->starts++;
+            atomic_store_explicit(&queue->owner_ready, true, memory_order_release);
+        }
         return 0;
     }
     rx->notify_fd=eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);
@@ -106,11 +119,42 @@ int ker_worker_rx_lcores_start(struct ker_worker_rx_lcores *rx)
     }
     for (unsigned i=0;i<rx->count;i++) if (rx->poller[i].lcore!=rx->main) {
         int result=rte_eal_remote_launch(poll_queues,&rx->poller[i],rx->poller[i].lcore);
-        if (result) return result;
+        if (result) {
+            /* Earlier launches own live poll loops and ring/eventfd state.
+             * Join and reclaim those resources before reporting this launch
+             * failure; callers must not inherit a half-running RX plan. */
+            uint64_t discarded;
+            (void)retire(rx,&discarded,NULL,false);
+            return result;
+        }
         rx->poller[i].launched=true;
     }
-    for (uint16_t q=0;q<rx->queues;q++) if (rx->queue[q].owner==rx->main) rx->queue[q].starts++;
-    return 0;
+    for (uint16_t q=0;q<rx->queues;q++) if (rx->queue[q].owner==rx->main) {
+        struct ker_rx_poll_queue *queue=&rx->queue[q];
+        queue->observed=rx->main;queue->cpu=sched_getcpu();queue->starts++;
+        atomic_store_explicit(&queue->owner_ready, true, memory_order_release);
+    }
+    struct timespec started, now;
+    int startup_error = 0;
+    if (clock_gettime(CLOCK_MONOTONIC, &started)) startup_error = -errno;
+    for (;;) {
+        if (startup_error) break;
+        bool all_ready=true;
+        for (uint16_t q=0;q<rx->queues;q++)
+            if (!atomic_load_explicit(&rx->queue[q].owner_ready, memory_order_acquire)) {
+                all_ready=false;break;
+            }
+        if (all_ready) return 0;
+        startup_error=atomic_load_explicit(&rx->error, memory_order_acquire);
+        if (startup_error) break;
+        if (clock_gettime(CLOCK_MONOTONIC, &now)) {startup_error=-errno;break;}
+        if (now.tv_sec-started.tv_sec>5 ||
+            (now.tv_sec-started.tv_sec==5 && now.tv_nsec>=started.tv_nsec)) break;
+        rte_pause();
+    }
+    uint64_t discarded;
+    (void)retire(rx,&discarded,NULL,false);
+    return startup_error ? startup_error : -ETIMEDOUT;
 }
 uint16_t ker_worker_rx_lcores_burst(struct ker_worker_rx_lcores *rx, uint16_t q,
     struct rte_mbuf **packets, uint16_t capacity)

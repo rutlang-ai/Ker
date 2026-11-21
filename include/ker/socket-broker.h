@@ -86,6 +86,36 @@ struct ker_socket_member_payload_snapshot {
     uint64_t sampled_sockets;
 };
 
+/* One nonconsuming observation from original Linux TCP readiness/accounting.
+ * write_accounting_space is Linux socket-memory accounting, not a promise
+ * that a write of that many payload bytes will be accepted. */
+#define KER_SOCKET_EVENT_SNAPSHOT_VERSION 2u
+enum ker_socket_event_validity {
+    KER_SOCKET_EVENT_READ_AVAILABLE_VALID = 1u << 0,
+    KER_SOCKET_EVENT_WRITE_ACCOUNTING_VALID = 1u << 1,
+    KER_SOCKET_EVENT_HARD_ERROR_VALID = 1u << 2
+};
+enum ker_socket_event_flags {
+    KER_SOCKET_EVENT_LISTENER = 1u << 0,
+    KER_SOCKET_EVENT_ERROR_QUEUE_ONLY = 1u << 1,
+    KER_SOCKET_EVENT_READ_SHUTDOWN = 1u << 2,
+    KER_SOCKET_EVENT_WRITE_SHUTDOWN = 1u << 3
+};
+struct ker_socket_event_snapshot {
+    uint32_t version;
+    uint32_t size;
+    uint32_t events; /* Original Linux EPOLL* readiness mask. */
+    uint32_t validity;
+    uint16_t family;
+    uint16_t type;
+    uint16_t protocol;
+    uint16_t reserved16;
+    int64_t read_available; /* Listener accept-ready count or stream bytes. */
+    int64_t write_accounting_space;
+    int32_t pending_hard_error; /* Nonconsuming sk_err, positive errno. */
+    uint32_t flags;
+};
+
 struct ker_socket_client {
     char path[KER_SOCKET_BROKER_PATH_MAX + 1];
     int session_fd;
@@ -183,6 +213,8 @@ int ker_socket_client_ioctl(struct ker_socket_client *client, int cap_fd,
     unsigned long request, void *argument);
 int ker_socket_client_fionbio(struct ker_socket_client *client, int cap_fd, int enabled);
 int ker_socket_client_fionread(struct ker_socket_client *client, int cap_fd, int *available);
+int ker_socket_client_event_snapshot(struct ker_socket_client *client, int cap_fd,
+    struct ker_socket_event_snapshot *snapshot);
 /* SEND accepts MSG_DONTWAIT, MSG_MORE, MSG_NOSIGNAL; the broker always adds
  * MSG_NOSIGNAL. RECV accepts MSG_PEEK and MSG_DONTWAIT. */
 ssize_t ker_socket_client_send(struct ker_socket_client *client, int cap_fd,

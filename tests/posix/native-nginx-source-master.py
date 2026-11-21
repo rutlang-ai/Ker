@@ -215,6 +215,7 @@ def execute():
             tx_delay_us=0, numa=True, all_multicast=False, promiscuous=None,
             log_dir=None, log_level=None, pcap_dir=None), decision_io.fileno())
         workerfd = os.pidfd_open(worker.process.pid)
+        io_identity = kr.rx_decision_identity(worker.process.pid, workerfd)
         executable = build / 'ker-socket-broker-rx-owner-relay-fixture'
         apphash = kr.runtime_service.sha256_file(executable)
         service = kr.runtime_service.RuntimeServiceSupervisor(root / 'service.sock',
@@ -259,7 +260,7 @@ def execute():
         kr.rx_decision_bootstrap(decision_app, kr.rx_decision_wire.TARGET_CONSUMER,
             kr.rx_decision_identity(app.pid, appfd), sup, supfd, nonce, epoch)
         kr.rx_decision_bootstrap(decision_io, kr.rx_decision_wire.TARGET_WORKER,
-            kr.rx_decision_identity(worker.process.pid, workerfd), sup, supfd, nonce, epoch)
+            io_identity, sup, supfd, nonce, epoch)
         decision_app.close(); decision_io.close(); run_app.close(); auth_app.close()
         os.close(startup_write)
         status = kr.wait_startup_marker(startup_read, b'', b'KER_NATIVE_READY\n', 20, 'native ready')
@@ -756,11 +757,20 @@ def execute():
             if fd>=0:os.close(fd)
         caps.clear()
         if generation_watch_fd>=0:os.close(generation_watch_fd);generation_watch_fd=-1
+        native_stop_started_ns = time.monotonic_ns()
         ready.stop()
         require(select.select([run_sup],[],[],35)[0] and run_sup.recv(64)==b'KER_RUN_STOP\n','native shutdown missing')
+        native_run_stop_ns = time.monotonic_ns()
         require(service.prepare_worker_shutdown(1.0),'runtime lease remains')
         require(not worker.finish(),'IO owner unresolved')
         status=kr.drain_startup_status(startup_read,status);require(kr.normal_native_shutdown_markers(status),'native shutdown markers missing')
+        (evidence_dir/'native-startup-status.log').write_bytes(status)
+        require(app.poll() is None, 'runtime app did not wait for its I/O shutdown acknowledgement')
+        kr._validate_private_shutdown_markers(status)
+        c31_shutdown = kr.private_c31_shutdown_record(status, worker.stats,
+            worker_identity=(io_identity.pid, io_identity.uid, io_identity.gid, io_identity.start_ticks),
+            supervisor_identity=(sup.pid, sup.uid, sup.gid, sup.start_ticks),
+            nonce=nonce, epoch=epoch)
         run_sup.send(b'OK\n');require(app.wait(timeout=10)==0,'native broker failed')
         trace=(prefix/'runtime.trace').read_text()
         original_log=(prefix/'logs/error.log').read_text()
@@ -800,6 +810,8 @@ def execute():
             master=manager.master_pid,old_worker_pid=old_pid,worker=manager.owner_pid,tid=manager.owner_tid,
             slot=[manager.owner_slot_device,manager.owner_slot_inode],ready_cookie=manager.owner_cookie,
             native=native,io=io,trace=trace,barriers=barriers,gap=gaps,
+            c31_shutdown=c31_shutdown,
+            native_stop_to_run_request_ns=native_run_stop_ns-native_stop_started_ns,
             c34_verify_before_retire=c34_verify_result_json(before_retire),
             c34_verify_after_retire=c34_verify_result_json(retired),
             held_alias_retirement=({'controller_result':alias_retire,'aliases':alias_receipts}

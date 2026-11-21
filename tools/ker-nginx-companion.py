@@ -16,6 +16,7 @@ import struct
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 _WIRE_SPEC = importlib.util.spec_from_file_location(
     '_ker_nginx_companion_wire', Path(__file__).resolve().with_name(
@@ -285,8 +286,11 @@ def process_parent(pid):
 def receive_owner_ready(endpoint, *, expected_cookie, binary_hash, master,
                          master_pidfd, master_start, supervisor_pidfd,
                          supervisor_pid, supervisor_start, expected_role=0,
-                         expected_slot=None, expected_worker_pidfd=None, timeout=15.0):
+                         expected_slot=None, expected_worker_pidfd=None, timeout=15.0,
+                         observation_deadline_ns=None):
     deadline = time.monotonic() + timeout
+    if observation_deadline_ns is not None:
+        deadline = min(deadline, observation_deadline_ns / 1_000_000_000)
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -346,7 +350,10 @@ def receive_owner_ready(endpoint, *, expected_cookie, binary_hash, master,
                     start_ticks(master.pid) != master_start or
                     process_parent(worker_pid) != master.pid or
                     start_ticks(worker_pid) != worker_start or
-                    sha256_file(f'/proc/{worker_pid}/exe') != binary_hash or
+                    (sha256_file_bounded(f'/proc/{worker_pid}/exe',
+                        deadline_ns=observation_deadline_ns or int(deadline * 1_000_000_000))
+                        if observation_deadline_ns is not None else
+                        sha256_file(f'/proc/{worker_pid}/exe')) != binary_hash or
                     not Path(f'/proc/{worker_pid}/task/{owner_tid}').exists() or
                     not process_alive(supervisor_pidfd) or
                     start_ticks(supervisor_pid) != supervisor_start):
@@ -427,6 +434,37 @@ def sha256_file(path):
     with open(path, 'rb') as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(block)
+    return digest.digest()
+
+
+def sha256_file_bounded(path, *, deadline_ns, maximum=256 * 1024 * 1024):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        if before.st_size < 0 or before.st_size > maximum:
+            raise ValueError('pinned executable exceeds bounded hash size')
+        total = 0
+        while True:
+            if time.monotonic_ns() >= deadline_ns:
+                raise TimeoutError('pinned executable hash deadline expired')
+            try:
+                block = stream.read(min(1024 * 1024, maximum - total + 1))
+            except InterruptedError:
+                continue
+            if not block:
+                break
+            total += len(block)
+            if total > maximum or time.monotonic_ns() >= deadline_ns:
+                raise TimeoutError('pinned executable hash exceeded its bound')
+            digest.update(block)
+        after = os.fstat(stream.fileno())
+        stable_before = (before.st_dev, before.st_ino, before.st_size,
+            before.st_mtime_ns, before.st_ctime_ns)
+        stable_after = (after.st_dev, after.st_ino, after.st_size,
+            after.st_mtime_ns, after.st_ctime_ns)
+        if (stable_before != stable_after or total != after.st_size or
+                time.monotonic_ns() >= deadline_ns):
+            raise RuntimeError('pinned executable changed during bounded hash')
     return digest.digest()
 
 
@@ -741,7 +779,7 @@ def recv_record(channel, expected_credential, deadline, rights_count,
                 raise ValueError(ancillary_error)
             if credentials != expected_credential:
                 raise PermissionError('wrong companion message sender')
-            if len(fds) not in allowed_rights:
+            if allowed_rights is not None and len(fds) not in allowed_rights:
                 raise ValueError('wrong companion descriptor count')
             if deadline is not None and time.monotonic() > deadline:
                 raise TimeoutError('companion record arrived after deadline')
@@ -780,6 +818,249 @@ def send_record(channel, packet, fds=(), deadline=None):
                 raise ConnectionError('companion supervisor channel closed')
         except InterruptedError:
             continue
+
+
+def serve_attached_session(channel, helper_hash, timeout=5.0):
+    """Serve one attach-only observer session from an accepted-origin binding.
+
+    This entry point is intentionally outside ``main``'s subreaper lifecycle.
+    Its errors only close received observer descriptors and return failure; it
+    never signals, waits for, or settles the original master subtree.
+    """
+    helper_hash_deadline = time.monotonic_ns() + int(timeout * 1_000_000_000)
+    if (len(helper_hash) != 32 or sha256_file_bounded(__file__,
+            deadline_ns=helper_hash_deadline, maximum=4 * 1024 * 1024) != helper_hash):
+        raise PermissionError('source attach helper script pin mismatch')
+    peer = UCRED.unpack(channel.getsockopt(socket.SOL_SOCKET,
+        socket.SO_PEERCRED, UCRED.size))
+    peer_pid, peer_uid, peer_gid = peer
+    received = []
+    ready_pidfd = -1
+    attachment = None
+    request_sequence = 1
+    candidate_watch_seen = False
+    deadline = time.monotonic() + timeout
+    try:
+        data, received = recv_record(channel, peer, deadline, 2)
+        record_type, nonce, epoch, sequence = wire.unpack_header(data)
+        if (record_type != wire.ATTACH or sequence != request_sequence or
+                not any(nonce) or not epoch):
+            raise ValueError('invalid ATTACH nonce/epoch/sequence')
+        fields = wire.unpack_record(data, wire.ATTACH, nonce, epoch,
+            request_sequence, wire.ATTACH_BODY)
+        (owner_pid, owner_uid, owner_gid, reserved, owner_start, deadline_ns,
+            master_pid, master_uid, master_gid, master_reserved, master_start,
+            binary_hash, profile) = fields
+        if (reserved or master_reserved or owner_pid != peer_pid or (owner_uid, owner_gid) !=
+                (peer_uid, peer_gid) or owner_uid != os.getuid() or
+                owner_gid != os.getgid() or owner_start != start_ticks(owner_pid) or
+                os.getppid() != owner_pid or start_ticks(os.getppid()) != owner_start or
+                not process_alive(received[0]) or pidfd_pid(received[0]) != owner_pid or
+                not process_alive(received[1]) or pidfd_pid(received[1]) != master_pid or
+                master_pid <= 0 or master_start != start_ticks(master_pid) or
+                (master_uid, master_gid) != (owner_uid, owner_gid) or
+                sha256_file_bounded(f'/proc/{master_pid}/exe',
+                    deadline_ns=deadline_ns) != binary_hash or
+                not any(profile) or time.monotonic_ns() >= deadline_ns or
+                deadline_ns > time.monotonic_ns() + 300_000_000_000):
+            raise PermissionError('ATTACH identity, actor FDs, or finite profile mismatch')
+        owner_pidfd, master_pidfd = received
+        received = []
+        attachment = SimpleNamespace(owner_pid=owner_pid, owner_start=owner_start,
+            owner_pidfd=owner_pidfd, master_pid=master_pid,
+            master_start=master_start, master_pidfd=master_pidfd,
+            binary_hash=binary_hash, profile=profile, nonce=nonce, epoch=epoch,
+            deadline_ns=deadline_ns)
+        attachment.close = lambda: _close_fds((owner_pidfd, master_pidfd))
+        credential = (owner_pid, owner_uid, owner_gid)
+        deadline = deadline_ns / 1_000_000_000
+        send_record(channel, wire.pack_record(wire.ATTACHED,
+            wire.ATTACH_BODY.pack(*fields), nonce, epoch, request_sequence),
+            deadline=deadline)
+        _close_fds(received)
+        request_sequence += 1
+
+        data, received = recv_record(channel, credential, deadline, 2,
+            watched_pidfds=(attachment.master_pidfd, attachment.owner_pidfd))
+        watch = wire.unpack_record(data, wire.SOURCE_WATCH, attachment.nonce,
+            attachment.epoch, request_sequence, wire.SOURCE_WATCH_BODY)
+        pid, tid, role, reserved, start, slot_device, slot_inode, cookie = watch
+        if (reserved or role != 0 or pid <= 0 or tid != pid or start <= 0 or
+                not slot_device or not slot_inode or not cookie or
+                pidfd_pid(received[1]) != pid or not process_alive(received[1]) or
+                start_ticks(pid) != start or process_parent(pid) != attachment.master_pid or
+                sha256_file_bounded(f'/proc/{attachment.master_pid}/exe',
+                    deadline_ns=attachment.deadline_ns) != attachment.binary_hash):
+            raise PermissionError('SOURCE_WATCH is not the exact original master child')
+        receiver = socket.socket(fileno=received.pop(0))
+        worker_pidfd = received.pop(0)
+        if (receiver.family != socket.AF_UNIX or
+                receiver.type & 15 != socket.SOCK_SEQPACKET or
+                receiver.getsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED) != 1):
+            raise PermissionError('SOURCE_WATCH READY receiver is not credentialed seqpacket')
+
+        class AttachedMaster:
+            pid = attachment.master_pid
+            def poll(_self):
+                return None if process_alive(attachment.master_pidfd) else 0
+
+        identity, ready_pidfd = receive_owner_ready(receiver,
+            expected_cookie=cookie, binary_hash=attachment.binary_hash,
+            master=AttachedMaster(), master_pidfd=attachment.master_pidfd,
+            master_start=attachment.master_start,
+            supervisor_pidfd=attachment.owner_pidfd,
+            supervisor_pid=attachment.owner_pid,
+            supervisor_start=attachment.owner_start,
+            expected_role=0, expected_slot=(slot_device, slot_inode),
+            expected_worker_pidfd=worker_pidfd,
+            timeout=max(0.001, deadline - time.monotonic()),
+            observation_deadline_ns=attachment.deadline_ns)
+        expected = (pid, os.getuid(), os.getgid(), role, tid, 0, start,
+            slot_device, slot_inode, cookie)
+        if identity != expected:
+            raise PermissionError('original owner READY differs from SOURCE_WATCH')
+        send_record(channel, wire.pack_record(wire.OWNER_READY,
+            wire.OWNER_READY_BODY.pack(*identity), attachment.nonce,
+            attachment.epoch, request_sequence), (ready_pidfd,),
+            deadline=deadline)
+        os.close(ready_pidfd)
+        ready_pidfd = -1
+        receiver.close()
+        receiver = None
+        _close_fds((worker_pidfd,))
+        worker_pidfd = -1
+        request_sequence += 1
+
+        while True:
+            # The next record may be the one permitted candidate SOURCE_WATCH
+            # (two descriptors), or a lifecycle command (no descriptors).
+            # Defer the exact count check until its authenticated record type
+            # is known; all other recv_record callers keep their strict count.
+            data, received = recv_record(channel, credential, deadline, None,
+                watched_pidfds=(attachment.master_pidfd, attachment.owner_pidfd))
+            record_type, nonce, epoch, sequence = wire.unpack_header(data)
+            if (nonce != attachment.nonce or epoch != attachment.epoch or
+                    sequence != request_sequence):
+                raise ValueError('invalid attached-session sequence correlation')
+            if record_type == wire.SOURCE_WATCH:
+                if len(received) != 2:
+                    raise ValueError('candidate SOURCE_WATCH requires exactly two descriptors')
+                if candidate_watch_seen:
+                    raise PermissionError('attached observer candidate watch is one-shot')
+                watch = wire.unpack_record(data, wire.SOURCE_WATCH,
+                    attachment.nonce, attachment.epoch, request_sequence,
+                    wire.SOURCE_WATCH_BODY)
+                pid, tid, role, reserved, start, slot_device, slot_inode, cookie = watch
+                if (reserved or role != 1 or pid <= 0 or tid != pid or start <= 0 or
+                        not slot_device or not slot_inode or not cookie or
+                        pidfd_pid(received[1]) != pid or not process_alive(received[1]) or
+                        start_ticks(pid) != start or process_parent(pid) != attachment.master_pid or
+                        sha256_file_bounded(f'/proc/{attachment.master_pid}/exe',
+                            deadline_ns=attachment.deadline_ns) != attachment.binary_hash):
+                    raise PermissionError('SOURCE_WATCH is not the exact first-HUP master child')
+                receiver = socket.socket(fileno=received.pop(0))
+                worker_pidfd = received.pop(0)
+                if (receiver.family != socket.AF_UNIX or
+                        receiver.type & 15 != socket.SOCK_SEQPACKET or
+                        receiver.getsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED) != 1):
+                    raise PermissionError('candidate READY receiver is not credentialed seqpacket')
+                ready_identity, ready_pidfd = receive_owner_ready(receiver,
+                    expected_cookie=cookie, binary_hash=attachment.binary_hash,
+                    master=AttachedMaster(), master_pidfd=attachment.master_pidfd,
+                    master_start=attachment.master_start,
+                    supervisor_pidfd=attachment.owner_pidfd,
+                    supervisor_pid=attachment.owner_pid,
+                    supervisor_start=attachment.owner_start,
+                    expected_role=1, expected_slot=(slot_device, slot_inode),
+                    expected_worker_pidfd=worker_pidfd,
+                    timeout=max(0.001, deadline - time.monotonic()),
+                    observation_deadline_ns=attachment.deadline_ns)
+                expected = (pid, os.getuid(), os.getgid(), 1, tid, 0, start,
+                    slot_device, slot_inode, cookie)
+                if ready_identity != expected:
+                    raise PermissionError('candidate READY differs from SOURCE_WATCH')
+                send_record(channel, wire.pack_record(wire.OWNER_READY,
+                    wire.OWNER_READY_BODY.pack(*ready_identity), attachment.nonce,
+                    attachment.epoch, request_sequence), (ready_pidfd,),
+                    deadline=deadline)
+                os.close(ready_pidfd)
+                ready_pidfd = -1
+                receiver.close()
+                receiver = None
+                _close_fds((worker_pidfd,))
+                worker_pidfd = -1
+                candidate_watch_seen = True
+                request_sequence += 1
+                continue
+            if received:
+                raise ValueError('attached-session command carried unexpected descriptors')
+            if len(data) != wire.HEADER.size:
+                raise ValueError('invalid attached-session command size')
+            if record_type in (wire.RELOAD, wire.STOP, wire.SOURCE_HUP):
+                raise PermissionError('attached observer has no master lifecycle authority')
+            raise ValueError('unexpected attached-session command')
+    except BaseException as error:
+        # A best-effort observation error is safe: it carries no cleanup claim.
+        try:
+            if (attachment is not None and time.monotonic_ns() < attachment.deadline_ns and
+                    process_alive(attachment.master_pidfd)):
+                body = wire.ERROR_BODY.pack(errno.ECONNRESET, 4,
+                    attachment.master_pid, 0, attachment.master_start,
+                    attachment.profile)
+                send_record(channel, wire.pack_record(wire.ERROR, body,
+                    attachment.nonce, attachment.epoch, request_sequence),
+                    deadline=min(time.monotonic() + 0.25,
+                        attachment.deadline_ns / 1_000_000_000))
+        except BaseException:
+            pass
+        raise
+    finally:
+        _close_fds(received)
+        if ready_pidfd >= 0:
+            os.close(ready_pidfd)
+        if 'receiver' in locals() and receiver is not None:
+            receiver.close()
+        if 'worker_pidfd' in locals() and worker_pidfd >= 0:
+            os.close(worker_pidfd)
+        if attachment is not None:
+            attachment.close()
+
+
+def receive_attached_owner_ready(channel, *, nonce, epoch, sequence,
+        expected_credential, expected_identity, expected_worker_pidfd,
+        worker_binary_hash, master_pidfd, master_pid, master_start,
+        owner_pidfd, owner_pid, owner_start, deadline_ns, expected_role=0):
+    """Receive the real owner READY receipt for one exact attached watch.
+
+    This verifier is observation-only and returns the received worker PIDFD to
+    the caller.  It does not signal, reap, or settle any source process.
+    """
+    if expected_role not in (0, 1):
+        raise ValueError('attached observer role is outside the fixed owner/candidate set')
+    deadline = deadline_ns / 1_000_000_000
+    data, fds = recv_record(channel, expected_credential, deadline, 1,
+        watched_pidfds=(master_pidfd, owner_pidfd, expected_worker_pidfd))
+    try:
+        identity = wire.unpack_record(data, wire.OWNER_READY, nonce, epoch,
+            sequence, wire.OWNER_READY_BODY)
+        wire.validate_owner_ready(identity, expected_uid=os.getuid(),
+            expected_gid=os.getgid(), expected_role=expected_role,
+            expected_cookie=expected_identity[9])
+        if (identity != expected_identity or pidfd_pid(fds[0]) != identity[0] or
+                not process_alive(fds[0]) or start_ticks(identity[0]) != identity[6] or
+                process_parent(identity[0]) != master_pid or
+                sha256_file_bounded(f'/proc/{identity[0]}/exe',
+                    deadline_ns=deadline_ns) != worker_binary_hash or
+                not Path(f'/proc/{identity[0]}/task/{identity[4]}').exists() or
+                not process_alive(master_pidfd) or start_ticks(master_pid) != master_start or
+                not process_alive(owner_pidfd) or start_ticks(owner_pid) != owner_start or
+                pidfd_pid(expected_worker_pidfd) != identity[0] or
+                time.monotonic_ns() >= deadline_ns):
+            raise PermissionError('attached owner READY differs from exact live worker/master')
+        result = fds.pop()
+        return identity, result
+    finally:
+        _close_fds(fds)
 
 
 def direct_children():
@@ -1487,6 +1768,29 @@ def run(args):
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == '--source-attach-only':
+        attach_parser = argparse.ArgumentParser()
+        attach_parser.add_argument('--source-attach-only', action='store_true')
+        attach_parser.add_argument('--control-fd', type=int, required=True)
+        attach_parser.add_argument('--helper-sha256', type=lambda value: bytes.fromhex(value), required=True)
+        attach_args = attach_parser.parse_args(argv)
+        if attach_args.control_fd < 3 or len(attach_args.helper_sha256) != 32:
+            attach_parser.error('invalid source attach helper control/profile')
+        channel = socket.socket(fileno=attach_args.control_fd)
+        try:
+            if (channel.family != socket.AF_UNIX or
+                    channel.type & 15 != socket.SOCK_SEQPACKET):
+                attach_parser.error('source attach control fd must be Unix SOCK_SEQPACKET')
+            channel.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            return serve_attached_session(channel, attach_args.helper_sha256)
+        except BaseException as error:
+            print(f'ker-nginx-companion attach observation failed: {error}',
+                file=sys.stderr)
+            return 2
+        finally:
+            channel.close()
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--control-fd', type=int, required=True)
     parser.add_argument('--cycle-control-fd', type=int)

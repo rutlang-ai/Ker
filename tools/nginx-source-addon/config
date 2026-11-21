@@ -1,0 +1,79 @@
+#!/bin/sh
+
+# Built-in module profile for a genuine upstream nginx --add-module build.
+# The source checkout stays read-only; only nginx's normal generated objs and
+# binary live in the caller's build tree.
+
+ngx_addon_name=ker_fstack_nginx_owner_activation
+ker_root=$(cd "$ngx_addon_dir/../.." && pwd) || exit 1
+
+: "${KER_NGINX_ADDON_FSTACK_ROOT:?set KER_NGINX_ADDON_FSTACK_ROOT to the pinned F-Stack checkout}"
+: "${KER_NGINX_ADDON_BUILD_DIR:?set KER_NGINX_ADDON_BUILD_DIR to the current Ker NativeLinux build directory}"
+: "${KER_NGINX_ADDON_SHIM:?set KER_NGINX_ADDON_SHIM to the ABI-matched worker shim input}"
+
+ker_fstack_root=$(cd "$KER_NGINX_ADDON_FSTACK_ROOT" && pwd) || exit 1
+ker_build_dir=$(cd "$KER_NGINX_ADDON_BUILD_DIR" && pwd) || exit 1
+ker_shim=$(cd "$(dirname "$KER_NGINX_ADDON_SHIM")" && pwd)/$(basename "$KER_NGINX_ADDON_SHIM")
+ker_nginx_src="$ker_fstack_root/app/nginx-1.28.0/src"
+ker_fstack_revision=$(git -C "$ker_fstack_root" rev-parse HEAD 2>/dev/null) || exit 1
+if [ "$ker_fstack_revision" != 646a641cfff77f4815e1e29829a09e1ed15a2999 ] ||
+        [ -n "$(git -C "$ker_fstack_root" status --porcelain --untracked-files=all -- app/nginx-1.28.0/src)" ]; then
+    echo "Ker Nginx addon requires unchanged F-Stack source 646a641cfff77f4815e1e29829a09e1ed15a2999" >&2
+    exit 1
+fi
+
+for ker_required in \
+    "$ker_nginx_src/core/ngx_config.h" \
+    "$ker_fstack_root/app/nginx-1.28.0/objs/ngx_auto_config.h" \
+    "$ker_build_dir/libker-socket-client.a" \
+    "$ker_build_dir/libker-ini.a" \
+    "$ker_build_dir/libfstack.so" \
+    "$ker_build_dir/libker-socket-preload.so" \
+    "$ker_shim"
+do
+    if [ ! -r "$ker_required" ]; then
+        echo "Ker Nginx addon input missing: $ker_required" >&2
+        exit 1
+    fi
+done
+
+ngx_module_type=CORE
+ngx_module_name=ker_fstack_nginx_owner_activation_module
+ngx_module_srcs="\
+$ker_root/src/posix/fstack-nginx-owner-activation-module.c \
+$ker_root/src/posix/nginx-source-owner-admission.c \
+$ker_root/src/posix/nginx-candidate-admission.c \
+$ker_root/src/posix/nginx-owner-ready.c \
+$ker_root/src/posix/nginx-candidate-map.c"
+ngx_module_incs="\
+$ker_root/include \
+$ker_root/src/posix \
+$ker_root/third_party/fstack-address-policy \
+$ker_root/third_party/fstack-flow-map \
+$ker_root/third_party/fstack-ipc \
+$ker_root/third_party/fstack-reload \
+$ker_nginx_src/core \
+$ker_nginx_src/event \
+$ker_nginx_src/event/modules \
+$ker_nginx_src/os/unix \
+$ker_fstack_root/app/nginx-1.28.0/objs"
+
+# This define suppresses the shared-object module export arrays in the module
+# source. Nginx's normal configure-generated ngx_modules.c owns those arrays
+# for a built-in addon.
+CFLAGS="${CFLAGS:-} -DKER_NGINX_OWNER_BUILTIN=1"
+
+# Keep direct NEEDED entries for the three Ker runtime DSOs even though their
+# primary purpose is interposition. They are ordered before the system libc
+# dependencies in the final Nginx ELF. Static Ker client/INI APIs resolve the
+# module's direct calls; OpenSSL and dl resolve its existing implementation.
+ngx_module_libs="-Wl,--no-as-needed \
+$ker_shim \
+$ker_build_dir/libfstack.so \
+$ker_build_dir/libker-socket-preload.so \
+-Wl,--as-needed -Wl,-rpath,$ker_build_dir:$(dirname "$ker_shim") \
+$ker_build_dir/libker-socket-client.a \
+$ker_build_dir/libker-ini.a -lcrypto -ldl -pthread"
+ngx_module_link=ADDON
+
+. auto/module

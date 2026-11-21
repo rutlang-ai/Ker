@@ -21,6 +21,13 @@
 #define PRELOAD_WAIT_SLOTS 4096
 
 struct fd_identity { dev_t device; ino_t inode; };
+struct ker_sb_preload_epoll_context_ref {
+    void *context;
+    ker_sb_preload_epoll_fd_close_fn fd_close;
+    ker_sb_preload_epoll_context_destroy_fn destroy;
+    uint64_t generation;
+    size_t references;
+};
 struct network_entry {
     int app_fd;
     int private_fd;
@@ -31,6 +38,7 @@ struct epoll_entry {
     int broker_fd;
     struct fd_identity identity;
     bool remote_first;
+    struct ker_sb_preload_epoll_context_ref *adapter_context;
 };
 struct wait_pin_entry { int host_fd; int broker_fd; pid_t owner_tid; };
 
@@ -45,6 +53,7 @@ static pid_t preload_origin_pid;
 static struct network_entry network_fds[PRELOAD_FD_SLOTS];
 static uint64_t network_registry_generation;
 static struct epoll_entry epoll_fds[PRELOAD_FD_SLOTS];
+static uint64_t epoll_context_generation;
 static int private_fds[PRELOAD_PRIVATE_SLOTS];
 static struct wait_pin_entry wait_pins[PRELOAD_WAIT_SLOTS];
 
@@ -101,6 +110,7 @@ static void fork_parent(void)
 static void fork_child(void)
 {
     close_vanished_wait_pins_locked(preload_fork_owner_tid);
+    ker_sb_preload_event_adapter_fork_child_cleanup();
     preload_fork_owner_tid = 0;
     ker_sb_preload_owner_loop_fork_cleanup();
     ker_sb_preload_unlock();
@@ -277,6 +287,9 @@ void ker_sb_preload_remove_network_locked(int app_fd)
 {
     size_t slot = find_network_slot(app_fd);
     if (slot == PRELOAD_FD_SLOTS) return;
+    if (network_fds[slot].private_fd >= 0)
+        (void)ker_sb_preload_event_fd_close_locked(app_fd,
+            network_fds[slot].private_fd);
     if (network_fds[slot].private_fd >= 0) {
         ker_sb_preload_untrack_private_fd_locked(network_fds[slot].private_fd);
         (void)syscall(SYS_close, network_fds[slot].private_fd);
@@ -811,10 +824,157 @@ static size_t free_epoll_slot(void)
     return PRELOAD_FD_SLOTS;
 }
 
+static void epoll_context_unref_locked(
+    struct ker_sb_preload_epoll_context_ref *reference)
+{
+    if (!reference || !reference->references) abort();
+    if (--reference->references == 0) {
+        reference->destroy(reference->context);
+        free(reference);
+    }
+}
+
+int ker_sb_preload_epoll_context_install_locked(int app_fd, void *context,
+    ker_sb_preload_epoll_fd_close_fn fd_close,
+    ker_sb_preload_epoll_context_destroy_fn destroy)
+{
+    size_t slot = find_epoll_slot(app_fd);
+    if (slot == PRELOAD_FD_SLOTS || !identity_matches(app_fd,
+            epoll_fds[slot].identity)) {
+        errno = EBADF;
+        return -1;
+    }
+    if (!context || !fd_close || !destroy || epoll_fds[slot].adapter_context) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct ker_sb_preload_epoll_context_ref *reference = calloc(1,
+        sizeof(*reference));
+    if (!reference) return -1;
+    if (++epoll_context_generation == 0) ++epoll_context_generation;
+    *reference = (struct ker_sb_preload_epoll_context_ref){
+        .context = context,
+        .fd_close = fd_close,
+        .destroy = destroy,
+        .generation = epoll_context_generation,
+        .references = 1
+    };
+    epoll_fds[slot].adapter_context = reference;
+    return 0;
+}
+
+int ker_sb_preload_epoll_context_acquire(int app_fd,
+    struct ker_sb_preload_epoll_context_ref **reference_out,
+    void **context_out, uint64_t *generation_out)
+{
+    if (!reference_out || !context_out || !generation_out) {
+        errno = EINVAL;
+        return -1;
+    }
+    ker_sb_preload_lock();
+    int composite = ker_sb_preload_epoll_fd_locked(app_fd, NULL);
+    if (composite <= 0) {
+        if (composite == 0) errno = EBADF;
+        ker_sb_preload_unlock();
+        return -1;
+    }
+    size_t slot = find_epoll_slot(app_fd);
+    struct ker_sb_preload_epoll_context_ref *reference =
+        epoll_fds[slot].adapter_context;
+    if (!reference) {
+        ker_sb_preload_unlock();
+        errno = EOPNOTSUPP;
+        return -1;
+    }
+    if (reference->references == SIZE_MAX) {
+        ker_sb_preload_unlock();
+        errno = EOVERFLOW;
+        return -1;
+    }
+    ++reference->references;
+    *reference_out = reference;
+    *context_out = reference->context;
+    *generation_out = reference->generation;
+    ker_sb_preload_unlock();
+    return 0;
+}
+
+void ker_sb_preload_epoll_context_release(
+    struct ker_sb_preload_epoll_context_ref *reference)
+{
+    if (!reference) return;
+    ker_sb_preload_lock();
+    epoll_context_unref_locked(reference);
+    ker_sb_preload_unlock();
+}
+
+void ker_sb_preload_event_adapter_fork_child_cleanup(void)
+{
+    /* The atfork child owns a private copy. In-flight references from vanished
+     * threads are discarded; each inherited epoll table entry keeps one owner
+     * reference until it is detached below. */
+    for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
+        struct ker_sb_preload_epoll_context_ref *reference =
+            epoll_fds[i].adapter_context;
+        if (!reference) continue;
+        bool first = true;
+        size_t owners = 0;
+        for (size_t j = 0; j < i; ++j)
+            if (epoll_fds[j].adapter_context == reference) first = false;
+        if (!first) continue;
+        for (size_t j = i; j < PRELOAD_FD_SLOTS; ++j)
+            if (epoll_fds[j].adapter_context == reference) ++owners;
+        reference->references = owners;
+    }
+    for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
+        struct ker_sb_preload_epoll_context_ref *reference =
+            epoll_fds[i].adapter_context;
+        if (!reference) continue;
+        epoll_fds[i].adapter_context = NULL;
+        epoll_context_unref_locked(reference);
+    }
+}
+
+int ker_sb_preload_event_fd_close_locked(int app_fd, int capability_fd)
+{
+    int result = 0;
+    for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
+        struct ker_sb_preload_epoll_context_ref *reference =
+            epoll_fds[i].adapter_context;
+        if (!reference) continue;
+        int status = reference->fd_close(reference->context, app_fd,
+            capability_fd);
+        if (status && !result) result = status;
+    }
+    return result;
+}
+
+int ker_sb_preload_event_epoll_ctl_locked(int epfd, int operation, int fd,
+    struct epoll_event *event)
+{
+    int broker_epoll_fd = -1;
+    int composite = ker_sb_preload_epoll_fd_locked(epfd, &broker_epoll_fd);
+    if (composite < 0) return -1;
+    if (!composite)
+        return (int)syscall(SYS_epoll_ctl, epfd, operation, fd, event);
+    int capability_fd = -1;
+    int native = ker_sb_preload_network_fd_locked(fd, &capability_fd);
+    if (native < 0) return -1;
+    if (!native)
+        return (int)syscall(SYS_epoll_ctl, epfd, operation, fd, event);
+    struct ker_socket_client *client = ker_sb_preload_client_locked();
+    return client ? ker_socket_client_epoll_ctl(client, broker_epoll_fd,
+        operation, capability_fd, event) : -1;
+}
+
 void ker_sb_preload_remove_epoll_locked(int app_fd)
 {
     size_t slot = find_epoll_slot(app_fd);
     if (slot == PRELOAD_FD_SLOTS) return;
+    struct ker_sb_preload_epoll_context_ref *reference =
+        epoll_fds[slot].adapter_context;
+    epoll_fds[slot].adapter_context = NULL;
+    if (reference) epoll_context_unref_locked(reference);
     if (epoll_fds[slot].broker_fd >= 0) {
         ker_sb_preload_untrack_private_fd_locked(epoll_fds[slot].broker_fd);
         (void)syscall(SYS_close, epoll_fds[slot].broker_fd);
@@ -896,6 +1056,20 @@ int ker_sb_preload_duplicate_epoll_locked(int old_fd, int minimum, bool cloexec)
         int error = errno;
         (void)syscall(SYS_close, broker_fd); (void)syscall(SYS_close, host_fd);
         errno = error; return -1;
+    }
+    size_t duplicate_slot = find_epoll_slot(host_fd);
+    struct ker_sb_preload_epoll_context_ref *reference =
+        epoll_fds[slot].adapter_context;
+    if (reference) {
+        if (reference->references == SIZE_MAX) {
+            ker_sb_preload_remove_epoll_locked(host_fd);
+            (void)syscall(SYS_close, host_fd);
+            (void)syscall(SYS_close, broker_fd);
+            errno = EOVERFLOW;
+            return -1;
+        }
+        ++reference->references;
+        epoll_fds[duplicate_slot].adapter_context = reference;
     }
     (void)syscall(SYS_close, broker_fd);
     return host_fd;

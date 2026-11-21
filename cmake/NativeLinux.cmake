@@ -232,14 +232,15 @@ if("CONFIG_SMP=y" IN_LIST ker_admission_lkl_profile OR
 else()
     set(ker_ff_admission_window_serialized_lkl TRUE)
 endif()
-add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
+add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/source-network-readback.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c src/posix/posix-interface.c src/posix/posix-statvfs.c src/posix/posix-process.c
     src/posix/posix-stdio.c
     src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/rx-decision-consumer.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c
     src/posix/member-census-diag.c src/posix/member-census-diag-parse.c
     src/posix/ff-owner-requests-diag.c src/posix/ff-owner-requests-parse.c
     src/posix/ff-admission-request-identity.c
-    src/posix/tcp-payload-snapshot.c src/posix/ff-admission-queue.c
+    src/posix/tcp-payload-snapshot.c src/posix/tcp-event-snapshot.c
+    src/posix/ff-admission-queue.c
     src/posix/ff-ingress-freeze-state.c src/posix/ff-ingress-freeze-queue-parse.c
     src/posix/ff-ingress-freeze-queue.c src/posix/ff-ingress-controller.c
     src/posix/ff-admission-channel.c src/posix/ff-admission-task.c)
@@ -335,8 +336,8 @@ endif()
 add_library(ker::socket-preload ALIAS ker-socket-preload)
 
 # Namespaced bridge for callers built against the original F-Stack socket ABI.
-# It deliberately implements only the leaf socket calls backed by the broker;
-# F-Stack startup, event, and reload APIs remain outside this target.
+# It implements broker-backed socket calls and bounded readiness adapters;
+# F-Stack startup and reload APIs remain outside this target.
 add_library(ker-fstack-socket-bridge SHARED src/posix/fstack-socket-bridge.c)
 set_target_properties(ker-fstack-socket-bridge PROPERTIES
     EXPORT_NAME fstack-socket-bridge
@@ -415,6 +416,44 @@ if(KER_BUILD_FSTACK_NGINX_RUNTIME)
         target_link_libraries(ker-fstack-nginx-runtime-profile-test PRIVATE ker-fstack-nginx-runtime)
         add_test(NAME fstack-nginx-runtime-profile-boundaries
             COMMAND ker-fstack-nginx-runtime-profile-test)
+
+        foreach(origin_transport IN ITEMS
+                nginx-source-bootstrap-v4-transport
+                nginx-source-origin-v2-transport)
+            add_executable(ker-${origin_transport}-test
+                tests/posix/${origin_transport}.c)
+            target_include_directories(ker-${origin_transport}-test PRIVATE
+                "${PROJECT_SOURCE_DIR}/include"
+                "${PROJECT_SOURCE_DIR}/src/posix")
+            target_compile_features(ker-${origin_transport}-test PRIVATE c_std_11)
+            target_compile_options(ker-${origin_transport}-test PRIVATE
+                -Wall -Wextra -Werror)
+            # The origin fixture exports explicit predicate/snapshot symbols
+            # for dlsym; neither test starts Nginx, native TCP, or DPDK.
+            target_link_options(ker-${origin_transport}-test PRIVATE
+                -Wl,--export-dynamic)
+            target_link_libraries(ker-${origin_transport}-test PRIVATE
+                ker-fstack-nginx-runtime)
+            if(origin_transport STREQUAL "nginx-source-bootstrap-v4-transport")
+                set(origin_test_name "source-bootstrap-v4-model-transport")
+            else()
+                set(origin_test_name "source-origin-v2-model-transport")
+            endif()
+            add_test(NAME ${origin_test_name}
+                COMMAND ker-${origin_transport}-test)
+            set_tests_properties(${origin_test_name} PROPERTIES
+                TIMEOUT 30 LABELS "source-shell;model-transport")
+        endforeach()
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        add_test(NAME source-bootstrap-worker-activate-model-transport
+            COMMAND "${CMAKE_COMMAND}" -E env
+                "KER_FSTACK_ACTIVATION_RECEIVER=$<TARGET_FILE:ker-nginx-source-bootstrap-v4-transport-test>"
+                "${Python3_EXECUTABLE}" -B
+                "${PROJECT_SOURCE_DIR}/tests/unit/test_nginx_source_bootstrap.py"
+                ShellCycleEnvelopeTests.test_source_activation_does_not_wait_for_full_unix_queue
+                ShellCycleEnvelopeTests.test_source_activation_reaches_real_c_receiver)
+        set_tests_properties(source-bootstrap-worker-activate-model-transport PROPERTIES
+            TIMEOUT 15 LABELS "source-shell;model-transport")
     endif()
 endif()
 
@@ -529,6 +568,7 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
 
     add_library(ker-fstack-nginx-worker-shim SHARED src/posix/fstack-nginx-multiworker-shim.c)
     target_include_directories(ker-fstack-nginx-worker-shim PRIVATE
+        "${PROJECT_SOURCE_DIR}/include"
         "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core"
         "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event"
         "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules"
@@ -692,7 +732,8 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
             LABELS "socket-broker;preload;rx-owner-relay;checkpoint;unit-model"
             TIMEOUT 10)
         add_executable(ker-rx-owner-relay-app-loop-test
-            tests/unit/rx-owner-relay-app-loop-test.c)
+            tests/unit/rx-owner-relay-app-loop-test.c
+            src/posix/rx-owner-relay-peer.c)
         target_include_directories(ker-rx-owner-relay-app-loop-test PRIVATE
             "${PROJECT_SOURCE_DIR}/include"
             "${PROJECT_SOURCE_DIR}/tests/posix"
@@ -708,7 +749,9 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
             LABELS "rx-decision;owner-relay;settlement"
             TIMEOUT 5)
         add_executable(ker-fstack-nginx-rx-relay-once-test
-            tests/unit/nginx-rx-relay-ff-run-once-test.c)
+            tests/unit/nginx-rx-relay-ff-run-once-test.c
+            src/posix/nginx-source-reload.c
+            src/posix/rx-owner-relay-peer.c)
         target_include_directories(ker-fstack-nginx-rx-relay-once-test PRIVATE
             "${PROJECT_SOURCE_DIR}/include"
             "${PROJECT_SOURCE_DIR}/src/posix"
@@ -716,11 +759,14 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
             "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map"
             "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
             "${PROJECT_SOURCE_DIR}/third_party/fstack-reload")
+        target_include_directories(ker-fstack-nginx-rx-relay-once-test SYSTEM PRIVATE
+            ${DPDK_INCLUDE_DIRS})
         target_compile_features(ker-fstack-nginx-rx-relay-once-test PRIVATE c_std_11)
         target_compile_options(ker-fstack-nginx-rx-relay-once-test PRIVATE
             -ffunction-sections -fdata-sections -Wall -Wextra -Werror)
         target_link_options(ker-fstack-nginx-rx-relay-once-test PRIVATE -Wl,--gc-sections)
-        target_link_libraries(ker-fstack-nginx-rx-relay-once-test PRIVATE ${CMAKE_DL_LIBS})
+        target_link_libraries(ker-fstack-nginx-rx-relay-once-test PRIVATE
+            ker-fstack-nginx-runtime ker-socket-preload Threads::Threads ${CMAKE_DL_LIBS})
         add_test(NAME fstack-nginx-rx-relay-ff-run-once
             COMMAND ker-fstack-nginx-rx-relay-once-test)
         set_tests_properties(fstack-nginx-rx-relay-ff-run-once PROPERTIES
@@ -1131,6 +1177,12 @@ if(BUILD_TESTING)
     set_tests_properties(rx-owner-source-route-python PROPERTIES
         TIMEOUT 30 LABELS "rx-decision;owner-relay;source-route;authentication"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    if(TARGET ker-nginx-source-bootstrap-v4-transport-test)
+        add_dependencies(ker-rx-owner-source-route-receiver-test
+            ker-nginx-source-bootstrap-v4-transport-test)
+        set_property(TEST rx-owner-source-route-python APPEND PROPERTY ENVIRONMENT
+            "KER_FSTACK_ACTIVATION_RECEIVER=$<TARGET_FILE:ker-nginx-source-bootstrap-v4-transport-test>")
+    endif()
     if(TARGET ker-fstack-nginx-owner-activation)
         add_executable(ker-nginx-source-relay-liveness-test
             tests/unit/nginx-source-relay-liveness-test.c)
@@ -3264,6 +3316,36 @@ endif()
 include(cmake/FStackOwnerRequestsTests.cmake)
 if(BUILD_TESTING)
     ker_add_ff_owner_requests_tests()
+    add_executable(ker-source-network-readback-model
+        tests/posix/source-network-readback.c src/posix/source-network-readback.c)
+    target_include_directories(ker-source-network-readback-model PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix")
+    target_include_directories(ker-source-network-readback-model SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_compile_options(ker-source-network-readback-model PRIVATE
+        -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+    target_link_options(ker-source-network-readback-model PRIVATE -Wl,--gc-sections)
+    add_test(NAME source-network-readback-model COMMAND ker-source-network-readback-model)
+    set_tests_properties(source-network-readback-model PROPERTIES TIMEOUT 30
+        LABELS "source-shell;model")
+    # The event adapter model and the production descriptor registry have
+    # separate controls; neither substitutes for the native broker tests.
+    foreach(event_control IN ITEMS fstack-kqueue-adapter socket-broker-preload-fd-context)
+        add_executable(ker-${event_control}-test tests/unit/${event_control}-test.c)
+        target_include_directories(ker-${event_control}-test PRIVATE
+            "${PROJECT_SOURCE_DIR}/include"
+            "${PROJECT_SOURCE_DIR}/src/posix"
+            "${PROJECT_SOURCE_DIR}/src/posix/lkl-overlay/arch/lkl/include"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
+        target_compile_options(ker-${event_control}-test PRIVATE
+            -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+        target_link_options(ker-${event_control}-test PRIVATE -Wl,--gc-sections)
+        target_link_libraries(ker-${event_control}-test PRIVATE Threads::Threads)
+        add_test(NAME ${event_control} COMMAND ker-${event_control}-test)
+        set_tests_properties(${event_control} PROPERTIES TIMEOUT 30
+            LABELS "fstack;event-adapter")
+    endforeach()
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/RxDecisionForwardTests.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/RuntimeServiceSupervisorTests.cmake")

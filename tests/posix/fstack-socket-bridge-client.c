@@ -145,6 +145,17 @@ static int guarded_ff_fcntl(int fd, int command, int argument)
 static void output(const char *text)
 { (void)syscall(SYS_write, STDOUT_FILENO, text, strlen(text)); }
 
+static int descriptor_count_below(unsigned limit);
+
+static int capture_descriptor_set(unsigned limit, unsigned char *set)
+{
+    for (unsigned fd = 0; fd < limit; ++fd) {
+        if (syscall(SYS_fcntl, (int)fd, F_GETFD) >= 0) set[fd] = 1;
+        else if (errno != EBADF) return -1;
+    }
+    return 0;
+}
+
 static void make_bytes(unsigned char *bytes, size_t size)
 { for (size_t i = 0; i < size; ++i) bytes[i] = (unsigned char)(i * 31u + 17u); }
 
@@ -172,6 +183,202 @@ static int write_exact(int fd, const unsigned char *bytes, size_t size)
         if (result <= 0) return -1;
         offset += (size_t)result;
     }
+    return 0;
+}
+
+static int verify_native_kqueue_readiness(int fd, int *queue_out,
+    int expected_read_bytes, int *fin_seen, const unsigned char *baseline_fds)
+{
+    int queue = ff_kqueue();
+    CHECK(queue >= 0);
+    int read_tag = 101, write_tag = 202, user_add_tag = 303, user_trigger_tag = 404;
+    struct kevent changes[4], results[4];
+    EV_SET(&changes[0], fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, &read_tag);
+    EV_SET(&changes[1], fd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, &write_tag);
+    EV_SET(&changes[2], 0, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, &user_add_tag);
+    EV_SET(&changes[3], 0, EVFILT_USER, 0, NOTE_TRIGGER, 0, &user_trigger_tag);
+
+    int have_read = 0, have_write = 0, have_user = 0;
+    for (unsigned attempt = 0; attempt < 8 && !(have_read && have_write && have_user);
+            ++attempt) {
+        struct timespec timeout = {.tv_sec = 1};
+        int count = ff_kevent(queue, attempt ? NULL : changes,
+            attempt ? 0 : 4, results, 4, &timeout);
+        CHECK(count >= 0);
+        for (int i = 0; i < count; ++i) {
+            if (results[i].filter == EVFILT_READ) {
+                CHECK(results[i].udata == &read_tag && results[i].data == expected_read_bytes);
+                CHECK(results[i].flags & EV_EOF);
+                have_read = 1;
+                if (results[i].flags & EV_EOF) *fin_seen = 1;
+                CHECK(results[i].fflags == 0);
+            } else if (results[i].filter == EVFILT_WRITE) {
+                CHECK(results[i].udata == &write_tag && results[i].data > 0);
+                CHECK(!(results[i].flags & EV_EOF));
+                have_write = 1;
+            } else if (results[i].filter == EVFILT_USER) {
+                CHECK(results[i].ident == 0 && results[i].udata == &user_trigger_tag &&
+                    results[i].fflags == NOTE_FFNOP);
+                have_user = 1;
+            } else {
+                CHECK(0);
+            }
+        }
+    }
+    CHECK(have_read && have_write && have_user);
+
+    int alias = dup(queue);
+    CHECK(alias >= 0);
+    void (*preload_lock)(void) = (void (*)(void))dlsym(RTLD_DEFAULT,
+        "ker_sb_preload_lock");
+    void (*preload_unlock)(void) = (void (*)(void))dlsym(RTLD_DEFAULT,
+        "ker_sb_preload_unlock");
+    int (*preload_epoll_mapping)(int, int *) = (int (*)(int, int *))
+        dlsym(RTLD_DEFAULT, "ker_sb_preload_epoll_fd_locked");
+    CHECK(preload_lock && preload_unlock && preload_epoll_mapping);
+    int queue_broker_fd = -1, alias_broker_fd = -1;
+    preload_lock();
+    int queue_registered = preload_epoll_mapping(queue, &queue_broker_fd);
+    int alias_registered = preload_epoll_mapping(alias, &alias_broker_fd);
+    preload_unlock();
+    CHECK(queue_registered == 1 && alias_registered == 1 &&
+        queue_broker_fd >= 0 && alias_broker_fd >= 0 &&
+        queue_broker_fd != alias_broker_fd);
+    int hidden_fds[16];
+    size_t hidden_count = 0;
+    for (unsigned candidate = 0; candidate < 4096; ++candidate) {
+        if (baseline_fds[candidate] || candidate == (unsigned)queue ||
+                candidate == (unsigned)alias ||
+                candidate == (unsigned)queue_broker_fd ||
+                candidate == (unsigned)alias_broker_fd) continue;
+        if (syscall(SYS_fcntl, (int)candidate, F_GETFD) >= 0) {
+            CHECK(hidden_count < sizeof(hidden_fds) / sizeof(hidden_fds[0]));
+            hidden_fds[hidden_count++] = (int)candidate;
+        } else {
+            CHECK(errno == EBADF);
+        }
+    }
+    CHECK(hidden_count == 7);
+    pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        errno = 0;
+        int result = ff_kevent(alias, NULL, 0, results, 1,
+            &(struct timespec){.tv_nsec = 1000000});
+        int kevent_error = errno;
+        /* Child atfork cleanup closes read/write/user app+broker epoll pairs
+         * and the private USER eventfd, while retaining public kqueue aliases. */
+        int hidden_closed = 1;
+        for (size_t i = 0; i < hidden_count; ++i) {
+            errno = 0;
+            if (syscall(SYS_fcntl, hidden_fds[i], F_GETFD) >= 0 || errno != EBADF)
+                hidden_closed = 0;
+        }
+        if (syscall(SYS_fcntl, queue_broker_fd, F_GETFD) < 0 ||
+                syscall(SYS_fcntl, alias_broker_fd, F_GETFD) < 0)
+            hidden_closed = 0;
+        _exit(result == -1 && kevent_error == EOPNOTSUPP && hidden_closed &&
+            syscall(SYS_fcntl, alias, F_GETFD) >= 0 ? 0 : 91);
+    }
+    int status = 0;
+    CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+        WEXITSTATUS(status) == 0);
+    CHECK(close(queue) == 0);
+    errno = 0;
+    CHECK(syscall(SYS_fcntl, queue_broker_fd, F_GETFD) < 0 && errno == EBADF);
+    CHECK(syscall(SYS_fcntl, alias_broker_fd, F_GETFD) >= 0);
+    *queue_out = alias;
+    return 0;
+}
+
+static int wait_native_kqueue_reset(int queue, int fd)
+{
+    for (unsigned attempt = 0; attempt < 8; ++attempt) {
+        struct kevent results[4];
+        struct timespec timeout = {.tv_sec = 1};
+        int count = ff_kevent(queue, NULL, 0, results, 4, &timeout);
+        CHECK(count >= 0);
+        for (int i = 0; i < count; ++i) {
+            if (results[i].filter != EVFILT_READ || !(results[i].flags & EV_EOF)) continue;
+            CHECK(results[i].fflags == ECONNRESET);
+            int socket_error = 0;
+            socklen_t length = sizeof(socket_error);
+            CHECK(ff_getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &length) == 0);
+            CHECK(length == sizeof(socket_error) && socket_error == ECONNRESET);
+            return 0;
+        }
+    }
+    CHECK(0);
+    return 1;
+}
+
+static int wait_native_kqueue_fin(int queue)
+{
+    for (unsigned attempt = 0; attempt < 8; ++attempt) {
+        struct kevent results[4];
+        struct timespec timeout = {.tv_sec = 1};
+        int count = ff_kevent(queue, NULL, 0, results, 4, &timeout);
+        CHECK(count >= 0);
+        for (int i = 0; i < count; ++i) {
+            if (results[i].filter == EVFILT_READ && (results[i].flags & EV_EOF)) {
+                CHECK(results[i].data == 0 && results[i].fflags == 0);
+                return 0;
+            }
+        }
+    }
+    CHECK(0);
+    return 1;
+}
+
+static int wait_native_kqueue_write_eof(int queue)
+{
+    for (unsigned attempt = 0; attempt < 8; ++attempt) {
+        struct kevent results[4];
+        struct timespec timeout = {.tv_sec = 1};
+        int count = ff_kevent(queue, NULL, 0, results, 4, &timeout);
+        CHECK(count >= 0);
+        for (int i = 0; i < count; ++i) {
+            if (results[i].filter != EVFILT_WRITE) continue;
+            CHECK(results[i].flags & EV_EOF);
+            CHECK(results[i].fflags == 0);
+            return 0;
+        }
+    }
+    CHECK(0);
+    return 1;
+}
+
+static int verify_native_kqueue_reset_connection(const struct sockaddr_in *address)
+{
+    int fd = ff_socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    CHECK(fd >= 0 && ff_socket_drain_count() == 1);
+    output("FF_RESET_CONNECTING\n");
+    int result = ff_connect(fd, (const struct linux_sockaddr *)address,
+        sizeof(*address));
+    CHECK(result == 0 || (result == -1 &&
+        (errno == EINPROGRESS || errno == EALREADY || errno == EINTR)));
+    int connected = 0;
+    struct linux_sockaddr peer = {0};
+    socklen_t peer_length = sizeof(peer);
+    for (unsigned attempt = 0; attempt < 2000; ++attempt) {
+        peer_length = sizeof(peer);
+        if (ff_getpeername(fd, &peer, &peer_length) == 0) { connected = 1; break; }
+        if (errno != ENOTCONN && errno != EINVAL) return 1;
+        struct timespec pause = {.tv_nsec = 1000000}; (void)nanosleep(&pause, NULL);
+    }
+    CHECK(connected);
+    output("FF_RESET_CONNECTED\n");
+
+    int queue = ff_kqueue();
+    CHECK(queue >= 0);
+    int read_tag = 505;
+    struct kevent change;
+    EV_SET(&change,fd,EVFILT_READ,EV_ADD|EV_CLEAR,0,0,&read_tag);
+    CHECK(ff_kevent(queue,&change,1,NULL,0,NULL)==0);
+    CHECK(wait_native_kqueue_reset(queue,fd)==0);
+    CHECK(close(queue)==0);
+    CHECK(ff_close(fd)==0 && ff_socket_drain_count()==0);
+    output("HARD_ERROR_NONCONSUMING_OK\n");
     return 0;
 }
 
@@ -461,21 +668,33 @@ int main(int argc, char **argv)
     unsigned char input[4097], expected[4097], output_bytes[4097];
     make_bytes(expected, sizeof(expected));
     int queued = 0;
-    for (unsigned attempt = 0; attempt < 1000; ++attempt) {
+    for (unsigned attempt = 0; attempt < 5000; ++attempt) {
         if (ff_ioctl(alias, FIONREAD, &queued) == 0 && queued > 0) break;
         struct timespec pause = {.tv_nsec = 1000000}; (void)nanosleep(&pause, NULL);
     }
-    CHECK(queued > 0);
+    CHECK(queued == (int)sizeof(input));
+    int descriptor_count_before_kqueue = descriptor_count_below(4096);
+    CHECK(descriptor_count_before_kqueue > 0);
+    unsigned char baseline_fds[4096] = {0};
+    CHECK(capture_descriptor_set(4096, baseline_fds) == 0);
+    int bridge_queue = -1, graceful_fin_seen = 0;
+    CHECK(verify_native_kqueue_readiness(alias, &bridge_queue, queued,
+        &graceful_fin_seen, baseline_fds) == 0);
     /* A bad write pointer must fail before changing the remote stream. */
     CHECK(ff_write(alias, (const void *)(uintptr_t)1, 1) == -1 && errno == EFAULT);
     CHECK(read_exact(alias, input, sizeof(input)) == 0);
     CHECK(memcmp(input, expected, sizeof(input)) == 0);
+    if (!graceful_fin_seen) CHECK(wait_native_kqueue_fin(bridge_queue) == 0);
     memcpy(output_bytes, input, sizeof(input));
     CHECK(write_exact(alias, output_bytes, sizeof(output_bytes)) == 0);
     CHECK(ff_shutdown(alias, SHUT_WR) == 0);
+    CHECK(wait_native_kqueue_write_eof(bridge_queue) == 0);
+    CHECK(close(bridge_queue) == 0);
+    CHECK(descriptor_count_below(4096) == descriptor_count_before_kqueue);
     CHECK(public_symbol_calls == 0);
     CHECK(ff_close(alias) == 0);
     CHECK(ff_socket_drain_count() == 0);
+    CHECK(verify_native_kqueue_reset_connection(&address) == 0);
     const char *broker_path = getenv("KER_SOCKET_BROKER_PATH");
     CHECK(broker_path && *broker_path);
     struct ker_socket_client broker_client = {.session_fd = -1};
