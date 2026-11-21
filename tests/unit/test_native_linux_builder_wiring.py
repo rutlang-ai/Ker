@@ -26,6 +26,7 @@ class NativeLinuxBuilderWiringTests(unittest.TestCase):
             builder.wire_ker_builtin_adapters(self.root)
         self.assertEqual(self.makefile.read_text(),
             'obj-y = setup.o misc.o \\\n\tconsole.o\nobj-y += ker_tcp_payload.o\n'
+            'obj-y += ker_tcp_event.o\n'
             'obj-y += ker_tcp_request_revoke.o\n'
             'obj-y += ker_ff_admission_queue.o\n')
         git.assert_called_once_with(self.root, 'add', '--',

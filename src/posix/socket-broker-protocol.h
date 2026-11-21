@@ -56,7 +56,9 @@ enum ker_sb_operation {
     KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN = 70,
     KER_SB_FF_OWNER_GROUP_RETRY_PLAN = 71,
     KER_SB_FF_OWNER_GROUP_ABANDON_PLAN = 72,
-    KER_SB_FF_OWNER_GROUP_RECOVER_DEAD_PLAN = 73
+    KER_SB_FF_OWNER_GROUP_RECOVER_DEAD_PLAN = 73,
+    /* Append-only: preserve all v2 operation numbers above. */
+    KER_SB_EVENT_SNAPSHOT = 74
 };
 
 struct ker_sb_header {

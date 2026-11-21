@@ -16,9 +16,11 @@
 #include "packet-device.h"
 #include "mtu-control.h"
 #include "extra-interfaces.h"
+#include "source-network-readback.h"
 #include "ff-admission-task.h"
 #include "ff-ingress-controller.h"
 #include "rx-decision-consumer.h"
+#include "rx-decision-shutdown-format.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -36,6 +38,9 @@
 #include <lkl/linux/virtio_net.h>
 #include <lkl/linux/time_types.h>
 #include <lkl.h>
+#include <lkl/linux/if.h>
+#include <lkl/linux/in.h>
+#include <lkl/linux/sockios.h>
 #include <lkl_host.h>
 #include <sys/utsname.h>
 #include <ker/posix.h>
@@ -48,6 +53,9 @@ _Static_assert(LKL_VIRTIO_NET_F_CSUM == 0 && LKL_VIRTIO_NET_F_HOST_TSO4 == 11 &&
 static atomic_bool ready;
 static struct lkl_netdev *device;
 static int startup_fd = -1;
+static bool source_network_profile;
+static struct ker_source_network_expectation source_network_expected;
+static struct ker_source_network_observation source_network_observed;
 static unsigned int drain_timeout = 5000;
 static char release[65];
 enum native_finalize_state {
@@ -99,6 +107,101 @@ static long parse_number(const char *text, long maximum)
     if (errno || !*text || *end || value < 0 || value > maximum) fail("invalid numeric configuration", -EINVAL);
     return value;
 }
+static int source_network_host_now(uint64_t *now_ns)
+{
+    struct timespec now;
+    if (syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &now) < 0) return -errno;
+    if (now.tv_sec < 0 || now.tv_nsec < 0 || now.tv_nsec >= 1000000000L ||
+        (uint64_t)now.tv_sec > (UINT64_MAX - (uint64_t)now.tv_nsec) / 1000000000ULL)
+        return -EOVERFLOW;
+    *now_ns = (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+    return 0;
+}
+static int source_network_check_deadline(void)
+{
+    uint64_t now_ns;
+    int result = source_network_host_now(&now_ns);
+    if (result) return result;
+    return now_ns < source_network_expected.deadline_ns ? 0 : -ETIMEDOUT;
+}
+static int source_network_set_ipv4_broadcast(int ifindex, struct in_addr broadcast,
+    const char **failed_stage)
+{
+    if (failed_stage) *failed_stage = "source broadcast initial deadline";
+    int result = source_network_check_deadline();
+    if (result) return result;
+
+    if (failed_stage) *failed_stage = "source broadcast AF_INET datagram socket";
+    long opened = lkl_sys_socket(LKL_AF_INET, LKL_SOCK_DGRAM, 0);
+    if (opened < 0) return (int)opened;
+    int fd = (int)opened;
+
+    if (failed_stage) *failed_stage = "source broadcast deadline before SIOCGIFNAME";
+    result = source_network_check_deadline();
+    struct lkl_ifreq request = {0};
+    if (!result) {
+        if (failed_stage) *failed_stage = "source broadcast SIOCGIFNAME ioctl";
+        request.lkl_ifr_ifindex = ifindex;
+        long queried = lkl_sys_ioctl(fd, LKL_SIOCGIFNAME, (unsigned long)&request);
+        if (queried < 0) result = (int)queried;
+    }
+    if (!result) {
+        if (failed_stage) *failed_stage = "source broadcast deadline after SIOCGIFNAME";
+        result = source_network_check_deadline();
+    }
+    if (!result) {
+        if (failed_stage) *failed_stage = "source broadcast interface name validation";
+        const char *end = memchr(request.lkl_ifr_name, '\0', sizeof(request.lkl_ifr_name));
+        if (!end || end == request.lkl_ifr_name) result = -EPROTO;
+    }
+    if (!result) {
+        if (failed_stage) *failed_stage = "source broadcast deadline before SIOCSIFBRDADDR";
+        result = source_network_check_deadline();
+    }
+    if (!result) {
+        if (failed_stage) *failed_stage = "source SIOCSIFBRDADDR ioctl";
+        struct lkl_sockaddr_in *value =
+            (struct lkl_sockaddr_in *)&request.lkl_ifr_addr;
+        value->sin_family = LKL_AF_INET;
+        value->sin_addr.lkl_s_addr = broadcast.s_addr;
+        long configured = lkl_sys_ioctl(fd, LKL_SIOCSIFBRDADDR,
+            (unsigned long)&request);
+        if (configured < 0) result = (int)configured;
+    }
+    if (!result) {
+        if (failed_stage) *failed_stage = "source broadcast deadline after SIOCSIFBRDADDR";
+        result = source_network_check_deadline();
+    }
+    if (!result) {
+        if (failed_stage) *failed_stage = "source broadcast deadline before socket close";
+        result = source_network_check_deadline();
+    }
+    long closed = lkl_sys_close(fd);
+    result = ker_source_network_finish_close(result, closed, failed_stage,
+        "source broadcast AF_INET datagram socket close");
+    if (!result) {
+        if (failed_stage) *failed_stage = "source broadcast deadline after socket close";
+        result = source_network_check_deadline();
+    }
+    return result;
+}
+static void source_network_check_options(void)
+{
+    static const char *const unsupported[] = {
+        "KER_PACKET_INTERFACES",
+        "KER_NATIVE_VIP_ADDRESSES",
+        "KER_NATIVE_VLANS",
+        "KER_NATIVE_VLAN_GATEWAY",
+        "KER_NATIVE_VLAN_GATEWAY6",
+        "KER_NATIVE_ADDRESS6",
+        "KER_NATIVE_VIP_ADDRESSES6",
+        "KER_NATIVE_GATEWAY6",
+    };
+    for (size_t i = 0; i < sizeof(unsupported) / sizeof(unsupported[0]); ++i)
+        if (getenv(unsupported[i]) != NULL) fail(unsupported[i], -EOPNOTSUPP);
+    const char *iftype = required("LKL_HIJACK_NET_IFTYPE");
+    if (strcmp(iftype, "ker-channel") != 0) fail("source network interface type", -EOPNOTSUPP);
+}
 static struct in6_addr add_ipv6_address(int index, const char *configuration)
 {
     char text[INET6_ADDRSTRLEN + 5];
@@ -133,6 +236,25 @@ int ker_native_host_usercopy_probe(void);
 __attribute__((constructor)) static void initialize(void)
 {
     atomic_store_explicit(&process_isolation, true, memory_order_release);
+    int result;
+    const char *source_enable = getenv("KER_NGINX_SOURCE_SHELL_ENABLE");
+    source_network_profile = source_enable != NULL;
+    if (!source_network_profile && getenv(KER_SOURCE_NETWORK_READBACK_ENV) != NULL)
+        fail("source network record without source profile", -EPERM);
+    if (source_network_profile) {
+        if (strcmp(source_enable, "1") != 0) fail("source shell profile value", -EINVAL);
+        source_network_check_options();
+        uint64_t now_ns;
+        result = source_network_host_now(&now_ns);
+        if (result) fail("source network host clock", result);
+        result = ker_source_network_parse_expectation(
+            required(KER_SOURCE_NETWORK_READBACK_ENV),
+            required("LKL_HIJACK_NET_IP"), required("LKL_HIJACK_NET_NETMASK_LEN"),
+            required("LKL_HIJACK_NET_GATEWAY"),
+            required("KER_NGINX_SOURCE_BOOTSTRAP_DEADLINE_NS"), now_ns,
+            &source_network_expected);
+        if (result) fail("source network expectation", result);
+    }
     int fd = (int)parse_number(required("KER_PACKET_FD"), INT_MAX), type = 0;
     socklen_t length = sizeof(type);
     if (syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_TYPE, &type, &length) || type != SOCK_DGRAM)
@@ -170,7 +292,7 @@ __attribute__((constructor)) static void initialize(void)
     ker_native_host_clock_init(&lkl_host_ops);
     ker_native_host_timer_init(&lkl_host_ops);
     lkl_host_ops.print = NULL;
-    int result = ker_native_host_usercopy_probe();
+    result = ker_native_host_usercopy_probe();
     if (result) fail("host fault-safe usercopy is unavailable", result);
     result = lkl_init(&lkl_host_ops);
     if (result) fail("kernel initialization", result);
@@ -264,6 +386,12 @@ __attribute__((constructor)) static void initialize(void)
     if (index <= 0) fail("network interface lookup", index);
     result = lkl_if_set_ipv4(index, address.s_addr, prefix);
     if (result) fail("IPv4 interface configuration", result);
+    if (source_network_profile) {
+        const char *broadcast_stage = "source broadcast setup";
+        result = source_network_set_ipv4_broadcast(index,
+            source_network_expected.broadcast, &broadcast_stage);
+        if (result) fail(broadcast_stage, result);
+    }
     const char *vip_text = getenv("KER_NATIVE_VIP_ADDRESSES");
     if (vip_text && *vip_text) {
         char *copy = strdup(vip_text);
@@ -332,15 +460,27 @@ __attribute__((constructor)) static void initialize(void)
     }
     result = ker_extra_interfaces_configure();
     if (result) fail("additional interface configuration", result);
+    if (source_network_profile) {
+        result = ker_source_network_readback(index, &source_network_expected,
+            &source_network_observed);
+        if (result) fail("source network startup readback", result);
+    }
     const char *timeout = getenv("KER_SHUTDOWN_TIMEOUT_MS");
     if (timeout) drain_timeout = (unsigned int)parse_number(timeout, 60000);
     if (pthread_atfork(NULL, NULL, fork_child)) fail("fork boundary", -ENOMEM);
-    atomic_store_explicit(&ready, true, memory_order_release);
+    if (!source_network_profile)
+        atomic_store_explicit(&ready, true, memory_order_release);
     startup_fd = (int)parse_number(required("KER_STARTUP_FD"), INT_MAX);
     if (syscall(SYS_fcntl, startup_fd, F_SETFD, FD_CLOEXEC) < 0) fail("startup descriptor flags", -errno);
-    static const char started[] = "KER_NATIVE_READY\n";
-    if (syscall(SYS_write, startup_fd, started, sizeof(started) - 1) != sizeof(started) - 1)
-        fail("startup acknowledgement", -EIO);
+    if (source_network_profile) {
+        result = ker_source_network_write_startup(startup_fd, &source_network_observed);
+        if (result) fail("source network startup proof acknowledgement", result);
+        atomic_store_explicit(&ready, true, memory_order_release);
+    } else {
+        static const char started[] = "KER_NATIVE_READY\n";
+        if (syscall(SYS_write, startup_fd, started, sizeof(started) - 1) != sizeof(started) - 1)
+            fail("startup acknowledgement", -EIO);
+    }
 
 }
 static void *finalize_cleanup_worker(void *unused)
@@ -573,6 +713,17 @@ int ker_native_finalize_finish(int *finalize_result_out)
             (unsigned long long)counters.tcp_ecn);
         if (length > 0 && (size_t)length < sizeof(json))
             (void)syscall(SYS_write, startup_fd, json, (size_t)length);
+    }
+    struct ker_rx_decision_shutdown_receipt c31_receipt;
+    int c31_receipt_status = ker_rx_decision_consumer_get_shutdown_receipt(&c31_receipt);
+    if (!c31_receipt_status) {
+        char line[KER_RX_DECISION_SHUTDOWN_LINE_BYTES];
+        int length = ker_rx_decision_format_shutdown_line(line, &c31_receipt);
+        if (length <= 0 || (size_t)length >= sizeof(line) || startup_fd < 0 ||
+            syscall(SYS_write, startup_fd, line, (size_t)length) != length)
+            if (!drained) drained = -EIO;
+    } else if (c31_receipt_status != -ENODATA && !drained) {
+        drained = c31_receipt_status;
     }
     ker_extra_interfaces_remove();
     if (device) {

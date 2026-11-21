@@ -2440,30 +2440,72 @@ def run_fstack_bridge_frontend(args, rpc_path, capabilities):
         os.close(fd)
     capabilities.clear()
     peer = None
+    reset_peer = None
+    phase = 'start frontend'
     try:
+        phase = 'wait first connect marker'
         require(read_line(frontend.stdout, 20, frontend) == 'FF_CONNECTING',
             'FF leaf caller did not enter the original-Linux connect path')
+        phase = 'accept graceful stream'
         peer, _ = host_listener.accept()
         peer.settimeout(10)
+        phase = 'wait first connected marker'
         require(read_line(frontend.stdout, 20, frontend) == 'FF_CONNECTED',
             'FF leaf caller did not finish the original-Linux connection')
         payload = bytes((index * 31 + 17) & 0xff for index in range(4097))
+        phase = 'send payload and graceful FIN'
         peer.sendall(payload)
+        peer.shutdown(socket.SHUT_WR)
+        phase = 'receive exact echoed payload'
         require(recv_exact(peer, len(payload)) == payload,
             'FF leaf caller did not echo the exact original-Linux stream')
+        phase = 'receive graceful client FIN'
         require(peer.recv(1) == b'', 'FF leaf stream had unexpected trailing bytes')
+        peer.close()
+        peer = None
+        phase = 'wait for reset connection request'
+        require(read_line(frontend.stdout, 20, frontend) == 'FF_RESET_CONNECTING',
+            'FF leaf caller did not start the separate reset-control connection')
+        phase = 'accept live reset-control connection'
+        reset_peer, _ = host_listener.accept()
+        reset_peer.settimeout(10)
+        phase = 'wait for reset-control connection established'
+        require(read_line(frontend.stdout, 20, frontend) == 'FF_RESET_CONNECTED',
+            'FF leaf reset-control socket was not established before peer reset')
+        phase = 'abortively close established reset-control peer'
+        reset_peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+        reset_peer.close()
+        reset_peer = None
+        phase = 'wait for kqueue hard-error nonconsumption result'
+        require(read_line(frontend.stdout, 20, frontend) == 'HARD_ERROR_NONCONSUMING_OK',
+            'kqueue error snapshot consumed or missed ECONNRESET on the live socket')
+        phase = 'collect frontend completion'
         output, errors = frontend.communicate(timeout=20)
         require(frontend.returncode == 0,
             f'FF leaf caller failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
         require(output == b'FF_STREAM_OK\n',
             f'FF leaf caller did not confirm final descriptor/pool checks: {output!r}')
-    except BaseException:
+    except BaseException as failure:
+        already_collected = 'output' in locals() and 'errors' in locals()
         if frontend.poll() is None:
-            frontend.kill(); frontend.wait()
-        raise
+            frontend.kill()
+        try:
+            if already_collected:
+                captured_output, captured_errors = output, errors
+            else:
+                captured_output, captured_errors = frontend.communicate(timeout=5)
+        except BaseException as collection_failure:
+            captured_output = b''
+            captured_errors = f'pipe collection failed: {collection_failure}'.encode()
+        raise RuntimeError(
+            f'FF leaf frontend failed during phase={phase!r}; cause={failure!r}; '
+            f'exit={frontend.poll()}; remaining_stdout='
+            f'{captured_output[-4096:]!r}; stderr={captured_errors[-4096:].decode(errors="replace")!r}') from failure
     finally:
         if peer is not None:
             peer.close()
+        if reset_peer is not None:
+            reset_peer.close()
         host_listener.close()
 
 
@@ -3761,6 +3803,18 @@ def inside(args):
                 second_peer.sendall(b'FRESH-ACCEPT')
                 require(recv_exact(second_peer, 9) == b'REPLY-TWO', 'fresh accepted stream reply differs')
                 second_peer.shutdown(socket.SHUT_WR)
+                require(read_line(client_process.stdout, 15, client_process) == 'THIRD_WAIT',
+                    'replacement did not reach the hard-error nonconsumption control')
+                third_peer = socket.create_connection(('198.18.0.2', 4097), timeout=10)
+                third_peer.settimeout(10)
+                require(read_line(client_process.stdout, 15, client_process) == 'THIRD_ACCEPTED',
+                    'replacement did not accept the reset-control stream')
+                third_peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                    struct.pack('ii', 1, 0))
+                third_peer.close()
+                require(read_line(client_process.stdout, 15, client_process) ==
+                    'HARD_ERROR_NONCONSUMING_OK',
+                    'event snapshots did not preserve ECONNRESET until SO_ERROR consumed it')
                 require(read_line(client_process.stdout, 15, client_process) == 'CHILD_DONE',
                     'exec replacement did not close all capabilities cleanly')
                 require(first_peer.recv(1) == b'', 'continued stream returned extra bytes or missed peer EOF')
