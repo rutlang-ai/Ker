@@ -19,6 +19,7 @@ import re
 import secrets
 import select
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -613,7 +614,31 @@ def execute():
                 print('PASS_SOURCE_SHARED_BUDGET_EXPIRY_CONTAINED '+
                     json.dumps(receipt,sort_keys=True))
                 return
-            authority.master_barrier(master_channel,packet,struct.unpack('=3i',anc[0][2]),apply)
+            master_paused = False
+
+            def apply_before_ack(operation, control_deadline):
+                nonlocal master_paused
+                apply(operation, control_deadline)
+                if operation != 5:
+                    return
+                # Hold the master until the queued PARK ACK and peer closure
+                # are both visible to its next socket poll.
+                signal.pidfd_send_signal(manager.master_pidfd, signal.SIGSTOP)
+                master_paused = True
+                status = Path(f'/proc/{manager.master_pid}/stat')
+                while time.monotonic_ns() < control_deadline:
+                    if status.read_text().rpartition(')')[2].split()[0] == 'T':
+                        return
+                    time.sleep(.0002)
+                raise TimeoutError('master did not stop within the original PARK deadline')
+
+            try:
+                with master_channel:
+                    authority.master_barrier(master_channel, packet,
+                        struct.unpack('=3i', anc[0][2]), apply_before_ack)
+            finally:
+                if master_paused:
+                    signal.pidfd_send_signal(manager.master_pidfd, signal.SIGCONT)
         require([item['operation'] for item in barriers] == [5,6] and
             barriers[0]['deadline'] == barriers[1]['deadline'],
             'PARK and COMMIT did not share one immutable 100 ms deadline')
