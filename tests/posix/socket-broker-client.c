@@ -400,7 +400,12 @@ static int parent_mode(const char *self, const char *path, int listener, int epo
         CHECK((listener_snapshot.flags & KER_SOCKET_EVENT_LISTENER) &&
             (listener_snapshot.validity & KER_SOCKET_EVENT_READ_AVAILABLE_VALID) &&
             !(listener_snapshot.validity & KER_SOCKET_EVENT_WRITE_ACCOUNTING_VALID));
-        if (listener_snapshot.read_available > 0) saw_listener_count = true;
+        if (listener_snapshot.read_available <= 0) {
+            struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
+            (void)syscall(SYS_nanosleep, &pause, NULL);
+            continue;
+        }
+        saw_listener_count = true;
         accepted = ker_socket_client_accept4(&client, listener, NULL, NULL, SOCK_CLOEXEC);
         if (accepted < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return 1;
         if (accepted < 0) { struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
