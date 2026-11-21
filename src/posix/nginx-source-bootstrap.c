@@ -231,7 +231,8 @@ int ker_nginx_source_bootstrap_poll_activate(const struct ker_nginx_source_boots
     return poll_command(binding, KER_NGINX_SOURCE_BOOTSTRAP_ACTIVATE);
 }
 
-static int wait_channel(int fd, int supervisor_pidfd, short events, uint64_t deadline)
+static int wait_channel(int fd, int supervisor_pidfd, short events, uint64_t deadline,
+    int allow_hup_with_reply)
 {
     for (;;) {
         uint64_t now = now_ns();
@@ -242,13 +243,17 @@ static int wait_channel(int fd, int supervisor_pidfd, short events, uint64_t dea
         long n = syscall(SYS_poll, fds, 2, timeout);
         if (n < 0 && errno == EINTR) continue;
         if (n < 0) return -errno;
-        if (fds[1].revents || (fds[0].revents & (POLLHUP | POLLERR | POLLNVAL))) {
+        short observed = fds[0].revents;
+        /* A one-shot master RPC can have a complete reply queued even after
+         * the supervisor closes the accepted socket. Validate it below. */
+        if (fds[1].revents || (observed & (POLLERR | POLLNVAL)) ||
+            ((observed & POLLHUP) && !(allow_hup_with_reply && (observed & POLLIN)))) {
             fprintf(stderr, "ker source bootstrap: channel failed pid=%ld fd=%d events=%x revents=%x supervisor_fd=%d revents=%x\n",
                 (long)getpid(), fd, (unsigned)events, (unsigned)fds[0].revents,
                 supervisor_pidfd, (unsigned)fds[1].revents);
             return -ENOTCONN;
         }
-        if (fds[0].revents & events) return 0;
+        if (observed & events) return 0;
     }
 }
 
@@ -318,13 +323,15 @@ int ker_nginx_source_bootstrap_connect(const char *path,
     uint64_t handshake_deadline = request->role == KER_NGINX_SOURCE_ROLE_MASTER ?
         request->control_deadline_ns : now_ns() + UINT64_C(5000000000);
     if (handshake_deadline > request->deadline_ns) handshake_deadline = request->deadline_ns;
-    status = wait_channel(binding->channel, binding->supervisor_pidfd, POLLOUT, handshake_deadline);
+    status = wait_channel(binding->channel, binding->supervisor_pidfd, POLLOUT,
+        handshake_deadline, 0);
     if (status) goto fail;
     long sent = syscall(SYS_sendto, binding->channel, request, sizeof(*request), MSG_NOSIGNAL, NULL, 0);
     if (sent != sizeof(*request)) {
         status = sent < 0 ? -errno : -EIO; goto fail;
     }
-    status = wait_channel(binding->channel, binding->supervisor_pidfd, POLLIN, handshake_deadline);
+    status = wait_channel(binding->channel, binding->supervisor_pidfd, POLLIN,
+        handshake_deadline, request->role == KER_NGINX_SOURCE_ROLE_MASTER);
     if (status) goto fail;
     struct ker_nginx_source_bootstrap_record response;
     char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(8 * sizeof(int))] = {0};
@@ -437,7 +444,8 @@ int ker_nginx_source_bootstrap_connect(const char *path,
             binding->slot_fd = fds[2]; binding->relay_fd = fds[3]; binding->ready_fd = fds[4];
         }
         fd_count = 0;
-        status = ker_nginx_source_bootstrap_live(binding);
+        status = request->role == KER_NGINX_SOURCE_ROLE_MASTER ?
+            live_actors(binding) : ker_nginx_source_bootstrap_live(binding);
     }
     for (int i = 0; i < fd_count; ++i) (void)syscall(SYS_close, fds[i]);
     if (!status) return 0;
