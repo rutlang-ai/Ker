@@ -362,6 +362,27 @@ int main(void)
     check(ff_kevent(queue,NULL,0,results,4,&zero)==0,
         "oneshot read and clear write do not repeat without new edge");
 
+    int disabled_pair[2]; make_pair(disabled_pair);
+    int disabled_tag=23;
+    struct kevent disabled_add, disabled_enable;
+    EV_SET(&disabled_add,disabled_pair[0],EVFILT_READ,
+        EV_ADD|EV_DISABLE|EV_CLEAR,0,0,&disabled_tag);
+    check(send(disabled_pair[1],"i",1,0)==1,
+        "seed readiness before initially disabled registration");
+    check(ff_kevent(queue,&disabled_add,1,NULL,0,NULL)==0,
+        "register initially disabled read filter");
+    count=ff_kevent(queue,NULL,0,results,4,&zero);
+    check(count==0,"initially disabled read filter is silent");
+    EV_SET(&disabled_enable,disabled_pair[0],EVFILT_READ,EV_ENABLE,0,0,NULL);
+    check(ff_kevent(queue,&disabled_enable,1,NULL,0,NULL)==0 &&
+        ff_kevent(queue,&disabled_enable,1,NULL,0,NULL)==0,
+        "repeated enable of active read filter is idempotent");
+    count=ff_kevent(queue,NULL,0,results,4,&zero);
+    check(count==1 && results[0].filter==EVFILT_READ &&
+        results[0].udata==&disabled_tag,
+        "enabled initially disabled read filter reports pending readiness");
+    close_pair(disabled_pair);
+
     check(KER_SOCKET_EVENT_SNAPSHOT_VERSION==2u,
         "shutdown snapshot protocol requires version two");
     int stale_version_pair[2]; make_pair(stale_version_pair);
@@ -437,6 +458,26 @@ int main(void)
     check(count==1 && results[0].filter==EVFILT_USER &&
         results[0].ident==0 && results[0].udata==&trigger_tag,
         "eventfd-backed USER trigger and latest userdata");
+
+    int disabled_user_tag=33, disabled_trigger_tag=34;
+    struct kevent disabled_user_add, disabled_user_trigger, user_enable;
+    EV_SET(&disabled_user_add,0,EVFILT_USER,EV_ADD|EV_DISABLE|EV_CLEAR,
+        0,0,&disabled_user_tag);
+    EV_SET(&disabled_user_trigger,0,EVFILT_USER,0,NOTE_TRIGGER,0,
+        &disabled_trigger_tag);
+    check(ff_kevent(queue,&disabled_user_add,1,NULL,0,NULL)==0 &&
+        ff_kevent(queue,&disabled_user_trigger,1,NULL,0,NULL)==0,
+        "add and trigger initially disabled USER filter");
+    count=ff_kevent(queue,NULL,0,results,4,&zero);
+    check(count==0,"initially disabled USER trigger remains withheld");
+    EV_SET(&user_enable,0,EVFILT_USER,EV_ENABLE,0,0,NULL);
+    check(ff_kevent(queue,&user_enable,1,NULL,0,NULL)==0 &&
+        ff_kevent(queue,&user_enable,1,NULL,0,NULL)==0,
+        "repeated enable of active USER filter is idempotent");
+    count=ff_kevent(queue,NULL,0,results,4,&zero);
+    check(count==1 && results[0].filter==EVFILT_USER &&
+        results[0].udata==&disabled_trigger_tag,
+        "enabled initially disabled USER filter reports pending trigger");
 
     /* Duplicate kqueue descriptors retain one queue context and independent
      * descriptor lifetime. */

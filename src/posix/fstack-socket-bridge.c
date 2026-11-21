@@ -434,8 +434,13 @@ static int ff_kqueue_user_ctl_locked(struct ff_kqueue_context *context,
         return 0;
     }
     if (change->flags & EV_ADD) {
+        bool enabled = !(change->flags & EV_DISABLE);
         if (user->present) {
-            if (!user->enabled) {
+            if (user->enabled && !enabled) {
+                int result = ff_kqueue_user_epoll_ctl_locked(context,
+                    EPOLL_CTL_DEL, user->event_fd, NULL);
+                if (result < 0 && errno != ENOENT) return -1;
+            } else if (!user->enabled && enabled) {
                 struct epoll_event event = {.events = EPOLLIN | EPOLLET};
                 event.data.u64 = ff_kqueue_token(KER_FF_KQUEUE_WATCH_MAX,
                     user->generation);
@@ -445,7 +450,7 @@ static int ff_kqueue_user_ctl_locked(struct ff_kqueue_context *context,
             user->udata = change->udata;
             user->fflags = change->fflags;
             user->data = change->data;
-            user->enabled = true;
+            user->enabled = enabled;
             return 0;
         }
         int event_fd = (int)syscall(SYS_eventfd2, 0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -457,7 +462,7 @@ static int ff_kqueue_user_ctl_locked(struct ff_kqueue_context *context,
         struct epoll_event event = {.events = EPOLLIN | EPOLLET};
         uint32_t generation = ff_kqueue_next_generation(context);
         event.data.u64 = ff_kqueue_token(KER_FF_KQUEUE_WATCH_MAX, generation);
-        if (ff_kqueue_user_epoll_ctl_locked(context,
+        if (enabled && ff_kqueue_user_epoll_ctl_locked(context,
                 EPOLL_CTL_ADD, event_fd, &event) < 0) {
             int error = errno;
             ker_sb_preload_untrack_private_fd_locked(event_fd);
@@ -468,7 +473,7 @@ static int ff_kqueue_user_ctl_locked(struct ff_kqueue_context *context,
             .generation = generation, .ident = change->ident,
             .flags = change->flags, .fflags = change->fflags,
             .data = change->data, .udata = change->udata,
-            .present = true, .enabled = true};
+            .present = true, .enabled = enabled};
         return 0;
     }
     if (!user->present) { errno = ENOENT; return -1; }
@@ -478,12 +483,14 @@ static int ff_kqueue_user_ctl_locked(struct ff_kqueue_context *context,
         if (result < 0 && errno != ENOENT) return -1;
         user->enabled = false;
     } else if (change->flags & EV_ENABLE) {
-        struct epoll_event event = {.events = EPOLLIN | EPOLLET};
-        event.data.u64 = ff_kqueue_token(KER_FF_KQUEUE_WATCH_MAX,
-            user->generation);
-        if (ff_kqueue_user_epoll_ctl_locked(context,
-                EPOLL_CTL_ADD, user->event_fd, &event) < 0) return -1;
-        user->enabled = true;
+        if (!user->enabled) {
+            struct epoll_event event = {.events = EPOLLIN | EPOLLET};
+            event.data.u64 = ff_kqueue_token(KER_FF_KQUEUE_WATCH_MAX,
+                user->generation);
+            if (ff_kqueue_user_epoll_ctl_locked(context,
+                    EPOLL_CTL_ADD, user->event_fd, &event) < 0) return -1;
+            user->enabled = true;
+        }
     }
     (void)change;
     return 0;
@@ -524,10 +531,12 @@ static int ff_kqueue_apply_change_locked(struct ff_kqueue_context *context,
         watch->capability_fd = capability_fd;
         watch->flags = change->flags & (EV_ONESHOT | EV_CLEAR);
         watch->udata = change->udata;
-        watch->enabled = true;
-        if (ff_kqueue_watch_ctl_locked(context, watch, true) < 0) {
-            watch->enabled = false;
-            return -1;
+        watch->enabled = !(change->flags & EV_DISABLE);
+        if (watch->enabled) {
+            if (ff_kqueue_watch_ctl_locked(context, watch, true) < 0) {
+                watch->enabled = false;
+                return -1;
+            }
         }
         return 0;
     }
@@ -538,6 +547,7 @@ static int ff_kqueue_apply_change_locked(struct ff_kqueue_context *context,
         watch->enabled = false;
     } else if (change->flags & EV_ENABLE) {
         if (cookie != watch->socket_cookie) { errno = ESTALE; return -1; }
+        if (watch->enabled) return 0;
         watch->capability_fd = capability_fd;
         watch->generation = ff_kqueue_next_generation(context);
         watch->enabled = true;

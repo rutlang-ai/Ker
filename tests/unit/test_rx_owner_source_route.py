@@ -1964,6 +1964,10 @@ class SourceRoute(unittest.TestCase):
 class SourceRouteCommitReceiptModelTests(unittest.TestCase):
     """Host socketpair model only; it does not qualify OriginalShellLaunch."""
 
+    def setUp(self):
+        if RECEIVER is None:
+            self.skipTest('receiver path is supplied by the native CTest invocation')
+
     def test_actual_prepare_ack_is_frozen_before_modeled_park_and_commit(self):
         SourceRoute.run_case(self, typed_handoff=True)
 
