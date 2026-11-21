@@ -732,7 +732,8 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
             LABELS "socket-broker;preload;rx-owner-relay;checkpoint;unit-model"
             TIMEOUT 10)
         add_executable(ker-rx-owner-relay-app-loop-test
-            tests/unit/rx-owner-relay-app-loop-test.c)
+            tests/unit/rx-owner-relay-app-loop-test.c
+            src/posix/rx-owner-relay-peer.c)
         target_include_directories(ker-rx-owner-relay-app-loop-test PRIVATE
             "${PROJECT_SOURCE_DIR}/include"
             "${PROJECT_SOURCE_DIR}/tests/posix"
@@ -748,7 +749,9 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
             LABELS "rx-decision;owner-relay;settlement"
             TIMEOUT 5)
         add_executable(ker-fstack-nginx-rx-relay-once-test
-            tests/unit/nginx-rx-relay-ff-run-once-test.c)
+            tests/unit/nginx-rx-relay-ff-run-once-test.c
+            src/posix/nginx-source-reload.c
+            src/posix/rx-owner-relay-peer.c)
         target_include_directories(ker-fstack-nginx-rx-relay-once-test PRIVATE
             "${PROJECT_SOURCE_DIR}/include"
             "${PROJECT_SOURCE_DIR}/src/posix"
@@ -762,7 +765,8 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
         target_compile_options(ker-fstack-nginx-rx-relay-once-test PRIVATE
             -ffunction-sections -fdata-sections -Wall -Wextra -Werror)
         target_link_options(ker-fstack-nginx-rx-relay-once-test PRIVATE -Wl,--gc-sections)
-        target_link_libraries(ker-fstack-nginx-rx-relay-once-test PRIVATE ${CMAKE_DL_LIBS})
+        target_link_libraries(ker-fstack-nginx-rx-relay-once-test PRIVATE
+            ker-fstack-nginx-runtime ker-socket-preload Threads::Threads ${CMAKE_DL_LIBS})
         add_test(NAME fstack-nginx-rx-relay-ff-run-once
             COMMAND ker-fstack-nginx-rx-relay-once-test)
         set_tests_properties(fstack-nginx-rx-relay-ff-run-once PROPERTIES
