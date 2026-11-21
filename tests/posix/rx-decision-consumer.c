@@ -206,6 +206,30 @@ static int child_worker(struct fixture *fixture)
     }
     if (!strcmp(fixture->mode, "bad-ready")) return 27;
 
+    if (!strcmp(fixture->mode, "idle-positive")) {
+        if (receive_packet(fixture->worker_fd, bytes, sizeof(bytes), &length,
+                getppid(), false) || length != sizeof(header)) return 52;
+        memcpy(&header, bytes, sizeof(header));
+        if (header.type != KER_RX_DECISION_STOP ||
+            header.control_id != KER_RX_DECISION_STOP_CONTROL_ID) return 53;
+        struct ker_rx_decision_header settled_header = {
+            .magic = KER_RX_DECISION_MAGIC, .version = KER_RX_DECISION_VERSION,
+            .type = KER_RX_DECISION_SETTLED, .header_bytes = sizeof(settled_header),
+            .message_bytes = sizeof(settled_header) + sizeof(struct ker_rx_decision_settled),
+            .worker_epoch = fixture->epoch,
+            .control_id = KER_RX_DECISION_STOP_CONTROL_ID,
+        };
+        memcpy(settled_header.run_nonce, fixture->nonce, sizeof(settled_header.run_nonce));
+        struct ker_rx_decision_settled settled = {.last_packet_id = 0};
+        struct iovec vectors[] = {{&settled_header, sizeof(settled_header)},
+            {&settled, sizeof(settled)}};
+        struct msghdr message = {.msg_iov = vectors, .msg_iovlen = 2};
+        if (sendmsg(fixture->worker_fd, &message, MSG_NOSIGNAL) != settled_header.message_bytes)
+            return 54;
+        char byte;
+        return read(fixture->worker_fd, &byte, 1) == 0 ? 0 : 55;
+    }
+
     struct ker_rx_decision_header data_header = {
         .magic = KER_RX_DECISION_MAGIC, .version = KER_RX_DECISION_VERSION,
         .type = KER_RX_DECISION_DATA, .header_bytes = sizeof(data_header),
@@ -245,7 +269,7 @@ static int child_worker(struct fixture *fixture)
         !strcmp(fixture->mode, "drop") || !strcmp(fixture->mode, "wrong-thread") ||
         !strcmp(fixture->mode, "no-handler") || !strcmp(fixture->mode, "alive-uncertain") ||
         !strcmp(fixture->mode, "dead-peer") || !strcmp(fixture->mode, "replay") ||
-        !strcmp(fixture->mode, "bad-action");
+        !strcmp(fixture->mode, "bad-action") || !strncmp(fixture->mode, "bad-settle-", 11);
     if (!strcmp(fixture->mode, "late-complete")) {
         usleep(150000);
         if (wait_fd(fixture->settle_pipe[0])) return 48;
@@ -304,7 +328,7 @@ static int child_worker(struct fixture *fixture)
         strcmp(fixture->mode, "defer") && strcmp(fixture->mode, "shutdown-pending") &&
         strcmp(fixture->mode, "bad-action") && strcmp(fixture->mode, "wrong-thread") &&
         strcmp(fixture->mode, "no-handler") && strcmp(fixture->mode, "alive-uncertain") &&
-        strcmp(fixture->mode, "dead-peer")) return 0;
+        strcmp(fixture->mode, "dead-peer") && strncmp(fixture->mode, "bad-settle-", 11)) return 0;
     if (receive_packet(fixture->worker_fd, bytes, sizeof(bytes), &length, getppid(), false)) return 32;
     if (length != sizeof(struct ker_rx_decision_header) + sizeof(struct ker_rx_decision_result)) return 33;
     struct ker_rx_decision_result decision;
@@ -332,12 +356,49 @@ static int child_worker(struct fixture *fixture)
     };
     memcpy(settled_header.run_nonce, fixture->nonce, sizeof(settled_header.run_nonce));
     struct ker_rx_decision_settled settled = {.last_packet_id = 1};
+    char byte;
+    if (!strcmp(fixture->mode, "bad-settle-nonce")) settled_header.run_nonce[0] ^= 1;
+    if (!strcmp(fixture->mode, "bad-settle-epoch")) settled_header.worker_epoch++;
+    if (!strcmp(fixture->mode, "bad-settle-id")) settled.last_packet_id++;
+    if (!strcmp(fixture->mode, "bad-settle-outstanding")) settled.outstanding_count = 1;
     struct iovec final_vectors[] = {{&settled_header, sizeof(settled_header)},
         {&settled, sizeof(settled)}};
     struct msghdr final_message = {.msg_iov = final_vectors, .msg_iovlen = 2};
-    if (sendmsg(fixture->worker_fd, &final_message, MSG_NOSIGNAL) != settled_header.message_bytes) return 37;
+    bool bad_settlement = !strncmp(fixture->mode, "bad-settle-", 11);
+    if (!strcmp(fixture->mode, "bad-settle-short")) final_vectors[1].iov_len--;
+    int unexpected_fd = -1;
+    char rights_control[CMSG_SPACE(sizeof(int))] = {0};
+    if (!strcmp(fixture->mode, "bad-settle-extra-fd")) {
+        unexpected_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+        if (unexpected_fd < 0) return 56;
+        final_message.msg_control = rights_control;
+        final_message.msg_controllen = sizeof(rights_control);
+        struct cmsghdr *rights = CMSG_FIRSTHDR(&final_message);
+        rights->cmsg_level = SOL_SOCKET;
+        rights->cmsg_type = SCM_RIGHTS;
+        rights->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(rights), &unexpected_fd, sizeof(unexpected_fd));
+    }
+    if (!strcmp(fixture->mode, "bad-settle-credential")) {
+        pid_t impostor = fork();
+        if (impostor < 0) return 57;
+        if (!impostor) {
+            ssize_t sent = sendmsg(fixture->worker_fd, &final_message, MSG_NOSIGNAL);
+            _exit(sent == (ssize_t)settled_header.message_bytes ? 0 : 58);
+        }
+        int child_status = 0;
+        if (waitpid(impostor, &child_status, 0) != impostor || !WIFEXITED(child_status) ||
+            WEXITSTATUS(child_status)) return 59;
+    } else {
+        ssize_t expected_bytes = (ssize_t)(sizeof(settled_header) + final_vectors[1].iov_len);
+        if (sendmsg(fixture->worker_fd, &final_message, MSG_NOSIGNAL) != expected_bytes) return 37;
+    }
+    if (unexpected_fd >= 0) close(unexpected_fd);
+    if (bad_settlement) {
+        if (read(fixture->settle_pipe[0], &byte, 1) != 1 || byte != 'B') return 60;
+        return 0;
+    }
     /* The real worker stays alive after RX settlement for independent shutdown. */
-    char byte;
     if (read(fixture->worker_fd, &byte, 1) != 0) return 43;
     return 0;
 }
@@ -495,13 +556,27 @@ static int run_case(const char *mode)
     }
     CHECK(consumer_start == 0);
     CHECK(ker_posix_rx_decision_is_ready() == 1);
+    if (!strcmp(mode, "idle-positive")) {
+        CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == 0);
+        int child_status = 0;
+        CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+        CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+        struct ker_rx_decision_shutdown_receipt receipt;
+        CHECK(ker_rx_decision_consumer_get_shutdown_receipt(&receipt) == 0);
+        CHECK(receipt.last_packet_id == 0 && receipt.last_result_id == 0 &&
+            receipt.outstanding_count == 0 && receipt.status == 0);
+        close(fixture.worker_pidfd);
+        close(fixture.supervisor_pidfd);
+        close(fixture.settle_pipe[1]);
+        return 0;
+    }
     if (strcmp(mode, "positive") && strcmp(mode, "defer") &&
         strcmp(mode, "shutdown-pending") && strcmp(mode, "late-complete") &&
         strcmp(mode, "worker-death-defer") && strcmp(mode, "late-settle") &&
         strcmp(mode, "drop") &&
         strcmp(mode, "wrong-thread") &&
         strcmp(mode, "no-handler") && strcmp(mode, "alive-uncertain") &&
-        strcmp(mode, "dead-peer")) {
+        strcmp(mode, "dead-peer") && strncmp(mode, "bad-settle-", 11)) {
         CHECK(wait_fd(consumer_fd) == 0);
         if (!strcmp(mode, "replay")) {
             CHECK(ker_rx_decision_consumer_pump() == 0);
@@ -572,6 +647,8 @@ static int run_case(const char *mode)
         CHECK(waited == worker);
         CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
         CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == 1);
+        struct ker_rx_decision_shutdown_receipt missing_receipt;
+        CHECK(ker_rx_decision_consumer_get_shutdown_receipt(&missing_receipt) < 0);
         close(fixture.worker_pidfd);
         close(fixture.supervisor_pidfd);
         close(fixture.settle_pipe[1]);
@@ -589,6 +666,8 @@ static int run_case(const char *mode)
         CHECK(waited == worker);
         CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
         CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == 1);
+        struct ker_rx_decision_shutdown_receipt missing_receipt;
+        CHECK(ker_rx_decision_consumer_get_shutdown_receipt(&missing_receipt) < 0);
         close(fixture.worker_pidfd);
         close(fixture.supervisor_pidfd);
         close(fixture.settle_pipe[1]);
@@ -626,6 +705,21 @@ static int run_case(const char *mode)
         CHECK(ker_rx_decision_consumer_registered() == 1);
         CHECK(write(fixture.settle_pipe[1], "x", 1) == 1);
     }
+    if (!strncmp(mode, "bad-settle-", 11)) {
+        CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == -EBUSY);
+        struct ker_rx_decision_shutdown_receipt missing_receipt;
+        CHECK(ker_rx_decision_consumer_get_shutdown_receipt(&missing_receipt) < 0);
+        CHECK(write(fixture.settle_pipe[1], "B", 1) == 1);
+        int child_status = 0;
+        CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+        CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+        CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == 1);
+        CHECK(ker_rx_decision_consumer_get_shutdown_receipt(&missing_receipt) < 0);
+        close(fixture.worker_pidfd);
+        close(fixture.supervisor_pidfd);
+        close(fixture.settle_pipe[1]);
+        return 0;
+    }
     int shutdown = ker_rx_decision_consumer_prepare_runtime_shutdown();
     if (!strcmp(mode, "dead-peer")) {
         if (shutdown == -EBUSY) {
@@ -639,6 +733,30 @@ static int run_case(const char *mode)
         CHECK(shutdown == 1);
         CHECK(ker_rx_decision_consumer_error() < 0);
     } else CHECK(shutdown == 0);
+    struct ker_rx_decision_shutdown_receipt receipt;
+    if (!strcmp(mode, "dead-peer")) {
+        CHECK(ker_rx_decision_consumer_get_shutdown_receipt(&receipt) < 0);
+    } else {
+        CHECK(ker_rx_decision_consumer_get_shutdown_receipt(&receipt) == 0);
+        CHECK(receipt.last_packet_id == 1 && receipt.last_result_id == 1 &&
+            receipt.outstanding_count == 0 && receipt.status == 0);
+        struct ker_rx_decision_header receipt_header;
+        struct ker_rx_decision_settled receipt_body;
+        memcpy(&receipt_header, receipt.record, sizeof(receipt_header));
+        memcpy(&receipt_body, receipt.record + sizeof(receipt_header), sizeof(receipt_body));
+        CHECK(receipt_header.type == KER_RX_DECISION_SETTLED &&
+            receipt_header.worker_epoch == fixture.epoch &&
+            !memcmp(receipt_header.run_nonce, fixture.nonce, sizeof(fixture.nonce)) &&
+            receipt_body.last_packet_id == 1 && !receipt_body.outstanding_count);
+        CHECK(receipt.worker_pid == (uint32_t)fixture.worker_pid &&
+            receipt.worker_uid == (uint32_t)getuid() && receipt.worker_gid == (uint32_t)getgid() &&
+            receipt.supervisor_pid == (uint32_t)getpid() &&
+            receipt.supervisor_uid == (uint32_t)getuid() && receipt.supervisor_gid == (uint32_t)getgid());
+        receipt.record[0] ^= 0xff;
+        struct ker_rx_decision_shutdown_receipt reread;
+        CHECK(ker_rx_decision_consumer_get_shutdown_receipt(&reread) == 0 &&
+            reread.record[0] != receipt.record[0]);
+    }
     int status = 0;
     if (fixture.worker_pid > 0) {
         CHECK(waitpid(fixture.worker_pid, &status, 0) == fixture.worker_pid);

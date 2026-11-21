@@ -11,6 +11,7 @@ import threading
 import time
 import unittest
 import socket
+import select
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("ker_run_under_test", ROOT / "tools/ker-run.py")
@@ -310,6 +311,66 @@ int main(void) {
         self.assertEqual(len(c_bytes), 112 + 96)
         self.assertEqual(c_bytes[:112], expected)
         self.assertEqual(c_bytes[112:], owner_auth_expected)
+
+    def test_app_auth_direction_uses_retained_app_side_alias_for_worker_peer(self):
+        before = set(os.listdir('/proc/self/fd'))
+        app_side, worker_side = socket.socketpair(socket.AF_UNIX,
+            socket.SOCK_SEQPACKET | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC)
+        app_alias = app_side.dup()
+        inherited_app_copy = app_side.dup()
+        app_alias.setblocking(False)
+        for endpoint in (app_side, app_alias, worker_side):
+            endpoint.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        cookie = getattr(socket, 'SO_COOKIE', 57)
+        self.assertEqual(app_alias.getsockopt(socket.SOL_SOCKET, cookie, 8),
+            app_side.getsockopt(socket.SOL_SOCKET, cookie, 8))
+        self.assertNotEqual(app_alias.getsockopt(socket.SOL_SOCKET, cookie, 8),
+            worker_side.getsockopt(socket.SOL_SOCKET, cookie, 8))
+        pidfd = os.pidfd_open(os.getpid(), 0)
+        owner = type('Owner', (), {
+            'owner_pid': os.getpid(), 'owner_tid': threading.get_native_id(),
+            'owner_start': ker_run.process_start_ticks(os.getpid()),
+        })()
+        received_fds = []
+        try:
+            # The app's inherited copy is closed in the SDK after Popen; this
+            # retained duplicate still sends toward the worker peer.
+            app_side.close()
+            ker_run.rx_owner_relay_auth(app_alias,
+                type('App', (), {'pid': os.getpid()})(), pidfd, pidfd,
+                owner, bytes(range(16)), 9,
+                time.monotonic_ns() + 1_000_000_000)
+            packet, ancillary, flags, _ = worker_side.recvmsg(256,
+                socket.CMSG_SPACE(12) + socket.CMSG_SPACE(4 * 4))
+            self.assertEqual(ker_run._RX_OWNER_RELAY_HEADER.unpack(packet)[2], 3)
+            credentials = []
+            for level, kind, payload in ancillary:
+                if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS:
+                    credentials.append(struct.unpack('=3i', payload))
+                elif level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                    values = array.array('i')
+                    values.frombytes(payload[:len(payload) - len(payload) % values.itemsize])
+                    received_fds.extend(values)
+            self.assertEqual(credentials, [(os.getpid(), os.getuid(), os.getgid())])
+            self.assertEqual(len(received_fds), 2)
+            self.assertFalse(flags)
+            self.assertEqual(select.select([app_alias], [], [], 0)[0], [])
+            # The Popen-inherited app endpoint keeps the worker peer alive
+            # until the actual child copy closes; the SDK's original alias
+            # must not be what suppresses EOF.
+            app_alias.close()
+            with self.assertRaises(BlockingIOError):
+                worker_side.recv(1)
+            inherited_app_copy.close()
+            self.assertEqual(worker_side.recv(1), b'')
+        finally:
+            for fd in received_fds:
+                os.close(fd)
+            app_alias.close()
+            inherited_app_copy.close()
+            worker_side.close()
+            os.close(pidfd)
+        self.assertEqual(set(os.listdir('/proc/self/fd')), before)
 
     def test_supervisor_owner_ack_receiver_validates_tuple_and_ancillary(self):
         for mode in ('valid', 'cookie', 'trailing', 'rights'):

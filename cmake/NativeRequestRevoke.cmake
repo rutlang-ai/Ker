@@ -206,6 +206,9 @@ if(BUILD_TESTING)
         set_tests_properties(native-c25-candidate-unbound-activation-tap PROPERTIES
             TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;wire;reuseport"
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+        add_executable(ker-nginx-owner-group-controller tests/posix/nginx-owner-group-controller.c)
+        target_link_libraries(ker-nginx-owner-group-controller PRIVATE ker-socket-client)
+        target_compile_options(ker-nginx-owner-group-controller PRIVATE -Wall -Wextra -Werror)
         if(TARGET ker-fstack-nginx-owner-activation AND
            TARGET ker-fstack-nginx-worker-shim AND KER_FSTACK_NGINX_BINARY)
             add_executable(ker-nginx-owner-ready-test
@@ -245,9 +248,6 @@ if(BUILD_TESTING)
                 COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/nginx-source-cps-oracle.py")
             set_tests_properties(native-nginx-source-cps-oracle PROPERTIES
                 TIMEOUT 10 LABELS "nginx;source-reload" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
-            add_executable(ker-nginx-owner-group-controller tests/posix/nginx-owner-group-controller.c)
-            target_link_libraries(ker-nginx-owner-group-controller PRIVATE ker-socket-client)
-            target_compile_options(ker-nginx-owner-group-controller PRIVATE -Wall -Wextra -Werror)
             add_test(NAME native-nginx-overlapping-owner-cutover-tap
                 COMMAND "${Python3_EXECUTABLE}"
                     "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"

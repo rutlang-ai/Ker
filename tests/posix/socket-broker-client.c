@@ -7,6 +7,7 @@
 #include <linux/filter.h>
 #include <netinet/in.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -112,6 +113,31 @@ static int write_exact(struct ker_socket_client *client, int cap, const void *bu
     return 0;
 }
 
+static int reused_capability_is_rejected(struct ker_socket_client *client)
+{
+    int capability = ker_socket_client_socket(client, AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (capability < 0) return -1;
+    int stale_number = capability;
+    if (syscall(SYS_close, capability) < 0) return -1;
+    int pipe_fds[2];
+    if (pipe2(pipe_fds, O_NONBLOCK | O_CLOEXEC) < 0) return -1;
+    if (pipe_fds[0] != stale_number) {
+        if (dup2(pipe_fds[0], stale_number) < 0) {
+            int error = errno;
+            close(pipe_fds[0]); close(pipe_fds[1]); errno = error; return -1;
+        }
+        close(pipe_fds[0]);
+    }
+    if (pipe_fds[1] != stale_number) close(pipe_fds[1]);
+    struct ker_socket_event_snapshot snapshot = {0};
+    errno = 0;
+    int result = ker_socket_client_event_snapshot(client, stale_number, &snapshot);
+    int error = errno;
+    (void)syscall(SYS_close, stale_number);
+    if (result != -1 || error != EBADF) { errno = EPROTO; return -1; }
+    return 0;
+}
+
 static void fill_payload(char *buffer, size_t length)
 {
     for (size_t i = 0; i < length; ++i) buffer[i] = (char)((i * 31u + 7u) & 0xffu);
@@ -158,6 +184,17 @@ static int child_mode(const char *path, int listener, int epoll, int accepted)
     CHECK(!memcmp(first, expected, sizeof(first)));
     CHECK(write_exact(&client, accepted, expected, sizeof(expected)) == 0);
     CHECK(read_until_eof(&client, accepted) == 0);
+    struct ker_socket_event_snapshot eof_first = {0}, eof_again = {0};
+    CHECK(ker_socket_client_event_snapshot(&client, accepted, &eof_first) == 0);
+    CHECK(ker_socket_client_event_snapshot(&client, accepted, &eof_again) == 0);
+    CHECK(eof_first.version == KER_SOCKET_EVENT_SNAPSHOT_VERSION &&
+        (eof_first.events & (EPOLLIN | EPOLLRDHUP)) == (EPOLLIN | EPOLLRDHUP));
+    CHECK((eof_first.flags & KER_SOCKET_EVENT_READ_SHUTDOWN) &&
+        !(eof_first.flags & KER_SOCKET_EVENT_WRITE_SHUTDOWN));
+    CHECK(eof_first.read_available == 0 && eof_first.pending_hard_error == 0);
+    CHECK(eof_again.events == eof_first.events &&
+        eof_again.read_available == eof_first.read_available &&
+        eof_again.pending_hard_error == eof_first.pending_hard_error);
     puts("FIRST_STREAM_OK"); fflush(stdout);
 
     int second = wait_accept(&client, listener, epoll, UINT64_C(0x4097));
@@ -170,8 +207,45 @@ static int child_mode(const char *path, int listener, int epoll, int accepted)
     CHECK(read_exact(&client, second, second_data, sizeof(second_data)) == 0);
     CHECK(!memcmp(second_data, "FRESH-ACCEPT", sizeof(second_data)));
     CHECK(ker_socket_client_write(&client, second, "REPLY-TWO", 9) == 9);
+    CHECK(ker_socket_client_shutdown(&client, second, SHUT_WR) == 0);
+    struct ker_socket_event_snapshot write_shutdown = {0};
+    CHECK(ker_socket_client_event_snapshot(&client, second, &write_shutdown) == 0 &&
+        (write_shutdown.flags & KER_SOCKET_EVENT_WRITE_SHUTDOWN));
     CHECK(read_until_eof(&client, second) == 0);
+    struct ker_socket_event_snapshot both_shutdown = {0};
+    CHECK(ker_socket_client_event_snapshot(&client, second, &both_shutdown) == 0 &&
+        (both_shutdown.flags & (KER_SOCKET_EVENT_READ_SHUTDOWN |
+            KER_SOCKET_EVENT_WRITE_SHUTDOWN)) ==
+            (KER_SOCKET_EVENT_READ_SHUTDOWN | KER_SOCKET_EVENT_WRITE_SHUTDOWN));
     close(second);
+    puts("THIRD_WAIT"); fflush(stdout);
+    int reset_socket = wait_accept(&client, listener, epoll, UINT64_C(0x4097));
+    CHECK(reset_socket >= 0);
+    puts("THIRD_ACCEPTED"); fflush(stdout);
+    struct ker_socket_event_snapshot error_first = {0}, error_again = {0};
+    struct timespec error_pause = {.tv_sec = 0, .tv_nsec = 1000000};
+    int saw_reset_error = 0;
+    for (unsigned i = 0; i < 10000; ++i) {
+        CHECK(ker_socket_client_event_snapshot(&client, reset_socket,
+            &error_first) == 0);
+        if (error_first.pending_hard_error == ECONNRESET) {
+            saw_reset_error = 1;
+            break;
+        }
+        (void)syscall(SYS_nanosleep, &error_pause, NULL);
+    }
+    CHECK(saw_reset_error && (error_first.events & EPOLLERR));
+    CHECK(ker_socket_client_event_snapshot(&client, reset_socket, &error_again) == 0);
+    CHECK(error_again.pending_hard_error == ECONNRESET);
+    int socket_error = 0;
+    socklen_t socket_error_length = sizeof(socket_error);
+    CHECK(ker_socket_client_getsockopt(&client, reset_socket, SOL_SOCKET, SO_ERROR,
+        &socket_error, &socket_error_length) == 0 &&
+        socket_error_length == sizeof(socket_error) && socket_error == ECONNRESET);
+    CHECK(ker_socket_client_event_snapshot(&client, reset_socket, &error_again) == 0);
+    CHECK(error_again.pending_hard_error == 0);
+    puts("HARD_ERROR_NONCONSUMING_OK"); fflush(stdout);
+    close(reset_socket);
     close(accepted);
     close(listener);
     close(epoll);
@@ -184,6 +258,15 @@ static int parent_mode(const char *self, const char *path, int listener, int epo
 {
     struct ker_socket_client client;
     CHECK(ker_socket_client_open(&client, path) == 0);
+    CHECK(reused_capability_is_rejected(&client) == 0);
+
+    struct ker_socket_event_snapshot listener_snapshot = {0};
+    CHECK(ker_socket_client_event_snapshot(&client, listener, &listener_snapshot) == 0);
+    CHECK((listener_snapshot.flags & KER_SOCKET_EVENT_LISTENER) &&
+        (listener_snapshot.validity & KER_SOCKET_EVENT_READ_AVAILABLE_VALID) &&
+        !(listener_snapshot.validity & KER_SOCKET_EVENT_WRITE_ACCOUNTING_VALID) &&
+        listener_snapshot.read_available == 0 &&
+        listener_snapshot.write_accounting_space == 0);
 
     int alias = dup(listener);
     CHECK(alias >= 0);
@@ -282,6 +365,9 @@ static int parent_mode(const char *self, const char *path, int listener, int epo
     errno = 0;
     CHECK(ker_socket_client_describe(&client, wrong[0], &described_kind,
         &described_flags) == -1 && errno == EBADF);
+    errno = 0;
+    CHECK(ker_socket_client_event_snapshot(&client, wrong[0],
+        &listener_snapshot) == -1 && errno == EBADF);
     close(wrong[0]); close(wrong[1]);
     int pipe_fds[2];
     CHECK(pipe2(pipe_fds, O_NONBLOCK | O_CLOEXEC) == 0);
@@ -307,13 +393,20 @@ static int parent_mode(const char *self, const char *path, int listener, int epo
     CHECK(ker_socket_client_accept4(&client, listener, NULL, NULL, SOCK_CLOEXEC) == -1 && errno == EAGAIN);
     puts("WAIT_ACCEPT"); fflush(stdout);
     int accepted = -1;
+    bool saw_listener_count = false;
     for (unsigned i = 0; i < 10000 && accepted < 0; ++i) {
+        CHECK(ker_socket_client_event_snapshot(&client, listener,
+            &listener_snapshot) == 0);
+        CHECK((listener_snapshot.flags & KER_SOCKET_EVENT_LISTENER) &&
+            (listener_snapshot.validity & KER_SOCKET_EVENT_READ_AVAILABLE_VALID) &&
+            !(listener_snapshot.validity & KER_SOCKET_EVENT_WRITE_ACCOUNTING_VALID));
+        if (listener_snapshot.read_available > 0) saw_listener_count = true;
         accepted = ker_socket_client_accept4(&client, listener, NULL, NULL, SOCK_CLOEXEC);
         if (accepted < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return 1;
         if (accepted < 0) { struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
             (void)syscall(SYS_nanosleep, &pause, NULL); }
     }
-    CHECK(accepted >= 0);
+    CHECK(accepted >= 0 && saw_listener_count);
     struct epoll_event event = {.events = EPOLLIN, .data.u64 = UINT64_C(0x1234)};
     CHECK(ker_socket_client_epoll_ctl(&client, epoll, EPOLL_CTL_ADD, accepted, &event) == 0);
     int accepted_alias = ker_socket_client_dup(&client, accepted);
@@ -350,6 +443,16 @@ static int parent_mode(const char *self, const char *path, int listener, int epo
     CHECK(ker_socket_client_epoll_ctl(&client, epoll, EPOLL_CTL_ADD, accepted_alias, &event) == 0);
     puts("PRE_FORK_WAIT"); fflush(stdout);
     CHECK(wait_event_pair(&client, epoll, UINT64_C(0x1234), UINT64_C(0x5678)) == 0);
+    struct ker_socket_event_snapshot stream_snapshot = {0};
+    CHECK(ker_socket_client_event_snapshot(&client, accepted_alias,
+        &stream_snapshot) == 0);
+    CHECK(!(stream_snapshot.flags & KER_SOCKET_EVENT_LISTENER) &&
+        (stream_snapshot.validity & KER_SOCKET_EVENT_READ_AVAILABLE_VALID) &&
+        (stream_snapshot.validity & KER_SOCKET_EVENT_WRITE_ACCOUNTING_VALID) &&
+        (stream_snapshot.validity & KER_SOCKET_EVENT_HARD_ERROR_VALID) &&
+        stream_snapshot.read_available == 11 &&
+        stream_snapshot.write_accounting_space >= 0 &&
+        (stream_snapshot.events & EPOLLIN));
     char before[11] = {0}, peeked[11] = {0};
     CHECK(ker_socket_client_recv(&client, accepted_alias, peeked, sizeof(peeked),
         MSG_PEEK | MSG_DONTWAIT) == sizeof(peeked));

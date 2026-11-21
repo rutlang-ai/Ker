@@ -26,6 +26,21 @@ struct ker_rx_decision_packet {
     const void *first_segment;
 };
 
+/* Read-only, private shutdown receipt copied only after a validated SETTLED
+ * record closes all registered descriptors. */
+#define KER_RX_DECISION_SETTLED_RECORD_BYTES 80
+struct ker_rx_decision_shutdown_receipt {
+    uint8_t record[KER_RX_DECISION_SETTLED_RECORD_BYTES];
+    uint32_t worker_pid, worker_uid, worker_gid;
+    uint64_t worker_start_ticks;
+    uint32_t supervisor_pid, supervisor_uid, supervisor_gid;
+    uint64_t supervisor_start_ticks;
+    uint8_t nonce[KER_RX_DECISION_NONCE_BYTES];
+    uint64_t epoch, last_packet_id, last_result_id;
+    uint32_t outstanding_count;
+    int32_t status;
+};
+
 typedef int (*ker_rx_decision_handler)(
     const struct ker_rx_decision_packet *packet, void *context);
 
@@ -55,6 +70,8 @@ int ker_posix_rx_decision_is_ready(void);
 int ker_rx_decision_consumer_start(void);
 int ker_rx_decision_consumer_pump(void);
 int ker_rx_decision_consumer_prepare_runtime_shutdown(void);
+int ker_rx_decision_consumer_get_shutdown_receipt(
+    struct ker_rx_decision_shutdown_receipt *receipt);
 int ker_rx_decision_consumer_registered(void);
 int ker_rx_decision_consumer_error(void);
 #ifdef KER_C31_RX_DECISION_TESTING

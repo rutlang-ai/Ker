@@ -96,7 +96,7 @@ struct ker_rx_decision_worker {
     int fd;
     bool bootstrapped;
     uint8_t nonce[KER_RX_DECISION_NONCE_BYTES];
-    uint64_t epoch, packet_id, control_id;
+    uint64_t epoch, packet_id, control_id, last_settled_packet_id;
     struct ker_rx_decision_peer supervisor, consumer;
 #ifdef KER_RX_DECISION_TESTING
     const char *test_data_marker_path;
@@ -339,6 +339,7 @@ static int rx_decision_send_settled(struct ker_rx_decision_worker *worker)
     do { sent = sendmsg(worker->fd, &message, MSG_DONTWAIT | MSG_NOSIGNAL); }
     while (sent < 0 && errno == EINTR);
     if (sent != (ssize_t)(sizeof(reply) + sizeof(body))) return sent < 0 ? -errno : -EIO;
+    worker->last_settled_packet_id = worker->packet_id;
     return 0;
 }
 
@@ -589,7 +590,8 @@ static int configure_mtu(uint16_t port, int mtu, uint16_t descriptors,
 /* Main owns device control; join remote RX pollers before queue rebuild,
  * then resume their original assignment on success or successful rollback. */
 static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mtu,
-    bool busy, struct ker_worker_exception *exception, uint64_t *changes, struct rte_mempool *pool,
+    bool busy, bool queue_proof_locked, struct ker_worker_exception *exception,
+    uint64_t *changes, struct rte_mempool *pool,
     uint16_t descriptors, unsigned int allocation_socket, uint16_t queues, struct ker_worker_rss *rss, bool *started,
     struct ker_worker_rx_lcores *rx_workers, struct ker_pcap *capture,
     uint64_t *rx_dropped, uint64_t *reconfigure_discarded)
@@ -616,6 +618,7 @@ static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mt
         else if (message.previous != *mtu) message.status = -ESTALE;
         else if (busy || exception_busy) message.status = -EBUSY;
         else if (scatter && scatter_mtu_supported(port, requested)) message.status = -EOPNOTSUPP;
+        else if (requested != *mtu && queue_proof_locked) message.status = -ENOTSUP;
         else if (requested != *mtu) {
             /* RX capacities can be fixed at queue setup (notably TAP scatter).
              * Stop before rebuilding queues with the same owned pool. Network
@@ -1188,6 +1191,9 @@ int main(int argc, char **argv)
     bool rx_decision_enabled = false, rx_decision_ready = false;
     bool rx_decision_stopping = false, rx_decision_settled = false;
     bool rx_pollers_stopped = false;
+    const char *queue_proof_nonce = NULL;
+    uint64_t queue_proof_epoch = 0;
+    int queue_proof_source_proc_id = -1;
 #ifdef KER_RX_DECISION_TESTING
     bool rx_test_eagain_once = false;
     uint64_t rx_test_eagain_id = 0, rx_test_eagain_injected = 0, rx_test_eagain_same_id = 0;
@@ -1233,6 +1239,25 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--idle-sleep-us")) idle_sleep_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--rx-decision-fd")) rx_decision_fd = number(argv[++i]);
+        else if (!strcmp(argv[i], "--queue-proof-session")) {
+            if (queue_proof_nonce) return 2;
+            queue_proof_nonce = argv[++i];
+        }
+        else if (!strcmp(argv[i], "--queue-proof-epoch")) {
+            if (queue_proof_epoch) return 2;
+            const char *epoch_text = argv[++i];
+            if (!*epoch_text) return 2;
+            for (const char *digit = epoch_text; *digit; digit++)
+                if (*digit < '0' || *digit > '9') return 2;
+            char *end = NULL; errno = 0;
+            unsigned long long parsed = strtoull(epoch_text, &end, 10);
+            if (errno || end == epoch_text || *end || !parsed) return 2;
+            queue_proof_epoch = (uint64_t)parsed;
+        }
+        else if (!strcmp(argv[i], "--queue-proof-source-proc-id")) {
+            if (queue_proof_source_proc_id != -1) return 2;
+            queue_proof_source_proc_id = number(argv[++i]);
+        }
         else if (!strcmp(argv[i], "--bond-policy")) bond_policy = argv[++i];
         else if (!strcmp(argv[i], "--tx-offloads")) tx_offloads = number(argv[++i]);
         else if (!strcmp(argv[i], "--rx-lcores")) rx_lcores = argv[++i];
@@ -1258,6 +1283,12 @@ int main(int argc, char **argv)
         (exception_iface && ((!port_filter && (exception_type < 1536 || exception_type > UINT16_MAX)) ||
         exception_queue < 4 || exception_queue > 65536 || (exception_queue & (exception_queue - 1)) || exception_rate < 0 || exception_console_rate < 0 || exception_general_rate < 0)) ||
         (!exception_iface && (exception_type || exception_rate || exception_console_rate || exception_general_rate || exception_queue != 256))) return 1;
+    if ((queue_proof_nonce == NULL) != (queue_proof_epoch == 0) ||
+        (queue_proof_nonce && (strlen(queue_proof_nonce) != 32 ||
+            strspn(queue_proof_nonce, "0123456789abcdef") != 32)) ||
+        (queue_proof_source_proc_id != -1 &&
+            (queue_proof_source_proc_id != 1 || !queue_proof_nonce || rx_decision_fd < 0)))
+        return 2;
     if (!maximum_mtu) maximum_mtu = mtu;
     if (maximum_mtu < mtu || maximum_mtu > KER_NATIVE_MAX_MTU) return 1;
     if (tx_offloads < 0 || tx_offloads > 2 || queues < 1 || queues > MAX_QUEUES || (rss_enabled && queues < 2) || tx_delay_us < 0 || tx_delay_us > 100 || idle_sleep_us < 0 || idle_sleep_us > 100000 || (strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
@@ -1643,9 +1674,28 @@ int main(int argc, char **argv)
     if (ker_worker_rx_lcores_start(&rx_workers)) {
         fprintf(stderr, "ker: cannot start port RX lcore workers\n"); goto cleanup;
     }
+    if (queue_proof_nonce) {
+        if (queue_proof_source_proc_id == 1 && (port != 0 || queues != 1 ||
+                rx_workers.queue[0].owner != 1 || rx_workers.queue[0].observed != 1)) {
+            fprintf(stderr, "ker: source queue-owner READY proof does not match port 0/lcore 1\n");
+            goto cleanup;
+        }
+        for (uint16_t queue = 0; queue < queues; queue++) {
+            const struct ker_rx_poll_queue *owner = &rx_workers.queue[queue];
+            rte_cpuset_t owner_cpu_set = rte_lcore_cpuset(owner->owner);
+            if (!atomic_load_explicit(&owner->owner_ready, memory_order_acquire) ||
+                owner->owner != owner->observed || owner->cpu < 0 ||
+                    !CPU_ISSET((unsigned)owner->cpu, &owner_cpu_set) ||
+                    (queue_proof_source_proc_id == 1 &&
+                        CPU_COUNT(&owner_cpu_set) != 1)) {
+                fprintf(stderr, "ker: RX queue owner was not observed before READY\n");
+                goto cleanup;
+            }
+        }
+    }
     printf("KER_IO_READY {\"all_multicast_method\":\"%s\",\"tap_retry_safe\":%s,\"tx_offload_features\":%u,\"tx_offload_flags\":%llu,\"tx_offload_mode\":%d,\"tx_capture_stage\":\"before_offload\",\"rss\":%s,\"queues\":%d,\"data_tx_queue\":0,\"bond\":%s,\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"pool_rx_descriptors\":%u,\"pool_tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
-        "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_base\":\"0x%llx\",\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
+        "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_base\":\"0x%llx\",\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d",
         receive_mode.method ? receive_mode.method : "off", offload.tap_retry_safe ? "true" : "false", offload.features, (unsigned long long)offload.flags, tx_offloads, rss_json, queues, initial_bond_json, device_info.driver_name ? device_info.driver_name : "unknown",
         device_info.max_rx_queues, device_info.max_tx_queues, receive_info.nb_desc, transmit_info.nb_desc,
         pool_rx_desc, pool_tx_desc, pool_count,
@@ -1654,6 +1704,26 @@ int main(int argc, char **argv)
         rte_eth_dev_socket_id(port), numa ? "true" : "false", rte_socket_id(), allocation_socket, pool->socket_id, eal_log_level, rte_log_get_global_level(), (unsigned long long)memory_base, (unsigned long long)rte_eal_get_physmem_size(),
         rte_eal_has_hugepages() ? "true" : "false", rte_memory_get_nchannel(), rte_lcore_count(), rte_get_main_lcore(), sched_getcpu(), link_status ? "null" : (link.link_status ? "true" : "false"),
         promiscuous_state < 0 ? "null" : (promiscuous_state ? "true" : "false"), idle_sleep_us, tx_delay_us);
+    if (queue_proof_nonce) {
+        printf(",\"queue_owner_proof\":{\"version\":1,\"worker_pid\":%ld,\"session_nonce\":\"%s\",\"session_epoch\":%llu,\"role\":\"%s\",\"source_proc_id\":%d,\"port_id\":%u,\"queues\":[",
+            (long)getpid(), queue_proof_nonce,
+            (unsigned long long)queue_proof_epoch,
+            "native-io-owner",
+            queue_proof_source_proc_id == 1 ? 1 : 0, port);
+        for (uint16_t queue = 0; queue < queues; queue++) {
+            const struct ker_rx_poll_queue *owner = &rx_workers.queue[queue];
+            rte_cpuset_t cpu_set = rte_lcore_cpuset(owner->owner);
+            printf("%s{\"queue_id\":%u,\"owner_eal_lcore\":%u,\"observed_eal_lcore\":%u,\"allowed_cpus\":[",
+                queue ? "," : "", queue, owner->owner, owner->observed);
+            bool first_cpu = true;
+            for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) if (CPU_ISSET(cpu, &cpu_set)) {
+                printf("%s%d", first_cpu ? "" : ",", cpu); first_cpu = false;
+            }
+            printf("],\"actual_cpu\":%d}", owner->cpu);
+        }
+        printf("]}");
+    }
+    printf("}\n");
     fflush(stdout);
     status = 0;
     bool exception_first = false;
@@ -1665,7 +1735,8 @@ int main(int argc, char **argv)
         if (bond_policy) (void)rte_eth_tx_burst(port, 0, NULL, 0);
         if (mtu_fd >= 0) {
             int result = mtu_command(mtu_fd, port, scatter, maximum_mtu, &mtu,
-                pending_tx != NULL || tx_length || batch.count || rx_index < rx_count, &exception, &mtu_changes,
+                pending_tx != NULL || tx_length || batch.count || rx_index < rx_count,
+                queue_proof_source_proc_id == 1, &exception, &mtu_changes,
                 pool, rx_desc, allocation_socket, (uint16_t)queues, &rss, &started,
                 &rx_workers, rx_capture.file ? &rx_capture : NULL, &rx_dropped, &rx_reconfigure_discarded);
             if (result < 0) { fprintf(stderr, "ker: MTU device transaction failed\n"); status = 1; break; }
@@ -2121,8 +2192,9 @@ cleanup:
         (unsigned long long)rx_test_eagain_same_id,
         rx_decision.test_data_marked ? "true" : "false");
 #endif
-    printf(",\"rx_decision_settled\":%s,\"rx_pollers\":[",
-        rx_decision_settled ? "true" : "false");
+    printf(",\"rx_decision_settled\":%s,\"rx_decision_last_settled_packet_id\":%llu,\"rx_pollers\":[",
+        rx_decision_settled ? "true" : "false",
+        (unsigned long long)rx_decision.last_settled_packet_id);
     for (uint16_t q = 0; q < rx_workers.queues; q++) {
         const struct ker_rx_poll_queue *poller = &rx_workers.queue[q];
         printf("%s{\"queue\":%u,\"owner\":%u,\"lcore\":%u,\"cpu\":%d,\"packets\":%llu,\"polls\":%llu,\"stalled\":%llu,\"shutdown\":%llu,\"reconfigured\":%llu,\"starts\":%llu}",

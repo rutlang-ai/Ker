@@ -11,9 +11,11 @@
 #include <ngx_connection.h>
 #include <ngx_module.h>
 #include <ngx_process.h>
+#include <ngx_conf_file.h>
 
 #include <ker/ini.h>
 #include <ker/socket-broker.h>
+#include "socket-broker-preload-internal.h"
 #include <ff_api.h>
 #include "nginx-relay-observation.h"
 
@@ -34,15 +36,14 @@ struct ff_reload_state;
 #include <string.h>
 #include <sys/syscall.h>
 #include <sys/socket.h>
-#ifdef KER_NGINX_OWNER_TEST_ALIAS
 #include <sys/un.h>
-#endif
 #include <poll.h>
 #include <sys/stat.h>
 
 #include "nginx-cycle-wire.h"
 #include "nginx-owner-ready.h"
 #include "nginx-source-bootstrap.h"
+#include "source-native-ini.h"
 #include "rx-owner-relay-wire.h"
 #include <time.h>
 #include <unistd.h>
@@ -51,6 +52,7 @@ extern ngx_uint_t ngx_test_config;
 extern ngx_uint_t ngx_process;
 extern volatile ngx_cycle_t *ngx_cycle;
 extern ngx_module_t ngx_core_module;
+extern ngx_module_t ker_fstack_nginx_owner_activation_module;
 
 static struct ker_socket_client broker;
 static int broker_open;
@@ -65,6 +67,195 @@ static bool worker_prepared;
 static bool candidate_mode;
 static bool delegated_initial_mode;
 static bool source_master_mode;
+static uint64_t source_shell_cycle_serial;
+static uint32_t source_worker_slot_number;
+static bool source_worker_native_commit_complete;
+static struct ker_nginx_source_bootstrap_proof source_worker_cycle_proof;
+#ifdef KER_NGINX_OWNER_BUILTIN
+static bool source_shell_environment_captured;
+static bool source_shell_profile_validated;
+static pid_t source_shell_module_pid;
+static ngx_cycle_t *source_shell_validated_cycle;
+
+/* Only the immutable launch context for the first original HUP is retained.
+ * Descriptor capabilities, per-worker values, and all test/fault variables
+ * remain outside Nginx's exec environment. */
+static const char *const source_shell_environment_names[] = {
+    "KER_NGINX_SOURCE_SHELL_ENABLE",
+    "KER_NGINX_SOURCE_BOOTSTRAP_PATH",
+    "KER_NGINX_SOURCE_BOOTSTRAP_NONCE",
+    "KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_PID",
+    "KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_START",
+    "KER_NGINX_SOURCE_BOOTSTRAP_EPOCH",
+    "KER_NGINX_SOURCE_BOOTSTRAP_DEADLINE_NS",
+    "KER_SOCKET_BROKER_PATH",
+    "KER_FSTACK_NGINX_INI",
+    "KER_NGINX_SOURCE_FIRST_HUP_ENABLE",
+    "KER_FSTACK_RUNTIME_TRACE",
+};
+
+static const size_t source_shell_environment_max_lengths[] = {
+    1,
+    sizeof(((struct sockaddr_un *) 0)->sun_path) - 1,
+    32,
+    10,
+    20,
+    20,
+    20,
+    KER_SOCKET_BROKER_PATH_MAX,
+    PATH_MAX - 1,
+    1,
+    PATH_MAX - 1,
+};
+
+_Static_assert(sizeof(source_shell_environment_max_lengths) /
+    sizeof(source_shell_environment_max_lengths[0]) ==
+    sizeof(source_shell_environment_names) / sizeof(source_shell_environment_names[0]),
+    "source-shell environment bounds must cover the complete allowlist");
+static char *source_shell_environment_values[sizeof(source_shell_environment_names) /
+    sizeof(source_shell_environment_names[0])];
+
+static bool
+source_shell_environment_decimal(const char *value, size_t length, uint64_t maximum)
+{
+    uint64_t parsed = 0;
+
+    if (value == NULL || length == 0 || length > 20 || value[0] == '0') {
+        return false;
+    }
+    for (size_t i = 0; i < length; i++) {
+        unsigned digit;
+        if (value[i] < '0' || value[i] > '9') {
+            return false;
+        }
+        digit = (unsigned) (value[i] - '0');
+        if (digit > maximum || parsed > (maximum - digit) / 10) {
+            return false;
+        }
+        parsed = parsed * 10 + digit;
+    }
+    return parsed != 0;
+}
+
+static bool
+source_shell_environment_nonce(const char *value, size_t length)
+{
+    if (value == NULL || length != 32) {
+        return false;
+    }
+    for (size_t i = 0; i < length; i++) {
+        if (!((value[i] >= '0' && value[i] <= '9') ||
+              (value[i] >= 'a' && value[i] <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static ngx_int_t
+source_shell_register_environment(ngx_cycle_t *cycle)
+{
+    ngx_core_conf_t *ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+    const char *enabled = getenv(source_shell_environment_names[0]);
+    ngx_str_t *configured;
+    const char *values[sizeof(source_shell_environment_names) /
+        sizeof(source_shell_environment_names[0])] = {0};
+    char *copies[sizeof(source_shell_environment_names) /
+        sizeof(source_shell_environment_names[0])] = {0};
+    ngx_str_t *entries;
+    ngx_uint_t i, j;
+
+    if (!enabled) {
+        return source_shell_environment_captured ? NGX_ERROR : NGX_DECLINED;
+    }
+    if (strcmp(enabled, "1") != 0 || ccf == NULL || ccf->environment != NULL ||
+        ccf->env.elts == NULL) {
+        return NGX_ERROR;
+    }
+    if (getenv("KER_NGINX_SOURCE_SUCCESSOR_ENABLE") ||
+        getenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE") || getenv("FF_FAULT")) {
+        return NGX_ERROR;
+    }
+
+    configured = ccf->env.elts;
+    for (i = 0; i < ccf->env.nelts; i++) {
+        for (j = 0; j < sizeof(source_shell_environment_names) / sizeof(source_shell_environment_names[0]); j++) {
+            size_t name_len = ngx_strlen(source_shell_environment_names[j]);
+            if (configured[i].len >= name_len &&
+                ngx_memcmp(configured[i].data, source_shell_environment_names[j], name_len) == 0 &&
+                (configured[i].len == name_len || configured[i].data[name_len] == '=')) {
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    for (i = 0; i < sizeof(source_shell_environment_names) / sizeof(source_shell_environment_names[0]); i++) {
+        const char *value = getenv(source_shell_environment_names[i]);
+        size_t max_length = source_shell_environment_max_lengths[i];
+        size_t value_len = value ? strnlen(value, max_length + 1) : 0;
+        if ((i != 10 && (!value || value_len == 0)) || value_len > max_length) {
+            return NGX_ERROR;
+        }
+        if ((i == 0 || i == 9) && strcmp(value, "1") != 0) return NGX_ERROR;
+        if (i == 2 && !source_shell_environment_nonce(value, value_len)) return NGX_ERROR;
+        if (i == 3 && !source_shell_environment_decimal(value, value_len, UINT32_MAX)) return NGX_ERROR;
+        if (i >= 4 && i <= 6 && !source_shell_environment_decimal(value, value_len, UINT64_MAX)) {
+            return NGX_ERROR;
+        }
+        values[i] = value;
+        if (source_shell_environment_captured) {
+            if ((source_shell_environment_values[i] == NULL) != (value == NULL) ||
+                (value && strcmp(source_shell_environment_values[i], value) != 0)) {
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    if (!source_shell_environment_captured) {
+        for (i = 0; i < sizeof(source_shell_environment_names) /
+             sizeof(source_shell_environment_names[0]); i++) {
+            if (values[i] != NULL) {
+                copies[i] = strdup(values[i]);
+                if (copies[i] == NULL) {
+                    for (j = 0; j < i; j++) free(copies[j]);
+                    return NGX_ERROR;
+                }
+            }
+        }
+    }
+
+    entries = ngx_array_push_n(&ccf->env, sizeof(source_shell_environment_names) /
+        sizeof(source_shell_environment_names[0]));
+    if (entries == NULL) {
+        for (i = 0; i < sizeof(copies) / sizeof(copies[0]); i++) free(copies[i]);
+        return NGX_ERROR;
+    }
+    for (i = 0; i < sizeof(source_shell_environment_names) / sizeof(source_shell_environment_names[0]); i++) {
+        entries[i].len = ngx_strlen(source_shell_environment_names[i]);
+        entries[i].data = (u_char *) source_shell_environment_names[i];
+    }
+    if (!source_shell_environment_captured) {
+        memcpy(source_shell_environment_values, copies, sizeof(copies));
+    }
+    source_shell_environment_captured = true;
+    return NGX_OK;
+}
+
+int
+ker_fstack_nginx_source_shell_daemon_prepared(void)
+{
+    ngx_cycle_t *cycle = (ngx_cycle_t *) ngx_cycle;
+    ngx_core_conf_t *ccf;
+
+    if (!source_shell_environment_captured || !source_shell_profile_validated ||
+        !source_master_mode || source_shell_module_pid != getpid() ||
+        cycle == NULL || cycle != source_shell_validated_cycle) {
+        return 0;
+    }
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+    return ccf != NULL && ccf->daemon == 1 && ccf->master == 1;
+}
+#endif
 static struct ker_nginx_source_bootstrap_record source_worker_record;
 static bool owner_ready_configured;
 static struct ker_nginx_owner_ready_sender owner_ready;
@@ -82,6 +273,12 @@ static uint64_t rx_owner_relay_supervisor_start;
 static uint64_t rx_owner_relay_last_packet;
 static pid_t rx_owner_relay_supervisor_pid;
 static bool rx_owner_relay_authenticated;
+static bool source_preexit_relay_armed;
+static bool source_preexit_relay_eof;
+#ifdef KER_NGINX_OWNER_BUILTIN
+static bool source_preexit_eof_notified;
+static uint64_t source_preexit_native_cookie;
+#endif
 static void trace_line(const char *format, ...);
 #ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
 static bool rx_owner_source_flowmap_cycle_done;
@@ -103,6 +300,39 @@ static uint32_t rx_owner_relay_frame_hash32(const void *data, size_t bytes)
 static int cycle_read_start_ticks(pid_t pid, uint64_t *ticks);
 static int cycle_monotonic_ns(uint64_t *now_ns);
 
+#ifdef KER_NGINX_OWNER_BUILTIN
+static int source_preexit_owner_pump(void)
+{
+    typedef int (*pump_fn)(void);
+    pump_fn pump = (pump_fn)dlsym(RTLD_DEFAULT, "ker_sb_preload_owner_pump");
+    if (!pump || !ker_sb_preload_owner_pump_registered()) return -ENOTCONN;
+    if (!source_preexit_relay_armed) {
+        pid_t tid = (pid_t)syscall(SYS_gettid);
+        if (!source_master_mode || !candidate_mode || !source_preexit_native_cookie ||
+            !worker_prepared || source_worker_record.flags != KER_NGINX_SOURCE_WORKER_CANDIDATE ||
+            source_worker_record.actor_pid != (uint32_t)getpid() ||
+            source_worker_record.actor_tid != (uint32_t)tid ||
+            !source_worker_cycle_proof.adapter_cycle_serial ||
+            source_worker_cycle_proof.adapter_cycle_serial != source_shell_cycle_serial ||
+            rx_owner_relay_fd < 0 || !rx_owner_relay_registered ||
+            !rx_owner_relay_authenticated || rx_owner_relay_owner_tid != (uint32_t)tid)
+            return -EPERM;
+        /* This callback is reached only after PREEXIT was sent by the
+         * source-bootstrap operation. Clear stale EOF before arming it. */
+        source_preexit_relay_eof = false;
+        source_preexit_eof_notified = false;
+        source_preexit_relay_armed = true;
+    }
+    int status = pump();
+    if (status) return status;
+    if (source_preexit_relay_eof && !source_preexit_eof_notified) {
+        source_preexit_eof_notified = true;
+        return KER_NGINX_SOURCE_PREEXIT_PUMP_RELAY_EOF;
+    }
+    return 0;
+}
+#endif
+
 #ifdef KER_NGINX_RX_RELAY_TEST_CALLBACK
 static int test_rx_owner_dispatcher(void *frame, uint16_t *length,
     uint16_t queue_id, uint16_t queue_count, struct ff_dispatcher_context context);
@@ -123,6 +353,7 @@ static long rx_owner_relay_send_until(int fd, struct msghdr *message, uint64_t d
 
 static int rx_owner_relay_pump(void *context)
 {
+    if (source_preexit_relay_armed && source_preexit_relay_eof) return 0;
     int fd = *(int *)context;
     unsigned char message[sizeof(struct ker_rx_owner_relay_header) +
         KER_RX_OWNER_RELAY_MAX_FRAME];
@@ -145,14 +376,42 @@ static int rx_owner_relay_pump(void *context)
             memcpy(&credentials, CMSG_DATA(cmsg), sizeof(credentials));
             have_credentials = true;
         } else if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
-            size_t count = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
-            if (cmsg->cmsg_len < CMSG_LEN(0) || fd_count + count > 2) {
+            if (cmsg->cmsg_len < CMSG_LEN(0)) {
                 ancillary_error = true;
+                continue;
+            }
+            size_t bytes = cmsg->cmsg_len - CMSG_LEN(0);
+            size_t count = bytes / sizeof(int);
+            if (bytes % sizeof(int)) ancillary_error = true;
+            if (fd_count + count > 2) {
+                ancillary_error = true;
+                for (size_t i = 0; i < count; ++i) {
+                    int unexpected_fd;
+                    memcpy(&unexpected_fd,
+                        (char *)CMSG_DATA(cmsg) + i * sizeof(unexpected_fd),
+                        sizeof(unexpected_fd));
+                    (void)syscall(SYS_close, unexpected_fd);
+                }
                 continue;
             }
             memcpy(received_fds + fd_count, CMSG_DATA(cmsg), count * sizeof(int));
             fd_count += count;
         } else ancillary_error = true;
+    }
+    if (received == 0) {
+        for (size_t i = 0; i < fd_count; ++i)
+            (void)syscall(SYS_close, received_fds[i]);
+        if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC) || ancillary_error ||
+            have_credentials || fd_count) return -EMSGSIZE;
+        if (!source_preexit_relay_armed || context != &rx_owner_relay_fd ||
+            fd != rx_owner_relay_fd || !source_master_mode || !candidate_mode ||
+            !rx_owner_relay_registered || !rx_owner_relay_authenticated ||
+            rx_owner_relay_owner_tid != (uint32_t)syscall(SYS_gettid) ||
+            source_worker_record.actor_pid != (uint32_t)getpid() ||
+            source_worker_record.actor_tid != rx_owner_relay_owner_tid)
+            return -ENOTCONN;
+        source_preexit_relay_eof = true;
+        return 0;
     }
     if ((msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) || ancillary_error ||
         !have_credentials || (size_t)received < sizeof(struct ker_rx_owner_relay_header) ||
@@ -1021,8 +1280,185 @@ struct module_config {
     bool path;
     bool graceful_reload;
     bool source_profile;
+    bool source_shell_profile;
     bool lcore_mask;
+    struct ker_source_native_ini native_ini;
 };
+
+#define KER_SOURCE_CONFIG_FILE_MAX (256u * 1024u)
+#define KER_SOURCE_CONFIG_TOTAL_MAX (512u * 1024u)
+#define KER_SOURCE_CONFIG_DUMP_COUNT 2u
+
+struct source_cycle_snapshot {
+    ngx_cycle_t *cycle;
+    uint64_t adapter_serial;
+    bool valid;
+    struct ker_source_native_ini_cycle_snapshot published;
+};
+
+static struct source_cycle_snapshot *
+source_cycle_snapshot_conf(ngx_cycle_t *cycle)
+{
+    if (!cycle || !cycle->conf_ctx || !cycle->modules ||
+        ker_fstack_nginx_owner_activation_module.index >= cycle->modules_n ||
+        cycle->modules[ker_fstack_nginx_owner_activation_module.index] !=
+            &ker_fstack_nginx_owner_activation_module) return NULL;
+    return (struct source_cycle_snapshot *)ngx_get_conf(cycle->conf_ctx,
+        ker_fstack_nginx_owner_activation_module);
+}
+
+static int
+source_hash_u64(EVP_MD_CTX *ctx, uint64_t value)
+{
+    unsigned char encoded[8];
+    for (unsigned i = 0; i < sizeof(encoded); i++)
+        encoded[sizeof(encoded) - 1 - i] = (unsigned char)(value >> (i * 8));
+    return EVP_DigestUpdate(ctx, encoded, sizeof(encoded)) == 1 ? 0 : -1;
+}
+
+static int
+source_dump_hash(ngx_cycle_t *cycle, uint8_t digest[32])
+{
+#if !NGX_DEBUG
+    (void)cycle;
+    (void)digest;
+    errno = ENOTSUP;
+    return -1;
+#else
+    /* Nginx deduplicates config_dump entries by filename; this bounded digest
+     * is cycle-local evidence, not a complete include-occurrence trace. The
+     * source-origin gate remains closed until the later verifier compares
+     * exact pinned main-config and MIME bytes. */
+    static const unsigned char domain[] = "ker-nginx-config-dump-v1";
+    static const char include_path[] = "/usr/local/nginx_fstack/conf/mime.types";
+    ngx_conf_dump_t *entries;
+    ngx_str_t *main_name;
+    EVP_MD_CTX *ctx = NULL;
+    unsigned digest_length = 0;
+    unsigned main_count = 0, include_count = 0;
+    size_t aggregate = 0;
+    int result = -1;
+
+    if (!cycle || !digest || cycle->config_dump.size != sizeof(ngx_conf_dump_t) ||
+        cycle->config_dump.nelts != KER_SOURCE_CONFIG_DUMP_COUNT ||
+        !cycle->config_dump.elts || !cycle->conf_file.data ||
+        cycle->conf_file.len == 0 || cycle->conf_file.len >= PATH_MAX) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    entries = cycle->config_dump.elts;
+    main_name = &cycle->conf_file;
+    ctx = EVP_MD_CTX_new();
+    if (!ctx || EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1 ||
+        EVP_DigestUpdate(ctx, domain, sizeof(domain)) != 1 ||
+        source_hash_u64(ctx, KER_SOURCE_CONFIG_DUMP_COUNT) != 0) goto done;
+
+    for (ngx_uint_t i = 0; i < cycle->config_dump.nelts; i++) {
+        ngx_str_t *name = &entries[i].name;
+        ngx_buf_t *buffer = entries[i].buffer;
+        uintptr_t start, pos, last, end;
+        size_t bytes;
+        bool is_main, is_include;
+        if (!name->data || !name->len || name->len >= PATH_MAX || !buffer ||
+            !buffer->start || !buffer->pos || !buffer->last || !buffer->end) {
+            errno = ENOTSUP;
+            goto done;
+        }
+        is_main = name->len == main_name->len &&
+            memcmp(name->data, main_name->data, name->len) == 0;
+        is_include = name->len == sizeof(include_path) - 1 &&
+            memcmp(name->data, include_path, sizeof(include_path) - 1) == 0;
+        if (is_main == is_include) {
+            errno = ENOTSUP;
+            goto done;
+        }
+        if (is_main) main_count++;
+        if (is_include) include_count++;
+        start = (uintptr_t)buffer->start;
+        pos = (uintptr_t)buffer->pos;
+        last = (uintptr_t)buffer->last;
+        end = (uintptr_t)buffer->end;
+        if (start > pos || pos != start || last < pos || end < last ||
+            last != end || end - start > KER_SOURCE_CONFIG_FILE_MAX) {
+            errno = ENOTSUP;
+            goto done;
+        }
+        bytes = (size_t)(last - start);
+        if (bytes == 0 || bytes > KER_SOURCE_CONFIG_TOTAL_MAX - aggregate) {
+            errno = ENOTSUP;
+            goto done;
+        }
+        aggregate += bytes;
+        if (source_hash_u64(ctx, name->len) != 0 ||
+            EVP_DigestUpdate(ctx, name->data, name->len) != 1 ||
+            source_hash_u64(ctx, bytes) != 0 ||
+            EVP_DigestUpdate(ctx, buffer->start, bytes) != 1) goto done;
+    }
+    if (main_count != 1 || include_count != 1) {
+        errno = ENOTSUP;
+        goto done;
+    }
+    if (EVP_DigestFinal_ex(ctx, digest, &digest_length) != 1 || digest_length != 32) {
+        errno = EIO;
+        goto done;
+    }
+    result = 0;
+done:
+    EVP_MD_CTX_free(ctx);
+    if (result != 0 && errno == 0) errno = EIO;
+    return result;
+#endif
+}
+
+#ifdef KER_SOURCE_SNAPSHOT_TESTING
+int
+ker_source_snapshot_test_dump_hash(ngx_cycle_t *cycle, uint8_t digest[32])
+{
+    return source_dump_hash(cycle, digest);
+}
+#endif
+
+static int
+source_ini_hash(const char *bytes, size_t length, uint8_t digest[32])
+{
+    static const unsigned char domain[] = "ker-source-native-ini-v1";
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    unsigned digest_length = 0;
+    int result = -1;
+    if (ctx && EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) == 1 &&
+        EVP_DigestUpdate(ctx, domain, sizeof(domain)) == 1 &&
+        source_hash_u64(ctx, length) == 0 &&
+        EVP_DigestUpdate(ctx, bytes, length) == 1 &&
+        EVP_DigestFinal_ex(ctx, digest, &digest_length) == 1 && digest_length == 32)
+        result = 0;
+    EVP_MD_CTX_free(ctx);
+    if (result && errno == 0) errno = EIO;
+    return result;
+}
+
+static int
+source_snapshot_abi_check(
+    const struct ker_source_native_ini_cycle_snapshot *snapshot)
+{
+    if (!snapshot) return -EINVAL;
+    return ker_source_native_ini_snapshot_abi_valid(snapshot) ? 0 : -EPROTO;
+}
+
+#ifdef KER_SOURCE_SNAPSHOT_TESTING
+int
+ker_source_snapshot_test_abi_check(
+    const struct ker_source_native_ini_cycle_snapshot *snapshot)
+{
+    return source_snapshot_abi_check(snapshot);
+}
+
+int
+ker_source_snapshot_test_ini_hash(const char *bytes, size_t length,
+    uint8_t digest[32])
+{
+    return source_ini_hash(bytes, length, digest);
+}
+#endif
 
 static int
 parse_ini(void *opaque, const char *section, const char *name,
@@ -1057,6 +1493,55 @@ parse_ini(void *opaque, const char *section, const char *name,
 }
 
 static ngx_int_t
+listener_profile_supported(const ngx_listening_t *listener,
+    bool source_shell_profile)
+{
+    bool source_shell_plain_rt01 = false;
+
+    if (source_shell_profile && listener && !listener->reuseport &&
+        !listener->belong_to_host && listener->type == SOCK_STREAM &&
+        listener->sockaddr && listener->socklen == sizeof(struct sockaddr_in) &&
+        listener->sockaddr->sa_family == AF_INET &&
+        listener->backlog == NGX_LISTEN_BACKLOG) {
+        const struct sockaddr_in *address =
+            (const struct sockaddr_in *) listener->sockaddr;
+
+        source_shell_plain_rt01 =
+            address->sin_addr.s_addr == htonl(INADDR_ANY) &&
+            address->sin_port == htons(80);
+    }
+
+    if (!listener ||
+        (!listener->reuseport && !source_shell_plain_rt01) ||
+        listener->belong_to_host || listener->type != SOCK_STREAM ||
+        !listener->sockaddr ||
+        listener->sockaddr->sa_family != AF_INET ||
+        listener->socklen != sizeof(struct sockaddr_in) ||
+        listener->fd != (ngx_socket_t)-1 || listener->connection != NULL ||
+        listener->ignore || !listener->open || listener->bound ||
+        listener->inherited || listener->add_reuseport ||
+        listener->backlog < 1 || listener->backlog > 65535 ||
+        listener->rcvbuf != -1 || listener->sndbuf != -1 ||
+        listener->keepalive || listener->deferred_accept ||
+        listener->add_deferred || listener->delete_deferred || listener->quic ||
+        listener->logp == NULL) return NGX_ERROR;
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    if (listener->keepidle != 0 || listener->keepintvl != 0 ||
+        listener->keepcnt != 0) return NGX_ERROR;
+#endif
+#if (NGX_HAVE_SETFIB)
+    if (listener->setfib != -1) return NGX_ERROR;
+#endif
+#if (NGX_HAVE_TCP_FASTOPEN)
+    if (listener->fastopen != -1) return NGX_ERROR;
+#endif
+#if (NGX_HAVE_DEFERRED_ACCEPT && defined SO_ACCEPTFILTER)
+    if (listener->accept_filter != NULL) return NGX_ERROR;
+#endif
+    return NGX_OK;
+}
+
+static ngx_int_t
 validate_profile(ngx_cycle_t *cycle, struct sockaddr_in *address,
     int *backlog)
 {
@@ -1072,9 +1557,16 @@ validate_profile(ngx_cycle_t *cycle, struct sockaddr_in *address,
     void *worker_shim = dlsym(RTLD_DEFAULT,
         "ker_fstack_nginx_worker_consume_authorization");
     const char *ini_path = getenv("KER_FSTACK_NGINX_INI");
-    char configured_ini[KER_SOCKET_BROKER_PATH_MAX + 1];
+    const char *shell_enable = getenv("KER_NGINX_SOURCE_SHELL_ENABLE");
+    const char *first_hup = getenv("KER_NGINX_SOURCE_FIRST_HUP_ENABLE");
+    char configured_ini[KER_SOURCE_NATIVE_INI_PATH_MAX];
     struct module_config config = {
-        .source_profile = getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH") != NULL};
+        .source_profile = getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH") != NULL,
+        .source_shell_profile = shell_enable && !strcmp(shell_enable, "1")};
+    struct source_cycle_snapshot *cycle_snapshot = NULL;
+    char ini_bytes[KER_SOURCE_NATIVE_INI_BYTES_MAX];
+    size_t ini_bytes_length = 0;
+    uint8_t config_digest[32], ini_digest[32];
     FILE *file;
     int parsed, close_status;
 
@@ -1084,6 +1576,16 @@ validate_profile(ngx_cycle_t *cycle, struct sockaddr_in *address,
             NGX_MODULE_SIGNATURE)) PROFILE_REJECT("Nginx ABI symbols");
     if (*process == NGX_PROCESS_WORKER || *process == NGX_PROCESS_SIGNALLER)
         return NGX_DECLINED;
+    if (shell_enable && (strcmp(shell_enable, "1") || !config.source_profile ||
+        !first_hup || strcmp(first_hup, "1")))
+        PROFILE_REJECT("source-shell profile requires authenticated first-HUP bootstrap");
+    if (config.source_shell_profile) {
+        cycle_snapshot = source_cycle_snapshot_conf(cycle);
+        if (!cycle_snapshot || cycle_snapshot->cycle != cycle ||
+            cycle_snapshot->adapter_serial == 0 ||
+            source_dump_hash(cycle, config_digest) != 0)
+            PROFILE_REJECT("source-shell profile requires complete NGX_DEBUG config capture");
+    }
     if (!worker_shim) PROFILE_REJECT("missing pinned worker activation shim");
     if (!cycle->modules || !cycle->conf_ctx || cycle->modules_n == 0 ||
         core_symbol->index >= cycle->modules_n ||
@@ -1104,41 +1606,52 @@ validate_profile(ngx_cycle_t *cycle, struct sockaddr_in *address,
         cycle->listening.nalloc < 1 || cycle->listening.nalloc > 16)
         PROFILE_REJECT("master/worker/listener count");
     listener = cycle->listening.elts;
-    if (!listener->reuseport || listener->belong_to_host ||
-        listener->type != SOCK_STREAM || !listener->sockaddr ||
-        listener->sockaddr->sa_family != AF_INET ||
-        listener->socklen != sizeof(struct sockaddr_in) ||
-        listener->fd != (ngx_socket_t)-1 || listener->connection != NULL ||
-        listener->ignore || !listener->open || listener->bound ||
-        listener->inherited || listener->add_reuseport || listener->backlog < 1 ||
-        listener->backlog > 65535 || listener->rcvbuf != -1 ||
-        listener->sndbuf != -1 || listener->keepalive || listener->deferred_accept ||
-        listener->add_deferred || listener->delete_deferred || listener->quic ||
-        listener->logp == NULL) PROFILE_REJECT("listener structure/options");
-#if (NGX_HAVE_KEEPALIVE_TUNABLE)
-    if (listener->keepidle != 0 || listener->keepintvl != 0 ||
-        listener->keepcnt != 0) PROFILE_REJECT("TCP keepalive tuning");
-#endif
-#if (NGX_HAVE_SETFIB)
-    if (listener->setfib != -1) PROFILE_REJECT("setfib option");
-#endif
-#if (NGX_HAVE_TCP_FASTOPEN)
-    if (listener->fastopen != -1) PROFILE_REJECT("TCP fast-open option");
-#endif
-#if (NGX_HAVE_DEFERRED_ACCEPT && defined SO_ACCEPTFILTER)
-    if (listener->accept_filter != NULL) PROFILE_REJECT("accept-filter option");
-#endif
+    if (listener_profile_supported(listener, config.source_shell_profile) != NGX_OK)
+        PROFILE_REJECT("listener structure/options");
     *address = *(struct sockaddr_in *)listener->sockaddr;
     *backlog = listener->backlog;
 
-    file = fopen(configured_ini, "r");
+    file = config.source_shell_profile ? ker_source_native_ini_open(configured_ini) :
+        fopen(configured_ini, "r");
     if (!file) PROFILE_REJECT("runtime ini unreadable");
-    parsed = ker_ini_parse_file(file, parse_ini, &config);
-    close_status = fclose(file);
+    if (config.source_shell_profile) {
+        memset(&config.native_ini, 0, sizeof(config.native_ini));
+        parsed = ker_source_native_ini_parse_file_capture(file,
+            ker_source_native_ini_parse, &config.native_ini, ini_bytes,
+            sizeof(ini_bytes), &ini_bytes_length);
+        close_status = fclose(file);
+        if (parsed || close_status ||
+            ker_source_native_ini_finish(&config.native_ini, configured_ini) ||
+            source_ini_hash(ini_bytes, ini_bytes_length, ini_digest) != 0)
+            PROFILE_REJECT("unsupported or malformed source-shell INI schema");
+        memcpy(config.broker_path, config.native_ini.broker_path,
+            strlen(config.native_ini.broker_path) + 1);
+        config.version = config.path = config.graceful_reload = config.lcore_mask = true;
+    } else {
+        parsed = ker_ini_parse_file(file, parse_ini, &config);
+        close_status = fclose(file);
+    }
     const char *broker_path = getenv("KER_SOCKET_BROKER_PATH");
-    if (parsed || close_status || !config.version || !config.path ||
-        !config.graceful_reload || (config.source_profile && !config.lcore_mask) || !broker_path ||
-        strcmp(broker_path, config.broker_path)) PROFILE_REJECT("runtime ini contents");
+    if ((!config.source_shell_profile &&
+        (parsed || close_status || !config.version || !config.path ||
+            !config.graceful_reload || (config.source_profile && !config.lcore_mask))) ||
+        !broker_path || strcmp(broker_path, config.broker_path))
+        PROFILE_REJECT("runtime ini contents");
+    if (config.source_shell_profile) {
+        size_t path_length = strlen(configured_ini);
+        if (!cycle_snapshot || path_length >= sizeof(cycle_snapshot->published.ini_path))
+            PROFILE_REJECT("source-shell cycle snapshot is unavailable");
+        cycle_snapshot->published.version = KER_SOURCE_NATIVE_INI_SNAPSHOT_VERSION;
+        cycle_snapshot->published.size = sizeof(cycle_snapshot->published);
+        cycle_snapshot->published.config = config.native_ini;
+        memcpy(cycle_snapshot->published.config_sha256, config_digest,
+            sizeof(config_digest));
+        memcpy(cycle_snapshot->published.ini_sha256, ini_digest, sizeof(ini_digest));
+        memcpy(cycle_snapshot->published.ini_path, configured_ini, path_length + 1);
+        cycle_snapshot->published.adapter_cycle_serial = cycle_snapshot->adapter_serial;
+        cycle_snapshot->published.cycle_identity = (uintptr_t)cycle;
+        cycle_snapshot->valid = true;
+    }
 #undef PROFILE_REJECT
     return NGX_OK;
 }
@@ -1344,6 +1857,20 @@ module_init(ngx_cycle_t *cycle)
         (void)syscall(SYS_write, STDERR_FILENO, abi_error, sizeof(abi_error) - 1);
         return NGX_ERROR;
     }
+    struct source_cycle_snapshot *source_snapshot = source_cycle_snapshot_conf(cycle);
+    if (!source_snapshot || source_shell_cycle_serial == UINT64_MAX) return NGX_ERROR;
+    source_snapshot->cycle = cycle;
+    source_snapshot->adapter_serial = ++source_shell_cycle_serial;
+    source_snapshot->valid = false;
+    memset(&source_snapshot->published, 0, sizeof(source_snapshot->published));
+#ifdef KER_NGINX_OWNER_BUILTIN
+    ngx_int_t source_shell_status = source_shell_register_environment(cycle);
+    if (source_shell_status == NGX_ERROR) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+            "source-shell environment is conflicting or changed");
+        return NGX_ERROR;
+    }
+#endif
     struct sockaddr_in address;
     int backlog;
     const char *path;
@@ -1362,6 +1889,11 @@ module_init(ngx_cycle_t *cycle)
             getenv("KER_NGINX_CANDIDATE_SLOT_FD") || getenv("KER_NGINX_INITIAL_SLOT_FD") ||
             getenv("KER_NGINX_CYCLE_FD") || getenv("KER_NGINX_OWNER_READY_FD")) return NGX_ERROR;
         source_master_mode = true;
+#ifdef KER_NGINX_OWNER_BUILTIN
+        source_shell_profile_validated = source_shell_environment_captured;
+        source_shell_module_pid = getpid();
+        source_shell_validated_cycle = cycle;
+#endif
         return NGX_OK;
     }
 #ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
@@ -1461,6 +1993,7 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
         int status = take(&grant);
         if (status) { errno = -status; return -1; }
         source_worker_record = grant.record;
+        source_worker_cycle_proof = grant.source_shell_proof;
         current_slot = grant.slot_fd;
         candidate_mode = grant.record.flags == KER_NGINX_SOURCE_WORKER_CANDIDATE;
         delegated_initial_mode = !candidate_mode;
@@ -1495,6 +2028,14 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
         ngx_cycle != cycle ||
         current_slot < 0 || (!candidate_mode && !delegated_initial_mode && current_plan < 0)) { errno = EPROTO; return -1; }
     int slot = current_slot;
+    ngx_int_t *process_slot = dlsym(RTLD_DEFAULT, "ngx_process_slot");
+    if (source_master_mode && (!process_slot || *process_slot < 0 || *process_slot >= 128)) {
+        (void)syscall(SYS_close, slot);
+        current_slot = -1;
+        errno = EPROTO;
+        return -1;
+    }
+    if (source_master_mode) source_worker_slot_number = (uint32_t)*process_slot;
     trace_line("C22_WORKER_SLOT pid=%ld slot=%d\n", (long)getpid(), slot);
     if (current_plan >= 0) {
         (void)syscall(SYS_close, current_plan);
@@ -1574,7 +2115,10 @@ int ker_fstack_nginx_owner_activation_worker_commit(void)
         (long)getpid(), current_slot, error);
     (void)syscall(SYS_close, current_slot);
     current_slot = -1;
-    if (!result) trace_line("NGINX_CANDIDATE_TASK_READY pid=%ld\n", (long)getpid());
+    if (!result) {
+        source_worker_native_commit_complete = true;
+        trace_line("NGINX_CANDIDATE_TASK_READY pid=%ld\n", (long)getpid());
+    }
     errno = error;
     return result;
 }
@@ -1584,6 +2128,72 @@ int ker_fstack_nginx_source_worker_authenticated(void)
     return source_master_mode && worker_prepared && owner_ready.sent &&
         rx_owner_relay_registered && rx_owner_relay_authenticated &&
         ngx_process == NGX_PROCESS_WORKER;
+}
+
+/* Pinned Nginx calls module exit_process in normal worker context immediately
+ * before its direct exit(). The final committed source candidate must keep
+ * the registered owner pump alive until the SDK returns an exact native
+ * settlement receipt. This is not signal-handler work and does not issue a
+ * C31 command; C31 remains owned by the application's existing runtime. */
+static void
+module_exit_process(ngx_cycle_t *cycle)
+{
+#ifdef KER_NGINX_OWNER_BUILTIN
+    typedef int (*pump_fn)(void);
+    pump_fn pump;
+    uint64_t operation_id;
+    int status;
+
+    if (!source_master_mode || !candidate_mode ||
+        !worker_prepared ||
+        !owner_ready.sent ||
+        !rx_owner_relay_registered || !rx_owner_relay_authenticated ||
+        cycle == NULL || cycle != (ngx_cycle_t *)ngx_cycle ||
+        ngx_process != NGX_PROCESS_WORKER || ngx_worker != 0 ||
+        source_worker_record.flags != KER_NGINX_SOURCE_WORKER_CANDIDATE ||
+        source_worker_record.actor_pid != (uint32_t)getpid() ||
+        source_worker_record.actor_tid != (uint32_t)syscall(SYS_gettid) ||
+        !source_worker_cycle_proof.adapter_cycle_serial ||
+        source_worker_cycle_proof.adapter_cycle_serial != source_shell_cycle_serial ||
+        !source_worker_cycle_proof.opaque_cycle_token ||
+        !source_worker_record.ready_cookie) {
+        return;
+    }
+    pump = (pump_fn)dlsym(RTLD_DEFAULT, "ker_sb_preload_owner_pump");
+    if (!pump || !ker_sb_preload_owner_pump_registered()) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+            "source final-owner settlement has no registered owner pump");
+        return;
+    }
+    if (cycle_monotonic_ns(&operation_id) != 0 || operation_id == 0) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+            "source final-owner settlement has no monotonic operation id");
+        return;
+    }
+    uint64_t native_commit_cookie = 0;
+    status = ker_nginx_source_bootstrap_worker_commit_cookie(&source_worker_record,
+        &source_worker_cycle_proof, &native_commit_cookie);
+    if (status) return;
+    source_preexit_relay_armed = false;
+    source_preexit_relay_eof = false;
+    source_preexit_eof_notified = false;
+    source_preexit_native_cookie = native_commit_cookie;
+    status = ker_nginx_source_bootstrap_worker_preexit(&source_worker_record,
+        &source_worker_cycle_proof, source_worker_slot_number,
+        KER_NGINX_SOURCE_WORKER_CANDIDATE, operation_id,
+        native_commit_cookie, source_worker_record.deadline_ns,
+        source_preexit_owner_pump);
+    source_preexit_relay_armed = false;
+    source_preexit_relay_eof = false;
+    source_preexit_eof_notified = false;
+    source_preexit_native_cookie = 0;
+    if (status) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, -status,
+            "source final-owner settlement is unresolved: %d", status);
+    }
+#else
+    (void)cycle;
+#endif
 }
 
 static void
@@ -1607,8 +2217,40 @@ module_exit_master(ngx_cycle_t *cycle)
     }
 }
 
+static void *
+module_create_conf(ngx_cycle_t *cycle)
+{
+    struct source_cycle_snapshot *snapshot;
+    if (!cycle || !cycle->pool) return NULL;
+    snapshot = ngx_pcalloc(cycle->pool, sizeof(*snapshot));
+    if (snapshot) snapshot->cycle = cycle;
+    return snapshot;
+}
+
+int
+ker_nginx_source_native_ini_snapshot_read(
+    struct ker_source_native_ini_cycle_snapshot *snapshot)
+{
+    int abi_status = source_snapshot_abi_check(snapshot);
+    if (abi_status) return abi_status;
+    ngx_cycle_t *cycle = (ngx_cycle_t *)ngx_cycle;
+    struct source_cycle_snapshot *current;
+    if (!cycle) return -ENOTSUP;
+    current = source_cycle_snapshot_conf(cycle);
+    if (!current || !current->valid) return -ENOTSUP;
+    if (current->cycle != cycle ||
+        !ker_source_native_ini_snapshot_matches_cycle(&current->published,
+            (uintptr_t)cycle) || current->adapter_serial == 0 ||
+        current->published.adapter_cycle_serial != current->adapter_serial)
+        return -ESTALE;
+    struct ker_source_native_ini_cycle_snapshot output = current->published;
+    if (!ker_source_native_ini_snapshot_abi_valid(&output)) return -EPROTO;
+    *snapshot = output;
+    return 0;
+}
+
 static ngx_core_module_t module_context = {
-    ngx_string("ker_fstack_nginx_owner_activation"), NULL, NULL
+    ngx_string("ker_fstack_nginx_owner_activation"), module_create_conf, NULL
 };
 
 ngx_module_t ker_fstack_nginx_owner_activation_module = {
@@ -1625,11 +2267,13 @@ ngx_module_t ker_fstack_nginx_owner_activation_module = {
 #endif
     NULL,
     NULL,
-    NULL,
+    module_exit_process,
     module_exit_master,
     NGX_MODULE_V1_PADDING
 };
 
+#ifndef KER_NGINX_OWNER_BUILTIN
 ngx_module_t *ngx_modules[] = { &ker_fstack_nginx_owner_activation_module, NULL };
 char *ngx_module_names[] = { "ker_fstack_nginx_owner_activation_module", NULL };
 char *ngx_module_order[] = { NULL };
+#endif

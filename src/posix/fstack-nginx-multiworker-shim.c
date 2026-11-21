@@ -12,6 +12,7 @@
 #include <ngx_connection.h>
 #include <ngx_module.h>
 #include <ngx_process_cycle.h>
+#include "nginx-source-origin.h"
 
 #include <dlfcn.h>
 #include <elf.h>
@@ -213,6 +214,61 @@ fork(void)
         errno = ENOSYS;
         return -1;
     }
+#ifdef KER_FSTACK_NGINX_DAEMON_FORK_RETURN_PC
+    if (caller_pc == (uintptr_t)KER_FSTACK_NGINX_DAEMON_FORK_RETURN_PC) {
+        typedef int (*predicate_fn)(void);
+        typedef int (*origin_prepare_fn)(void);
+        typedef int (*origin_parent_fn)(pid_t);
+        typedef int (*origin_child_fn)(void);
+        typedef void (*origin_abort_fn)(void);
+        predicate_fn daemon_prepared = (predicate_fn)dlsym(RTLD_DEFAULT,
+            "ker_fstack_nginx_source_shell_daemon_prepared");
+
+        /* Keep every existing invocation outside the bounded source-shell
+         * profile on Nginx's original fork path. The local module predicate
+         * only selects the adapter; the authenticated origin ACK authorizes
+         * the private constructor-origin rebind. */
+        if (daemon_prepared && daemon_prepared()) {
+            origin_prepare_fn prepare = (origin_prepare_fn)dlsym(RTLD_DEFAULT,
+                "ker_nginx_source_daemon_fork_prepare");
+            origin_parent_fn parent = (origin_parent_fn)dlsym(RTLD_DEFAULT,
+                "ker_nginx_source_daemon_fork_parent");
+            origin_child_fn child = (origin_child_fn)dlsym(RTLD_DEFAULT,
+                "ker_nginx_source_daemon_fork_child");
+            origin_abort_fn abort_origin = (origin_abort_fn)dlsym(RTLD_DEFAULT,
+                "ker_nginx_source_daemon_fork_abort");
+            if (main_binary_matches_pinned_build() != 0 || !prepare || !parent ||
+                !child || !abort_origin) {
+                errno = ENOTSUP;
+                return -1;
+            }
+            if (prepare() != 0) {
+                if (!errno) errno = EAGAIN;
+                return -1;
+            }
+            pid_t daemon_child = real_fork();
+            if (daemon_child == 0) {
+                if (child() != 0) {
+                    int error = errno ? errno : EPROTO;
+                    (void)syscall(SYS_exit_group, error == ETIMEDOUT ? 124 : 125);
+                    __builtin_unreachable();
+                }
+                return 0;
+            }
+            if (daemon_child < 0) {
+                int error = errno;
+                abort_origin();
+                errno = error;
+                return -1;
+            }
+            if (parent(daemon_child) != 0) {
+                if (!errno) errno = EPROTO;
+                return -1;
+            }
+            return daemon_child;
+        }
+    }
+#endif
     if (caller_pc != (uintptr_t)KER_FSTACK_NGINX_RESPAWN_FORK_RETURN_PC)
         return cycle_safe_fork(real_fork, close_cycle_child);
 

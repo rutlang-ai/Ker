@@ -61,12 +61,20 @@ static void full(struct ker_worker_rx_lcores *rx)
     uint64_t end=deadline();
     while(rte_ring_count(rx->queue[1].handoff)!=KER_RX_HANDOFF_CAPACITY-1){CHECK(rte_get_timer_cycles()<end);rte_pause();}
 }
+static void ready(struct ker_worker_rx_lcores *rx)
+{
+    for (uint16_t q=0;q<rx->queues;q++)
+        CHECK(atomic_load_explicit(&rx->queue[q].owner_ready,memory_order_acquire) &&
+            rx->queue[q].owner==rx->queue[q].observed && rx->queue[q].cpu>=0);
+}
 int main(void)
 {
     cpu_set_t cpus;CHECK(!sched_getaffinity(0,sizeof(cpus),&cpus));int cpu[2],found=0;
     for(int c=0;c<CPU_SETSIZE&&found<2;c++)if(CPU_ISSET(c,&cpus))cpu[found++]=c;
     if(found<2){puts("SKIP: two allowed CPUs required");return 77;}
-    char cores[80];snprintf(cores,sizeof(cores),"--lcores=0@%d,1@%d",cpu[0],cpu[1]);
+    /* Logical lcore 2 shares an allowed CPU so a second launch can be
+     * rejected deterministically while the first remote poller is active. */
+    char cores[112];snprintf(cores,sizeof(cores),"--lcores=0@%d,1@%d,2@%d",cpu[0],cpu[1],cpu[0]);
     char *args[]={"rx-lcores",cores,"--no-huge","--no-pci","--no-shconf","--no-telemetry","-m","64",NULL};
     CHECK(rte_eal_init(8,args)>=0);
     pool=rte_pktmbuf_pool_create("rx_core_pool",4095,0,0,512,SOCKET_ID_ANY);CHECK(pool);
@@ -81,7 +89,7 @@ int main(void)
     CHECK(!rte_eth_dev_start(port));
     struct ker_worker_rx_lcores rx;
     CHECK(ker_worker_rx_lcores_plan(&rx,port,2,"1",true)==-EXDEV);
-    CHECK(ker_worker_rx_lcores_plan(&rx,port,2,"2",false)==-EINVAL);
+    CHECK(ker_worker_rx_lcores_plan(&rx,port,2,"3",false)==-EINVAL);
     CHECK(ker_worker_rx_lcores_plan(&rx,port,2,"0,0",false)==-EINVAL);
     CHECK(ker_worker_rx_lcores_plan(&rx,port,1,"0,1",false)==-EINVAL);
     CHECK(!ker_worker_rx_lcores_plan(&rx,port,2,"0,1",true));
@@ -92,7 +100,17 @@ int main(void)
     CHECK(ker_worker_rx_lcores_start(&rx)==-EEXIST);uint64_t abandoned;
     CHECK(!ker_worker_rx_lcores_stop(&rx,&abandoned,NULL)&&!abandoned&&rx.notify_fd==-1);
     CHECK(rte_ring_lookup(collision_name)==collision);rte_ring_free(collision);
-    CHECK(!ker_worker_rx_lcores_plan(&rx,port,2,"0,1",true)&&!ker_worker_rx_lcores_start(&rx));
+    /* Force the second real EAL launch onto the already-running first lcore.
+     * Failed startup must join that poller and release its rings/eventfd. */
+    CHECK(!ker_worker_rx_lcores_plan(&rx,port,2,"1,2",false));
+    rx.poller[1].lcore=rx.poller[0].lcore;
+    CHECK(ker_worker_rx_lcores_start(&rx)<0);
+    CHECK(!rx.poller[0].launched&&!rx.poller[1].launched&&rx.notify_fd==-1);
+    for(unsigned q=0;q<2;q++){
+        char name[RTE_RING_NAMESIZE];snprintf(name,sizeof(name),"ker_rx_%u_%u",port,q);
+        CHECK(rte_ring_lookup(name)==NULL);
+    }
+    CHECK(!ker_worker_rx_lcores_plan(&rx,port,2,"0,1",true)&&!ker_worker_rx_lcores_start(&rx));ready(&rx);
     for(unsigned i=0;i<10;i++)CHECK(!rte_ring_enqueue(input[0],packet(i)));
     for(unsigned i=0;i<512;i++)CHECK(!rte_ring_enqueue(input[1],packet(1000+i)));
     full(&rx); /* Consumer deliberately absent until the bounded ring is full. */
@@ -123,7 +141,7 @@ int main(void)
     CHECK(!ker_worker_rx_lcores_stop(&rx,&abandoned,NULL)&&!abandoned);
     for(unsigned q=0;q<2;q++){struct rte_mbuf *p;while(!rte_ring_dequeue(input[q],(void**)&p))rte_pktmbuf_free(p);}
     uint64_t prior_polled=rx.queue[1].polled,prior_discarded=rx.queue[1].reconfigured;
-    CHECK(!ker_worker_rx_lcores_start(&rx)); /* Same assignment, counters survive. */
+    CHECK(!ker_worker_rx_lcores_start(&rx));ready(&rx); /* Same assignment, counters survive. */
     CHECK(ker_worker_rx_lcores_start(&rx)==-EBUSY);
     for(unsigned i=0;i<32;i++)CHECK(!rte_ring_enqueue(input[1],packet(4000+i)));
     received=0;end=deadline();
@@ -151,7 +169,7 @@ int main(void)
     jumbo_pool = rte_pktmbuf_pool_create("rx_jumbo_pool", jumbo_pool_count,
         0, 0, RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
     CHECK(jumbo_pool);
-    CHECK(!ker_worker_rx_lcores_plan(&rx,port,2,"0,1",true)&&!ker_worker_rx_lcores_start(&rx));
+    CHECK(!ker_worker_rx_lcores_plan(&rx,port,2,"0,1",true)&&!ker_worker_rx_lcores_start(&rx));ready(&rx);
     for (unsigned i = 0; i < JUMBO_FRAME_COUNT; i++)
         CHECK(!rte_ring_enqueue(input[1], jumbo_packet(4000 + i)));
     full(&rx);
@@ -175,7 +193,7 @@ int main(void)
     rte_mempool_free(jumbo_pool); jumbo_pool = NULL;
     /* A real ENOSPC capture failure must report failure and still free every
      * queued/retained mbuf after joining its original EAL producer. */
-    CHECK(!ker_worker_rx_lcores_plan(&rx,port,2,"0,1",true)&&!ker_worker_rx_lcores_start(&rx));
+    CHECK(!ker_worker_rx_lcores_plan(&rx,port,2,"0,1",true)&&!ker_worker_rx_lcores_start(&rx));ready(&rx);
     for(unsigned i=0;i<32;i++)CHECK(!rte_ring_enqueue(input[1],packet(3000+i)));
     end=deadline();while(rte_ring_count(rx.queue[1].handoff)!=32){CHECK(rte_get_timer_cycles()<end);rte_pause();}
     char failure_directory[]="/tmp/ker-rx-full-XXXXXX";CHECK(mkdtemp(failure_directory));
