@@ -2319,14 +2319,17 @@ class SourceShellController:
                         if not context._executable_live(pid):
                             raise ProcessLookupError('captured delegated worker executable changed')
                     except OSError as error:
-                        # After the ABORT ACK this exact actor may exit between
-                        # checking the pidfd and opening its executable.
-                        if not (first_aborted and key == (1, 1) and
+                        # A committed initial owner or an aborted candidate may
+                        # lose /proc/PID/exe before its exact pidfd signals exit.
+                        initial_retirement = (key == (0, 0) and transport is not None and
+                            self._private_committed_worker_key(context) == (1, 1) and
+                            getattr(self, '_first_candidate_activation_delivered', False))
+                        aborted_candidate = first_aborted and key == (1, 1)
+                        if not ((initial_retirement or aborted_candidate) and
                                 (isinstance(error, (FileNotFoundError, ProcessLookupError)) or
                                  error.errno == errno.EBADF)):
                             raise
                         os.fstat(fd)
-                        # Linux drops /proc/PID/exe before publishing pidfd exit.
                         if identity.process_alive(fd):
                             poller = select.poll()
                             poller.register(fd, select.POLLIN)
@@ -2335,6 +2338,9 @@ class SourceShellController:
                             poller.poll(wait_ms)
                             if identity.process_alive(fd):
                                 raise
+                        if initial_retirement:
+                            self._check_private_initial_worker_exit_binding(
+                                transport, self.c22_provider, context)
                 if time.monotonic_ns() >= self.deadline_ns:
                     raise TimeoutError('source worker liveness check exceeded its immutable deadline')
         transport = getattr(self, '_initial_transport', None)

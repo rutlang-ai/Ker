@@ -32,11 +32,11 @@ class CatalogTests(unittest.TestCase):
     def save(self):
         self.path.write_text(json.dumps(self.manifest))
 
-    def test_valid_snapshot_reports_remaining_work(self):
+    def test_valid_snapshot_reports_every_case(self):
         manifest, counts = audit.validate(self.root)
         self.assertEqual(len(manifest['files']), 106)
         self.assertEqual(len(manifest['cases']), 433)
-        self.assertGreater(counts['blocked'], 0)
+        self.assertEqual(sum(counts.values()), len(manifest['cases']))
 
     def test_omitted_case_is_rejected(self):
         self.manifest['cases'].pop()
@@ -51,8 +51,8 @@ class CatalogTests(unittest.TestCase):
             audit.validate(self.root)
 
     def test_fabricated_pass_without_test_is_rejected(self):
-        item = next(v for v in self.manifest['cases'] if v['status'] == 'blocked')
-        item['status'] = 'scenario-adapted'
+        item = next(v for v in self.manifest['cases'] if v['status'] == 'scenario-adapted')
+        item['ker_tests'] = []
         self.save()
         with self.assertRaisesRegex(ValueError, 'no runnable Ker test'):
             audit.validate(self.root)
@@ -164,12 +164,9 @@ class CatalogTests(unittest.TestCase):
     def test_exclusion_group_cannot_contain_blocked_case(self):
         exclusion = next(group for group in self.followups['groups']
                          if group['disposition'] == 'architecture-specific')
-        blocked = next(item['id'] for item in self.manifest['cases'] if item['status'] == 'blocked')
-        actionable = next(group for group in self.followups['groups'] if blocked in group['cases'])
-        exclusion_case = exclusion['cases'][0]
-        exclusion['cases'][0] = blocked
-        actionable['cases'][actionable['cases'].index(blocked)] = exclusion_case
-        self.followup_path.write_text(json.dumps(self.followups))
+        item = next(item for item in self.manifest['cases'] if item['id'] == exclusion['cases'][0])
+        item['status'] = 'blocked'
+        self.save()
         with self.assertRaisesRegex(ValueError, 'Wrong follow-up disposition'):
             audit.validate(self.root)
 
@@ -180,11 +177,7 @@ class CatalogTests(unittest.TestCase):
         partial_item['status'] = 'partial'
         partial_item['remaining'] = 'synthetic partial boundary for mutation test'
         group = next(group for group in self.followups['groups']
-                     if group['id'] == 'reload-generations')
-        group['cases'].append(partial)
-        group['disposition'] = 'harness-only'
-        # Exercise this partial case before any blocked case in the same group.
-        group['cases'].remove(partial)
+                     if group['disposition'] == 'harness-only')
         group['cases'].insert(0, partial)
         self.save()
         self.followup_path.write_text(json.dumps(self.followups))
@@ -192,10 +185,26 @@ class CatalogTests(unittest.TestCase):
             audit.validate(self.root)
 
     def test_completion_gate_fails_while_cases_are_incomplete(self):
+        item = next(item for item in self.manifest['cases']
+                    if item['status'] == 'scenario-adapted')
+        item['status'] = 'blocked'
+        item['ker_tests'] = []
+        self.followups['groups'].append({
+            'id': 'synthetic-blocked-case',
+            'title': 'Incomplete test fixture',
+            'disposition': 'adaptation-needed',
+            'reason': 'Exercise the completion gate with an actionable case.',
+            'cases': [item['id']],
+            'issue': 'https://github.com/rutlang-ai/Ker/issues/9999999',
+            'evidence': ['tests/fstack-migration.json'],
+            'acceptance': ['Run the missing case under CTest.'],
+        })
+        self.save()
+        self.followup_path.write_text(json.dumps(self.followups))
         result = subprocess.run([sys.executable, str(ROOT / 'tests/fstack_migration.py'),
                                  '--root', str(self.root), '--require-complete'],
                                 text=True, capture_output=True)
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn('issue tracking is not migration completion', result.stdout)
         partial_count = sum(item['status'] == 'partial' for item in self.manifest['cases'])
         self.assertIn(f'blocked + {partial_count} partial cases', result.stderr)

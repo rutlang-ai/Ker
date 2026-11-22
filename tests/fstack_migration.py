@@ -145,6 +145,13 @@ def validate(root):
         if 'add_test(NAME fstack-${fstack_case} ' in text:
             for values in re.findall(r'foreach\(fstack_case\s+([^)]*)\)', text):
                 ctests.update('fstack-' + value for value in values.split())
+        if 'add_test(NAME "fstack-original-shell-${ker_original_shell_case}"' in text:
+            declarations = (
+                r'foreach\(ker_original_shell_case\s+IN\s+ITEMS|'
+                r'set\(ker_original_shell_cases|list\(APPEND\s+ker_original_shell_cases'
+            )
+            for values in re.findall(rf'(?:{declarations})\s+([^)]*)\)', text):
+                ctests.update('fstack-original-shell-' + value for value in values.split())
     provenance = json.loads((root / 'tests/fstack-provenance.json').read_text())
     require(provenance['revision'] == manifest['revision'], 'Provenance and snapshot pins differ')
     for item in records:
