@@ -480,6 +480,44 @@ if(BUILD_TESTING AND NOT TARGET ker-fstack-nginx-runtime)
     ker_add_fstack_nginx_runtime(ker-c16-fstack-test-runtime fstack-c16-test-runtime)
 endif()
 
+set(KER_FSTACK_ORIGINAL_SHELL_SOURCE "" CACHE PATH
+    "Pinned F-Stack checkout for building the original source-shell caller in CTest")
+set(KER_FSTACK_ORIGINAL_SHELL_DPDK_BUILD "" CACHE PATH
+    "Pinned DPDK Meson build tree used by the original shell provenance checker")
+if(BUILD_TESTING AND KER_FSTACK_ORIGINAL_SHELL_SOURCE)
+    if(NOT EXISTS "${KER_FSTACK_ORIGINAL_SHELL_DPDK_BUILD}/meson-info/meson-info.json")
+        message(FATAL_ERROR "KER_FSTACK_ORIGINAL_SHELL_DPDK_BUILD must point to the pinned DPDK build")
+    endif()
+    if(TARGET ker-fstack-nginx-runtime)
+        set(ker_original_shell_runtime ker-fstack-nginx-runtime)
+        set(ker_original_shell_build_flags)
+    elseif(TARGET ker-fstack-nginx-fault-test-runtime)
+        if(NOT CMAKE_GENERATOR STREQUAL "Ninja")
+            message(FATAL_ERROR "The original F-Stack fault build requires Ninja compile evidence")
+        endif()
+        set(ker_original_shell_runtime ker-fstack-nginx-fault-test-runtime)
+        set(ker_original_shell_build_flags --fault --ninja "${CMAKE_MAKE_PROGRAM}")
+    else()
+        message(FATAL_ERROR "KER_FSTACK_ORIGINAL_SHELL_SOURCE requires a F-Stack Nginx runtime build")
+    endif()
+    if(KER_DPDK_PKGCONFIG_DIR)
+        list(APPEND ker_original_shell_build_flags --dpdk-pkgconfig "${KER_DPDK_PKGCONFIG_DIR}")
+    endif()
+    find_program(ker_original_shell_make NAMES gmake make REQUIRED)
+    add_test(NAME fstack-original-shell-build
+        COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/posix/build-fstack-original-shell.py"
+            --repo "${PROJECT_SOURCE_DIR}" --source "${KER_FSTACK_ORIGINAL_SHELL_SOURCE}"
+            --runtime "$<TARGET_FILE:${ker_original_shell_runtime}>"
+            --dpdk-build "${KER_FSTACK_ORIGINAL_SHELL_DPDK_BUILD}"
+            --output "${CMAKE_CURRENT_BINARY_DIR}/fstack-original-shell"
+            --cc "${CMAKE_C_COMPILER}" --make "${ker_original_shell_make}"
+            ${ker_original_shell_build_flags})
+    set_tests_properties(fstack-original-shell-build PROPERTIES
+        TIMEOUT 600
+        LABELS "fstack;source-shell;build"
+        FIXTURES_SETUP fstack-original-shell-caller)
+endif()
+
 set(KER_NO_FF_NGINX_BINARY "" CACHE FILEPATH
     "Pinned no-FF nginx executable for the native socket-preload lifecycle prerequisite")
 set(KER_FSTACK_NGINX_BINARY "" CACHE FILEPATH
@@ -1121,6 +1159,30 @@ if(BUILD_TESTING)
     target_compile_definitions(ker-socket-broker-readiness-fixture PRIVATE
         KER_SOCKET_BROKER_READINESS_TESTING=1
         KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING=1)
+    if(KER_FSTACK_ORIGINAL_SHELL_SOURCE AND TARGET ker-fstack-nginx-runtime)
+        set(ker_original_shell_guest "${PROJECT_SOURCE_DIR}/tests/posix/fstack-original-shell-guest.py")
+        set(ker_original_shell_fixture "${CMAKE_CURRENT_BINARY_DIR}/fstack-original-shell")
+        foreach(ker_original_shell_case IN ITEMS precheck gr0)
+            set(ker_original_shell_native_args)
+            if(ker_original_shell_case STREQUAL "gr0")
+                set(ker_original_shell_native_args --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --broker "$<TARGET_FILE:ker-socket-broker-readiness-fixture>"
+                    --pmd-dir "${ker_session_pmd_dir}")
+            endif()
+            add_test(NAME "fstack-original-shell-${ker_original_shell_case}"
+                COMMAND "${Python3_EXECUTABLE}" -B "${ker_original_shell_guest}"
+                    --repo "${PROJECT_SOURCE_DIR}" --fixture "${ker_original_shell_fixture}"
+                    --output "${ker_original_shell_fixture}/runs" --case "${ker_original_shell_case}"
+                    ${ker_original_shell_native_args})
+        endforeach()
+        set_tests_properties(fstack-original-shell-precheck PROPERTIES TIMEOUT 45)
+        set_tests_properties(fstack-original-shell-gr0 PROPERTIES TIMEOUT 180)
+        set_tests_properties(fstack-original-shell-precheck fstack-original-shell-gr0
+            PROPERTIES LABELS "native-tcp;fstack;source-shell"
+                FIXTURES_REQUIRED fstack-original-shell-caller)
+    endif()
+
     add_executable(ker-socket-broker-rx-owner-relay-fixture
         tests/posix/socket-broker-rx-owner-relay-fixture.c
         src/posix/rx-owner-relay-peer.c)

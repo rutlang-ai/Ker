@@ -377,6 +377,31 @@ All 17 applicable original cases passed in isolated private diagnostic
 runs. The catalog entry remains `blocked` for registering a reproducible
 CTest job that can build and launch the complete original shell matrix.
 
+The opt-in CTest fixture builds a fresh copy of the pinned F-Stack Nginx
+caller, rebuilds the Ker shim against its ELF, and runs the unchanged
+upstream build verifier. Configure a native test build with
+`KER_FSTACK_ORIGINAL_SHELL_SOURCE` pointing to a checkout of F-Stack
+`646a641cfff77f4815e1e29829a09e1ed15a2999` and
+`KER_FSTACK_ORIGINAL_SHELL_DPDK_BUILD` pointing to the Meson build tree
+of the pinned DPDK used by `KER_DPDK_PKGCONFIG_DIR`. Enable
+`KER_BUILD_FSTACK_NGINX_RUNTIME` for the production form.
+
+```bash
+cmake --build BUILD --target ker-fstack-nginx-runtime ker-socket-broker-readiness-fixture
+ctest --test-dir BUILD -R '^fstack-original-shell-(precheck|gr0)$' --output-on-failure
+```
+
+These cases run with OpenSSH and TAP in private Linux namespaces on a host
+with subordinate user/group IDs, `/dev/net/tun`, and existing mount points
+at `/data` and `/dev/hugepages`. The guest uses private
+SSH keys and keeps its run evidence under
+`BUILD/fstack-original-shell/runs`. The `gr0` case exercises the real
+serial native replacement path and checks the two native STOP settlements.
+For the fault form, use a separate Ninja build with
+`KER_BUILD_FSTACK_NGINX_FAULT_TEST_RUNTIME`, build the target
+`ker-fstack-nginx-fault-test-runtime` and run
+`ctest --test-dir BUILD -R '^fstack-original-shell-build$'`.
+
 ## Packet-channel retirement and worker control lifetime
 
 The standalone I/O worker now treats a retired native packet endpoint as a

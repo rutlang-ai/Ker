@@ -1189,7 +1189,7 @@
       "id": "tests/integration/test_graceful_reload.sh::entrypoint",
       "kind": "shell-e2e",
       "status": "blocked",
-      "reason": "All 17 applicable unchanged upstream shell cases passed with the original verdicts, native STOP acknowledgments, zero outstanding resources, and zero-exit ECHILD in isolated private diagnostic runs. The full rv9 run passed 100 reloads at 15-second intervals, 7,948 fresh connections with zero failures, and flat resource trends. The rt25 run completed the real USR2/WINCH takeover with 90 successful fresh connections and all old workers retired. A reproducible CTest job for the complete original shell matrix remains to be registered. See docs/fstack-graceful-reload-gap.md.",
+      "reason": "All 17 applicable unchanged upstream shell cases passed with the original verdicts, native STOP acknowledgments, zero outstanding resources, and zero-exit ECHILD in isolated private diagnostic runs. The full rv9 run passed 100 reloads at 15-second intervals, 7,948 fresh connections with zero failures, and flat resource trends. The rt25 run completed the real USR2/WINCH takeover with 90 successful fresh connections and all old workers retired. Opt-in CTest builds both caller variants and runs the original precheck and gr0. The remaining 15 original cases require a fixture that binds newly built artifacts to the private C34 runtime. See docs/fstack-graceful-reload-gap.md.",
       "ker_tests": []
     },
     {
