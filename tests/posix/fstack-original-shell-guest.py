@@ -36,9 +36,62 @@ def namespace(kind):
     return os.readlink(f"/proc/self/ns/{kind}")
 
 
-def ephemeral_filesystems():
+def ephemeral_filesystems(readonly_inputs=(), writable_inputs=()):
+    # Keep descriptors to accepted inputs that live under a path covered by a
+    # tmpfs mount. Their original pathnames are hidden by that mount, but the
+    # descriptors still refer to the original trees and can be rebound there.
+    overlays = (Path("/tmp"), Path("/usr/local"))
+    preserved = []
+    for writable, paths in ((False, readonly_inputs), (True, writable_inputs)):
+        for path in paths:
+            path = Path(path).resolve(strict=True)
+            if not any(path != root and path.is_relative_to(root) for root in overlays):
+                continue
+            if any(path == prior and writable == prior_writable
+                   for prior, prior_writable, _ in preserved):
+                continue
+            flags = os.O_PATH
+            fd = os.open(path, flags)
+            preserved.append((path, writable, fd))
+
     for path in ("/data", "/run", "/tmp", "/dev/hugepages", "/dev/shm", "/usr/local"):
         run("mount", "-t", "tmpfs", "tmpfs", path)
+
+    # Restore only the supplied trees, leaving the rest of /tmp and /usr/local
+    # ephemeral. Output directories are rebound writable; all other accepted
+    # paths remain read-only inside the guest.
+    anchors = Path("/run/fstack-inputs")
+    anchors.mkdir()
+    for index, (path, writable, fd) in enumerate(
+            sorted(preserved, key=lambda item: len(item[0].parts))):
+        is_directory = os.path.isdir(f"/proc/self/fd/{fd}")
+        anchor = anchors / str(index)
+        if is_directory:
+            anchor.mkdir()
+        else:
+            anchor.touch()
+        # Use a distinct in-namespace anchor: util-linux canonicalizes mount
+        # sources, and mounting an fd straight back over its own old pathname
+        # can resolve to the newly mounted tmpfs instead of the open tree.
+        run("mount", "--bind", f"/proc/self/fd/{fd}", anchor, pass_fds=(fd,))
+        if not writable:
+            run("mount", "-o", "remount,bind,ro", anchor)
+        if is_directory:
+            if not path.is_dir():
+                path.mkdir(parents=True)
+        else:
+            if not path.parent.is_dir():
+                path.parent.mkdir(parents=True)
+            if not path.is_file():
+                path.touch()
+        run("mount", "--bind", anchor, path)
+        if not writable:
+            run("mount", "-o", "remount,bind,ro", path)
+        else:
+            run("mount", "-o", "remount,bind,rw", path)
+    for _, _, fd in preserved:
+        os.close(fd)
+
     WORKSPACE.mkdir()
     for path, mode in (("/run/sshd", 0o755), ("/run/dpdk", 0o700), ("/tmp", 0o700)):
         target = Path(path)
@@ -489,7 +542,31 @@ def main():
     if os.getpid() != 1 or os.geteuid() != 0 or any(
             parent == child for parent, child in zip(args.parent_namespaces, current)):
         raise RuntimeError("guest setup requires private PID, mount and network namespaces")
-    ephemeral_filesystems()
+    readonly_inputs = [repo, fixture]
+    readonly_inputs.extend(inputs.values())
+    # C34 captures runtime libraries beside the worker, and the build manifest
+    # points at the pinned DPDK Meson tree through this source-tree symlink.
+    if args.worker is not None:
+        if args.worker.parent not in (Path("/tmp"), Path("/usr/local")):
+            readonly_inputs.append(args.worker.parent)
+    if args.pmd_dir is not None:
+        libraries = args.pmd_dir.parent.parent
+        if libraries not in (Path("/tmp"), Path("/usr/local")):
+            readonly_inputs.append(libraries)
+    manifest = Path((fixture / "manifest-path").read_text().strip()).resolve(strict=True)
+    readonly_inputs.append((manifest.parent / "fstack/dpdk/build").resolve(strict=True))
+    if args.case == "rt12":
+        # The sidecar testpmd has its own install prefix and PMD tree; it may
+        # differ from Ker's --pmd-dir and may itself live under /usr/local.
+        sidecar_prefix = args.virtio_testpmd.parent.parent
+        sidecar_pmds = list(sidecar_prefix.glob("lib*/dpdk/pmds-*/librte_net_virtio.so"))
+        if sidecar_prefix in (Path("/tmp"), Path("/usr/local")):
+            readonly_inputs.append(args.virtio_testpmd.parent)
+        else:
+            readonly_inputs.append(sidecar_prefix)
+        for pmd in sidecar_pmds:
+            readonly_inputs.append(pmd.parent.parent)
+    ephemeral_filesystems(readonly_inputs, (out,))
     os.environ["TMPDIR"] = "/tmp"
     client = start_client(configure_ssh(), out / "sshd.log")
     source, nginx, manifest = prepare_source(repo, fixture, args.case)
