@@ -98,11 +98,6 @@ _NGINX_COMPANION_SPEC.loader.exec_module(nginx_companion)
 _SOURCE_SHELL_CONTROLLER_NAME = '_ker_nginx_source_shell_controller'
 source_shell_controller_module = None
 _SOURCE_ORIGIN_NAME = '_ker_nginx_source_origin'
-_PRIVATE_C34_BUILD_ROOT = Path('/home/hurricane/.local/state/ker-fstack-source-shell/source-original-case-build-20261114T122801Z')
-_PRIVATE_C34_SOURCE_ROOT = _PRIVATE_C34_BUILD_ROOT / 'fstack-646a-shallow'
-_PRIVATE_C34_NETWORK_CONFIG = _PRIVATE_C34_SOURCE_ROOT / 'config.ini'
-_PRIVATE_C34_BUILD_MANIFEST = _PRIVATE_C34_BUILD_ROOT / 'artifacts/original-source-build-manifest.json'
-_PRIVATE_C34_BUILD_MANIFEST_SHA256 = '9d90e32fd4343e1da0a34aa7777e9a3d68a62e14029a20ba790ab6d10784c7d8'
 
 
 def _load_source_shell_controller():
@@ -483,27 +478,31 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
                                   command_sequence=None, source_epoch=1,
                                   previous_aborted=None, previous_committed=None,
                                   source_context=None, source_park_evidence=None,
-                                  source_cycle_proof=None):
+                                  source_cycle_proof=None, prepare_deadline_ns=None):
     """Stage a fresh same-master source candidate while retaining current route.
 
     The candidate ACK is consumed by C31 after this function sends supervisor
     APP_AUTH; this function waits only for C31's independently validated
     PREPARED response. The caller must send source-worker ACTIVATE afterward.
-    Epoch 2 is permitted only after the matching acknowledged epoch-1 ABORT.
+    A later epoch requires the preceding COMMIT or the explicit epoch-1 ABORT.
     `prepared.candidate_pidfd` is borrowed from the caller's READY proof; the
     caller keeps it open through any retry decision and closes it in its normal
     proof cleanup, including when PREPARE or COMMIT fails.
     """
     successor = previous_committed is not None
+    upgrade = successor and source_epoch == 2 and getattr(source_context, 'upgrade_scope', False)
+    if type(source_epoch) is not int or not 1 <= source_epoch <= 100 or (
+            not successor and source_epoch > 2):
+        raise ValueError('unsupported source-route epoch')
     now = time.monotonic_ns()
     if successor:
         previous_fields = getattr(previous_committed, 'fields', ())
         previous_sequence = getattr(previous_committed, 'command_sequence', 0)
         if command_sequence is None:
             command_sequence = previous_sequence + 1
-        if (previous_aborted is not None or source_epoch != 2 or
+        if (previous_aborted is not None or
                 not getattr(previous_committed, 'committed', False) or
-                getattr(previous_committed, 'source_epoch', 0) != 1 or
+                getattr(previous_committed, 'source_epoch', 0) != source_epoch - 1 or
                 previous_committed.last_command_type not in
                     (_RX_OWNER_SOURCE_ROUTE_COMMIT, _RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME) or
                 previous_committed.last_status != 0 or len(previous_fields) != 23 or
@@ -527,8 +526,6 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
                      (previous_fields[12], previous_fields[13]),
                      (previous_fields[19], previous_fields[20]))):
             raise ValueError('successor requires committed lineage and a fresh same-master candidate')
-    if source_epoch not in (1, 2):
-        raise ValueError('unsupported source-route epoch')
     if source_epoch == 1:
         if previous_aborted is not None or successor:
             raise ValueError('epoch 1 cannot use retry lineage')
@@ -565,7 +562,8 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
             raise ValueError('epoch 2 requires one fresh candidate after acknowledged abort')
     if (not nonce or len(nonce) != 16 or not epoch or
             authority_deadline_ns <= now or
-            authority_deadline_ns - now > 300_000_000_000 or
+            authority_deadline_ns - now > (1_800_000_000_000 if
+                getattr(source_context, 'allow_successor', False) else 300_000_000_000) or
             current.owner_role != (1 if successor else 0) or candidate.owner_role != 1 or
             current.owner_pid == candidate.owner_pid or
             current.owner_cookie == candidate.owner_cookie or
@@ -598,7 +596,7 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
         _RX_OWNER_AUTH_MAGIC, _RX_OWNER_AUTH_VERSION,
         _RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARE if successor else _RX_OWNER_SOURCE_ROUTE_PREPARE,
         _RX_OWNER_SOURCE_ROUTE_RECORD.size, supervisor, candidate.owner_pid,
-        candidate.owner_tid, candidate.owner_role, 0, epoch, supervisor_start,
+        candidate.owner_tid, candidate.owner_role, int(upgrade), epoch, supervisor_start,
         candidate.owner_start, candidate.owner_slot_device,
         candidate.owner_slot_inode, candidate.owner_cookie, nonce,
         current.owner_pid, current.owner_tid, current.owner_start,
@@ -617,11 +615,16 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
             owner.owner_cookie, owner.owner_pidfd)
     current_actor = route_actor(current)
     candidate_actor = route_actor(candidate)
+    if source_bound and source_epoch > 1:
+        if (type(prepare_deadline_ns) is not int or
+                not time.monotonic_ns() < prepare_deadline_ns <= authority_deadline_ns):
+            raise PermissionError('typed C31 successor requires a live setup deadline within its grant')
+    elif prepare_deadline_ns is not None:
+        raise PermissionError('C31 successor setup deadline requires typed later-round authority')
     if source_bound:
         if (source_context is None or source_cycle_proof is None or
-                source_park_evidence is not None or successor or
-                previous_aborted is not None or source_epoch != 1):
-            raise PermissionError('typed C31 PREPARE binding requires the exact first-HUP phase before PARK')
+                source_park_evidence is not None):
+            raise PermissionError('typed C31 PREPARE requires the exact source context before PARK')
         source_bootstrap = sys.modules.get(type(source_context).__module__)
         expected_path = Path(__file__).resolve().with_name(
             'nginx_source_bootstrap_supervisor.py')
@@ -632,7 +635,9 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
                 not callable(preflight)):
             raise PermissionError('source handoff did not resolve the canonical bootstrap module')
         preflight(source_context, tuple(fields), source_epoch, current_actor,
-            candidate_actor, source_cycle_proof, endpoint, candidate_channel, actors)
+            candidate_actor, source_cycle_proof, endpoint, candidate_channel, actors,
+            previous_aborted=previous_aborted, previous_committed=previous_committed,
+            prepare_deadline_ns=prepare_deadline_ns)
     if source_bound:
         if (type(endpoint) is not socket.socket or
                 endpoint.family != socket.AF_UNIX or
@@ -654,17 +659,25 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
             not fcntl.fcntl(candidate_channel.fileno(), fcntl.F_GETFD) & fcntl.FD_CLOEXEC):
         raise PermissionError('typed C31 PREPARE requires a distinct nonblocking CLOEXEC candidate relay')
     # The receiving app must enable credentials before APP_AUTH can queue ACK.
+    if source_bound and source_epoch == 2 and not successor:
+        begin = getattr(source_bootstrap, '_begin_source_route_retry_prepare', None)
+        if not callable(begin):
+            raise PermissionError('canonical C31 retry attempt tracker is unavailable')
+        begin(source_context, previous_aborted, operation_id, command_sequence, prepare_deadline_ns)
     candidate_channel.setblocking(False)
     candidate_channel.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
     rights = array.array('i', (candidate.owner_pidfd, candidate_channel.fileno(),
         source_master.pidfd))
+    if upgrade:
+        rights.append(source_context._worker_master((2, 0)).pidfd)
     sent = endpoint.sendmsg([payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
         getattr(socket, 'MSG_NOSIGNAL', 0) | getattr(socket, 'MSG_DONTWAIT', 0))
     if sent != len(payload):
         raise RuntimeError('short supervisor-to-C31 source-route PREPARE send')
     rx_owner_relay_auth(candidate_channel, app, app_pidfd, supervisor_pidfd,
-        candidate, nonce, epoch)
-    deadline = min(time.monotonic() + 5, authority_deadline_ns / 1e9)
+        candidate, nonce, epoch, authority_deadline_ns=prepare_deadline_ns)
+    deadline = min(time.monotonic() + 5, authority_deadline_ns / 1e9,
+        (prepare_deadline_ns or authority_deadline_ns) / 1e9)
     with selectors.DefaultSelector() as selector:
         selector.register(endpoint, selectors.EVENT_READ)
         if not selector.select(max(0, deadline - time.monotonic())):
@@ -737,7 +750,8 @@ def rx_owner_source_route_prepare(endpoint, candidate_channel, app, app_pidfd,
                 None, prepared, tuple(fields), source_epoch,
                 current_actor, candidate_actor, source_cycle_proof,
                 endpoint, candidate_channel, actors, bytes(packet), bytes(expected_wire),
-                tuple(credentials[0])))
+                tuple(credentials[0]), previous_aborted=previous_aborted,
+                previous_committed=previous_committed, prepare_deadline_ns=prepare_deadline_ns))
             prepared._source_route_commit_receipt = None
             _SOURCE_ROUTE_PREPARATIONS[id(prepared)] = (prepared,
                 source_context, prepared._source_route_preparation)
@@ -907,17 +921,18 @@ def send_source_route_command(endpoint, prepared, command_type, command_sequence
                 raise PermissionError('canonical C31 source sequence tracker is unavailable')
             finish_attempt(source_preparation, command_sequence,
                 command_type == _RX_OWNER_SOURCE_ROUTE_COMMIT and
-                status == -errno.EBUSY)
+                status == -errno.EBUSY,
+                aborted=command_type == _RX_OWNER_SOURCE_ROUTE_ABORT and status == 0)
         prepared.command_sequence = command_sequence
         prepared.last_command_type = command_type
         prepared.last_status = status
         if command_type == _RX_OWNER_SOURCE_ROUTE_ABORT and status == 0:
             prepared.aborted = True
-        if command_type in (_RX_OWNER_SOURCE_ROUTE_COMMIT,
-                _RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME) and status == 0:
+        committed = command_type in (_RX_OWNER_SOURCE_ROUTE_COMMIT,
+            _RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME) and status == 0
+        if committed:
             prepared.committed = True
-        if (source_preparation is not None and
-                command_type == _RX_OWNER_SOURCE_ROUTE_COMMIT and status == 0):
+        if source_preparation is not None and committed:
             mint = getattr(bootstrap, '_mint_source_route_commit_receipt', None)
             if not callable(mint):
                 raise PermissionError('canonical source C31 receipt minter is unavailable')
@@ -1181,11 +1196,17 @@ def _new_private_c34_network_input(args, environ):
     """Render the original 13-key F-Stack input for this private CLI launch."""
     source = dict(environ)
     deadline_text = source.get(source_network_startup.BOOTSTRAP_DEADLINE_ENV)
+    env_items = getattr(args, 'control_nginx_env', None) or []
+    baseline = any(key == 'KER_FSTACK_NGINX_INI' and Path(value).name == 'fstack_base.ini'
+        for key, _, value in (item.partition('=') for item in env_items))
+    rv9 = any(key == 'KER_FSTACK_NGINX_INI' and Path(value).name == 'fstack_rv9.ini'
+        for key, _, value in (item.partition('=') for item in env_items))
+    # Cover startup, the unchanged probe, and the original cleanup window.
+    budget_ns = (1_750_000_000_000 if rv9 else
+        410_000_000_000 if baseline else 280_000_000_000)
     deadline = (int(deadline_text) if type(deadline_text) is str and
         deadline_text.isascii() and deadline_text.isdecimal() else
-        time.monotonic_ns() + 60_000_000_000)
-    command = getattr(args, 'command', None)
-    env_items = getattr(args, 'control_nginx_env', None) or []
+        time.monotonic_ns() + budget_ns)
     broker_values = [item.partition('=')[2] for item in env_items
         if item.partition('=')[0] == 'KER_SOCKET_BROKER_PATH']
     if len(broker_values) != 1:
@@ -1217,7 +1238,8 @@ def _new_private_c34_network_input(args, environ):
         finally:
             os.close(fd)
         origin = _load_source_origin_module()
-        captured = origin.capture_source_network_expectation(str(path), deadline)
+        captured = (origin.capture_source_network_expectation(str(path), deadline, repeated=True)
+            if rv9 else origin.capture_source_network_expectation(str(path), deadline))
         source[source_network_startup.PROFILE_ENV] = '1'
         source[source_network_startup.BOOTSTRAP_DEADLINE_ENV] = str(deadline)
         supplied_record = source.get(source_network_startup.READBACK_ENV)
@@ -1259,13 +1281,22 @@ def _capture_private_c34_source_controller(args, expected, control_profile,
         raise ValueError('private C34 broker path must be a fresh child of an owned 0700 run directory')
     if getattr(args, 'control_nginx_owner_module', None) is not None:
         raise ValueError('private C34 built-in addon rejects an external owner module')
-    if Path(control_profile[0]).resolve(strict=False) != _PRIVATE_C34_SOURCE_ROOT / 'app/nginx-1.28.0/objs/nginx':
-        raise ValueError('private C34 selector rejects a conflicting Nginx executable')
-
     controller_module = _load_source_shell_controller()
     profile_module = controller_module._c34_profile_module()
     artifact_module = profile_module._provider()
     origin_module = _load_source_origin_module()
+    if Path(control_profile[0]).resolve(strict=False) != artifact_module._FIXED_ARTIFACTS['nginx'][0]:
+        raise ValueError('private C34 selector rejects a conflicting Nginx executable')
+    output_ini = control_profile[3].get('KER_FSTACK_NGINX_INI')
+    if type(output_ini) is not str or not output_ini:
+        raise ValueError('private C34 selector requires the exact generated INI path')
+    ini_path = Path(output_ini)
+    case = origin_module.SOURCE_HUP_INI_CASES.get(ini_path.name)
+    if case is None:
+        raise ValueError('private C34 selector requires the INI of a supported HUP case')
+    selected_fault = origin_module.SOURCE_HUP_FAULTS.get(case)
+    if selected_fault != artifact_module._SOURCE_FAULT:
+        raise ValueError('private C34 selector requires the matching pinned fault build')
     capture = None
     profile = None
     scope_temp = None
@@ -1284,18 +1315,15 @@ def _capture_private_c34_source_controller(args, expected, control_profile,
         fixed_backend = capture.artifact('test_backend')
         if Path(command[0]).resolve(strict=True) != fixed_backend.path:
             raise ValueError('private C34 selector requires the fixed TEST_ONLY backend as args.command[0]')
-        source_root = _PRIVATE_C34_SOURCE_ROOT.resolve(strict=True)
-        manifest_path = _PRIVATE_C34_BUILD_MANIFEST.resolve(strict=True)
-        if manifest_path != _PRIVATE_C34_BUILD_MANIFEST:
+        source_root = artifact_module._SOURCE_ROOT.resolve(strict=True)
+        manifest_path = artifact_module._BUILD_MANIFEST.resolve(strict=True)
+        if manifest_path != artifact_module._BUILD_MANIFEST:
             raise ValueError('private C34 build manifest path changed')
         manifest = capture.artifact('build_manifest')
         if (manifest.path != manifest_path or
-                manifest.sha256 != _PRIVATE_C34_BUILD_MANIFEST_SHA256):
+                manifest.sha256 != artifact_module._BUILD_MANIFEST_SHA256):
             raise ValueError('private C34 held build manifest differs from its frozen pin')
-        output_ini = control_profile[3].get('KER_FSTACK_NGINX_INI')
-        if type(output_ini) is not str or not output_ini:
-            raise ValueError('private C34 selector requires the exact generated INI path')
-        output = Path(output_ini).parent
+        output = ini_path.parent
         if (not output.is_absolute() or str(output.resolve(strict=False)) != str(output) or
                 output.name in ('', '.', '..') or output.exists()):
             raise ValueError('private C34 selector requires a fresh canonical output path')
@@ -1309,7 +1337,7 @@ def _capture_private_c34_source_controller(args, expected, control_profile,
             'KER_NGINX_SOURCE_SHELL_ENABLE': '1',
             'KER_NGINX_SOURCE_FIRST_HUP_ENABLE': '1',
             'KER_NGINX_SOURCE_BOOTSTRAP_NONCE': secrets.token_hex(16),
-            'KER_NGINX_SOURCE_BOOTSTRAP_EPOCH': str(max(1, time.monotonic_ns())),
+            'KER_NGINX_SOURCE_BOOTSTRAP_EPOCH': '1',
             source_network_startup.BOOTSTRAP_DEADLINE_ENV: str(deadline),
             'KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_PID': str(os.getpid()),
             'KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_START': str(process_start_ticks(os.getpid())),
@@ -1317,10 +1345,30 @@ def _capture_private_c34_source_controller(args, expected, control_profile,
         })
         if 'PATH' not in environment:
             environment['PATH'] = os.environ.get('PATH', os.defpath)
-        arguments = ['--cases', 'precheck,rt01', '--workers', '1', '--graceful', '1',
+        arguments = ['--cases', f'precheck,{case}', '--workers', '1', '--graceful', '1',
             '--target-ip', network_capture.address, '--out', str(output), '--fstack-conf',
             network_capture.template_path, '--nginx', str(nginx.path), '--build-manifest',
             str(manifest_path)]
+        if case == 'baseline':
+            arguments.extend(('--baseline-duration', origin_module.SOURCE_BASELINE_SECONDS))
+        if case == 'rv9':
+            arguments.extend(('--rounds', '100', '--interval', '15'))
+            environment['KER_NGINX_SOURCE_SUCCESSOR_ENABLE'] = '1'
+        if case == 'rt25':
+            environment[origin_module.SOURCE_UPGRADE_ENV] = '1'
+        if case == 'rt12':
+            filters = (args.exception_mode, args.exception_policy,
+                args.exception_tcp_ports, args.exception_udp_ports, args.exception_iface)
+            if filters != ('ports', 'reject', '80,443', '53', 'kerkni'):
+                raise ValueError('source rt12 requires the original KNI port policy and private TAP')
+            management = ipaddress.IPv4Address(int(ipaddress.IPv4Address(network_capture.address)) + 1)
+            arguments.extend(('--kernel-nic-ip', str(management)))
+            environment[origin_module.SOURCE_KNI_ENV] = '1'
+        if selected_fault is not None:
+            arguments.extend(('--fault', selected_fault))
+            if case == 'rt20b':
+                arguments.extend(('--fault-delay-ms', origin_module.SOURCE_READY_DELAY_MS))
+            environment[origin_module.SOURCE_FAULT_SWITCHES[selected_fault]] = '1'
         profile = profile_module.PrivateNewC34InteropProfile.capture(
             origin_module, source_network_startup, source_root=source_root,
             arguments=arguments, environment=environment,
@@ -2482,7 +2530,9 @@ def _read_private_shutdown_pipes(startup_read, io_fd, startup_prefix,
         while not startup_eof or not io_eof:
             remaining = deadline - time.monotonic_ns()
             if remaining <= 0:
-                raise TimeoutError('private shutdown pipe collection exceeded PREEXIT deadline')
+                streams = [key.data for key in selector.get_map().values()]
+                raise TimeoutError(
+                    f'private shutdown pipe collection exceeded PREEXIT deadline awaiting {", ".join(streams)} EOF')
             events = selector.select(min(0.005, remaining / 1_000_000_000))
             for key, _ in events:
                 target = startup if key.data == 'startup' else io_output
@@ -2588,7 +2638,6 @@ def collect_private_shutdown_streams(controller, app, app_pidfd, worker, worker_
     backend_receipt = getattr(origin, 'backend_receipt', None)
     io_ready_proof = getattr(origin, 'native_io_ready', None)
     pending = getattr(controller, '_private_candidate_preexit_pending', None)
-    proof = getattr(controller, '_private_initial_retirement_proof', None)
     authorization = getattr(broker, '_private_stop_authorization', None)
     app_anchor = getattr(controller, '_private_runtime_app_anchor', None)
     deadline = getattr(pending, 'deadline_ns', None)
@@ -2624,15 +2673,15 @@ def collect_private_shutdown_streams(controller, app, app_pidfd, worker, worker_
         raise PermissionError('private shutdown collector lacks its held pipes and STOP phase')
     stop_receipt = controller._validated_cached_private_stop_receipt(transport, broker)
     if (stop_receipt.authorization.pending is not pending or
-            stop_receipt.authorization.retirement_proof is not proof or
+            not controller._private_shutdown_binding_matches(context, pending.key,
+                stop_receipt.authorization.retirement_proof) or
             context is None or
             getattr(broker, 'app', None) != (app.pid, os.getuid(), os.getgid(),
                 source_app_start_ticks) or
-            getattr(transport, 'app', None) != app_anchor.identity or
+            transport.app is not app or
             getattr(controller.io_actor, 'pid', None) != worker.pid or
             getattr(controller.io_actor, 'pidfd', None) != worker_pidfd or
             getattr(controller.io_actor, 'start_ticks', None) != worker_start_ticks or
-            getattr(transport, 'app_pidfd', None) != getattr(broker, 'app_pidfd', None) or
             (not run_stop and (app.poll() != 0 or worker.poll() != 0 or
                 not _private_pidfd_exited(broker.app_pidfd) or
                 not _private_pidfd_exited(app_pidfd) or
@@ -2733,35 +2782,66 @@ def _settle_private_source_shutdown(controller, collection):
     pending = stop.authorization.pending
     deadline = pending.deadline_ns
     _private_shutdown_remaining(deadline)
-    if (stop is not collection.stop_receipt or pending.key != (1, 1) or
+    if (stop is not collection.stop_receipt or
+            not controller._private_shutdown_binding_matches(context, pending.key,
+                stop.authorization.retirement_proof) or
             collection.collected_ns >= deadline or
             context.runtime is not controller.launch.backend_runtime_actor or
             context.io is not controller.io_actor or
             not _private_pidfd_exited(context.runtime.pidfd) or
             not _private_pidfd_exited(context.io.pidfd)):
         raise PermissionError('private source SETTLED lost its native actor or STOP authority')
-    prepared = controller._first_candidate_source_prepared
-    preparation = context._source_route_preparations.get(id(prepared))
-    grant = controller._first_candidate_worker_grant
-    channel = context._pending_preexits[pending.operation_id][2]
-    relay = controller._first_candidate_relay_anchor
-    bootstrap = controller.profile.origin_module.bootstrap
-    if (grant is None or grant.channel is not channel or grant.worker_key != pending.key or
-            grant.channel_identity != controller._first_candidate_endpoint_identity(channel) or
-            grant.channel_cookie != controller._first_candidate_socket_cookie(channel) or
-            preparation is None or preparation.context is not context or
-            type(relay) is not socket.socket or preparation.endpoint is not relay or
-            preparation.endpoint_identity != bootstrap._source_socket_identity(relay)):
-        raise PermissionError('private source SETTLED lost its granted channel or prepared relay')
     retirement = stop.authorization.retirement_proof
-    c28_response = json.dumps(dict(retirement.c28_response), sort_keys=True,
-        separators=(',', ':')).encode('ascii')
+    channel = context._pending_preexits[pending.operation_id][2]
+    c28_digest = None
+    if pending.key == (0, 0):
+        # The runtime holds the peer of the initial relay. Its exit delivered
+        # EOF directly to the original worker; this SDK has no peer to release.
+        relay = None
+        controller_module = sys.modules[type(controller).__module__]
+        if (retirement.initial_bootstrap_channel_identity !=
+                controller_module._source_bootstrap_channel_identity(channel)):
+            raise PermissionError('initial source SETTLED lost its granted channel')
+    else:
+        successive = getattr(context, 'allow_successor', False)
+        retry = pending.key == (2, 1)
+        if successive:
+            prepared = controller._successive_candidate_prepared
+            grant = controller._accepted_successive_worker_request
+            relay = controller._successive_relays.get(pending.key[0])
+        else:
+            prepared = (controller._retry_candidate_prepared if retry else
+                controller._first_candidate_source_prepared)
+            grant = (controller._accepted_retry_worker_request if retry else
+                controller._first_candidate_worker_grant)
+            relay = (controller._retry_candidate_relay_anchor if retry else
+                controller._first_candidate_relay_anchor)
+        preparation = context._source_route_preparations.get(id(prepared))
+        bootstrap = controller.profile.origin_module.bootstrap
+        if (grant is None or grant.worker_key != pending.key or
+                grant.channel_identity != controller._first_candidate_endpoint_identity(channel) or
+                grant.channel_cookie != controller._first_candidate_socket_cookie(channel) or
+                preparation is None or preparation.context is not context or
+                type(relay) is not socket.socket or preparation.candidate_channel is not relay or
+                preparation.candidate_channel_identity != bootstrap._source_socket_identity(relay)[:4]):
+            raise PermissionError('private source SETTLED lost its granted channel or prepared relay')
+        c28_response = json.dumps(dict(retirement.c28_response), sort_keys=True,
+            separators=(',', ':')).encode('ascii')
+        components = retirement.c28_request + c28_response
+        if successive:
+            final_round, retired_key, retire_ack, verify = controller.c22_provider._successor_retire_receipt
+            expected_epoch = context.successor_final_epoch
+            if (final_round, retired_key) != (expected_epoch, (expected_epoch - 1, 1)):
+                raise PermissionError('final source settlement lacks the last predecessor receipt')
+            components += retire_ack[3] + verify
+        c28_digest = hashlib.sha256(components).digest()
+    bootstrap = controller.profile.origin_module.bootstrap
     c31 = collection.parsed['c31']
     settlement = bootstrap.SourceRetirementProof(
         pending.operation_id, pending.request_sha256,
         stop.authorization.term_evidence.receipt_sha256,
         hashlib.sha256(stop.raw_ack).digest(),
-        hashlib.sha256(retirement.c28_request + c28_response).digest(),
+        c28_digest,
         hashlib.sha256(bytes.fromhex(c31['record_hex']) + collection.io_stdout).digest(),
         c31['outstanding_count'], c31['last_packet_id'], c31['status'])
     controller._private_source_settlement_attempted = True
@@ -3818,7 +3898,7 @@ def main(*, retained_backend_handoff=None, source_shell_controller=None):
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
             extra_worker.start(worker_path, args)
-        env = {key: value for key, value in os.environ.items()
+        env = {key: value for key, value in launch_environment.items()
             if not key.startswith(('LKL_', 'KER_PACKET_', 'KER_RUNTIME_SERVICE_',
                                    'KER_BROKER_', 'KER_RUN_CONTROL_'))}
         env.pop('KER_NGINX_CANDIDATE_SLOT_TRANSFER_FD', None)
@@ -3843,6 +3923,15 @@ def main(*, retained_backend_handoff=None, source_shell_controller=None):
             env.update(runtime_service_server.env)
         if broker_readiness_channel is not None:
             env.update(broker_readiness_channel.environment())
+        synack_evidence_var = 'KER_NATIVE_TEST_SYNACK_FAILURE_OUTPUT'
+        env.pop(synack_evidence_var, None)
+        env.pop('KER_RX_OWNER_SOURCE_SUCCESSIVE_ENABLE', None)
+        if private_source_rx:
+            if source_shell_controller.profile.network_expectation.repeated:
+                env['KER_RX_OWNER_SOURCE_SUCCESSIVE_ENABLE'] = '1'
+            env['KER_BROKER_SOURCE_SHELL_LISTENER'] = '1'
+            if (source_shell_controller.profile.artifact_capture.source_fault == 'synack_fail'):
+                env[synack_evidence_var] = source_shell_controller.profile.output
         if additional:
             env['KER_PACKET_INTERFACES'] = ';'.join(extra.native_settings() for extra in additional)
         env.pop('KER_NATIVE_VLANS', None)
@@ -4057,7 +4146,6 @@ def main(*, retained_backend_handoff=None, source_shell_controller=None):
                 if (source_shell_controller is not None and app.poll() is None and
                         not (private_source_rx and
                             source_shell_controller._private_stop_ack_receipt is not None)):
-                    source_shell_controller.check_live()
                     source_shell_controller.pump_source_requests(broker_readiness_channel)
                 if (private_source_rx and not run_finished and
                         source_shell_controller._private_stop_ack_receipt is not None and
@@ -4639,7 +4727,12 @@ def main(*, retained_backend_handoff=None, source_shell_controller=None):
                     except Interrupted:
                         break
             try:
-                source_shell_controller.stop_original()
+                # The private PREEXIT already joins the original supervisor's
+                # TERM. Let it finish recording the shell verdict and reaping.
+                settlement = source_shell_controller.stop_original(
+                    request_stop=not private_source_rx)
+                if private_source_rx and exit_code == 0:
+                    exit_code = settlement['result']
             except (OSError, RuntimeError, TimeoutError, ValueError,
                     subprocess.TimeoutExpired) as error:
                 print(f'ker-run: source supervisor stop remains unresolved: {error}',

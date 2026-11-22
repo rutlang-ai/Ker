@@ -638,11 +638,14 @@ class SourceScopeCapsules:
         # caller cannot supply run_id or supervisor identity as data.
         private_launch = type(launch) is getattr(self.origin_module,
             'PrivateC34OriginalShellLaunch', None)
-        if (type(launch) is not self.origin_module.OriginalShellLaunch and not private_launch or
+        serial_launch = type(launch) is getattr(self.origin_module,
+            'OriginalSerialShellLaunch', None)
+        if (type(launch) is not self.origin_module.OriginalShellLaunch and
+                not private_launch and not serial_launch or
                 launch.creator_pid != ROOT_PID or launch.creator_start != self.root['root_start_time'] or
                 not callable(getattr(launch, 'live_supervisor', None)) or
                 type(captured_roots) is not tuple or not captured_roots or
-                getattr(launch, 'native_io_ready', None) is None or
+                (not serial_launch and getattr(launch, 'native_io_ready', None) is None) or
                 any(type(item) is not CapturedScopeRoot for item in captured_roots)):
             raise PermissionError('run scope requires the actual same-process original launch and held roots')
         if private_launch:
@@ -657,7 +660,10 @@ class SourceScopeCapsules:
         if time.monotonic_ns() >= launch.deadline_ns:
             raise TimeoutError('original launch observation deadline expired')
         launch.live_supervisor(launch.deadline_ns)
-        launch._native_io_ready_live(launch.native_io_ready.actor, launch.deadline_ns)
+        if serial_launch:
+            launch.live_initial_runtime()
+        else:
+            launch._native_io_ready_live(launch.native_io_ready.actor, launch.deadline_ns)
         if time.monotonic_ns() >= launch.deadline_ns:
             raise TimeoutError('original launch expired after identity validation')
         run_id = launch.run_id
@@ -674,7 +680,10 @@ class SourceScopeCapsules:
         if (len(roots) > 8 or len(set(root_paths)) != len(roots) or
                 any(Path(entry['path']).is_relative_to(Path(__file__).parent) for entry in roots)):
             raise ValueError('captured cleanup roots are duplicated, oversized, or include source code')
-        if not {'/tmp', '/var/run/dpdk'} <= {str(path) for path in root_paths}:
+        if serial_launch:
+            if root_paths != [Path('/tmp')]:
+                raise ValueError('serial source scope only owns the original probe directory')
+        elif not {'/tmp', '/var/run/dpdk'} <= {str(path) for path in root_paths}:
             raise ValueError('run scope requires captured original-shell and DPDK runtime parents')
         if any(left in right.parents or right in left.parents
                 for index, left in enumerate(root_paths) for right in root_paths[index + 1:]):
@@ -722,8 +731,9 @@ class SourceScopeCapsules:
         if self.run_published:
             if (launch is None or launch is not self.run_launch or
                     (type(launch) is not self.origin_module.OriginalShellLaunch and
-                     type(launch) is not getattr(self.origin_module,
-                        'PrivateC34OriginalShellLaunch', None)) or
+                     type(launch) not in (getattr(self.origin_module,
+                        'PrivateC34OriginalShellLaunch', None), getattr(self.origin_module,
+                        'OriginalSerialShellLaunch', None))) or
                     launch.process is None or launch.process.poll() is None):
                 raise RuntimeError('run capsules remain owned until original launch settlement')
             settlement = launch.observe_settlement()

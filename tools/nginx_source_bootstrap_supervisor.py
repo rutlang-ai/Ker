@@ -36,7 +36,8 @@ PREEXIT_VERSION = 1
 PREEXIT_REQUEST = 10
 PREEXIT_SETTLED = 11
 COMMIT_EVIDENCE = 12
-PREEXIT_BUDGET_NS = 100_000_000
+# Match KER_NGINX_SOURCE_PREEXIT_BUDGET_NS for final native shutdown.
+PREEXIT_BUDGET_NS = 1_000_000_000
 PREEXIT_HEADER = struct.Struct('=IHHII')
 PREEXIT_TAIL = struct.Struct('=IIQQQ')
 SETTLED_TAIL = struct.Struct('=IIQQiI')
@@ -108,10 +109,16 @@ class _SourceRoutePreparation(NamedTuple):
     raw_prepared_ack: bytes
     expected_prepared_record: bytes
     prepared_credentials: tuple
+    candidate_channel: object
+    candidate_channel_identity: tuple
+
+
+# Source route terminal request and ACK kinds from the C31 wire record.
+_SOURCE_ROUTE_COMMIT_ACK_TYPES = {7: 8, 11: 12}
 
 
 class _SourceRouteCommitReceipt(NamedTuple):
-    """One-shot proof minted only after an authenticated ordinary C31 COMMIT ACK."""
+    """One-shot proof minted only after an authenticated C31 route COMMIT ACK."""
     token: object
     preparation: _SourceRoutePreparation
     command_type: int
@@ -178,7 +185,8 @@ def _make_source_c28_park_evidence(context, provider, response, bundle,
     if (type(context) is not SourceBootstrapSupervisor or
             type(response) is not dict or response.get('phase') != 1 or
             type(response.get('lease')) is not int or response['lease'] <= 0 or
-            response.get('accepted') != response.get('received') or
+            type(response.get('received')) is not int or response['received'] < 0 or
+            response.get('accepted') != 0 or
             type(bundle) is not dict or type(bundle.get('record')) is not bytes or
             type(bundle.get('credentials')) is not tuple or
             type(bundle.get('fds')) is not tuple):
@@ -195,10 +203,19 @@ def _make_source_c28_park_evidence(context, provider, response, bundle,
         _source_socket_identity(channel))
 
 
+def _route_worker_keys(context, source_epoch):
+    if source_epoch > 1 and getattr(context, 'allow_successor', False):
+        return ((source_epoch - 1, 1 - source_epoch % 2),
+            (source_epoch, source_epoch % 2))
+    return (0, 0), (source_epoch, 1)
+
+
 def _make_source_route_preparation(context, park, prepared, fields, source_epoch,
                                    current, candidate, cycle_proof, endpoint,
                                    candidate_channel, actors, raw_prepared_ack,
-                                   expected_prepared_record, prepared_credentials):
+                                   expected_prepared_record, prepared_credentials,
+                                   previous_aborted=None, previous_committed=None,
+                                   prepare_deadline_ns=None):
     require(type(context) is SourceBootstrapSupervisor and context.shell_mode,
         'C31 handoff needs the exact source-shell context')
     require(type(fields) is tuple and len(fields) == 23 and
@@ -208,9 +225,18 @@ def _make_source_route_preparation(context, park, prepared, fields, source_epoch
         'C31 handoff snapshot is incomplete')
     # C31 has received the candidate relay and may have changed the shared
     # open-file status flags; identity and SDK ownership remain stable.
+    deadline_ns = prepare_deadline_ns
+    if source_epoch == 2 and previous_committed is None:
+        require(hasattr(context, '_source_retry_prepare_attempt'),
+            'retry PREPARED ACK lacks its one-shot attempt')
+        prior, operation_id, sequence, deadline_ns = context._source_retry_prepare_attempt
+        require(previous_aborted is prior and prepared.operation_id == operation_id and
+            prepared.command_sequence == sequence and time.monotonic_ns() < deadline_ns,
+            'retry PREPARED ACK does not settle the one-shot retry attempt')
     _validate_source_route_prepare_inputs(context, fields, source_epoch,
         current, candidate, cycle_proof, endpoint, candidate_channel, actors,
-        check_candidate_mode=False)
+        check_candidate_mode=False, previous_aborted=previous_aborted,
+        previous_committed=previous_committed, prepare_deadline_ns=deadline_ns)
     require(type(raw_prepared_ack) is bytes and
         type(expected_prepared_record) is bytes and
         raw_prepared_ack == expected_prepared_record and
@@ -220,9 +246,8 @@ def _make_source_route_preparation(context, park, prepared, fields, source_epoch
         'C31 PREPARED snapshot lacks its exact credentialed ACK')
     current_key, current_proof = _source_worker_join(context, current[1:])
     candidate_key, candidate_proof = _source_worker_join(context, candidate[1:])
-    require(current_key == (0, 0) and candidate_key == (1, 1) and
-        current[3] == 0 and candidate[3] == 1 and
-        candidate_key[0] == source_epoch and
+    require((current_key, candidate_key) == _route_worker_keys(context, source_epoch) and
+        current[3] == bool(previous_committed) and candidate[3] == 1 and
         type(cycle_proof) is SourceCycleProof and
         cycle_proof is candidate_proof,
         'C31 candidate cycle proof is not the exact retained candidate-worker proof')
@@ -236,13 +261,15 @@ def _make_source_route_preparation(context, park, prepared, fields, source_epoch
         candidate[0], tuple(candidate[1:]), candidate_key, candidate_proof,
         cycle_proof, endpoint, _source_socket_identity(endpoint), tuple(actors),
         bytes(raw_prepared_ack), bytes(expected_prepared_record),
-        tuple(prepared_credentials))
+        tuple(prepared_credentials), candidate_channel,
+        _source_socket_identity(candidate_channel)[:4])
 
 
 def _validate_source_route_prepare_inputs(context, fields, source_epoch,
                                           current, candidate, cycle_proof,
                                           endpoint, candidate_channel, actors,
-                                          check_candidate_mode=True):
+                                          check_candidate_mode=True, previous_aborted=None,
+                                          previous_committed=None, prepare_deadline_ns=None):
     """Check source-bound PREPARE provenance before channel side effects."""
     require(type(context) is SourceBootstrapSupervisor and context.shell_mode and
         type(fields) is tuple and len(fields) == 23 and
@@ -250,14 +277,21 @@ def _validate_source_route_prepare_inputs(context, fields, source_epoch,
         type(candidate) is tuple and len(candidate) == 9 and
         type(actors) is tuple and len(actors) == 9,
         'C31 pre-send binding is incomplete or noncanonical')
-    require(type(source_epoch) is int and source_epoch == 1 and
-        fields[2] == 5 and fields[9] == context.epoch and
+    successor = previous_committed is not None
+    upgrade = successor and source_epoch == 2 and context.upgrade_scope
+    require(type(source_epoch) is int and 1 <= source_epoch <= (100 if successor else 2) and
+        fields[2] == (13 if successor else 5) and fields[8] == int(upgrade) and
+        fields[9] == context.epoch and
         fields[15] == context.nonce and type(fields[22]) is int and
         0 < fields[22] <= context.deadline_ns and
         time.monotonic_ns() < fields[22],
-        'source-bound PREPARE supports only the original first-HUP epoch')
-    context.live(fields[22])
-    require(time.monotonic_ns() < fields[22],
+        'source-bound PREPARE has an unsupported original epoch or grant')
+    observation_deadline_ns = fields[22] if prepare_deadline_ns is None else prepare_deadline_ns
+    require(type(observation_deadline_ns) is int and
+        time.monotonic_ns() < observation_deadline_ns <= fields[22],
+        'source-bound PREPARE setup deadline expired or exceeds its grant')
+    context.live(observation_deadline_ns)
+    require(time.monotonic_ns() < observation_deadline_ns,
         'source-bound PREPARE expired during context liveness validation')
     _require_context_route_actors(context, actors)
     require(type(endpoint) is socket.socket and endpoint.family == socket.AF_UNIX and
@@ -290,10 +324,16 @@ def _validate_source_route_prepare_inputs(context, fields, source_epoch,
         'source candidate relay aliases C31 endpoint or lacks SDK socket ownership')
     current_key, current_proof = _source_worker_join(context, current[1:])
     candidate_key, candidate_proof = _source_worker_join(context, candidate[1:])
-    require(current_key == (0, 0) and candidate_key == (1, 1) and
-        current[3] == 0 and candidate[3] == 1 and
+    if upgrade:
+        new_master = context._worker_master(candidate_key)
+        require(identity.process_alive(new_master.pidfd) and
+            context.workers[candidate_key][1][7] == new_master.pid and
+            context._scalar(context.master.pid, 'ngx_new_binary', '=i') == new_master.pid,
+            'C31 upgrade candidate lost the authenticated original exec master')
+    require((current_key, candidate_key) == _route_worker_keys(context, source_epoch) and
+        current[3] == int(successor) and candidate[3] == 1 and
         type(cycle_proof) is SourceCycleProof and
-        current_proof is context.initial_cycle_proof and
+        (successor or current_proof is context.initial_cycle_proof) and
         candidate_proof is cycle_proof and
         context.workers[current_key][1][14:17] ==
             (context.epoch, context.deadline_ns, context.nonce) and
@@ -304,13 +344,74 @@ def _validate_source_route_prepare_inputs(context, fields, source_epoch,
         fields[16:22] == (current[1], current[2], current[4], current[5],
             current[6], current[7]),
         'source-bound PREPARE does not join exact current/candidate worker proofs')
+    if successor:
+        _validate_source_route_successor(context, source_epoch, previous_committed,
+            current[1:], endpoint)
+    elif source_epoch == 2:
+        _validate_source_route_retry(context, previous_aborted, endpoint, actors, current[1:],
+            candidate[1:])
+    else:
+        require(previous_aborted is None, 'first source PREPARE cannot use retry lineage')
     require(type(getattr(context, '_source_route_preparations', None)) is dict and
         type(getattr(context, '_source_route_park_joins', None)) is dict,
         'source C31 preparation registries are unavailable')
-    context.live(fields[22])
-    require(time.monotonic_ns() < fields[22],
+    context.live(observation_deadline_ns)
+    require(time.monotonic_ns() < observation_deadline_ns,
         'source-bound PREPARE expired during pre-send joins')
     return True
+
+
+def _validate_source_route_successor(context, source_epoch, previous, current, endpoint):
+    prior = context._source_route_park_joins.get(id(previous))
+    receipt = context._source_route_commit_receipts.get(id(previous))
+    require(context.allow_successor and source_epoch >= 2 and
+        context._source_round(source_epoch) == (1 - source_epoch % 2, source_epoch % 2) and
+        type(prior) is _SourceRoutePreparation and prior.context is context and
+        prior.prepared is previous and prior.source_epoch == source_epoch - 1 and
+        prior.endpoint is endpoint and prior.candidate == current and
+        type(receipt) is _SourceRouteCommitReceipt and receipt.preparation is prior and
+        id(previous) in context._source_route_commit_consumed and
+        (prior.source_epoch, 6) in context._completed_master_barriers and
+        context._source_shell_committed_plans.get(prior.candidate_worker_key, {}).get(
+            'native_current_cookie') == context._native_committed_cookie and
+        not identity.process_alive(prior.current[7]),
+        'C31 successor did not join its acknowledged prior COMMIT and retired owner')
+
+
+def _validate_source_route_retry(context, previous_aborted, endpoint, actors, current, candidate):
+    acknowledged = getattr(context, '_source_route_abort_receipt', None)
+    require(getattr(context, 'control_only', False) is True and
+        getattr(context, 'allow_abort_retry', False) is True and
+        getattr(context, '_completed_master_barriers', set()) == {(1, 5), (1, 9)} and
+        getattr(context, '_native_retry_cookie', 0) > 0 and
+        getattr(context, '_private_retry_grant_attempted', False) is True and
+        acknowledged is not None and previous_aborted is not None,
+        'typed C31 retry requires acknowledged original ABORT and native adoption')
+    prior, sequence = acknowledged
+    require(type(prior) is _SourceRoutePreparation and prior.source_epoch == 1 and
+        prior.prepared is previous_aborted and prior.context is context and
+        prior.park is not None and context._source_route_park_joins.get(id(previous_aborted)) is prior and
+        context._source_route_sequences.get(id(previous_aborted)) == (sequence, None, True) and
+        previous_aborted.command_sequence == sequence and
+        prior.endpoint is endpoint and prior.actors == actors and prior.current == current and
+        context.workers[(1, 1)][1][5] == prior.candidate[0] and
+        not identity.process_alive(prior.candidate[7]) and
+        not identity.process_alive(context.workers[(1, 1)][0]),
+        'typed C31 retry changed the exact acknowledged predecessor or its actors')
+    ready = getattr(context, '_private_retry_ready_identity', None)
+    require(ready == (candidate[0], os.getuid(), os.getgid(), 1, candidate[1], 0,
+        candidate[3], candidate[4], candidate[5], candidate[6]) and
+        (candidate[4], candidate[5]) == context._retry_slot,
+        'typed C31 retry lacks the credentialed epoch-2 READY and native FIFO')
+
+
+def _begin_source_route_retry_prepare(context, previous_aborted, operation_id,
+                                      command_sequence, deadline_ns):
+    require(not hasattr(context, '_source_retry_prepare_attempt') and
+        type(deadline_ns) is int and time.monotonic_ns() < deadline_ns <= context.deadline_ns,
+        'typed C31 retry PREPARE was already attempted or expired')
+    context._source_retry_prepare_attempt = (previous_aborted, operation_id,
+        command_sequence, deadline_ns)
 
 
 def _source_worker_join(context, actor):
@@ -325,7 +426,10 @@ def _source_worker_join(context, actor):
                     pid, tid, start, slot_device, slot_inode, cookie)):
                 proof = getattr(context, 'worker_proofs', {}).get(key)
                 held_pidfd = entry[0]
-                expected_role = 0 if key == (0, 0) else 1 if key == (1, 1) else -1
+                expected_role = (0 if key == (0, 0) else
+                    1 if (key in ((1, 1), (2, 1)) or
+                        (getattr(context, 'allow_successor', False) and
+                         2 <= key[0] <= 100 and key[1] == key[0] % 2)) else -1)
                 if (type(proof) is SourceCycleProof and role == expected_role and
                         identity._pidfd_pid(held_pidfd) == pid and
                         identity._start_ticks(pid) == start and
@@ -437,13 +541,15 @@ def _mint_source_route_commit_receipt(preparation, prepared, command_type,
                                       credentials):
     require(type(preparation) is _SourceRoutePreparation and
         preparation.token is _SOURCE_HANDOFF_TOKEN and preparation.prepared is prepared and
-        command_type == 7 and status == 0 and type(command_sequence) is int and
+        command_type in _SOURCE_ROUTE_COMMIT_ACK_TYPES and status == 0 and
+        type(command_sequence) is int and
         command_sequence > preparation.command_sequence and
         deadline_ns == preparation.park.deadline_ns and
         type(validated_ns) is int and time.monotonic_ns() < deadline_ns and
         validated_ns < deadline_ns and
         type(raw_ack) is bytes and type(expected_record) is bytes and
-        len(raw_ack) == len(expected_record) and raw_ack == expected_record and
+        len(raw_ack) >= 8 and raw_ack == expected_record and
+        struct.unpack_from('=H', raw_ack, 6)[0] == _SOURCE_ROUTE_COMMIT_ACK_TYPES[command_type] and
         type(credentials) is tuple and len(credentials) == 3 and
         credentials == (preparation.actors[0], os.getuid(), os.getgid()) and
         _source_socket_identity(preparation.endpoint) == preparation.endpoint_identity,
@@ -464,9 +570,11 @@ def _validate_source_route_commit_receipt(receipt, provider, deadline_ns):
         prep.context is provider.context and prep.park.context is provider.context and
         prep.park.provider is provider and provider._source_park_evidence is prep.park and
         provider._source_park_deadline_ns == prep.park.deadline_ns and
-        receipt.command_type == 7 and receipt.status == 0 and
+        receipt.command_type in _SOURCE_ROUTE_COMMIT_ACK_TYPES and receipt.status == 0 and
         type(receipt.raw_ack) is bytes and type(receipt.expected_record) is bytes and
-        receipt.raw_ack == receipt.expected_record and
+        len(receipt.raw_ack) >= 8 and receipt.raw_ack == receipt.expected_record and
+        struct.unpack_from('=H', receipt.raw_ack, 6)[0] ==
+            _SOURCE_ROUTE_COMMIT_ACK_TYPES[receipt.command_type] and
         receipt.credentials == (prep.actors[0], os.getuid(), os.getgid()) and
         receipt.deadline_ns == deadline_ns == prep.park.deadline_ns and
         receipt.validated_ns < deadline_ns and time.monotonic_ns() < deadline_ns and
@@ -549,12 +657,14 @@ def _begin_source_route_attempt(preparation, command_sequence):
     registry[id(preparation.prepared)] = (last, command_sequence, False)
 
 
-def _finish_source_route_attempt(preparation, command_sequence, retryable):
+def _finish_source_route_attempt(preparation, command_sequence, retryable, *, aborted=False):
     registry = preparation.context._source_route_sequences
     last, pending, terminal = registry[id(preparation.prepared)]
     require(pending == command_sequence and command_sequence > last,
         'source C31 ACK does not settle the pending command sequence')
     registry[id(preparation.prepared)] = (command_sequence, None, not retryable)
+    if aborted and preparation.source_epoch == 1:
+        preparation.context._source_route_abort_receipt = (preparation, command_sequence)
 
 
 def _consume_source_route_commit_receipt(receipt, provider, deadline_ns):
@@ -572,7 +682,7 @@ class SourceRetirementProof(NamedTuple):
     request_sha256: bytes
     supervisor_term_sha256: bytes
     broker_stop_sha256: bytes
-    c28_drain_sha256: bytes
+    c28_drain_sha256: bytes | None
     native_shutdown_sha256: bytes
     c31_outstanding: int
     c31_last_packet_id: int
@@ -607,10 +717,12 @@ class PendingSourceRetirement(NamedTuple):
     deadline_ns: int
 
 
-def required_source_exports(shell_mode):
+def required_source_exports(shell_mode, upgrade=False):
     result = dict(SOURCE_EXPORT_SIZES)
     if shell_mode:
         result['ngx_cycle'] = 8
+    if upgrade:
+        result.update(ngx_inherited=8, ngx_new_binary=4)
     return result
 
 
@@ -675,7 +787,8 @@ def shared_mapping(pid, address):
     raise PermissionError('source block is outside pinned process mappings')
 
 
-def bounded_source_exports(fd, expected_hash, deadline_ns, *, require_cycle=False):
+def bounded_source_exports(fd, expected_hash, deadline_ns, *, require_cycle=False,
+        require_upgrade=False):
     """Read only the fixed source data exports from the same hashed ELF FD.
 
     The origin startup path must not spawn a metadata helper whose teardown
@@ -734,7 +847,7 @@ def bounded_source_exports(fd, expected_hash, deadline_ns, *, require_cycle=Fals
     require(names[0] == 0 and entries[:24] == bytes(24),
         'source ELF null string/symbol entry is malformed')
     result = {}
-    export_sizes = required_source_exports(require_cycle)
+    export_sizes = required_source_exports(require_cycle, require_upgrade)
     wanted = {name.encode(): name for name in export_sizes}
     for offset in range(0, len(entries), 24):
         within()
@@ -866,6 +979,8 @@ class SourceBootstrapSupervisor:
         self.slim_pidfd = -1
         self.slim_start_ticks = 0
         self.slim_reply = None
+        self._upgrade_directory_fd = -1
+        self._upgrade_master = None
         self.slim_channel = None
         self.slim_stop_sent = False
         self.workers = {}
@@ -908,7 +1023,8 @@ class SourceBootstrapSupervisor:
         self.allow_successor = allow_successor
         self._executable_files = {}
         require(len(self.nonce) == 16 and any(self.nonce) and epoch > 0 and
-            time.monotonic_ns() < deadline_ns <= time.monotonic_ns() + 300_000_000_000,
+            time.monotonic_ns() < deadline_ns <= time.monotonic_ns() +
+                (1_800_000_000_000 if self.shell_mode and self.allow_successor else 420_000_000_000),
             'invalid finite source-bootstrap launch context')
         require(len({master.pid, runtime.pid, io.pid, os.getpid()}) == 4,
             'source actors must be separate processes')
@@ -935,7 +1051,7 @@ class SourceBootstrapSupervisor:
             if observation_deadline_ns is not None:
                 self.symbols = bounded_source_exports(executable_fd,
                     self.binary_hash, observation_deadline_ns,
-                    require_cycle=self.shell_mode)
+                    require_cycle=self.shell_mode, require_upgrade=self.upgrade_scope)
             else:
                 exports = subprocess.run(['nm', '-D', '--defined-only',
                     f'/proc/self/fd/{executable_fd}'], pass_fds=(executable_fd,),
@@ -957,6 +1073,50 @@ class SourceBootstrapSupervisor:
     def _file_identity(value):
         return (value.st_dev, value.st_ino, value.st_size,
             value.st_mtime_ns, value.st_ctime_ns)
+
+    @property
+    def upgrade_scope(self):
+        origin = getattr(getattr(self, 'owner_live', None), '__self__', None)
+        return getattr(origin, 'source_case', None) == 'rt25'
+
+    @property
+    def successor_final_epoch(self):
+        return 2 if self.upgrade_scope else 100
+
+    def _worker_master(self, key):
+        if self.upgrade_scope and key == (2, 0):
+            require(self._upgrade_master is not None, 'upgrade master is not pinned')
+            return self._upgrade_master
+        return self.master
+
+    def current_master(self):
+        if self.upgrade_scope and (2, 0) in self._source_shell_committed_plans:
+            return self._worker_master((2, 0))
+        return self.master
+
+    def _pin_upgrade_master(self, record, deadline):
+        require(self.upgrade_scope and self._upgrade_directory_fd >= 0 and
+            self._upgrade_master is None and record[8:10] == (0, 2),
+            'upgrade candidate is outside its one-use source grant')
+        pid, start = record[7], record[12]
+        require(pid > 0 and pid != self.master.pid and
+            self._scalar(self.master.pid, 'ngx_new_binary', '=i') == pid and
+            self._scalar(pid, 'ngx_inherited', '=Q') == 1 and
+            self._scalar(pid, 'ngx_process', '=Q') == 1,
+            'candidate master is not the original USR2 exec child')
+        pidfd = os.pidfd_open(pid)
+        try:
+            require(int(Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[1]) ==
+                self.master.pid, 'upgrade master lost its original parent')
+            self._pin_executable(pid, pidfd, start, self.binary_hash, deadline)
+            require(self._executable_files[pid][1] == self._executable_files[self.master.pid][1],
+                'upgrade master did not exec the same original Nginx inode')
+            self._upgrade_master = SimpleNamespace(pid=pid, pidfd=pidfd,
+                start_ticks=start, executable_hash=self.binary_hash)
+            pidfd = -1
+        finally:
+            if pidfd >= 0:
+                os.close(pidfd)
 
     def _pin_executable(self, pid, pidfd, start, expected_hash, observation_deadline_ns=None):
         def within_observation():
@@ -994,7 +1154,10 @@ class SourceBootstrapSupervisor:
                 os.close(fd)
 
     def _executable_live(self, pid):
-        fd, frozen = self._executable_files[pid]
+        held = self._executable_files.get(pid)
+        if held is None:
+            return False
+        fd, frozen = held
         # Keep the hashed inode open for the grant lifetime. Every observation
         # detects exec/replacement or changed metadata on that same inode;
         # active executable writes are additionally denied by Linux ETXTBSY.
@@ -1014,19 +1177,127 @@ class SourceBootstrapSupervisor:
         require(time.monotonic_ns() < self.deadline_ns, 'source bootstrap authority expired')
         require(identity._start_ticks(os.getpid()) == self.supervisor_start,
             'source supervisor identity changed')
-        for actor in (self.master, self.runtime, self.io):
+        current_master = self.current_master()
+        for actor in (current_master, self.runtime, self.io):
             require(identity._pidfd_pid(actor.pidfd) == actor.pid and
                 identity.process_alive(actor.pidfd) and
                 identity._start_ticks(actor.pid) == actor.start_ticks and
                 self._executable_live(actor.pid),
                 'pinned source/native actor is no longer live')
-        require(self.master.executable_hash == self.binary_hash, 'master executable is not pinned Nginx')
+        require(current_master.executable_hash == self.binary_hash, 'master executable is not pinned Nginx')
+        if (current_master is not self.master and not identity.process_alive(self.master.pidfd) and
+                not getattr(self, '_upgrade_original_term', None)):
+            # WINCH drains the old worker. The old master is allowed to
+            # exit only after the original supervisor requests final TERM.
+            origin = self.owner_live.__self__
+            deadline = min(observation_deadline_ns or self.deadline_ns,
+                time.monotonic_ns() + PREEXIT_BUDGET_NS)
+            self._upgrade_original_term = origin._observe_actor_term(self,
+                self.master.pid, self.master.start_ticks, deadline, require_membership=False)
         if self.slim_pidfd >= 0:
-            require(identity._pidfd_pid(self.slim_pidfd) == self.slim_pid and
-                identity.process_alive(self.slim_pidfd) and
-                identity._start_ticks(self.slim_pid) == self.slim_start_ticks and
-                self._executable_live(self.slim_pid),
-                'exact delegated slim actor exited or changed identity')
+            self.check_slim_live(observation_deadline_ns)
+
+    def _abort_only(self):
+        origin = getattr(getattr(self, 'owner_live', None), '__self__', None)
+        return (getattr(self, 'control_only', False) is True and
+            getattr(origin, 'source_case', None) == 'rt21' and
+            getattr(getattr(origin, 'c34_artifact_capture', None), 'source_fault', None) == 'flip_fail')
+
+    def _unparked_abort_profile(self):
+        origin = getattr(getattr(self, 'owner_live', None), '__self__', None)
+        case = getattr(origin, 'source_case', None)
+        return (getattr(self, 'control_only', False) is True and case in ('rt20', 'rt22') and
+            getattr(getattr(origin, 'c34_artifact_capture', None), 'source_fault', None) ==
+                {'rt20': 'ready_never', 'rt22': 'park_never'}[case])
+
+    def _observe_unparked_abort(self, prepared):
+        """Retain the exact source timeout without granting a native cutover."""
+        if not self._unparked_abort_profile():
+            return False
+        key = (1, 1)
+        entry = self.workers.get(key)
+        if entry is None or identity.process_alive(entry[0]):
+            return False
+        preparation = self._source_route_preparations.get(id(prepared))
+        require(not getattr(self, '_master_barriers', set()) and
+            not getattr(self, '_completed_master_barriers', set()) and
+            not self._source_route_park_joins and not self._source_shell_committed_plans and
+            getattr(self, '_activated_workers', set()) == {key} and
+            preparation is not None and preparation.context is self and
+            preparation.prepared is prepared and preparation.candidate_worker_key == key and
+            not identity.process_alive(preparation.candidate[7]) and
+            self._source_route_sequences[id(prepared)] == (preparation.command_sequence, None, False),
+            'source timeout lost its never-parked C31 preparation')
+        info = os.fstat(entry[0])
+        joined = os.fstat(preparation.candidate[7])
+        require((info.st_dev, info.st_ino) == (joined.st_dev, joined.st_ino),
+            'source timeout candidate pidfds do not refer to the same process')
+        binding = (entry[0], info.st_dev, info.st_ino, preparation)
+        held = getattr(self, '_unparked_abort', None)
+        if held is not None:
+            require(held[0] == binding, 'source timeout candidate binding changed')
+            return True
+        deadline = min(self.deadline_ns, time.monotonic_ns() + PREEXIT_BUDGET_NS)
+        origin = getattr(self.owner_live, '__self__', None)
+        self.live(deadline)
+        address = self._scalar(self.master.pid, 'ngx_ff_reload_shm', '=Q')
+        values = struct.unpack('=8I', memory(self.master.pid, address, 32))
+        markers = struct.unpack('=3I', memory(self.master.pid, address + 48 + 128 * 8, 12))
+        require(values[3:7] == (1, 0, 1, 0) and markers == (0, 0, 0),
+            'source timeout did not restore the original idle owner')
+        digest = origin.observe_unparked_abort(self, deadline)
+        self._unparked_abort = (binding, digest)
+        return True
+
+    def _can_observe_final_slim_term(self):
+        if not self.control_only:
+            return False
+        origin = getattr(self.owner_live, '__self__', None)
+        if getattr(origin, 'source_case', None) in ('rv9', 'rt25'):
+            return self.allow_successor and (self.successor_final_epoch, 0) in self._source_shell_committed_plans
+        if getattr(origin, 'source_case', None) == 'baseline':
+            return (set(self.workers) == {(0, 0)} and
+                not getattr(self, '_activated_workers', set()) and
+                not getattr(self, '_completed_master_barriers', set()) and
+                not self._source_shell_committed_plans)
+        if self._unparked_abort_profile():
+            return getattr(self, '_unparked_abort', None) is not None
+        if self._abort_only():
+            return (getattr(self, '_completed_master_barriers', set()) == {(1, 5), (1, 9)} and
+                not identity.process_alive(self.workers[(1, 1)][0]))
+        return (self.allow_abort_retry and
+            self._completed_master_barriers == {(1, 5), (1, 9), (2, 5), (2, 6)} and
+            (2, 1) in self._source_shell_committed_plans)
+
+    def check_slim_live(self, observation_deadline_ns=None):
+        if identity.process_alive(self.slim_pidfd):
+            try:
+                require(identity._pidfd_pid(self.slim_pidfd) == self.slim_pid and
+                    identity._start_ticks(self.slim_pid) == self.slim_start_ticks and
+                    self._executable_live(self.slim_pid),
+                    'exact delegated slim actor changed identity')
+                return
+            except (FileNotFoundError, ProcessLookupError):
+                if identity.process_alive(self.slim_pidfd):
+                    raise
+        require(self._can_observe_final_slim_term(),
+            'exact delegated slim actor exited before current-owner shutdown')
+        info = os.fstat(self.slim_pidfd)
+        binding = (self.slim_pidfd, info.st_dev, info.st_ino,
+            self.slim_pid, self.slim_start_ticks)
+        held = getattr(self, '_final_slim_term', None)
+        if held is not None:
+            require(binding == held[0], 'retired slim pidfd changed identity')
+            return
+        deadline = min(self.deadline_ns, observation_deadline_ns or self.deadline_ns,
+            time.monotonic_ns() + PREEXIT_BUDGET_NS)
+        origin = getattr(self.owner_live, '__self__', None)
+        evidence = origin.observe_final_slim_term(self, deadline)
+        require(type(evidence) is SupervisorTermEvidence and
+            (evidence.worker_pid, evidence.worker_start_ticks) == binding[3:] and
+            evidence.phase == 'stopping' and evidence.signal == 'TERM',
+            'original TERM evidence does not match the exact retired slim actor')
+        self._final_slim_term = (binding, evidence)
 
     def _scalar(self, pid, name, code):
         size = struct.calcsize(code)
@@ -1066,6 +1337,7 @@ class SourceBootstrapSupervisor:
         if self.shell_mode:
             require(proof == self.initial_cycle_proof,
                 'initial slim/worker cycle proof differs from the accepted origin proof')
+            return self.initial_cycle_proof
         return proof
 
     def _fresh_candidate_cycle_proof(self, record):
@@ -1157,6 +1429,20 @@ class SourceBootstrapSupervisor:
             self._cycle_token_live(self.master.pid, self.slim_proof.opaque_cycle_token)
             self._cycle_token_live(self.slim_pid, self.slim_proof.opaque_cycle_token)
         rights = array.array('i', (self.runtime.pidfd, self.io.pidfd))
+        origin = getattr(self.owner_live, '__self__', None)
+        if getattr(origin, 'source_case', None) == 'rt25':
+            require(self.shell_mode and self.control_only and control_only and
+                origin.c34_artifact_capture is not None and
+                getattr(origin, 'context', None) is self,
+                'source upgrade requires the accepted private original shell')
+            directory = os.memfd_create('ker-fstack-reload-directory',
+                os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+            self._upgrade_directory_fd = directory
+            # Bound to the pinned ff_reload_gendir ABI in the C adapter.
+            os.ftruncate(directory, 6424)
+            fcntl.fcntl(directory, fcntl.F_ADD_SEALS, fcntl.F_SEAL_SEAL |
+                fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK)
+            rights.append(directory)
         require(channel.sendmsg([data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
             getattr(socket, 'MSG_NOSIGNAL', 0)) == len(data), 'short source bootstrap grant')
         self.slim_reply, self.slim_channel = tuple(r), channel
@@ -1192,60 +1478,256 @@ class SourceBootstrapSupervisor:
             getattr(self, '_completed_master_barriers', set()) == {(1, 5), (1, 9)} and
             getattr(self, '_native_retry_cookie', 0) > 0,
             'retry requires the acknowledged first pre-flip abort')
-        old_pidfd, old = self.workers[(0, 0)]
-        dead_pidfd, dead = self.workers[(1, 1)]
-        require(identity.process_alive(old_pidfd) and
-            identity._start_ticks(old[5]) == old[11] and
-            not identity.process_alive(dead_pidfd),
-            'retry requires the same live old owner and exact dead aborted successor')
-        address = self.slim_reply[13]
-        def original_idle():
-            return (struct.unpack('=8I', memory(self.master.pid, address, 32))[3:7] ==
-                (1, 0, 1, 0) and struct.unpack('=3I', memory(self.master.pid,
-                    address + 48 + 128 * 8, 12)) == (0, 0, 0))
-        require(original_idle(), 'source did not return to original idle after abort')
+        require(self._aborted_retry_source_idle(),
+            'retry requires original T0 and the exact dead aborted successor')
         # Consume before calling native code. Failure never enables another try.
         self._retry_slot = None
         fd = acquire_native_slot()
         try:
-            value = os.fstat(fd)
-            require(stat.S_ISFIFO(value.st_mode) and
-                fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_WRONLY and
-                (value.st_dev, value.st_ino) not in (old[24:26], dead[24:26]),
-                'native retry did not transfer a fresh candidate FIFO')
+            slot = self._aborted_retry_fifo_identity(fd)
             self.live()
-            require(original_idle() and identity.process_alive(old_pidfd) and
-                not identity.process_alive(dead_pidfd), 'source/native retry identity changed')
-            self._retry_slot = (value.st_dev, value.st_ino)
+            require(self._aborted_retry_source_idle(), 'source/native retry identity changed')
+            self._retry_slot = slot
             return fd
         except BaseException:
             os.close(fd)
             raise
 
-    def prepare_successful_successor(self, acquire_native_slot):
-        """Consume one native successor adoption after original gen-1 commit.
-
-        The callback returns the fresh candidate FIFO and the preserved live
-        listener cookie from the acknowledged native SUCCESSOR transaction.
-        The committed actor and its original generation are never relabeled.
-        """
-        self._require_full_authority('native successor slot adoption')
-        self.live()
-        require(self.allow_successor and not hasattr(self, '_successor_slot') and
-            getattr(self, '_completed_master_barriers', set()) == {(1, 5), (1, 6)} and
-            getattr(self, '_native_committed_cookie', 0) > 0,
-            'successor requires the acknowledged original first commit')
-        retired_fd, retired = self.workers[(0, 0)]
-        current_fd, current = self.workers[(1, 1)]
+    def _aborted_retry_source_idle(self):
+        old_pidfd, old = self.workers[(0, 0)]
+        dead_pidfd, _ = self.workers[(1, 1)]
+        require(identity.process_alive(old_pidfd) and identity._pidfd_pid(old_pidfd) == old[5] and
+            identity._start_ticks(old[5]) == old[11], 'retry requires the same live original owner')
+        if identity.process_alive(dead_pidfd):
+            return False
         address = self.slim_reply[13]
-        def original_idle():
-            return (struct.unpack('=8I', memory(self.master.pid, address, 32))[3:7] ==
-                (1, 1, 1, 0) and struct.unpack('=3I', memory(self.master.pid,
-                    address + 48 + 128 * 8, 12)) == (1, 0, 0))
-        require(original_idle() and not identity.process_alive(retired_fd) and
+        values = struct.unpack('=8I', memory(self.master.pid, address, 32))
+        require(values[:2] == (0x46524c4d, 1) and 32 <= values[2] <= 16384,
+            'original reload block changed before retry')
+        return (values[3:7] == (1, 0, 1, 0) and struct.unpack('=3I', memory(self.master.pid,
+            address + 48 + 128 * 8, 12)) == (0, 0, 0))
+
+    def _aborted_retry_fifo_identity(self, fd):
+        value = os.fstat(fd)
+        slot = (value.st_dev, value.st_ino)
+        require(stat.S_ISFIFO(value.st_mode) and
+            fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_WRONLY and
+            slot not in (self.workers[(0, 0)][1][24:26], self.workers[(1, 1)][1][24:26]),
+            'native retry did not transfer a fresh candidate FIFO')
+        return slot
+
+    def _check_private_retry_controller(self, controller, provider, deadline_ns):
+        require(threading.current_thread() is threading.main_thread() and
+            self.control_only is True and self.shell_mode and self.allow_abort_retry is True and
+            _source_provider_matches_context(self, provider, controller) and
+            getattr(provider, '_source_retry_allowed', False) is True and not provider._closed and
+            provider.broker_readiness is controller.broker_readiness and provider._used_slots == {0, 1} and
+            controller._private_first_abort_acknowledged(self) and
+            type(deadline_ns) is int and time.monotonic_ns() < deadline_ns <= self.deadline_ns,
+            'private retry lacks the acknowledged original ABORT and exact C34 provider')
+        self.live(deadline_ns)
+
+    def poll_private_retry_slot(self, controller, provider, deadline_ns):
+        """Claim the adopted plan once while the original master is back at T0."""
+        self._check_private_retry_controller(controller, provider, deadline_ns)
+        if getattr(self, '_private_retry_fds', None) is not None:
+            return
+        require(not hasattr(self, '_retry_slot'), 'private retry capability transfer already attempted')
+        if not self._aborted_retry_source_idle():
+            return
+        self._retry_slot = None
+        fds = provider.take_source_retry_slot(deadline_ns)
+        try:
+            slot = self._aborted_retry_fifo_identity(fds[0])
+            self.live(deadline_ns)
+            require(self._aborted_retry_source_idle() and time.monotonic_ns() < deadline_ns,
+                'source/native retry identity changed during capability transfer')
+            self._retry_slot = slot
+            self._private_retry_fds = tuple(fds)
+        except BaseException:
+            for fd in fds:
+                os.close(fd)
+            raise
+
+    def reply_private_retry_worker(self, controller, provider, request, relay):
+        """Grant epoch 2 only on the exact worker connection read by the SDK."""
+        module = sys.modules.get('_ker_nginx_source_shell_controller')
+        require(type(request) is getattr(module, '_AcceptedCandidateWorkerRequest', None) and
+            request is controller._accepted_retry_worker_request and
+            request.token is getattr(module, '_ACCEPTED_CANDIDATE_REQUEST_TOKEN', None) and
+            request.controller is controller and request.worker_key == (2, 1) and
+            request.listener is controller.listener and
+            controller._first_candidate_endpoint_identity(request.listener) == request.listener_identity and
+            controller._first_candidate_socket_cookie(request.listener) == request.listener_cookie and
+            controller._first_candidate_endpoint_identity(request.channel) == request.channel_identity and
+            controller._first_candidate_socket_cookie(request.channel) == request.channel_cookie,
+            'private retry grant lacks the exact owned-listener receive receipt')
+        self._check_private_retry_controller(controller, provider, request.deadline_ns)
+        fds = getattr(self, '_private_retry_fds', None)
+        require(fds is not None and not getattr(self, '_private_retry_grant_attempted', False) and
+            self._aborted_retry_fifo_identity(fds[0]) == self._retry_slot,
+            'private retry grant lacks a fresh unused native FIFO')
+        fields = self._unpack_request(request.packet, 1, 1)
+        require(fields[8:10] == [1, 2], 'private retry grant expected source epoch 2, generation 1')
+        self._private_retry_grant_attempted = True
+        watch, receiver = self._reply_worker_impl(request.channel, request.packet, request.credentials,
+            fds[0], relay, grant_deadline_ns=request.deadline_ns)
+        self.worker_ready_receivers[(2, 1)] = receiver
+        return watch
+
+    def observe_private_retry_ready(self, controller, provider, watch, deadline_ns):
+        """Authenticate the retry worker's READY on its retained grant socket."""
+        self._check_private_retry_controller(controller, provider, deadline_ns)
+        key = (2, 1)
+        receiver = self.worker_ready_receivers.get(key)
+        pidfd, record = self.workers[key]
+        supervisor_pidfd = controller._initial_transport.supervisor_pidfd
+        require(receiver is not None and watch is controller._retry_candidate_watch and
+            (watch['pidfd'], watch['role'], watch['process_slot']) ==
+                (pidfd, 1, self.worker_process_slots[key]) and
+            (watch['pid'], watch['tid'], watch['start'], watch['slot_device'],
+                watch['slot_inode'], watch['cookie']) ==
+                (record[5], record[6], record[11], record[24], record[25], record[27]) and
+            identity._pidfd_pid(supervisor_pidfd) == os.getpid() and
+            receiver.getsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED) == 1,
+            'private retry READY changed its worker, slot or credentialed receiver')
+        ready = self._receive_privately_granted_ready(receiver, key, supervisor_pidfd,
+            deadline_ns)
+        self.worker_ready_receivers.pop(key).close()
+        self._private_retry_ready_identity = ready
+        return ready
+
+    def _receive_privately_granted_ready(self, receiver, key, supervisor_pidfd, deadline_ns):
+        pidfd, record = self.workers[key]
+        spec = importlib.util.spec_from_file_location('_ker_private_source_ready_verifier',
+            Path(__file__).with_name('ker-nginx-companion.py'))
+        require(spec is not None and spec.loader is not None, 'source READY verifier unavailable')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        actor = self._worker_master(key)
+        master = SimpleNamespace(pid=actor.pid,
+            poll=lambda: None if identity.process_alive(actor.pidfd) else 0)
+        ready, observed_pidfd = verifier.receive_owner_ready(receiver,
+            expected_cookie=record[27], binary_hash=self.binary_hash,
+            master=master, master_pidfd=actor.pidfd, master_start=actor.start_ticks,
+            supervisor_pidfd=supervisor_pidfd, supervisor_pid=os.getpid(),
+            supervisor_start=self.supervisor_start, expected_role=1, expected_slot=record[24:26],
+            expected_worker_pidfd=pidfd, observation_deadline_ns=deadline_ns)
+        try:
+            require(ready == (record[5], os.getuid(), os.getgid(), 1, record[6], 0,
+                record[11], *record[24:26], record[27]),
+                'source candidate READY differs from its exact grant')
+            self.live(deadline_ns)
+            require(self._executable_live(record[5]) and identity.process_alive(pidfd) and
+                time.monotonic_ns() < deadline_ns, 'source candidate READY lost live worker authority')
+            return ready
+        finally:
+            os.close(observed_pidfd)
+
+    def _private_successor_provider(self, controller):
+        origin = getattr(self.owner_live, '__self__', None)
+        provider = getattr(controller, 'c22_provider', None)
+        require(self.control_only and self.shell_mode and self.allow_successor and
+            getattr(origin, 'source_case', None) in ('rv9', 'rt25') and
+            getattr(self, 'owner_live', None) is not None and
+            _source_provider_matches_context(self, provider, controller) and
+            provider._source_successor_allowed and
+            controller._private_initial_retirement_proof is provider._initial_retirement_proof and
+            provider._initial_retirement_proof is not None,
+            'successor does not have the original rv9 launch and native retirement authority')
+        return provider
+
+    def grant_private_successive_worker(self, controller, request, relay):
+        provider = self._private_successor_provider(controller)
+        module = sys.modules['_ker_nginx_source_shell_controller']
+        require(type(request) is module._AcceptedCandidateWorkerRequest and
+            request.token is module._ACCEPTED_CANDIDATE_REQUEST_TOKEN and
+            request.controller is controller and request.listener is controller.listener and
+            request is controller._accepted_successive_worker_request and
+            controller._first_candidate_endpoint_identity(request.listener) == request.listener_identity and
+            controller._first_candidate_socket_cookie(request.listener) == request.listener_cookie and
+            controller._first_candidate_endpoint_identity(request.channel) == request.channel_identity and
+            controller._first_candidate_socket_cookie(request.channel) == request.channel_cookie,
+            'successive worker lacks the exact owned-listener receive receipt')
+        source_epoch, generation = request.worker_key
+        require(2 <= source_epoch <= self.successor_final_epoch and generation == source_epoch % 2 and
+            request.worker_key not in self.workers, 'successive worker key is stale')
+        setup_deadline = request.deadline_ns
+        if self.upgrade_scope:
+            self._pin_upgrade_master(self.record_struct.unpack(request.packet), setup_deadline)
+        slot = self.prepare_successful_successor(
+            lambda: provider.take_successor_slot(source_epoch, setup_deadline),
+            source_epoch=source_epoch, private_controller=controller)
+        try:
+            watch, receiver = self._reply_worker_impl(request.channel, request.packet,
+                request.credentials, slot, relay, grant_deadline_ns=setup_deadline)
+        finally:
+            provider.close_successor_slot(slot)
+        with receiver:
+            self._receive_privately_granted_ready(receiver, request.worker_key,
+                controller._initial_transport.supervisor_pidfd, setup_deadline)
+        return watch
+
+    def activate_private_successive_worker(self, controller, prepared, watch, deadline_ns):
+        self._private_successor_provider(controller)
+        key = (watch['source_epoch'], watch['generation'])
+        request = controller._accepted_successive_worker_request
+        preparation = self._source_route_preparations.get(id(prepared))
+        attempted = getattr(self, '_source_prepared_activation_attempts', set())
+        require(type(preparation) is _SourceRoutePreparation and
+            preparation.context is self and preparation.prepared is prepared and
+            preparation.park is None and preparation.candidate_worker_key == key and
+            preparation.raw_prepared_ack == preparation.expected_prepared_record and
+            self.worker_channels[key] is not None and request.worker_key == key and
+            request.deadline_ns == deadline_ns and id(prepared) not in attempted,
+            'successive ACTIVATE lacks its exact prepared role, channel and deadline')
+        attempted.add(id(prepared))
+        self._source_prepared_activation_attempts = attempted
+        _validate_source_route_preparation(preparation, prepared, preparation.endpoint)
+        self._activate_worker_body(self.worker_channels[key], watch,
+            operation_deadline_ns=deadline_ns)
+
+    def prepare_successful_successor(self, acquire_native_slot, *, source_epoch=2,
+            private_controller=None):
+        """Adopt a fresh FIFO after the preceding original COMMIT and owner exit."""
+        if private_controller is None:
+            self._require_full_authority('native successor slot adoption')
+        else:
+            self._private_successor_provider(private_controller)
+        require(type(source_epoch) is int and 2 <= source_epoch <= 100,
+            'candidate epoch is outside the original repeated reload')
+        self.live()
+        previous_epoch = source_epoch - 1
+        previous_generation = previous_epoch % 2
+        expected_previous = {(epoch, operation)
+            for epoch in range(1, source_epoch) for operation in (5, 6)}
+        require(self.allow_successor and 2 <= source_epoch <= 100 and
+            getattr(self, '_successor_slot_epoch', 1) == previous_epoch and
+            getattr(self, '_completed_master_barriers', set()) == expected_previous and
+            getattr(self, '_native_committed_cookie', 0) > 0,
+            'successor requires the preceding acknowledged original commit')
+        retired_fd, retired = self.workers[(previous_epoch - 1, 1 - previous_generation)]
+        current_fd, current = self.workers[(previous_epoch, previous_generation)]
+        address = self.slim_reply[13]
+
+        def original_phase_matches():
+            round_state = struct.unpack('=8I', memory(self.master.pid, address, 32))[3:7]
+            rx_state = struct.unpack('=3I', memory(self.master.pid,
+                address + 48 + 128 * 8, 12))
+            if private_controller is not None and not self.upgrade_scope:
+                # The original shell starts this transaction only after the
+                # requested worker reaches ff_init in T1_GNEW_SPAWN. The
+                # predecessor's verified retirement and native receipt precede it.
+                return (round_state == (source_epoch, previous_generation,
+                    1 - previous_generation, 1) and rx_state == (previous_generation, 0, 1))
+            return (round_state == (previous_epoch, previous_generation,
+                previous_generation, 0) and rx_state == (previous_generation, 0, 0))
+
+        require(original_phase_matches() and not identity.process_alive(retired_fd) and
             identity.process_alive(current_fd) and
             identity._start_ticks(current[5]) == current[11],
-            'successor requires original idle, retired predecessor and same live gen-1 actor')
+            'successor requires the exact original phase, retired predecessor and live committed owner')
+        self._successor_slot_epoch = source_epoch
         self._successor_slot = None
         fd, cookie = acquire_native_slot()
         try:
@@ -1256,7 +1738,7 @@ class SourceBootstrapSupervisor:
                 (value.st_dev, value.st_ino) not in (retired[24:26], current[24:26]),
                 'native successor did not preserve the live listener and transfer a fresh FIFO')
             self.live()
-            require(original_idle() and not identity.process_alive(retired_fd) and
+            require(original_phase_matches() and not identity.process_alive(retired_fd) and
                 identity.process_alive(current_fd) and
                 identity._start_ticks(current[5]) == current[11],
                 'original successor lineage changed during native adoption')
@@ -1271,8 +1753,10 @@ class SourceBootstrapSupervisor:
             return 0, 1
         if source_epoch == 2 and self.allow_abort_retry and getattr(self, '_retry_slot', None):
             return 0, 1
-        if source_epoch == 2 and self.allow_successor and getattr(self, '_successor_slot', None):
-            return 1, 0
+        if (self.allow_successor and 2 <= source_epoch <= 100 and
+                source_epoch == getattr(self, '_successor_slot_epoch', None) and
+                getattr(self, '_successor_slot', None)):
+            return 1 - source_epoch % 2, source_epoch % 2
         raise PermissionError('source round has no bounded acknowledged native lineage')
 
     def reply_worker(self, channel, packet, credentials, slot_fd, relay):
@@ -1369,10 +1853,11 @@ class SourceBootstrapSupervisor:
             'first candidate source FIFO identity changed before grant')
         self.live()
         return self._reply_worker_impl(channel, packet, credentials,
-            provider.slots[1], relay, grant_deadline_ns=grant_deadline_ns)
+            provider.slots[1], relay, grant_deadline_ns=grant_deadline_ns,
+            candidate_cycle_proof=cap.cycle_proof)
 
     def _reply_worker_impl(self, channel, packet, credentials, slot_fd, relay,
-            grant_deadline_ns=None):
+            grant_deadline_ns=None, candidate_cycle_proof=None):
         self.live()
         if grant_deadline_ns is not None:
             require(type(grant_deadline_ns) is int and
@@ -1382,55 +1867,61 @@ class SourceBootstrapSupervisor:
             'worker grant requires the exact live control-only slim primary')
         record = self.record_struct
         r = self._unpack_request(packet, 1, 1)
+        key = (r[9], r[8])
+        upgrade = self.upgrade_scope and key == (2, 0)
+        master = self._worker_master(key)
         require(not r[10] and
             r[14:17] == [self.epoch, self.deadline_ns, self.nonce] and not any(r[17:29]),
             'worker bootstrap context mismatch')
         peer = struct.unpack('=3i', channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
         require(peer == credentials == (r[5], os.getuid(), os.getgid()) and r[5] == r[6] and
-            r[7] == self.master.pid and r[12] == self.master.start_ticks,
+            r[7] == master.pid and r[12] == master.start_ticks,
             'worker sender/master identity mismatch')
         pidfd = os.pidfd_open(r[5])
         ready_receiver = ready_sender = None
         retained_channel = None
         try:
             require(identity._pidfd_pid(pidfd) == r[5] and identity.process_alive(pidfd) and
-                identity._start_ticks(r[5]) == r[11] and
-                identity._sha256(f'/proc/{r[5]}/exe') == self.binary_hash,
-                'worker executable or pidfd mismatch')
+                identity._start_ticks(r[5]) == r[11], 'worker pidfd mismatch')
             fields = Path(f'/proc/{r[5]}/stat').read_text().rpartition(')')[2].split()
-            require(int(fields[1]) == self.master.pid and
+            require(int(fields[1]) == master.pid and
                 self._scalar(r[5], 'ngx_process', '=Q') == 3 and
                 self._scalar(r[5], 'ngx_worker', '=Q') == 0 and
                 self._scalar(r[5], 'ngx_ff_process', '=q') == 2 and
                 self._scalar(r[5], 'ngx_ff_graceful_reload', '=i') == 1,
                 'caller is not source worker zero/secondary of exact master')
-            address = self._scalar(self.master.pid, 'ngx_ff_reload_shm', '=Q')
+            address = self._scalar(master.pid, 'ngx_ff_reload_shm', '=Q')
             require(address == r[13] == self._scalar(r[5], 'ngx_ff_reload_shm', '=Q') and
-                shared_mapping(self.master.pid, address) == shared_mapping(r[5], address),
+                shared_mapping(master.pid, address) == shared_mapping(r[5], address),
                 'worker does not share original master reload block')
-            prefix = memory(self.master.pid, address, 32)
+            prefix = memory(master.pid, address, 32)
             values = struct.unpack('=8I', prefix)
             require(values[:2] == (0x46524c4d, 1) and 32 <= values[2] <= 16384 and
-                r[9] == values[3] and values[4] in (0, 1) and values[5] in (0, 1) and
+                (0 if upgrade else r[9]) == values[3] and values[4] in (0, 1) and values[5] in (0, 1) and
                 values[6] in (0, 1) and r[8] == (values[5] if values[6] else values[4]),
                 'worker generation does not match original source selection')
             # Native plan roles remain distinct from the source generation.
-            # Epoch two has one explicit lineage: aborted retry or committed
-            # successor, each requiring its own acknowledged native adoption.
-            role = 0 if values[3:] == (0, 0, 0, 0, 0) else 1
-            old_generation, target_generation = self._source_round(values[3]) if role else (0, 0)
-            require((role == 0 and r[8:10] == [0, 0]) or
+            # A later epoch needs one acknowledged native adoption, either
+            # the first-round abort retry or the preceding committed owner.
+            role = 0 if not upgrade and values[3:] == (0, 0, 0, 0, 0) else 1
+            old_generation, target_generation = self._source_round(r[9]) if role else (0, 0)
+            require((upgrade and values[3:] == (0, 0, 0, 0, 0)) or
+                (role == 0 and r[8:10] == [0, 0]) or
                 (role == 1 and values[4:7] == (old_generation, target_generation, 1) and
                     r[8] == target_generation),
                 'worker is outside the bounded original source rounds')
             if self.shell_mode:
-                cycle_proof = (self._initial_cycle_proof_matches(r) if role == 0 else
+                cycle_proof = (self._record_cycle_proof(r) if upgrade else
+                    self._initial_cycle_proof_matches(r) if role == 0 else
                     self._fresh_candidate_cycle_proof(r))
-                self._cycle_token_live(self.master.pid, cycle_proof.opaque_cycle_token)
+                if candidate_cycle_proof is not None:
+                    require(role == 1 and cycle_proof == candidate_cycle_proof,
+                        'worker cycle proof differs from the retained candidate grant')
+                    cycle_proof = candidate_cycle_proof
+                self._cycle_token_live(master.pid, cycle_proof.opaque_cycle_token)
                 self._cycle_token_live(r[5], cycle_proof.opaque_cycle_token)
             else:
                 cycle_proof = None
-            key = (r[9], r[8])
             require(key not in self.workers, 'source worker generation already delegated')
             process_slot = self._scalar(r[5], 'ngx_process_slot', '=q')
             require(0 <= process_slot < 128, 'source worker process slot is outside original READY array')
@@ -1438,10 +1929,10 @@ class SourceBootstrapSupervisor:
             require(stat.S_ISFIFO(slot.st_mode) and
                 fcntl.fcntl(slot_fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_WRONLY,
                 'worker slot is not a write-only SDK FIFO capability')
-            if r[9] == 2:
+            if r[9] > 1:
                 if self.allow_successor:
-                    current_pidfd, current = self.workers[(1, 1)]
-                    dead_pidfd, dead = self.workers[(0, 0)]
+                    current_pidfd, current = self.workers[(r[9] - 1, old_generation)]
+                    dead_pidfd, dead = self.workers[(r[9] - 2, target_generation)]
                     require((slot.st_dev, slot.st_ino) == self._successor_slot and
                         r[5] not in (dead[5], current[5]) and
                         not identity.process_alive(dead_pidfd) and
@@ -1473,22 +1964,26 @@ class SourceBootstrapSupervisor:
             r[20] = 2 if role == 0 else 4
             r[24:28] = [slot.st_dev, slot.st_ino, relay_cookie, ready_cookie]
             self.live()
-            require(memory(self.master.pid, address, 32) == prefix and identity.process_alive(pidfd),
+            require(memory(master.pid, address, 32) == prefix and identity.process_alive(pidfd),
                 'source worker state changed before grant')
             if self.shell_mode:
-                self._cycle_token_live(self.master.pid, cycle_proof.opaque_cycle_token)
+                self._cycle_token_live(master.pid, cycle_proof.opaque_cycle_token)
                 self._cycle_token_live(r[5], cycle_proof.opaque_cycle_token)
+            self._pin_executable(r[5], pidfd, r[11], self.binary_hash,
+                grant_deadline_ns if grant_deadline_ns is not None else self.deadline_ns)
             # Consume before sending; a short/error send cannot renew authority.
             self.workers[key] = (pidfd, tuple(r))
+            pidfd = -1
             if self.shell_mode:
                 self.worker_proofs[key] = cycle_proof
-                if role:
+                if role and not upgrade:
                     self._used_cycle_proofs.add((cycle_proof.adapter_cycle_serial,
                         cycle_proof.opaque_cycle_token))
                     self._cycle_serial_highwater = cycle_proof.adapter_cycle_serial
-            pidfd = -1
             rights = array.array('i', (self.runtime.pidfd, self.io.pidfd, slot_fd,
                 relay.fileno(), ready_sender.fileno()))
+            if getattr(self, '_upgrade_directory_fd', -1) >= 0:
+                rights.append(self._upgrade_directory_fd)
             data = record.pack(*r)
             if self.shell_mode:
                 if hasattr(channel, 'setsockopt'):
@@ -1534,14 +2029,18 @@ class SourceBootstrapSupervisor:
 
     def observe_committed_current_owner(self, key, *, private_controller=None):
         """Capture the required live, idle source snapshot before shutdown."""
+        retry = key == (2, 1) and private_controller is not None and self.allow_abort_retry
         if getattr(self, 'control_only', False):
-            require(private_controller is not None and key == (1, 1) and
+            require(private_controller is not None and
+                key == private_controller._private_committed_worker_key(self) and
                 self._private_candidate_preexit_authority(private_controller),
                 'private current-owner observation lacks the exact PREEXIT phase')
         else:
             self._require_full_authority('committed current-owner observation')
-        require(self.shell_mode and not self.allow_successor and
-            not self.allow_abort_retry and key in self._source_shell_committed_plans,
+        repeated_final = self.allow_successor and key == (self.successor_final_epoch, 0)
+        upgrade = self.upgrade_scope and key == (2, 0)
+        require(self.shell_mode and (not self.allow_successor or repeated_final) and
+            (retry or not self.allow_abort_retry) and key in self._source_shell_committed_plans,
             'current-owner proof requires the exact source-shell COMMIT profile')
         self.live()
         committed = self._source_shell_committed_plans[key]
@@ -1550,16 +2049,17 @@ class SourceBootstrapSupervisor:
             identity.process_alive(pidfd) and
             identity._start_ticks(worker[5]) == worker[11] and
             self.worker_proofs.get(key) == committed['cycle_proof'] and
-            key[0] == 1 and (key[0], 9) not in self._completed_master_barriers and
+            (retry or repeated_final or key[0] == 1) and (key[0], 9) not in self._completed_master_barriers and
             not any(epoch > key[0] for epoch, _ in self.workers),
             'committed current owner is stale, aborted, or has a successor')
-        address = self._scalar(self.master.pid, 'ngx_ff_reload_shm', '=Q')
+        master = self._worker_master(key)
+        address = self._scalar(master.pid, 'ngx_ff_reload_shm', '=Q')
         require(address == committed['source_block_address'],
             'current owner source block changed after COMMIT')
-        values = struct.unpack('=8I', memory(self.master.pid, address, 32))
-        owner, stopped, fsm = struct.unpack('=3I', memory(self.master.pid,
+        values = struct.unpack('=8I', memory(master.pid, address, 32))
+        owner, stopped, fsm = struct.unpack('=3I', memory(master.pid,
             address + 48 + 128 * 8, 12))
-        require(values[3] == key[0] and values[4] == key[1] and values[6] == 0 and
+        require(values[3] == (0 if upgrade else key[0]) and values[4] == key[1] and values[6] == 0 and
             owner == key[1] and stopped == 0 and fsm == 0,
             'source master is not idle on the committed current generation')
         committed['idle_observation'] = {
@@ -1568,15 +2068,31 @@ class SourceBootstrapSupervisor:
             'owner': owner,
             'stopped': stopped,
             'fsm': fsm,
-            'master_pid': self.master.pid,
-            'master_start_ticks': self.master.start_ticks,
+            'master_pid': master.pid,
+            'master_start_ticks': master.start_ticks,
             'slim_pid': self.slim_pid,
             'slim_start_ticks': self.slim_start_ticks,
         }
         return dict(committed['idle_observation'])
 
     def _private_candidate_preexit_authority(self, controller):
-        """Fail-closed exact C34/R2 gate for the first candidate PREEXIT only."""
+        """Require the exact committed private worker and native retirement proof."""
+        if getattr(self, 'allow_successor', False):
+            try:
+                provider = self._private_successor_provider(controller)
+                key = controller._private_committed_worker_key(self)
+                final_epoch = self.successor_final_epoch
+                predecessor = (final_epoch - 1, 1)
+                expected = {(epoch, epoch % 2) for epoch in range(final_epoch + 1)}
+                return (key == (final_epoch, 0) and set(self.workers) == expected and
+                    provider._successor_retire_receipt is not None and
+                    provider._successor_retire_receipt[:2] == (final_epoch, predecessor) and
+                    provider._source_committed and provider._source_park_epoch == final_epoch and
+                    all(not identity.process_alive(self.workers[retired][0])
+                        for retired in expected - {key}) and
+                    identity.process_alive(self.workers[key][0]))
+            except (OSError, RuntimeError, AttributeError, KeyError):
+                return False
         controller_module = sys.modules.get('_ker_nginx_source_shell_controller')
         profile_module = sys.modules.get('_ker_nginx_source_c34_profile')
         provider_module = sys.modules.get('_ker_nginx_source_c22_provider')
@@ -1614,25 +2130,50 @@ class SourceBootstrapSupervisor:
                 getattr(controller, '_first_candidate_activation_delivered', False) is not True or
                 type(cap) is not getattr(controller_module, '_FirstCandidateWorkerGrant', None) or
                 cap is not getattr(controller, '_first_candidate_worker_grant', None) or
-                cap.controller is not controller or cap.context is not self or cap.provider is not provider or
-                getattr(self, '_completed_master_barriers', set()) != {(1, 5), (1, 6)} or
-                (1, 1) not in getattr(self, '_source_shell_committed_plans', {}) or
-                set(getattr(self, 'workers', {})) != {(0, 0), (1, 1)} or
-                set(getattr(self, 'worker_channels', {})) != {(0, 0), (1, 1)}):
+                cap.controller is not controller or cap.context is not self or cap.provider is not provider):
+            return False
+        key = controller._private_committed_worker_key(self)
+        retry = key == (2, 1)
+        keys = {(0, 0), (1, 1), (2, 1)} if retry else {(0, 0), (1, 1)}
+        if (key is None or set(self.workers) != keys or set(self.worker_channels) != keys or
+                (retry and not self.allow_abort_retry)):
             return False
         try:
-            controller._check_first_candidate_phase(transport)
+            if retry:
+                controller._check_private_initial_worker_exit_binding(transport, provider, self)
+            else:
+                controller._check_first_candidate_phase(transport)
             return True
         except (OSError, PermissionError, RuntimeError, TimeoutError, AttributeError, KeyError):
             return False
 
+    def _private_preexit_authority(self, controller, key):
+        if key != (0, 0):
+            return self._private_candidate_preexit_authority(controller)
+        origin = getattr(getattr(self, 'owner_live', None), '__self__', None)
+        return (self.control_only and self.shell_mode and not self.allow_abort_retry and
+            not self.allow_successor and
+            (getattr(origin, 'source_case', None) == 'baseline' or self._abort_only() or
+                self._unparked_abort_profile()) and
+            getattr(controller, 'launch', None) is origin and
+            getattr(origin, 'context', None) is self and
+            getattr(controller, 'bootstrap_context', None) is self and
+            getattr(controller, '_private_initial_shutdown_binding', lambda _: None)(self) is not None)
+
     def poll_private_candidate_preexit(self, controller):
-        """Consume at most one exact (1,1) PREEXIT in the closed private phase."""
+        """Consume one exact PREEXIT from the current private worker."""
         if threading.current_thread() is not threading.main_thread():
             raise PermissionError('private candidate PREEXIT requires the SDK main thread')
-        require(self._private_candidate_preexit_authority(controller),
-            'candidate PREEXIT lacks the exact private post-COMMIT authority')
-        self.observe_committed_current_owner((1, 1), private_controller=controller)
+        origin = getattr(getattr(self, 'owner_live', None), '__self__', None)
+        if (getattr(origin, 'source_case', None) == 'baseline' or self._abort_only() or
+                self._unparked_abort_profile()):
+            key = (0, 0)
+            require(self._private_preexit_authority(controller, key),
+                'initial PREEXIT lacks the exact baseline authority')
+        else:
+            require(self._private_candidate_preexit_authority(controller),
+                'candidate PREEXIT lacks the exact private post-COMMIT authority')
+            key = controller._private_committed_worker_key(self)
         pending = getattr(controller, '_private_candidate_preexit_pending', None)
         if pending is not None:
             require(self._pending_preexits.get(pending.operation_id, (None,))[0] is pending and
@@ -1641,9 +2182,19 @@ class SourceBootstrapSupervisor:
             return pending
         require(not getattr(self, '_private_candidate_preexit_consumed', False),
             'private candidate PREEXIT receive attempt was already consumed')
-        channel = self.worker_channels[(1, 1)]
+        channel = self.worker_channels[key]
         if not select.select([channel], [], [], 0)[0]:
             return None
+        if key == (0, 0):
+            address = self._scalar(self.master.pid, 'ngx_ff_reload_shm', '=Q')
+            values = struct.unpack('=8I', memory(self.master.pid, address, 32))
+            markers = struct.unpack('=3I', memory(self.master.pid, address + 48 + 128 * 8, 12))
+            expected = ((1, 0, 1, 0) if self._abort_only() or self._unparked_abort_profile()
+                else (0, 0, 0, 0))
+            require(values[3:7] == expected and markers == (0, 0, 0),
+                'source master is not idle on its initial worker')
+        else:
+            self.observe_committed_current_owner(key, private_controller=controller)
         self._private_candidate_preexit_consumed = True
         packet, ancillary, flags, _ = channel.recvmsg(PREEXIT_RECORD_BYTES + 1,
             socket.CMSG_SPACE(12) + socket.CMSG_SPACE(8 * 4),
@@ -1666,7 +2217,8 @@ class SourceBootstrapSupervisor:
         require(not invalid and not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) and
             len(packet) == PREEXIT_RECORD_BYTES and len(credentials) == 1,
             'malformed private candidate PREEXIT transport')
-        pending = self._accept_worker_preexit((1, 1), channel, packet, credentials[0])
+        pending = self._accept_worker_preexit(key, channel, packet, credentials[0],
+            private_retry=key == (2, 1), private_initial=key == (0, 0))
         controller._private_candidate_preexit_pending = pending
         return pending
 
@@ -1685,7 +2237,7 @@ class SourceBootstrapSupervisor:
                 time.monotonic_ns() < pending.deadline_ns,
                 'private TERM authorization already consumed or pending receipt changed')
             return pending
-        require(self._private_candidate_preexit_authority(controller) and
+        require(self._private_preexit_authority(controller, pending.key) and
             getattr(controller, '_private_candidate_preexit_pending', None) is pending and
             self._pending_preexits.get(pending.operation_id, (None,))[0] is pending and
             time.monotonic_ns() < pending.deadline_ns,
@@ -1752,7 +2304,8 @@ class SourceBootstrapSupervisor:
         pending = self._accept_worker_preexit(key, channel, packet, credentials[0])
         return pending
 
-    def _accept_worker_preexit(self, key, channel, packet, credentials):
+    def _accept_worker_preexit(self, key, channel, packet, credentials, *,
+            private_retry=False, private_initial=False):
         require(self.shell_mode and key in self.workers and
             self.worker_channels.get(key) is channel,
             'PREEXIT channel is not the retained source worker endpoint')
@@ -1766,15 +2319,17 @@ class SourceBootstrapSupervisor:
         pidfd, granted = self.workers[key]
         proof = self.worker_proofs.get(key)
         pid, start = granted[5], granted[11]
+        master = self._worker_master(key)
+        local_epoch = 0 if self.upgrade_scope and key == (2, 0) else key[0]
         peer = struct.unpack('=3i', channel.getsockopt(socket.SOL_SOCKET,
             socket.SO_PEERCRED, 12))
         committed = getattr(self, '_source_shell_committed_plans', {}).get(key)
         now = time.monotonic_ns()
         require(credentials == peer == (pid, os.getuid(), os.getgid()) and
             record[0:3] == [MAGIC, SHELL_VERSION, PREEXIT_REQUEST] and
-            record[3:11] == [SHELL_RECORD.size, 1, pid, granted[6], self.master.pid,
+            record[3:11] == [SHELL_RECORD.size, 1, pid, granted[6], master.pid,
                 key[1], key[0], 0] and
-            record[11:13] == [start, self.master.start_ticks] and
+            record[11:13] == [start, master.start_ticks] and
             record[13] == granted[13] and
             record[14:17] == [self.epoch, self.deadline_ns, self.nonce] and
             record[17:24] == list(granted[17:24]) and
@@ -1782,23 +2337,29 @@ class SourceBootstrapSupervisor:
             record[28] == 0,
             'PREEXIT source identity mismatch')
         actual_proof = _proof_from_record(record)
-        require(proof is not None and actual_proof == proof and
-            record[20] == 4 and record[27] == granted[27] and
-            record[2] == PREEXIT_REQUEST and role == 4 and
-            slot == getattr(self, 'worker_process_slots', {}).get(key) and
-            operation_id > 0 and operation_id not in getattr(self, '_seen_preexit_ids', set()) and
-            now < operation_deadline_ns <= self.deadline_ns and
-            operation_deadline_ns - now <= PREEXIT_BUDGET_NS and
+        expected_role = 2 if private_initial else 4
+        current = (key == (0, 0) and native_commit_cookie == 0 and
+            committed is None and proof is self.initial_cycle_proof) if private_initial else (
             committed is not None and committed['worker_pid'] == pid and
             committed['worker_start_ticks'] == start and committed['slot'] == slot and
             committed['ready_cookie'] == granted[27] and
             committed['native_current_cookie'] == native_commit_cookie and
             native_commit_cookie > 0 and committed['cycle_proof'] == proof and
             committed.get('idle_observation') is not None and
-            committed['idle_observation']['source_snapshot'][0] == key[0] and
+            committed['idle_observation']['source_snapshot'][0] == local_epoch and
             committed['idle_observation']['source_snapshot'][1] == key[1] and
-            committed['idle_observation']['source_snapshot'][3] == 0 and
-            not self.allow_successor and not self.allow_abort_retry and
+            committed['idle_observation']['source_snapshot'][3] == 0)
+        require(proof is not None and actual_proof == proof and current and
+            record[20] == expected_role and record[27] == granted[27] and
+            record[2] == PREEXIT_REQUEST and role == expected_role and
+            slot == getattr(self, 'worker_process_slots', {}).get(key) and
+            operation_id > 0 and operation_id not in getattr(self, '_seen_preexit_ids', set()) and
+            now < operation_deadline_ns <= self.deadline_ns and
+            operation_deadline_ns - now <= PREEXIT_BUDGET_NS and
+            (not self.allow_successor or (self.control_only and
+                key == (self.successor_final_epoch, 0))) and
+            (not self.allow_abort_retry or (private_retry and key == (2, 1) and self.control_only is True and
+                    self._completed_master_barriers == {(1, 5), (1, 9), (2, 5), (2, 6)})) and
             (key[0], 9) not in getattr(self, '_completed_master_barriers', set()) and
             identity._pidfd_pid(pidfd) == pid and identity.process_alive(pidfd) and
             identity._start_ticks(pid) == start,
@@ -1942,8 +2503,10 @@ class SourceBootstrapSupervisor:
             settlement.supervisor_term_sha256 == evidence.receipt_sha256 and
             all(type(value) is bytes and len(value) == 32 and any(value) for value in
                 (settlement.request_sha256, settlement.supervisor_term_sha256,
-                 settlement.broker_stop_sha256, settlement.c28_drain_sha256,
-                 settlement.native_shutdown_sha256)) and
+                 settlement.broker_stop_sha256, settlement.native_shutdown_sha256)) and
+            (settlement.c28_drain_sha256 is None if pending.key == (0, 0) else
+                type(settlement.c28_drain_sha256) is bytes and
+                len(settlement.c28_drain_sha256) == 32 and any(settlement.c28_drain_sha256)) and
             settlement.c31_outstanding == 0 and settlement.c31_last_result >= 0 and
             time.monotonic_ns() < pending.deadline_ns,
             'source native settlement receipt is incomplete or expired')
@@ -2060,7 +2623,8 @@ class SourceBootstrapSupervisor:
                 controller.listener) and
             accepted.channel_identity == grant.channel_identity and
             accepted.channel_cookie == grant.channel_cookie and
-            grant.relay is controller._first_candidate_relay_anchor and
+            grant.relay_identity[:3] == controller._first_candidate_endpoint_identity(grant.relay)[:3] and
+            grant.relay_cookie == controller._first_candidate_socket_cookie(grant.relay) and
             grant.channel_identity == controller._first_candidate_endpoint_identity(grant.channel) and
             grant.channel_cookie == controller._first_candidate_socket_cookie(grant.channel) and
             grant.provider is provider and getattr(provider, '_closed', True) is False and
@@ -2087,6 +2651,10 @@ class SourceBootstrapSupervisor:
             preparation.raw_prepared_ack == preparation.expected_prepared_record and
             preparation.prepared_credentials[0] == preparation.actors[0] and
             preparation.prepared_credentials[1:] == (os.getuid(), os.getgid()) and
+            preparation.candidate_channel is controller._first_candidate_relay_anchor and
+            preparation.candidate_channel_identity ==
+                _source_socket_identity(preparation.candidate_channel)[:4] and
+            preparation.candidate_channel_identity[0] != grant.relay_cookie and
             getattr(prepared, '_source_route_preparation', None) is preparation and
             preparation.cycle_proof is self.worker_proofs.get((1, 1)) and
             preparation.candidate_cycle_proof is preparation.cycle_proof and
@@ -2104,7 +2672,9 @@ class SourceBootstrapSupervisor:
                 (expected[0], 1, expected[3], expected[4], expected[5], expected[6]) and
             identity._pidfd_pid(controller._first_candidate_observed_pidfd) == expected[0] and
             identity.process_alive(controller._first_candidate_observed_pidfd) and
-            grant.channel is channel and grant.cycle_proof is preparation.cycle_proof,
+            grant.channel_identity == controller._first_candidate_endpoint_identity(channel) and
+            grant.channel_cookie == controller._first_candidate_socket_cookie(channel) and
+            grant.cycle_proof is preparation.cycle_proof,
             'private source ACTIVATE is not bound to the retained role-1 READY and channel')
         require((watch.get('source_epoch'), watch.get('generation'), watch.get('role'),
                 watch.get('pid'), watch.get('tid'), watch.get('start'),
@@ -2126,9 +2696,40 @@ class SourceBootstrapSupervisor:
         self.live()
         self._activate_worker_body(channel, watch)
 
-    def _activate_worker_body(self, channel, watch):
+    def activate_prepared_retry_candidate(self, controller, prepared, watch, deadline_ns):
+        """Release original epoch-2 READY only after its credentialed C31 PREPARED."""
+        provider = controller.c22_provider
+        self._check_private_retry_controller(controller, provider, deadline_ns)
+        key = (2, 1)
+        channel = self.worker_channels[key]
+        preparation = self._source_route_preparations.get(id(prepared))
+        prior, operation_id, sequence, deadline = self._source_retry_prepare_attempt
+        request = controller._accepted_retry_worker_request
+        require(type(preparation) is _SourceRoutePreparation and
+            preparation.context is self and preparation.prepared is prepared and
+            preparation.candidate_worker_key == key and preparation.source_epoch == 2 and
+            preparation.park is None and preparation.raw_prepared_ack == preparation.expected_prepared_record and
+            preparation.candidate_channel is controller._retry_candidate_relay_anchor and
+            _source_socket_identity(preparation.candidate_channel)[:4] ==
+                preparation.candidate_channel_identity and
+            preparation.candidate_cycle_proof is self.worker_proofs[key] and
+            preparation.operation_id == operation_id and preparation.command_sequence == sequence and
+            request.deadline_ns == deadline_ns == deadline and
+            _source_socket_identity(channel)[0] == request.channel_cookie and
+            getattr(controller, '_retry_candidate_prepared', None) is prepared and
+            watch is controller._retry_candidate_watch and self._activated_workers == {(1, 1)},
+            'retry ACTIVATE lacks its exact credentialed C31 PREPARED and retained worker')
+        _validate_source_route_retry(self, prior, preparation.endpoint, preparation.actors,
+            preparation.current, preparation.candidate)
+        _validate_source_route_preparation(preparation, prepared, preparation.endpoint)
+        self._activate_worker_body(channel, watch, operation_deadline_ns=deadline_ns)
+
+    def _activate_worker_body(self, channel, watch, *, operation_deadline_ns=None):
         """Shared original-record send after one of the two exact gates."""
-        self.live()
+        if operation_deadline_ns is None:
+            self.live()
+        else:
+            self.live(operation_deadline_ns)
         key = (watch['source_epoch'], watch['generation'])
         old_generation, target_generation = self._source_round(key[0])
         require(key[1] == target_generation and key in self.workers,
@@ -2136,6 +2737,7 @@ class SourceBootstrapSupervisor:
         pidfd, granted = self.workers[key]
         record = list(granted)
         cycle_proof = self.worker_proofs.get(key) if self.shell_mode else None
+        master = self._worker_master(key)
         activated = getattr(self, '_activated_workers', set())
         attempted = getattr(self, '_activation_attempts', set())
         require(key not in activated and (not self.shell_mode or key not in attempted) and
@@ -2148,14 +2750,16 @@ class SourceBootstrapSupervisor:
         if self.shell_mode:
             require(cycle_proof == self._record_cycle_proof(record),
                 'source activation candidate proof changed after grant')
-            self._cycle_token_live(self.master.pid, cycle_proof.opaque_cycle_token)
+            self._cycle_token_live(master.pid, cycle_proof.opaque_cycle_token)
             self._cycle_token_live(watch['pid'], cycle_proof.opaque_cycle_token)
-        values = struct.unpack('=8I', memory(self.master.pid, record[13], 32))
-        require(values[3:7] == (key[0], old_generation, target_generation, 1),
+        values = struct.unpack('=8I', memory(master.pid, record[13], 32))
+        expected = ((0, 0, 0, 0) if self.upgrade_scope and key == (2, 0) else
+            (key[0], old_generation, target_generation, 1))
+        require(values[3:7] == expected,
             'original source round changed before candidate activation')
         record[2] = 4
         if self.shell_mode:
-            self._cycle_token_live(self.master.pid, cycle_proof.opaque_cycle_token)
+            self._cycle_token_live(master.pid, cycle_proof.opaque_cycle_token)
             self._cycle_token_live(watch['pid'], cycle_proof.opaque_cycle_token)
         payload = self.record_struct.pack(*record)
         flags = getattr(socket, 'MSG_NOSIGNAL', 0)
@@ -2165,7 +2769,8 @@ class SourceBootstrapSupervisor:
         if self.shell_mode:
             # A positive Python socket timeout can poll even with MSG_DONTWAIT.
             channel.setblocking(False)
-            deadline_ns = min(self.deadline_ns, record[15])
+            deadline_ns = min(self.deadline_ns, record[15],
+                operation_deadline_ns if operation_deadline_ns is not None else self.deadline_ns)
             if time.monotonic_ns() >= deadline_ns:
                 raise TimeoutError('source activation expired before send')
             flags |= getattr(socket, 'MSG_DONTWAIT', 0)
@@ -2195,7 +2800,17 @@ class SourceBootstrapSupervisor:
 
     def private_source_master_barrier(self, channel, packet, credentials,
             apply, controller, prepared, grant, provider):
-        """Authorize the private epoch-one PARK/COMMIT cutover only."""
+        """Authorize a private cutover, including the one adopted retry."""
+        require(type(packet) is bytes and len(packet) == self.record_struct.size,
+            'invalid private source master barrier size')
+        fields = self.record_struct.unpack(packet)
+        operation, source_epoch = fields[2], fields[9]
+        retry = source_epoch == 2
+        candidate_key = (source_epoch, 1)
+        prior_barriers = {(1, 5), (1, 9)} if retry else set()
+        activated = {(1, 1), candidate_key}
+        require(source_epoch in (1, 2) and (not retry or operation in (5, 6)),
+            'unsupported private source cutover round or operation')
         controller_module = sys.modules.get('_ker_nginx_source_shell_controller')
         profile_module = sys.modules.get('_ker_nginx_source_c34_profile')
         origin = getattr(getattr(self, 'owner_live', None), '__self__', None)
@@ -2215,29 +2830,43 @@ class SourceBootstrapSupervisor:
             controller._first_candidate_worker_grant_consumed is True and
             controller._first_candidate_prepare_attempted is True and
             controller._first_candidate_activation_delivered is True and
-            controller._first_candidate_source_prepared is prepared and
+            (getattr(controller, '_retry_candidate_prepared', None) if retry else
+                controller._first_candidate_source_prepared) is prepared and
             grant.provider is provider and controller.c22_provider is provider and
             getattr(provider, '_closed', True) is False and
             _source_provider_matches_context(self, provider, controller) and
             controller._first_candidate_worker_pending is True and
-            getattr(self, '_activated_workers', set()) == {(1, 1)},
+            getattr(self, '_activated_workers', set()) == activated,
             'private source master barrier lacks the exact activated C34 controller/provider')
+        if retry:
+            require(controller._private_first_abort_acknowledged(self) and
+                controller._retry_candidate_ready is self._private_retry_ready_identity and
+                getattr(provider, '_source_retry_slot_delivered', False) is True,
+                'private source cutover lacks the acknowledged adopted retry worker')
         preparation = getattr(self, '_source_route_preparations', {}).get(id(prepared))
         require(type(preparation) is _SourceRoutePreparation and
             preparation.context is self and preparation.prepared is prepared and
-            preparation.park is None and preparation.source_epoch == 1 and
+            preparation.park is None and preparation.source_epoch == source_epoch and
             preparation.raw_prepared_ack == preparation.expected_prepared_record and
-            preparation.cycle_proof is self.worker_proofs.get((1, 1)) and
-            controller._first_candidate_activation_delivered and
-            type(packet) is bytes and len(packet) == self.record_struct.size,
+            preparation.cycle_proof is self.worker_proofs.get(candidate_key),
             'private source master barrier lacks its registered PREPARED/ACTIVATE tuple')
-        operation = self.record_struct.unpack(packet)[2]
         if operation == 5:
-            require(not getattr(self, '_completed_master_barriers', set()) and
-                not getattr(self, '_source_route_park_joins', {}) and
-                getattr(provider, '_source_park_evidence', None) is None,
+            joins = getattr(self, '_source_route_park_joins', {})
+            park = getattr(provider, '_source_park_evidence', None)
+            prior = self._source_route_abort_receipt[0] if retry else None
+            require(getattr(self, '_completed_master_barriers', set()) == prior_barriers and
+                id(prepared) not in joins and
+                (type(park) is _SourceC28ParkEvidence and
+                    joins.get(id(prior.prepared)) is prior and prior.park is park and
+                    park.deadline_ns < fields[28] if retry else not joins and park is None),
                 'private source PARK is repeated or already partially joined')
-        elif operation == 6:
+        elif operation in (6, 9):
+            if operation == 9:
+                fault = getattr(origin.c34_artifact_capture, 'source_fault', None)
+                require(((self.allow_abort_retry and fault == origin_module.SOURCE_RETRY_FAULT) or
+                            (self._abort_only() and fault == 'flip_fail')) and
+                    getattr(controller.profile.helper_capture, 'source_fault', None) == fault,
+                    'private source ABORT requires the captured fault profile')
             park = getattr(provider, '_source_park_evidence', None)
             joined = getattr(self, '_source_route_park_joins', {}).get(id(prepared))
             require(type(park) is _SourceC28ParkEvidence and
@@ -2245,36 +2874,67 @@ class SourceBootstrapSupervisor:
                 joined.prepared is prepared and joined.park is park and
                 joined.context is self and park.context is self and
                 park.provider is provider and preparation.park is None and
-                park.deadline_ns == self.record_struct.unpack(packet)[28] and
+                park.deadline_ns == fields[28] and
                 getattr(provider, '_source_park_deadline_ns', None) == park.deadline_ns and
-                getattr(self, '_completed_master_barriers', set()) == {(1, 5)} and
-                getattr(self, '_master_control_deadlines', {}).get(1) == park.deadline_ns and
-                getattr(provider, '_source_committed', False) is False,
-                'private source COMMIT lacks the exact registered PARK/PREPARED join or deadline')
+                getattr(self, '_completed_master_barriers', set()) == prior_barriers | {(source_epoch, 5)} and
+                getattr(self, '_master_control_deadlines', {}).get(source_epoch) == park.deadline_ns and
+                getattr(provider, '_source_committed', False) is False and
+                getattr(provider, '_source_abort_result', None) is None,
+                f"private source {'COMMIT' if operation == 6 else 'ABORT'} lacks "
+                'the exact registered PARK/PREPARED join or deadline')
         else:
-            raise OSError(errno.ENOTSUP, 'private source master accepts only PARK and COMMIT')
+            raise OSError(errno.ENOTSUP, 'unsupported private source master operation')
         attempts = getattr(self, '_private_source_master_attempts', set())
-        key = (1, operation)
+        key = (source_epoch, operation)
         require(key not in attempts,
             'private source master operation already has an attempt')
         attempts.add(key)
         self._private_source_master_attempts = attempts
-        provider._check_actor(self.deadline_ns)
+        provider._check_actor(fields[28] if retry or operation == 9 else self.deadline_ns)
+        return self._master_barrier_body(channel, packet, credentials, apply,
+            private_source=True)
+
+    def private_successive_master_barrier(self, channel, packet, credentials, apply,
+            controller, prepared):
+        provider = self._private_successor_provider(controller)
+        require(type(packet) is bytes and len(packet) == self.record_struct.size,
+            'invalid successive master barrier envelope')
+        fields = self.record_struct.unpack(packet)
+        operation, epoch = fields[2], fields[9]
+        key = (epoch, epoch % 2)
+        prior = {(previous, step) for previous in range(1, epoch) for step in (5, 6)}
+        preparation = self._source_route_preparations.get(id(prepared))
+        require(2 <= epoch <= 100 and operation in (5, 6),
+            'invalid successive master stage')
+        require(type(preparation) is _SourceRoutePreparation and
+            preparation.context is self and preparation.prepared is prepared and
+            preparation.source_epoch == epoch and preparation.candidate_worker_key == key and
+            preparation.cycle_proof is self.worker_proofs.get(key) and
+            key in self._activated_workers and
+            self._completed_master_barriers == (prior if operation == 5 else prior | {(epoch, 5)}),
+            'successive master stage lacks its exact activated candidate and prior COMMIT')
+        if operation == 6:
+            join = self._source_route_park_joins.get(id(prepared))
+            require(type(join) is _SourceRoutePreparation and
+                join.park is provider._source_park_evidence and join.park.deadline_ns == fields[28],
+                'successive COMMIT does not reuse the original PARK receipt')
+        provider._check_actor(fields[28])
         return self._master_barrier_body(channel, packet, credentials, apply,
             private_source=True)
 
     def _master_barrier_body(self, channel, packet, credentials, apply,
             *, private_source):
         """Shared original Master barrier validation and one-shot native ACK."""
-        self.live()
         record_struct = self.record_struct
         require(len(packet) == record_struct.size, 'invalid source master barrier size')
         record = list(record_struct.unpack(packet))
         operation = record[2]
         source_epoch = record[9]
+        upgrade = self.upgrade_scope and source_epoch == 2
+        source_markers = (1, 1, 1, 0) if upgrade else None
         old_generation, target_generation = self._source_round(source_epoch)
         expected_version = SHELL_VERSION if self.shell_mode else 3
-        require(operation in (5, 6, 9) and (operation != 9 or self.allow_abort_retry) and
+        require(operation in (5, 6, 9) and (operation != 9 or self.allow_abort_retry or self._abort_only()) and
             record[:2] == [0x4b534247, expected_version] and
             record[3:11] == [record_struct.size, 2, self.master.pid, self.master.pid,
                 self.master.pid, target_generation, source_epoch, 0] and
@@ -2287,9 +2947,14 @@ class SourceBootstrapSupervisor:
             struct.unpack('=3i', channel.getsockopt(socket.SOL_SOCKET,
                 socket.SO_PEERCRED, 12)) == credentials,
             'source master barrier correlation/credentials mismatch')
+        if private_source and source_epoch > 1:
+            self.live(record[28])
+        else:
+            self.live()
         if self.shell_mode:
             barrier_proof = self._record_cycle_proof(record)
-            accepted_proof = self.worker_proofs.get((source_epoch, target_generation))
+            accepted_proof = self.worker_proofs.get((1, 1) if upgrade else
+                (source_epoch, target_generation))
             require(accepted_proof is not None and barrier_proof == accepted_proof,
                 'source master barrier does not echo the accepted candidate cycle proof')
             self._cycle_token_live(self.master.pid, barrier_proof.opaque_cycle_token)
@@ -2302,7 +2967,13 @@ class SourceBootstrapSupervisor:
             memory(self.master.pid, address + 48 + 128 * 8, 12))
         expected_markers = {5: (old_generation, 0), 6: (target_generation, 0),
             9: (old_generation, 1)}
-        require(values[3:7] == (source_epoch, old_generation, target_generation, 1) and fsm == 2 and
+        if upgrade:
+            require(self._scalar(self.master.pid, 'ngx_new_binary', '=i') ==
+                self._worker_master((2, 0)).pid, 'original USR2 child changed before WINCH')
+            expected_markers[6] = (target_generation, 1)
+        else:
+            source_markers = (source_epoch, old_generation, target_generation, 1)
+        require(values[3:7] == source_markers and fsm == (0 if upgrade else 2) and
             (owner, stopped) == expected_markers[operation],
             'source master barrier does not match original T2 park/release state')
         if operation == 9:
@@ -2323,14 +2994,14 @@ class SourceBootstrapSupervisor:
             self._master_control_deadlines[source_epoch] = record[28]
         else:
             require(record[28] == self._master_control_deadlines[source_epoch],
-                'source COMMIT attempted to renew the PARK deadline')
+                'source master attempted to renew the PARK deadline')
         barriers.add(key)
         self._master_barriers = barriers
         control_deadline = record[28]
         require(time.monotonic_ns() < control_deadline,
             'source operation expired before native barrier work')
         outcome = apply(operation, control_deadline)
-        if operation == 9 and outcome is not None:
+        if operation == 9 and (private_source or outcome is not None) and not self._abort_only():
             require(type(outcome) is dict and set(outcome) == {'native_retry_cookie'} and
                 type(outcome['native_retry_cookie']) is int and outcome['native_retry_cookie'] > 0,
                 'native retry adoption receipt is malformed')
@@ -2348,7 +3019,7 @@ class SourceBootstrapSupervisor:
             plan_key = (source_epoch, target_generation)
             candidate_pidfd, candidate = self.workers[plan_key]
             candidate_proof = self.worker_proofs.get(plan_key)
-            require(candidate_proof == barrier_proof and
+            require((upgrade or candidate_proof == barrier_proof) and
                 identity.process_alive(candidate_pidfd) and
                 identity._pidfd_pid(candidate_pidfd) == candidate[5] and
                 identity._start_ticks(candidate[5]) == candidate[11] and
@@ -2360,9 +3031,12 @@ class SourceBootstrapSupervisor:
                 candidate_proof)
         require(time.monotonic_ns() < control_deadline,
             'native barrier exceeded original operation deadline; quarantine required')
-        self.live()
+        if private_source and source_epoch > 1:
+            self.live(control_deadline)
+        else:
+            self.live()
         require(struct.unpack('=8I', memory(self.master.pid, address, 32))[3:7] ==
-            (source_epoch, old_generation, target_generation, 1),
+            source_markers,
             'source round changed during native barrier')
         if self.shell_mode:
             self._cycle_token_live(self.master.pid, barrier_proof.opaque_cycle_token)
@@ -2431,6 +3105,7 @@ class SourceBootstrapSupervisor:
             self._native_committed_cookie = outcome['native_current_cookie']
         if operation == 6 and self.shell_mode:
             plan_key, candidate_pidfd, candidate, candidate_proof = committed_candidate
+            candidate_master = self._worker_master(plan_key)
             self._source_shell_committed_plans[plan_key] = {
                 'worker_pid': candidate[5],
                 'worker_start_ticks': candidate[11],
@@ -2439,13 +3114,13 @@ class SourceBootstrapSupervisor:
                 'native_current_cookie': outcome['native_current_cookie'],
                 'cycle_proof': candidate_proof,
                 'barrier': (source_epoch, 6),
-                'master_pid': self.master.pid,
-                'master_start_ticks': self.master.start_ticks,
-                'master_pidfd': self.master.pidfd,
+                'master_pid': candidate_master.pid,
+                'master_start_ticks': candidate_master.start_ticks,
+                'master_pidfd': candidate_master.pidfd,
                 'slim_pid': self.slim_pid,
                 'slim_start_ticks': self.slim_start_ticks,
                 'slim_pidfd': self.slim_pidfd,
-                'source_block_address': address,
+                'source_block_address': candidate[13],
                 'source_idle_snapshot': tuple(values[3:7]),
             }
 
@@ -2454,6 +3129,9 @@ class SourceBootstrapSupervisor:
         if self.slim_pidfd >= 0:
             os.close(self.slim_pidfd)
             self.slim_pidfd = -1
+        if getattr(self, '_upgrade_master', None) is not None:
+            os.close(self._upgrade_master.pidfd)
+            self._upgrade_master = None
         for pidfd, _ in self.workers.values():
             os.close(pidfd)
         self.workers.clear()
@@ -2463,7 +3141,11 @@ class SourceBootstrapSupervisor:
         for receiver in getattr(self, 'worker_ready_receivers', {}).values():
             receiver.close()
         self.worker_ready_receivers = {}
-        for fd_name in ('_original_supervisor_pidfd', '_original_supervisor_output_fd'):
+        for fd in getattr(self, '_private_retry_fds', None) or ():
+            os.close(fd)
+        self._private_retry_fds = None
+        for fd_name in ('_original_supervisor_pidfd', '_original_supervisor_output_fd',
+                '_upgrade_directory_fd'):
             fd = getattr(self, fd_name, -1)
             if fd >= 0:
                 os.close(fd)

@@ -1189,7 +1189,7 @@
       "id": "tests/integration/test_graceful_reload.sh::entrypoint",
       "kind": "shell-e2e",
       "status": "blocked",
-      "reason": "The original operational entrypoint still requires the real Nginx/F-Stack HUP/USR2 generation FSM, live remote TCP probes, source counters, drain behavior, fault cases and cleanup. Ker now supports selected cross-process socket capabilities through an original-Linux broker, and a private C16 fixture qualifies one authenticated IPv4 owner/listener with original-kernel SYN-ACK gating, imported flow-map admission, request revocation, independent broker progress, owner authentication and fail-closed cleanup. That fixture does not bind the production Nginx dispatcher or generation FSM, enable public graceful_reload=1, or prove healthy recovery and the full source matrix. Running F-Stack alone remains an upstream baseline. See docs/fstack-graceful-reload-gap.md.",
+      "reason": "All 17 applicable unchanged upstream shell cases passed with the original verdicts, native STOP acknowledgments, zero outstanding resources, and zero-exit ECHILD in isolated private diagnostic runs. The full rv9 run passed 100 reloads at 15-second intervals, 7,948 fresh connections with zero failures, and flat resource trends. The rt25 run completed the real USR2/WINCH takeover with 90 successful fresh connections and all old workers retired. A reproducible CTest job for the complete original shell matrix remains to be registered. See docs/fstack-graceful-reload-gap.md.",
       "ker_tests": []
     },
     {

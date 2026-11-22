@@ -118,8 +118,71 @@ class PrivateC34ArtifactTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             provider.SourceShellC34InteropProvider(object(), object(), object())
 
+    def test_retry_helper_argv_requires_matching_origin_context_and_capture(self):
+        module = load_module('_c34_retry_helper_launch_test', C22_PATH)
+        helper_type = self.provider.PrivateC34HelperCapture
+        class BeforeExec(Exception):
+            pass
 
-    def _profile(self):
+        for fault, origin_fault, retry, enabled, expected in (
+                (None, None, False, False, '--source-shell'),
+                ('flip_fail_once', 'flip_fail_once', True, True,
+                    '--source-shell-abort-retry'),
+                (None, 'flip_fail_once', True, True, None),
+                ('flip_fail_once', 'flip_fail_once', False, True, None),
+                ('flip_fail_once', None, True, True, None),
+                ('flip_fail_once', 'flip_fail_once', True, False, None)):
+            with self.subTest(fault=fault, origin_fault=origin_fault, retry=retry, enabled=enabled):
+                helper = object.__new__(helper_type)
+                helper.sha256 = bytes.fromhex(self.provider._HELPER_SHA256)
+                helper.build_id = self.provider._HELPER_BUILD_ID
+                helper.source_command_abi = 1
+                helper.source_fault = fault
+                context = SimpleNamespace(shell_mode=True, nonce=b's' * 16,
+                    epoch=1, deadline_ns=time.monotonic_ns() + 5_000_000_000,
+                    original_supervisor_identity=object(), allow_abort_retry=retry)
+                origin = SimpleNamespace(context=context,
+                    c34_artifact_capture=SimpleNamespace(source_fault=origin_fault),
+                    artifact_binding=SimpleNamespace(broker_path='/private/broker.sock'),
+                    environment={'KER_SOCKET_BROKER_PATH': '/private/broker.sock'})
+                if enabled:
+                    origin.environment['KER_NGINX_SOURCE_ABORT_RETRY_ENABLE'] = '1'
+                context.owner_live = MethodType(lambda self, deadline: None, origin)
+                readiness = SimpleNamespace(ready=True, stopped=False, nonce=b'b' * 16, epoch=1)
+
+                def take_helper(deadline):
+                    return os.open('/dev/null', os.O_RDONLY | os.O_CLOEXEC), (), helper.sha256
+
+                with mock.patch.object(helper_type, '_take_helper_fd', side_effect=take_helper), \
+                        mock.patch.object(module, '_source_listener_tuple',
+                            return_value=('0.0.0.0', 80, 511)), \
+                        mock.patch.object(module.subprocess, 'Popen', side_effect=BeforeExec) as launch:
+                    if expected is None:
+                        with self.assertRaisesRegex(PermissionError, 'accepted fault launch'):
+                            module.SourceShellC34InteropProvider(context, readiness, helper)
+                        launch.assert_not_called()
+                    else:
+                        with self.assertRaises(BeforeExec):
+                            module.SourceShellC34InteropProvider(context, readiness, helper)
+                        self.assertEqual(launch.call_args.args[0][3], expected)
+
+    def test_sdk_rt24_rejects_production_bundle_before_artifact_capture(self):
+        ker_run = load_module('_c34_fault_selector_negative_test', KER_RUN_PATH)
+        with tempfile.TemporaryDirectory(prefix='c34-fault-selector-') as path:
+            broker = str(Path(path) / 'broker.sock')
+            nginx = self.provider._FIXED_ARTIFACTS['nginx'][0]
+            args = SimpleNamespace(command=['/fixed/backend', broker],
+                control_nginx_owner_module=None)
+            env = {'KER_SOCKET_BROKER_PATH': broker,
+                'KER_FSTACK_NGINX_INI': str(Path(path) / 'out/fstack_rt24.ini')}
+            control = (nginx, None, None, env, None, None, True, True)
+            with mock.patch.object(self.provider.PrivateC34ArtifactCapture, 'capture') as capture:
+                with self.assertRaisesRegex(ValueError, 'matching pinned fault build'):
+                    ker_run._capture_private_c34_source_controller(
+                        args, {'deadline_ns': time.monotonic_ns() + 10_000_000_000}, control)
+                capture.assert_not_called()
+
+    def _profile(self, case='rt01', ini_case=None):
         self._require_private_capture()
         ker_run = load_module('_c34_profile_ker_run_test', KER_RUN_PATH)
         controller = load_module('_c34_profile_controller_test', CONTROLLER_PATH)
@@ -140,24 +203,38 @@ class PrivateC34ArtifactTests(unittest.TestCase):
                 'KER_NGINX_SOURCE_BOOTSTRAP_NONCE':'a'*32,
                 'KER_NGINX_SOURCE_BOOTSTRAP_EPOCH':'19',
                 startup.BOOTSTRAP_DEADLINE_ENV:str(deadline),
-                'KER_FSTACK_NGINX_INI':str(output/'fstack_rt01.ini'),
+                'KER_FSTACK_NGINX_INI':str(output / f'fstack_{ini_case or case}.ini'),
                 'KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_PID':str(os.getpid()),
                 'KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_START':str(ker_run.process_start_ticks(os.getpid())),
             }
             profile_module=controller._c34_profile_module()
-            args=['--cases','precheck,rt01','--workers','1','--graceful','1',
+            args=['--cases',f'precheck,{case}','--workers','1','--graceful','1',
                 '--target-ip',expectation.address,'--out',str(output),
                 '--fstack-conf',str(template),'--nginx',
                 str(self.provider.PrivateC34ArtifactCapture.capture.__func__.__globals__['_FIXED_ARTIFACTS']['nginx'][0]),
-                '--build-manifest',str(profile_module._PRIVATE_BUILD_MANIFEST)]
+                '--build-manifest',str(self.provider._BUILD_MANIFEST)]
             profile=profile_module.PrivateNewC34InteropProfile.capture(origin,startup,
-                source_root=profile_module._PRIVATE_SOURCE_ROOT,arguments=args,environment=environment,
+                source_root=self.provider._SOURCE_ROOT,arguments=args,environment=environment,
                 network_expectation=expectation,scope_directory=scope,stdout=None,
                 stderr=None,port_name='eth0')
             return controller,profile,directory
         except BaseException:
             directory.cleanup()
             raise
+
+    def test_traffic_profiles_require_matching_generated_ini(self):
+        for case in ('rt02', 'rt23', 'rt30', 'rt31'):
+            with self.subTest(case=case):
+                _, profile, temporary = self._profile(case)
+                try:
+                    self.assertIn(f'precheck,{case}', profile.arguments)
+                    self.assertEqual(profile.environment['KER_FSTACK_NGINX_INI'],
+                        str(Path(profile.output) / f'fstack_{case}.ini'))
+                finally:
+                    profile.close()
+                    temporary.cleanup()
+                with self.assertRaisesRegex(PermissionError, 'INI path'):
+                    self._profile(case, ini_case='rt01')
 
     def test_private_profile_exact_dispatch_and_helper_provider_route(self):
         controller_module, profile, temporary = self._profile()
@@ -348,16 +425,17 @@ class PrivateC34ArtifactTests(unittest.TestCase):
                 profile_type = ker_run._load_source_shell_controller()._c34_profile_module().PrivateNewC34InteropProfile
                 self.assertIs(type(controller.profile),
                     profile_type)
+                self.assertEqual(controller.profile.epoch, 1)
                 self.assertEqual(controller.profile.profile_id, 'NEWC34_INTEROP')
                 self.assertEqual(controller.profile.nginx, nginx)
                 self.assertEqual(controller.profile.helper_capture.source_command_abi, 1)
                 self.assertEqual(controller.profile.source_root,
-                    ker_run._PRIVATE_C34_SOURCE_ROOT.resolve(strict=True))
+                    self.provider._SOURCE_ROOT.resolve(strict=True))
                 self.assertTrue(controller.profile.scope_directory.is_relative_to('/dev/shm'))
                 self.assertFalse(ker_run._needs_nginx_companion(controller, control))
                 self.assertTrue(ker_run._needs_nginx_companion(None, control))
                 self.assertEqual(controller.profile.arguments[-2:], ('--build-manifest',
-                    str(ker_run._PRIVATE_C34_BUILD_MANIFEST)))
+                    str(self.provider._BUILD_MANIFEST)))
                 self.assertFalse(output.exists())
                 self.assertIsNone(controller.launch)
                 controller_module = ker_run._load_source_shell_controller()
@@ -443,6 +521,23 @@ class PrivateC34ArtifactTests(unittest.TestCase):
                 self.assertNotIn('source controller does not match', stderr.getvalue())
                 popen.assert_not_called()
             self.assertFalse(output.exists())
+
+    def test_private_launch_default_covers_timed_probe_and_startup(self):
+        ker_run = load_module('_c34_timed_launch_ker_run_test', KER_RUN_PATH)
+        args = SimpleNamespace(address=ipaddress.IPv4Interface('192.168.1.2/24'),
+            gateway=ipaddress.IPv4Address('192.168.1.1'),
+            control_nginx_env=['KER_SOCKET_BROKER_PATH=/run/ker/broker.sock'])
+        before = time.monotonic_ns()
+        environment, temporary, capture = ker_run._new_private_c34_network_input(args, {})
+        try:
+            self.assertGreater(capture.deadline_ns - before, 208_000_000_000)
+            self.assertLessEqual(capture.deadline_ns - before,
+                ker_run.source_network_startup.MAX_DEADLINE_AHEAD_NS)
+            self.assertEqual(environment[ker_run.source_network_startup.BOOTSTRAP_DEADLINE_ENV],
+                str(capture.deadline_ns))
+        finally:
+            capture.template_file.close()
+            temporary.cleanup()
 
     def test_private_input_render_failures_remove_temporary_directory(self):
         ker_run = load_module('_c34_input_cleanup_ker_run_test', KER_RUN_PATH)
@@ -553,7 +648,7 @@ class PrivateC34ArtifactTests(unittest.TestCase):
                 events.append(('private-launch',kwargs.get('artifact_capture')))
                 self.process=None
                 self.capture=kwargs.get('artifact_capture')
-            def live_supervisor(self,deadline): events.append(('live',deadline))
+            def wait_supervisor(self): events.append('wait')
         original=profile.origin_module.PrivateC34OriginalShellLaunch
         profile.origin_module.PrivateC34OriginalShellLaunch=Launch
         controller=None

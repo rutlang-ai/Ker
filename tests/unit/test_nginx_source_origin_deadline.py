@@ -1,7 +1,9 @@
 """Bound the real UNIX listener's pre-request wait in the source-shell SDK."""
 
+import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -24,12 +26,14 @@ class OriginDeadlineTests(unittest.TestCase):
         self.listener.bind(self.path)
         self.listener.listen(1)
         self.listener.setblocking(False)
-        self.actor = object()
+        pidfd = os.pidfd_open(os.getpid())
+        self.addCleanup(os.close, pidfd)
+        self.actor = SimpleNamespace(pidfd=pidfd)
         self.controller = object.__new__(SourceShellController)
         self.controller.started = True
         self.controller.listener = self.listener
-        self.controller.io_actor = object()
-        self.controller.launch = mock.Mock()
+        self.controller.io_actor = self.actor
+        self.controller.launch = mock.Mock(pidfd=pidfd)
         self.controller.profile = SimpleNamespace(deadline_ns=None)
 
     def connect(self):
@@ -70,6 +74,18 @@ class OriginDeadlineTests(unittest.TestCase):
             self.controller.accept_origin(self.actor)
         self.assertIs(error.exception, reject)
         self.assertEqual(client.recv(1), b"")
+        self.assertEqual(self.listener.gettimeout(), 0.0)
+
+    def test_backend_exit_interrupts_listener_wait(self):
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(0.05)'])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        pidfd = os.pidfd_open(child.pid)
+        self.addCleanup(os.close, pidfd)
+        self.controller.profile.deadline_ns = time.monotonic_ns() + 2_000_000_000
+        with self.assertRaisesRegex(ProcessLookupError, 'actor exited'):
+            self.controller.accept_origin(SimpleNamespace(pidfd=pidfd))
+        self.controller.launch.accept_origin.assert_not_called()
         self.assertEqual(self.listener.gettimeout(), 0.0)
 
     def test_expired_deadline_leaves_connection_queued(self):

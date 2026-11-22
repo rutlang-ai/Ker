@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import re
+import select
 import shutil
 import socket
 import stat
@@ -23,10 +24,20 @@ import sys
 import time
 from types import SimpleNamespace
 
-_SPEC = importlib.util.spec_from_file_location('_source_origin_bootstrap',
-    Path(__file__).with_name('nginx_source_bootstrap_supervisor.py'))
-bootstrap = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(bootstrap)
+_BOOTSTRAP_NAME = '_source_origin_bootstrap'
+_BOOTSTRAP_PATH = Path(__file__).with_name('nginx_source_bootstrap_supervisor.py').resolve(strict=True)
+bootstrap = sys.modules.get(_BOOTSTRAP_NAME)
+if bootstrap is None:
+    _SPEC = importlib.util.spec_from_file_location(_BOOTSTRAP_NAME, _BOOTSTRAP_PATH)
+    bootstrap = importlib.util.module_from_spec(_SPEC)
+    sys.modules[_BOOTSTRAP_NAME] = bootstrap
+    try:
+        _SPEC.loader.exec_module(bootstrap)
+    except BaseException:
+        del sys.modules[_BOOTSTRAP_NAME]
+        raise
+elif Path(getattr(bootstrap, '__file__', '')).resolve() != _BOOTSTRAP_PATH:
+    raise ImportError('cached Origin bootstrap module belongs to another path')
 identity = bootstrap.identity
 
 _LAUNCHER_SPEC = importlib.util.spec_from_file_location('_source_origin_launcher',
@@ -59,6 +70,36 @@ ORIGIN_MAX_STARTUP_NS = 5_000_000_000
 SOURCE_CONFIG_MAX_BYTES = 64 * 1024
 SOURCE_INI_MAX_BYTES = 16 * 1024
 SOURCE_INI_LINE_MAX = 2047
+SOURCE_RETRY_FAULT = 'flip_fail_once'
+SOURCE_RETRY_ENV = 'KER_NGINX_SOURCE_ABORT_RETRY_ENABLE'
+SOURCE_READY_DELAY_ENV = 'KER_NGINX_SOURCE_READY_DELAY_ENABLE'
+SOURCE_READY_DELAY_MS = '15000'
+SOURCE_ABORT_ENV = 'KER_NGINX_SOURCE_ABORT_ENABLE'
+SOURCE_SYNACK_FAULT_ENV = 'KER_NGINX_SOURCE_SYNACK_FAULT_ENABLE'
+SOURCE_HUP_FAULTS = {'rt20': 'ready_never', 'rt20b': 'ready_delay',
+    'rt21': 'flip_fail', 'rt22': 'park_never', 'rt24': SOURCE_RETRY_FAULT,
+    'rt26': 'synack_fail'}
+SOURCE_UNPARKED_ABORT = {
+    'rt20': ('READY wait timed out', 60_000),
+    'rt22': ('G_old park confirmation timed out', 100),
+}
+SOURCE_FAULT_SWITCHES = {'ready_delay': SOURCE_READY_DELAY_ENV,
+    'flip_fail': SOURCE_ABORT_ENV, 'ready_never': SOURCE_ABORT_ENV,
+    'park_never': SOURCE_ABORT_ENV, SOURCE_RETRY_FAULT: SOURCE_RETRY_ENV,
+    'synack_fail': SOURCE_SYNACK_FAULT_ENV}
+SOURCE_KNI_ENV = 'KER_NGINX_SOURCE_KNI_ENABLE'
+SOURCE_KNI_OPTIONS = {'enable': '1', 'method': 'reject', 'owner_proc_id': '1',
+    'tcp_port': '80,443', 'udp_port': '53'}
+SOURCE_BASELINE_SECONDS = '330'
+SOURCE_BASELINE_AUTHORITY_NS = 420_000_000_000
+SOURCE_RV9_AUTHORITY_NS = 1_800_000_000_000
+SOURCE_UPGRADE_ENV = 'KER_NGINX_SOURCE_UPGRADE_ENABLE'
+SOURCE_HUP_CASES = ('rt01', 'rt02', 'rv9', 'rt12', 'rt20', 'rt20b', 'rt21', 'rt22',
+    'rt23', 'rt24', 'rt25', 'rt26', 'rt30', 'rt31')
+SOURCE_CASE_TAGS = {'baseline': 'base', **{case: case for case in SOURCE_HUP_CASES}}
+SOURCE_HUP_INI_CASES = {f'fstack_{tag}.ini': case for case, tag in SOURCE_CASE_TAGS.items()}
+SOURCE_HUP_ARTIFACTS = frozenset(SOURCE_HUP_INI_CASES) | {
+    f'ngx_{tag}.conf' for tag in SOURCE_CASE_TAGS.values()}
 SHELL_SHA256 = '7efd3e0d10e584daa57377915da0ba2a9d1f67bebbcd2f512298230d71f35203'
 SUPERVISOR_SHA256 = '901e5ab1acff7110621a205786bf349cb8085a9f8e6c8549d9901e2449fd5d74'
 CHECKS_SHA256 = '686a57c12981af7be78a24f2f8e94e0070e456ee5042fe0f528b200bfc37bb7d'
@@ -86,46 +127,99 @@ def _read_pinned(pinned, deadline_ns=None, maximum=4 * 1024 * 1024):
     return data
 
 
-def render_rt01_config(shell_bytes, output):
+def source_hup_case(cases):
+    prefix, _, case = cases.partition(',')
+    require(prefix == 'precheck' and case in SOURCE_CASE_TAGS,
+        'source observer requires precheck followed by one supported HUP case')
+    return case
+
+
+def validate_source_hup_fault(case, arguments, environment, captured_fault):
+    """Match the exact original fault case to the frozen launch artifacts."""
+    fault = SOURCE_HUP_FAULTS.get(case)
+    require(captured_fault == fault, 'source HUP case and captured fault build differ')
+    options = [index for index, arg in enumerate(arguments) if arg == '--fault']
+    delays = [index for index, arg in enumerate(arguments) if arg == '--fault-delay-ms']
+    explicit_delay = (len(delays) == 1 and delays[0] + 1 < len(arguments) and
+        arguments[delays[0] + 1] == SOURCE_READY_DELAY_MS)
+    fault_switches = {key: environment[key] for key in
+        SOURCE_FAULT_SWITCHES.values() if key in environment}
+    expected_switches = {SOURCE_FAULT_SWITCHES[fault]: '1'} if fault is not None else {}
+    baseline = [index for index, arg in enumerate(arguments) if arg == '--baseline-duration']
+    require((len(baseline) == 1 and
+                arguments[baseline[0] + 1:baseline[0] + 2] == [SOURCE_BASELINE_SECONDS])
+            if case == 'baseline' else not baseline,
+            'source baseline requires its original duration')
+    require((environment.get(SOURCE_KNI_ENV) == '1' and
+                arguments.count('--kernel-nic-ip') == 1)
+            if case == 'rt12' else (SOURCE_KNI_ENV not in environment and
+                '--kernel-nic-ip' not in arguments),
+            'source KNI configuration is scoped to the original rt12 case')
+    repeated = environment.get('KER_NGINX_SOURCE_SUCCESSOR_ENABLE')
+    round_args = [arg for arg in arguments if arg in ('--rounds', '-r', '--interval', '-i')]
+    if case == 'rv9':
+        require(repeated == '1' and round_args == ['--rounds', '--interval'] and
+            arguments[arguments.index('--rounds') + 1:arguments.index('--rounds') + 2] == ['100'] and
+            arguments[arguments.index('--interval') + 1:arguments.index('--interval') + 2] == ['15'],
+            'rv9 requires the original 100 rounds at 15-second intervals')
+    else:
+        require(repeated is None and not round_args,
+            'committed successor authority is scoped to the original rv9 case')
+    require((case == 'rt25' and environment.get(SOURCE_UPGRADE_ENV) == '1') or
+        (case != 'rt25' and SOURCE_UPGRADE_ENV not in environment),
+        'cross-master generation directory is scoped to the original rt25 case')
+    require('--baseline' not in arguments and
+        (explicit_delay if fault == 'ready_delay' else not delays) and
+        fault_switches == expected_switches and
+        ((fault is None and not options) or
+         (fault is not None and len(options) == 1 and options[0] + 1 < len(arguments) and
+            arguments[options[0] + 1] == fault)) and
+        'FF_FAULT' not in environment and 'FF_FAULT_DELAY_MS' not in environment,
+        'source HUP fault arguments or environment differ from the captured case')
+
+
+def render_source_hup_config(shell_bytes, output, case='rt01'):
     """Render only the pinned shell's gen_nginx_conf here-doc, without a shell."""
     require(type(shell_bytes) is bytes and len(shell_bytes) <= 4 * 1024 * 1024 and
         b'\0' not in shell_bytes and b'\r' not in shell_bytes,
         'pinned shell source is malformed or oversized')
+    require(case in SOURCE_CASE_TAGS, 'unsupported source HUP config case')
     output = os.fspath(output)
     encoded_output = os.fsencode(output)
     require(len(encoded_output) <= 200 and re.fullmatch(
         rb'/[A-Za-z0-9._/-]+', encoded_output) is not None and
         all(part not in (b'', b'.', b'..') for part in encoded_output.split(b'/')[1:]),
-        'rt01 output path contains unsafe template bytes')
+        'source HUP output path contains unsafe template bytes')
     source = shell_bytes.decode('ascii', errors='strict')
     starts = list(re.finditer(r'(?m)^gen_nginx_conf\(\) \{[^\n]*\n', source))
     all_functions = list(re.finditer(r'(?m)^[A-Za-z_][A-Za-z0-9_]*\(\) \{', source))
     require(len(starts) == 1 and len(all_functions) >= 2 and
         sum(match.start() == starts[0].start() for match in all_functions) == 1,
-        'pinned shell has an ambiguous rt01 template function')
+        'pinned shell has an ambiguous source HUP template function')
     following = [match.start() for match in all_functions if match.start() > starts[0].start()]
-    require(following, 'pinned rt01 template function has no closing boundary')
+    require(following, 'pinned source HUP template function has no closing boundary')
     function = source[starts[0].start():following[0]]
     heredocs = re.findall(r'(?m)^    cat > "\$conf" <<CONF\n(.*?)^CONF\n',
         function, re.S)
     require(len(heredocs) == 1 and function.count('<<') == 1 and
         len(re.findall(r'(?m)^CONF$', function)) == 1,
-        'pinned shell has an ambiguous rt01 template here-doc')
+        'pinned shell has an ambiguous source HUP template here-doc')
     template = heredocs[0].encode('ascii')
     require(b'`' not in template and b'\\' not in template and b'$(' not in template,
-        'rt01 template contains shell expansion syntax outside the closed substitutions')
-    values = {b'WORKERS': b'1', b'stline': b'', b'OUT': encoded_output,
-        b'tag': b'rt01', b'listen': b'80'}
+        'source HUP template contains shell expansion syntax outside the closed substitutions')
+    values = {b'WORKERS': b'1', b'stline': (b'worker_shutdown_timeout  15s;'
+        if case == 'rv9' else b''), b'OUT': encoded_output,
+        b'tag': SOURCE_CASE_TAGS[case].encode('ascii'), b'listen': b'80'}
     def substitute(match):
         name = match.group(1)
-        require(name in values, 'rt01 template contains an unknown shell variable')
+        require(name in values, 'source HUP template contains an unknown shell variable')
         return values[name]
     rendered = re.sub(rb'\$([A-Za-z_][A-Za-z0-9_]*)', substitute, template)
     require(not re.search(rb'\$|`|\x00', rendered),
-        'rt01 rendered config retains expansion or control syntax')
+        'source HUP rendered config retains expansion or control syntax')
     require(rendered.count(b'include       ' + MIME_CONFIG_PATH.encode() + b';\n') == 1 and
         len(re.findall(rb'(?m)^\s*include\s+', rendered)) == 1,
-        'rt01 rendered config does not have exactly its pinned MIME include')
+        'source HUP rendered config does not have exactly its pinned MIME include')
     return rendered
 
 
@@ -333,7 +427,7 @@ class PinnedOutputArtifact:
     def __init__(self, directory_fd, name, maximum, deadline_ns):
         self.name = name
         self.fd = -1
-        require(name in ('ngx_rt01.conf', 'fstack_rt01.ini') and
+        require(name in SOURCE_HUP_ARTIFACTS and
             type(maximum) is int and maximum > 0 and
             time.monotonic_ns() < deadline_ns,
             'invalid generated source artifact request')
@@ -448,8 +542,9 @@ class OriginalShellLaunch:
                 Path(nginx).resolve(strict=True) == private_c34_capture.artifact('nginx').path and
                 Path(source_root).resolve(strict=True) == private_c34_capture.source_root and
                 private_c34_capture.source_head == '646a641cfff77f4815e1e29829a09e1ed15a2999' and
+                private_c34_capture.source_fault == c34_module._SOURCE_FAULT and
                 private_c34_capture.artifact('build_manifest').sha256 ==
-                    '9d90e32fd4343e1da0a34aa7777e9a3d68a62e14029a20ba790ab6d10784c7d8' and
+                    c34_module._BUILD_MANIFEST_SHA256 and
                 frozenset(private_c34_capture.source_symbols) == frozenset((
                     'ngx_cycle', 'ngx_ff_reload_shm', 'ngx_ff_graceful_reload',
                     'ngx_ff_process', 'ngx_process', 'ngx_worker', 'ngx_process_slot')),
@@ -494,10 +589,17 @@ class OriginalShellLaunch:
         self.epoch = int(self.environment['KER_NGINX_SOURCE_BOOTSTRAP_EPOCH'])
         self.deadline_ns = int(self.environment['KER_NGINX_SOURCE_BOOTSTRAP_DEADLINE_NS'])
         now = time.monotonic_ns()
-        require(self.epoch > 0 and now < self.deadline_ns <= now + 300_000_000_000,
+        baseline_scope = (private_c34_capture is not None and
+            self._option_value(('--cases', '-c'), 'cases') == 'precheck,baseline')
+        rv9_scope = (private_c34_capture is not None and
+            self._option_value(('--cases', '-c'), 'cases') == 'precheck,rv9')
+        authority = (SOURCE_RV9_AUTHORITY_NS if rv9_scope else
+            SOURCE_BASELINE_AUTHORITY_NS if baseline_scope else 300_000_000_000)
+        require(self.epoch > 0 and now < self.deadline_ns <= now + authority,
             'invalid immutable launch lifetime')
         require(type(network_expectation) is SourceNetworkExpectation and
             network_expectation.deadline_ns == self.deadline_ns and
+            network_expectation.repeated == rv9_scope and
             network_expectation.template_file.nonblocking and
             network_expectation.template_file.maximum == SOURCE_INI_MAX_BYTES,
             'captured source network template has a different lifetime or open mode')
@@ -516,14 +618,15 @@ class OriginalShellLaunch:
             for ch in self.output),
             'original output directory must be canonical and contain no whitespace')
         require(not Path(self.output).exists(), 'original output directory must be fresh')
-        self.expected_ini = self.output + '/fstack_rt01.ini'
-        self.expected_config = self.output + '/ngx_rt01.conf'
+        self.source_case = self._validate_source_launch_scope()
+        tag = SOURCE_CASE_TAGS[self.source_case]
+        self.expected_ini = f'{self.output}/fstack_{tag}.ini'
+        self.expected_config = f'{self.output}/ngx_{tag}.conf'
         require(len(os.fsencode(self.expected_ini)) <= 107 and
             len(os.fsencode(self.output + '/fstack-')) < 4096,
-            'original rt01 output path exceeds the native INI limits')
-        self._validate_rt01_launch_scope()
+            'original HUP output path exceeds the native INI limits')
         require(self.environment.get('KER_FSTACK_NGINX_INI') == self.expected_ini,
-            'source launch INI path is not bound to the original rt01 output')
+            'source launch INI path is not bound to the original HUP output')
         require(self._option_value(('--fstack-conf',), 'f-stack config template') ==
             network_expectation.template_path and
             str(self.network_template.path) == network_expectation.template_path,
@@ -635,16 +738,22 @@ class OriginalShellLaunch:
             'original shell requires exactly one ' + label + ' option')
         return found[0]
 
-    def _validate_rt01_launch_scope(self):
-        require('--baseline' not in self.arguments and '--fault' not in self.arguments,
-            'source observer does not support baseline/fault profile augmentation')
-        require(self._option_value(('-c', '--cases'), 'cases') == 'precheck,rt01' and
+    def _validate_source_launch_scope(self):
+        case = source_hup_case(self._option_value(('-c', '--cases'), 'cases'))
+        capture = getattr(self, 'c34_artifact_capture', None)
+        validate_source_hup_fault(case, self.arguments, getattr(self, 'environment', {}),
+            getattr(capture, 'source_fault', None))
+        if capture is not None:
+            require(self._option_value(('--build-manifest',), 'build manifest') ==
+                str(capture.artifact('build_manifest').path),
+                'original build manifest differs from the held artifact')
+        require((case == 'rt01' or type(self) is PrivateC34OriginalShellLaunch) and
             self._option_value(('--workers',), 'workers') == '1' and
             self._option_value(('--graceful',), 'graceful') == '1' and
             self._option_value(('-t', '--target-ip'), 'target') != '' and
             self._option_value(('-o', '--out'), 'output') == self.output and
             self.arguments.count('--out') == 1,
-            'source observer supports only original precheck,rt01 workers=1 graceful=1')
+            'source observer requires the matching one-worker graceful HUP profile')
         template_path = self._option_value(('--fstack-conf',), 'f-stack config template')
         require(Path(template_path).is_absolute() and
             str(Path(template_path).resolve(strict=False)) == template_path and
@@ -655,14 +764,22 @@ class OriginalShellLaunch:
             require(template_path == expectation.template_path and
                 self._option_value(('-t', '--target-ip'), 'target') == expectation.address,
                 'original target or f-stack template differs from pinned source network')
+            if case == 'rt12':
+                target = ipaddress.IPv4Address(expectation.address)
+                management = ipaddress.IPv4Address(int(target) + 1)
+                require(self._option_value(('--kernel-nic-ip',), 'management address') ==
+                    str(management) and str(management) != expectation.gateway and
+                    management < ipaddress.IPv4Address(expectation.broadcast),
+                    'source management address differs from the captured subnet')
         nginx_options = [self.arguments[index + 1]
             for index, value in enumerate(self.arguments[:-1]) if value == '--nginx']
         require(len(nginx_options) <= 1 and
             (not nginx_options or nginx_options[0] == self.nginx_argument),
             'original shell Nginx option differs from the pinned launch executable')
+        return case
 
     @staticmethod
-    def _source_ini_values(data):
+    def _source_ini_values(data, *, kni=False):
         require(type(data) is bytes and 0 < len(data) <= SOURCE_INI_MAX_BYTES and
             b'\0' not in data, 'source INI is empty, oversized, or contains NUL')
         sections = {}
@@ -685,8 +802,8 @@ class OriginalShellLaunch:
                     name = line[1:close].decode('ascii')
                 except UnicodeDecodeError as error:
                     raise PermissionError('source INI section is not ASCII') from error
-                require(name in ('ker_socket_broker', 'dpdk', 'port0') and
-                    name not in sections, 'source INI has an unknown or duplicate section')
+                require((name in ('ker_socket_broker', 'dpdk', 'port0') or
+                    (name == 'kni' and kni)) and name not in sections, 'source INI has an unknown or duplicate section')
                 sections[name] = {}
                 current = name
                 continue
@@ -708,9 +825,14 @@ class OriginalShellLaunch:
                 'file_prefix', 'fstack_log_file_prefix', 'fstack_log_level'},
             'port0': {'lcore_list', 'addr', 'netmask', 'broadcast', 'gateway'},
         }
+        if kni:
+            expected['kni'] = set(SOURCE_KNI_OPTIONS)
         require(set(sections) == set(expected) and
             all(set(sections[name]) == keys for name, keys in expected.items()),
             'source INI does not contain the exact three-section, thirteen-key schema')
+        if kni:
+            require(sections['kni'] == SOURCE_KNI_OPTIONS,
+                'source INI KNI options differ from the original management profile')
         try:
             address = ipaddress.IPv4Address(sections['port0']['addr'])
             mask = ipaddress.IPv4Address(sections['port0']['netmask'])
@@ -752,10 +874,14 @@ class OriginalShellLaunch:
         return values[0]
 
     def _bind_original_artifacts(self, origin_pid, child_pid, deadline_ns, io):
-        """Bind generated rt01 config/INI before any source context is created."""
-        self._validate_rt01_launch_scope()
-        require(self.environment.get('KER_FSTACK_NGINX_INI') == self.expected_ini,
-            'source launch INI path is not bound to the original rt01 output')
+        """Bind generated config and INI before creating a source context."""
+        case = self._validate_source_launch_scope()
+        tag = SOURCE_CASE_TAGS[case]
+        config_name, ini_name = f'ngx_{tag}.conf', f'fstack_{tag}.ini'
+        ini_path = self.output + '/' + ini_name
+        require(self.environment.get('KER_FSTACK_NGINX_INI') == self.expected_ini == ini_path and
+            self.expected_config == self.output + '/' + config_name,
+            'source launch INI path is not bound to the original HUP output')
         self.live_supervisor(deadline_ns)
         self._native_io_ready_live(io, deadline_ns)
         require(self.run_id is not None and self.output_fd >= 0 and
@@ -779,12 +905,12 @@ class OriginalShellLaunch:
             command_line = bounded_cmdline(pid, deadline_ns)
             require(command_line.endswith(b'\0') and
                 command_line[:-1].split(b'\0') == expected_argv,
-                'authenticated original Nginx argv is not the exact rt01 -c launch')
+                'authenticated original Nginx argv is not the exact HUP -c launch')
 
-        config = PinnedOutputArtifact(self.output_fd, 'ngx_rt01.conf',
+        config = PinnedOutputArtifact(self.output_fd, config_name,
             SOURCE_CONFIG_MAX_BYTES, deadline_ns)
         self.files.append(config)
-        ini = PinnedOutputArtifact(self.output_fd, 'fstack_rt01.ini',
+        ini = PinnedOutputArtifact(self.output_fd, ini_name,
             SOURCE_INI_MAX_BYTES, deadline_ns)
         self.files.append(ini)
         shell_bytes = _read_pinned(self.shell, deadline_ns)
@@ -795,25 +921,22 @@ class OriginalShellLaunch:
         require(self.environment.get(SOURCE_NETWORK_READBACK_ENV) ==
                 self.network_expectation.readback_setting(),
             'source network readback setting changed after launch')
-        expected_config = render_rt01_config(shell_bytes, self.output)
+        expected_config = render_source_hup_config(shell_bytes, self.output, case)
         require(hashlib.sha256(mime_bytes).hexdigest() == MIME_SHA256 and
             config.data == expected_config,
-            'generated main config differs from the exact pinned rt01 template or MIME source')
+            'generated main config differs from the exact pinned HUP template or MIME source')
         output_prefix = self.output + '/'
-        error_log = output_prefix + 'err_rt01.log'
+        error_log = f'{output_prefix}err_{tag}.log'
         pid_file = output_prefix + 'nginx.pid'
-        ini_path = output_prefix + 'fstack_rt01.ini'
-        require(ini_path == self.expected_ini and
-            self.environment.get('KER_FSTACK_NGINX_INI') == ini_path and
-            self._config_directive(config.data, 'daemon') == 'on' and
+        require(self._config_directive(config.data, 'daemon') == 'on' and
             self._config_directive(config.data, 'master_process') == 'on' and
             self._config_directive(config.data, 'worker_processes') == '1' and
             self._config_directive(config.data, 'error_log') == error_log + '  notice' and
             self._config_directive(config.data, 'pid') == pid_file and
             self._config_directive(config.data, 'fstack_conf') == ini_path,
-            'generated rt01 config differs from the original one-worker artifact paths')
+            'generated HUP config differs from the original one-worker artifact paths')
 
-        sections = self._source_ini_values(ini.data)
+        sections = self._source_ini_values(ini.data, kni=case == 'rt12')
         expected_network = self.network_expectation
         require(tuple(sections['port0'][key] for key in
                 ('addr', 'netmask', 'broadcast', 'gateway')) ==
@@ -821,7 +944,7 @@ class OriginalShellLaunch:
                     expected_network.broadcast, expected_network.gateway) and
             expected_network.template_sha256 == self.network_template.sha256.hex() and
             expected_network.template_path == str(self.network_template.path),
-            'generated rt01 INI network differs from the pinned original template')
+            'generated HUP INI network differs from the pinned original template')
         broker_path = self.environment.get('KER_SOCKET_BROKER_PATH', '')
         require(broker_path.startswith('/') and len(os.fsencode(broker_path)) <= 107 and
             sections['ker_socket_broker']['version'] == '1' and
@@ -833,7 +956,7 @@ class OriginalShellLaunch:
             sections['dpdk']['fstack_log_file_prefix'] == output_prefix + 'fstack-' and
             sections['dpdk']['fstack_log_level'] == '0' and
             sections['port0']['lcore_list'] == '1',
-            'generated rt01 INI differs from the authenticated source/native topology')
+            'generated HUP INI differs from the authenticated source/native topology')
 
         proof = self.native_io_ready
         require(proof.actor is io and proof.nonce == self.nonce and
@@ -845,8 +968,9 @@ class OriginalShellLaunch:
         queue_proof = record.get('queue_owner_proof')
         queues = queue_proof.get('queues') if type(queue_proof) is dict else None
         queue = queues[0] if type(queues) is list and len(queues) == 1 else None
+        main_lcore = 1 if case == 'rt12' else 0
         require(record.get('process_type') == 'primary' and
-            type(record.get('main_lcore')) is int and record['main_lcore'] == 0 and
+            type(record.get('main_lcore')) is int and record['main_lcore'] == main_lcore and
             type(record.get('lcore_count')) is int and record['lcore_count'] == 2 and
             type(record.get('port_id')) is int and record['port_id'] == 0 and
             type(record.get('port_count')) is int and record['port_count'] == 1 and
@@ -946,8 +1070,26 @@ class OriginalShellLaunch:
             re.fullmatch(r'[0-9a-f]{64}', getattr(binding, 'ini_file_sha256', '')) is not None,
             'control-only Origin ACK lacks the exact parsed artifact binding')
 
-    def live_supervisor(self, deadline_ns=None):
-        deadline_ns = min(self.deadline_ns, deadline_ns or self.deadline_ns)
+    def wait_supervisor(self):
+        """Observe the original Bash child's one exec into the pinned supervisor."""
+        deadline = min(self.deadline_ns, time.monotonic_ns() + ORIGIN_MAX_STARTUP_NS)
+        poller = select.poll()
+        poller.register(self.pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        ready_file = Path(self.output) / 'supervisor.json'
+        while time.monotonic_ns() < deadline:
+            self._require_supervisor_child(deadline)
+            value = os.stat(f'/proc/{self.process.pid}/exe')
+            executable = (value.st_dev, value.st_ino)
+            # /proc may expose the new executable during exec. Wait for the
+            # original supervisor's startup file before validating its argv.
+            if executable == self.python.frozen[:2] and ready_file.is_file():
+                return self.live_supervisor(deadline)
+            require(executable in (self.bash.frozen[:2], self.python.frozen[:2]),
+                'captured child entered an unexpected executable before supervisor startup')
+            poller.poll(2)
+        raise TimeoutError('original shell did not enter its supervisor within the startup deadline')
+
+    def _require_supervisor_child(self, deadline_ns):
         require(os.getpid() == self.creator_pid and
             identity._start_ticks(self.creator_pid) == self.creator_start and
             time.monotonic_ns() < deadline_ns and
@@ -958,6 +1100,10 @@ class OriginalShellLaunch:
             parent_pid(self.process.pid) == self.creator_pid and
             namespace_identity(self.process.pid) == self.pid_namespace,
             'captured original supervisor is no longer live')
+
+    def live_supervisor(self, deadline_ns=None):
+        deadline_ns = min(self.deadline_ns, deadline_ns or self.deadline_ns)
+        self._require_supervisor_child(deadline_ns)
         self.shell.live(deadline_ns)
         self.supervisor_script.live(deadline_ns)
         self.checks_script.live(deadline_ns)
@@ -1125,10 +1271,11 @@ class OriginalShellLaunch:
             expected_session=(self.nonce.hex(), self.epoch), require_queue_proof=True,
             expected_port_id=0, expected_queue_count=1, expected_queue_lcores=[1],
             expected_source_proc_id=1)
+        kni = getattr(self, 'source_case', None) == 'rt12'
         require(record.get('process_type') == 'primary' and
             all(type(record.get(name)) is int and record[name] == value
                 for name, value in (('port_id', 0), ('port_count', 1),
-                    ('queues', 1), ('main_lcore', 0), ('lcore_count', 2))),
+                    ('queues', 1), ('main_lcore', int(kni)), ('lcore_count', 2))),
             'native I/O READY is outside the one-port, two-lcore source profile')
         command_line = bounded_cmdline(io.pid, deadline)
         arguments = command_line[:-1].split(b'\0')
@@ -1286,6 +1433,9 @@ class OriginalShellLaunch:
             candidate_context = bootstrap.SourceBootstrapSupervisor(master, runtime, io,
                 self.nginx.path, self.nginx.sha256, self.nonce, self.epoch, self.deadline_ns,
                 observation_deadline_ns=deadline, owner_live=self.live_supervisor,
+                allow_abort_retry=(getattr(getattr(self, 'c34_artifact_capture', None),
+                    'source_fault', None) == SOURCE_RETRY_FAULT),
+                allow_successor=self.source_case in ('rv9', 'rt25'),
                 initial_cycle_proof=initial_cycle_proof,
                 expected_config_sha256=expected_config_sha256,
                 expected_ini_sha256=expected_ini_sha256, control_only=True)
@@ -1306,6 +1456,9 @@ class OriginalShellLaunch:
             self.context = candidate_context
             candidate_context = None
             self.origin_channel = channel
+            origin_fd_stat = os.fstat(self.origin_pidfd)
+            parent_pin = (self.context, self.origin_pidfd,
+                origin_fd_stat.st_dev, origin_fd_stat.st_ino)
             remaining = deadline - time.monotonic_ns()
             require(remaining > 0, 'origin ACK budget expired')
             channel.settimeout(remaining / 1_000_000_000)
@@ -1313,6 +1466,7 @@ class OriginalShellLaunch:
                 channel.sendmsg([ORIGIN.pack(*fields)], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
                     array.array('i', [supervisor_pidfd]))]) == ORIGIN.size and
                 time.monotonic_ns() < deadline, 'origin ACK missed the original startup budget')
+            self._origin_ack_parent_pin = parent_pin
             return self.context
         finally:
             if candidate_context is not None:
@@ -1321,6 +1475,40 @@ class OriginalShellLaunch:
                 os.close(fd)
             if supervisor_pidfd >= 0:
                 os.close(supervisor_pidfd)
+
+    def check_origin_parent(self, context):
+        """Retain the exact daemon parent pin across its normal post-ACK exit."""
+        fd = self.origin_pidfd
+        acknowledged = getattr(self, '_origin_ack_parent_pin', None)
+        if acknowledged is None:
+            if not identity.process_alive(fd) or identity._pidfd_pid(fd) <= 0:
+                raise ProcessLookupError('captured origin actor is no longer live before ACK')
+            return
+        info = os.fstat(fd)
+        require(context is self.context is acknowledged[0] and
+            (fd, info.st_dev, info.st_ino) == acknowledged[1:],
+            'acknowledged daemon parent pidfd binding changed')
+
+    def observe_unparked_abort(self, context, deadline):
+        """Confirm that the original master completed its selected timeout."""
+        reason, minimum_ms = SOURCE_UNPARKED_ABORT[self.source_case]
+        require(self.context is context and context._unparked_abort_profile(),
+            'unparked timeout receipt requires the exact original profile')
+        self.live_supervisor(deadline)
+        log, _ = _read_original_output_receipt(
+            self, f'err_{self.source_case}.log', 2 * 1024 * 1024, deadline)
+        actor = str(context.master.pid).encode('ascii') + b'#0: '
+        own = [entry.split(actor, 1)[1] for entry in log.splitlines()
+            if actor in entry and actor in entry[:100]]
+        before = b'T1_GNEW_SPAWN' if self.source_case == 'rt20' else b'T2_HANDOVER'
+        failure = b'graceful reload aborted: ' + reason.encode('ascii') + b' (old generation untouched)'
+        elapsed = [re.fullmatch(rb'graceful reload fsm: ' + before +
+            rb' -> T_ERROR \(transition [0-9]+, elapsed ([0-9]+) ms\)', entry)
+            for entry in own]
+        require(own.count(failure) == 1 and
+            any(match and int(match[1]) >= minimum_ms for match in elapsed),
+            'original master did not record the expected bounded timeout')
+        return hashlib.sha256(log).digest()
 
     def observe_worker_term(self, context, pending):
         """Produce typed TERM proof from this captured original supervisor.
@@ -1349,6 +1537,20 @@ class OriginalShellLaunch:
             identity._start_ticks(pending.worker_pid) == pending.worker_start_ticks,
             'pending TERM worker no longer matches its exact live grant')
 
+        return self._observe_actor_term(context, pending.worker_pid,
+            pending.worker_start_ticks, deadline, require_membership=True)
+
+    def observe_final_slim_term(self, context, deadline):
+        """Check original-supervisor TERM for the exact retired slim actor."""
+        require(self.context is context and context._can_observe_final_slim_term() and
+            not identity.process_alive(context.slim_pidfd),
+            'slim TERM observation is outside the current-owner shutdown')
+        return self._observe_actor_term(context, context.slim_pid,
+            context.slim_start_ticks, deadline, require_membership=False)
+
+    def _observe_actor_term(self, context, pid, start_ticks, deadline, *,
+            require_membership):
+        self.live_supervisor(deadline)
         snapshot_bytes, snapshot_inode = _read_original_output_receipt(
             self, 'supervisor.json', 65536, deadline)
         events_bytes, events_inode = _read_original_output_receipt(
@@ -1381,21 +1583,21 @@ class OriginalShellLaunch:
         require(type(controller) is int and controller > 0 and
             type(stack) is str and stack,
             'original stopping snapshot lacks exact controller/stack identity')
-        members = snapshot.get('members')
-        require(type(members) is list and all(type(member) is dict for member in members),
-            'original stopping snapshot members are malformed')
-        member_matches = [member for member in members if
-            member.get('pid') == pending.worker_pid and
-            member.get('start_time') == pending.worker_start_ticks]
-        if not member_matches:
-            raise BlockingIOError(errno.EAGAIN,
-                'original supervisor has not published the exact worker membership')
-        require(len(member_matches) == 1 and
-            member_matches[0].get('role') in ('target', 'orphan'),
-            'original supervisor worker membership is ambiguous or not a target')
+        if require_membership:
+            members = snapshot.get('members')
+            require(type(members) is list and all(type(member) is dict for member in members),
+                'original stopping snapshot members are malformed')
+            member_matches = [member for member in members if
+                member.get('pid') == pid and member.get('start_time') == start_ticks]
+            if not member_matches:
+                raise BlockingIOError(errno.EAGAIN,
+                    'original supervisor has not published the exact worker membership')
+            require(len(member_matches) == 1 and
+                member_matches[0].get('role') in ('target', 'orphan'),
+                'original supervisor worker membership is ambiguous or not a target')
         actor_events = [event for event in events if
-            event.get('pid') == pending.worker_pid and
-            event.get('start_time') == pending.worker_start_ticks and
+            event.get('pid') == pid and
+            event.get('start_time') == start_ticks and
             event.get('signal') in ('TERM', 'KILL')]
         require(not any(event.get('signal') == 'KILL' for event in actor_events),
             'original supervisor has already escalated this worker to KILL')
@@ -1429,7 +1631,7 @@ class OriginalShellLaunch:
             snapshot_bytes + b'\0' + events_bytes).digest()
         return bootstrap.SupervisorTermEvidence(self.process.pid, self.start,
             self.python.sha256, self.run_id, controller, stack, 'stopping',
-            pending.worker_pid, pending.worker_start_ticks, 'TERM',
+            pid, start_ticks, 'TERM',
             int(observed * 1_000_000_000), directory_identity[0],
             directory_identity[1], receipt_hash)
 
@@ -1509,6 +1711,9 @@ class OriginalShellLaunch:
         if self.context is not None:
             known_actors.extend([self.context.slim_pidfd,
                 *(fd for fd, _ in self.context.workers.values())])
+            successor = getattr(self.context, '_upgrade_master', None)
+            if successor is not None:
+                known_actors.append(successor.pidfd)
         require(all(fd < 0 or not identity.process_alive(fd) for fd in known_actors),
             'original/delegated actors still live')
         value = os.stat(self.output, follow_symlinks=False)
@@ -1608,7 +1813,7 @@ class OriginalShellLaunch:
             value.close()
 
 
-def capture_source_network_expectation(template_path, deadline_ns):
+def capture_source_network_expectation(template_path, deadline_ns, *, repeated=False):
     """Pin the owned rt01 network template before backend startup or shell Popen.
 
     The returned value owns its O_NONBLOCK|O_NOFOLLOW descriptor. Pass it to
@@ -1616,7 +1821,7 @@ def capture_source_network_expectation(template_path, deadline_ns):
     """
     now = time.monotonic_ns()
     require(type(deadline_ns) is int and deadline_ns > now and
-        deadline_ns <= now + 300_000_000_000,
+        deadline_ns <= now + (SOURCE_RV9_AUTHORITY_NS if repeated else SOURCE_BASELINE_AUTHORITY_NS),
         'source network template capture has an invalid absolute deadline')
     raw_path = os.fspath(template_path)
     require(type(raw_path) is str and Path(raw_path).is_absolute(),
@@ -1638,7 +1843,7 @@ def capture_source_network_expectation(template_path, deadline_ns):
         port = sections['port0']
         return SourceNetworkExpectation(canonical_path, pinned.sha256.hex(),
             port['addr'], port['netmask'], port['broadcast'], port['gateway'],
-            deadline_ns, pinned)
+            deadline_ns, pinned, repeated)
     except BaseException:
         pinned.close()
         raise
@@ -1663,3 +1868,154 @@ class PrivateC34OriginalShellLaunch(OriginalShellLaunch):
         super().__init__(source_root, arguments, environment, nginx, nginx_hash,
             network_expectation=network_expectation, stdout=stdout, stderr=stderr,
             cwd=cwd, _private_c34_capture=artifact_capture)
+
+
+class OriginalSerialShellLaunch(OriginalShellLaunch):
+    """Observe the pinned graceful-off shell and a master on the serial channel."""
+
+    def __init__(self, source_root, nginx, manifest, template, output, cycle,
+            *, trace, stderr=None, stdout=None):
+        self.files = []
+        self.process = None
+        self.pidfd = self.master_pidfd = self.origin_pidfd = self.output_fd = -1
+        self.context = self.origin_channel = self.settlement = None
+        self.run_id = None
+        self.started = self.unresolved = False
+        self.creator_pid = os.getpid()
+        self.creator_start = identity._start_ticks(self.creator_pid)
+        self.pid_namespace = namespace_identity(self.creator_pid)
+        self.deadline_ns = time.monotonic_ns() + 150_000_000_000
+        self.output = str(Path(output).resolve())
+        require(not Path(self.output).exists(), 'serial source output must be fresh')
+        require(cycle.source_socket is not None and cycle.outer_pid == self.creator_pid and
+            cycle.outer_start == self.creator_start,
+            'serial source shell requires a named channel owned by this process')
+        source = Path(source_root).resolve(strict=True)
+        require(subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'],
+            text=True).strip() == '646a641cfff77f4815e1e29829a09e1ed15a2999',
+            'serial source revision differs from the pinned original')
+        self.common = source / 'tests/integration/common'
+        try:
+            self.shell = self.pin(self.common.parent / 'test_graceful_reload.sh', SHELL_SHA256)
+            self.supervisor_script = self.pin(self.common / 'reload_supervisor.py', SUPERVISOR_SHA256)
+            self.checks_script = self.pin(self.common / 'reload_checks.py', CHECKS_SHA256)
+            self.runtime_script = self.pin(self.common / 'reload_runtime.sh', RUNTIME_SHA256)
+            self.launcher_script = self.pin(Path(__file__).with_name('ker-run.py'), _LAUNCHER_SHA256)
+            self.bash = self.pin('/bin/bash')
+            self.python = self.pin(shutil.which('python3', path=os.defpath))
+            build = self.pin(manifest, maximum=16 * 1024 * 1024)
+            manifest_data = json.loads(_read_pinned(build, self.deadline_ns, build.maximum))
+            self.nginx = self.pin(nginx, manifest_data['nginx']['sha256'])
+            self.binary_hash = self.nginx.sha256
+            require(str(self.nginx.path) == manifest_data['nginx']['path'],
+                'serial source Nginx differs from the build manifest')
+            self.template = self.pin(template, maximum=SOURCE_INI_MAX_BYTES)
+            config = self._source_ini_values(_read_pinned(self.template, self.deadline_ns,
+                self.template.maximum))
+            require(config['port0'] == dict(addr='198.18.0.2', netmask='255.255.255.0',
+                broadcast='198.18.0.255', gateway='198.18.0.1', lcore_list='0') and
+                config['ker_socket_broker'].get('version') == '1' and
+                config['dpdk']['graceful_reload'] == '0' and
+                config['dpdk']['primary_slim'] == '0' and
+                config['dpdk']['lcore_mask'] == '1',
+                'original serial source requires the bounded graceful-off network')
+            self.arguments = ['--cases', 'precheck,gr0', '--workers', '1', '--graceful', '0',
+                '--target-ip', '198.18.0.2', '--out', self.output,
+                '--fstack-conf', str(self.template.path), '--nginx', str(self.nginx.path),
+                '--build-manifest', str(build.path)]
+            environment = dict(PATH=os.defpath, **cycle.nginx_environment(),
+                KER_SOCKET_BROKER_PATH=config['ker_socket_broker']['path'],
+                KER_FSTACK_NGINX_INI=str(Path(self.output) / 'fstack_gr0.ini'),
+                KER_FSTACK_RUNTIME_TRACE=os.fspath(trace))
+            self.cycle = cycle
+            self.process = subprocess.Popen([str(self.bash.path), str(self.shell.path),
+                *self.arguments], env=environment, stdout=stdout, stderr=stderr,
+                close_fds=True)
+            self.pidfd = os.pidfd_open(self.process.pid)
+            self.start = identity._start_ticks(self.process.pid)
+        except BaseException as error:
+            if self.process is not None:
+                raise OriginalLaunchUnsettled(self, error) from error
+            self.close()
+            raise
+
+    def bind_initial_runtime(self, controller, context):
+        from ker_serial_generation import SerialGenerationController
+
+        require(type(controller) is SerialGenerationController and
+            not hasattr(self, 'serial_runtime') and context is controller._old_context,
+            'serial shell requires the controller’s initial native runtime')
+        controller.verify_source_initial_runtime(context, self.cycle)
+        self.serial_runtime = controller, context
+
+    def live_initial_runtime(self):
+        require(hasattr(self, 'serial_runtime'), 'serial shell has no captured native runtime')
+        controller, context = self.serial_runtime
+        controller.verify_source_initial_runtime(context, self.cycle)
+
+    def bind_master(self, pid, deadline_ns):
+        require(not self.started and not self.unresolved,
+            'original serial master was already pinned')
+        start = identity._start_ticks(pid)
+        fd = os.pidfd_open(pid)
+        try:
+            while time.monotonic_ns() < deadline_ns:
+                self.live_supervisor(deadline_ns)
+                self.nginx.matches_process(pid, deadline_ns)
+                require(namespace_identity(pid) == self.pid_namespace and
+                    identity._pidfd_pid(fd) == pid and identity.process_alive(fd) and
+                    identity._start_ticks(pid) == start,
+                    'original serial master changed during observation')
+                try:
+                    snapshot, _ = _read_original_output_receipt(self, 'supervisor.json',
+                        65536, deadline_ns)
+                except BlockingIOError:
+                    continue
+                snapshot = json.loads(snapshot)
+                actor = snapshot.get('supervisor', {})
+                require(snapshot.get('run_id') == self.run_id and
+                    (actor.get('pid'), actor.get('start_time'), actor.get('device'),
+                        actor.get('inode')) == (self.process.pid, self.start,
+                            *self.python.frozen[:2]),
+                    'serial master membership belongs to a different supervisor')
+                for member in snapshot.get('members', ()):
+                    current = member.get('current') or {}
+                    if (snapshot.get('stack') == 'gr0' and member.get('role') == 'target' and
+                        (member.get('pid'), member.get('start_time'), current.get('device'),
+                            current.get('inode')) == (pid, start, *self.nginx.frozen[:2])):
+                        self.master_pid, self.master_start, self.master_pidfd = pid, start, fd
+                        self.started = True
+                        return
+                time.sleep(.01)
+            raise TimeoutError('original supervisor did not register the serial master')
+        except BaseException:
+            os.close(fd)
+            self.unresolved = True
+            raise
+
+    def final_owner_receipt(self, owner, cycle):
+        require(self.started and not self.unresolved and self.cycle is cycle and
+            cycle.master_identity == (self.master_pid, os.getuid(), os.getgid(),
+                self.master_start, self.binary_hash),
+            'original serial master differs from the pinned cycle channel')
+        settled = self.observe_settlement()
+        require(settled['result'] == 0, 'original serial shell failed')
+        deadline = time.monotonic_ns() + 1_000_000_000
+        events, _ = _read_original_output_receipt(self, 'ownership-events.jsonl',
+            8 * 1024 * 1024, deadline)
+        require(hashlib.sha256(events).hexdigest() == settled['events_sha256'],
+            'original serial events differ from final settlement')
+        rows = [json.loads(row) for row in events.splitlines()]
+        for pid, start in ((self.master_pid, self.master_start),
+                (owner.pid, owner.start_ticks)):
+            matched = [row for row in rows if row.get('run_id') == self.run_id and
+                (row.get('pid'), row.get('start_time')) == (pid, start)]
+            require(any(row.get('event') == 'signal_requested' and row.get('signal') == 'TERM'
+                for row in matched) and not any(row.get('signal') == 'KILL' for row in matched) and
+                sum(row.get('event') == 'exited' and row.get('stack') == 'gr0'
+                    for row in matched) == 1,
+                'original serial actor lacks natural supervisor-verified retirement')
+        for artifact in self.files:
+            artifact.live(deadline)
+        return hashlib.sha256(b'ker-original-serial-shutdown-v1\0' +
+            bytes.fromhex(settled['snapshot_sha256']) + events).digest()

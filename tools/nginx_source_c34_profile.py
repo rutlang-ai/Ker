@@ -1,6 +1,5 @@
 """Exact private profile for the captured NEWC34_INTEROP source path."""
 import os
-import hashlib
 from pathlib import Path
 import re
 import stat
@@ -10,9 +9,6 @@ from types import MappingProxyType
 _PROVIDER_NAME = '_ker_nginx_source_c34_artifacts'
 _PROVIDER_PATH = Path(__file__).with_name('nginx_source_c34_artifact_provider.py').resolve(strict=True)
 _PROFILE_TOKEN = object()
-_PRIVATE_SOURCE_ROOT = Path('/home/hurricane/.local/state/ker-fstack-source-shell/source-original-case-build-20261114T122801Z/fstack-646a-shallow')
-_PRIVATE_BUILD_MANIFEST = Path('/home/hurricane/.local/state/ker-fstack-source-shell/source-original-case-build-20261114T122801Z/artifacts/original-source-build-manifest.json')
-_PRIVATE_BUILD_MANIFEST_SHA256 = '9d90e32fd4343e1da0a34aa7777e9a3d68a62e14029a20ba790ab6d10784c7d8'
 
 
 def _provider():
@@ -72,8 +68,9 @@ class PrivateNewC34InteropProfile:
         self.port_name = port_name
         self.artifact_capture = artifact_capture
         self.helper_capture = artifact_capture.helper_capture
-        self.build_manifest_path = str(_PRIVATE_BUILD_MANIFEST)
-        self.build_manifest_sha256 = _PRIVATE_BUILD_MANIFEST_SHA256
+        manifest = artifact_capture.artifact('build_manifest')
+        self.build_manifest_path = str(manifest.path)
+        self.build_manifest_sha256 = manifest.sha256
         self.profile_id = 'NEWC34_INTEROP'
         self._sealed = True
 
@@ -103,7 +100,10 @@ class PrivateNewC34InteropProfile:
             'private C34 session fields are not canonical')
         epoch, deadline = int(epoch_text), int(deadline_text)
         now = time.monotonic_ns()
-        require(0 < epoch < (1 << 64) and now < deadline <= now + 300_000_000_000 and
+        bound = (origin_module.SOURCE_RV9_AUTHORITY_NS if network_expectation.repeated else
+            origin_module.SOURCE_BASELINE_AUTHORITY_NS
+            if 'precheck,baseline' in arguments else 300_000_000_000)
+        require(0 < epoch < (1 << 64) and now < deadline <= now + bound and
             deadline == network_expectation.deadline_ns,
             'private C34 deadline/session is outside its bound')
         require(environment.get('KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_PID') == str(os.getpid()) and
@@ -123,13 +123,18 @@ class PrivateNewC34InteropProfile:
                 else: i += 1
             require(len(found) == 1, 'private C34 option is missing or duplicated')
             return found[0]
-        require('--baseline' not in args and '--fault' not in args and
-            option(('--cases','-c')) == 'precheck,rt01' and
-            option(('--workers',)) == '1' and option(('--graceful',)) == '1' and
+        case = origin_module.source_hup_case(option(('--cases','-c')))
+        require(option(('--workers',)) == '1' and option(('--graceful',)) == '1' and
             option(('--target-ip','-t')) == network_expectation.address,
-            'private C34 profile supports only precheck,rt01 workers=1 graceful=1')
+            'private C34 profile requires one worker with graceful reload enabled')
         output, template = option(('--out','-o')), option(('--fstack-conf',))
-        expected_ini = output + '/fstack_rt01.ini'
+        require(network_expectation.repeated == (case == 'rv9'),
+            'extended successor authority is specific to the original rv9 case')
+        if case not in ('baseline', 'rv9'):
+            require(deadline <= now + 300_000_000_000,
+                'extended private lifetime is scoped to the original baseline')
+        tag = origin_module.SOURCE_CASE_TAGS[case]
+        expected_ini = f'{output}/fstack_{tag}.ini'
         require(environment.get('KER_FSTACK_NGINX_INI') == expected_ini,
             'private C34 runtime INI path is not bound to fresh output')
         require(not any(environment.get(key) for key in ('LD_PRELOAD','LD_AUDIT','LD_LIBRARY_PATH')),
@@ -145,24 +150,27 @@ class PrivateNewC34InteropProfile:
             len(os.fsencode(scope / 'origin.sock')) < 108 and
             not (scope / 'origin.sock').exists() and not (scope / 'bootstrap.json').exists(),
             'private C34 scope is not a fresh owned private directory')
-        require(Path(source_root).resolve(strict=True) == _PRIVATE_SOURCE_ROOT.resolve(strict=True),
+        provider = _provider()
+        origin_module.validate_source_hup_fault(case, args, environment, provider._SOURCE_FAULT)
+        require(Path(source_root).resolve(strict=True) == provider._SOURCE_ROOT.resolve(strict=True),
             'private C34 source root differs from its fixed original-case build root')
         manifest_text = option(('--build-manifest',))
-        require(manifest_text == str(_PRIVATE_BUILD_MANIFEST) and args.count('--build-manifest') == 1,
+        require(manifest_text == str(provider._BUILD_MANIFEST) and args.count('--build-manifest') == 1,
             'private C34 build manifest path differs from its fixed capture input')
         # The descriptor is included in the private capture and stays held
         # until the profile/Origin launch relinquishes that capture.
         copied = dict(environment)
         copied[startup_module.READBACK_ENV] = network_expectation.readback_setting()
-        provider = _provider()
         capture = (provider.PrivateC34ArtifactCapture.capture(deadline)
             if artifact_capture is None else artifact_capture)
         require(type(capture) is provider.PrivateC34ArtifactCapture,
             'private C34 artifact capture has the wrong exact type')
         try:
             manifest = capture.artifact('build_manifest')
-            require(manifest.path == _PRIVATE_BUILD_MANIFEST and
-                manifest.sha256 == _PRIVATE_BUILD_MANIFEST_SHA256,
+            require(manifest.path == provider._BUILD_MANIFEST and
+                manifest.sha256 == provider._BUILD_MANIFEST_SHA256 and
+                capture.source_fault == provider._SOURCE_FAULT and
+                capture.helper_capture.source_fault == capture.source_fault,
                 'private C34 held build manifest differs from its fixed input')
             nginx_options = []
             i = 0

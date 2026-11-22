@@ -167,7 +167,17 @@ class SourceAttachment:
             raise PermissionError('accepted source master identity/profile changed')
         if time.monotonic_ns() >= launch.deadline_ns:
             raise TimeoutError('accepted source origin expired before attach')
-        if launch.deadline_ns > time.monotonic_ns() + 300_000_000_000:
+        case = getattr(launch, 'source_case', None)
+        authority = 300_000_000_000
+        self.attach_scope = 0
+        if case == 'baseline':
+            authority = 420_000_000_000
+        elif case == 'rv9' and launch.c34_artifact_capture is not None:
+            # The accepted private source launch already verified the exact
+            # 100-round command and its retained network observation.
+            self.attach_scope = wire.ATTACH_ORIGINAL_RV9
+            authority = wire.ATTACH_ORIGINAL_RV9_MAX_NS
+        if launch.deadline_ns > time.monotonic_ns() + authority:
             raise PermissionError('accepted source origin exceeds the bounded lifetime')
 
         self.launch = launch
@@ -253,7 +263,8 @@ class SourceAttachment:
             deadline_ns=launch.deadline_ns)
 
     def _identity_body(self):
-        return wire.ATTACH_BODY.pack(self.owner_pid, os.getuid(), os.getgid(), 0,
+        return wire.ATTACH_BODY.pack(self.owner_pid, os.getuid(), os.getgid(),
+            self.attach_scope,
             self.owner_start, self.launch.deadline_ns, self.master_pid,
             os.getuid(), os.getgid(), 0,
             self.master_start, self.binary_hash, self.profile)
@@ -526,14 +537,33 @@ class SourceAttachment:
                 pass
             self.helper_pidfd = -1
 
-    def check(self):
+    def check(self, *, aborted_candidate_pidfd=None):
         """Revalidate the bound source actors without acquiring lifecycle authority."""
         if not self.attached or self.ready is None:
             raise RuntimeError('source attachment is not ready for observation')
         try:
             self.launch.live_supervisor(self.launch.deadline_ns)
             ready_workers = [self.ready]
-            if self.candidate_ready is not None:
+            if aborted_candidate_pidfd is not None:
+                context = self.context
+                barriers = getattr(context, '_completed_master_barriers', set())
+                parked_abort = (barriers == {(1, 5), (1, 9)} and
+                    (getattr(context, 'allow_abort_retry', False) is True or
+                     (context._abort_only() and
+                      getattr(context, '_source_route_abort_receipt', None) is not None)))
+                unparked_abort = (not barriers and
+                    getattr(context, '_unparked_abort', None) is not None and
+                    context._unparked_abort_profile())
+                if (self.candidate_ready is None or self.launch.context is not context or
+                        not (parked_abort or unparked_abort) or
+                        context.workers.get((1, 1), (None,))[0] != aborted_candidate_pidfd):
+                    raise PermissionError('abort observation lacks the acknowledged watched candidate')
+                candidate_pin = os.fstat(self.candidate_ready[1])
+                aborted_pin = os.fstat(aborted_candidate_pidfd)
+                if ((candidate_pin.st_dev, candidate_pin.st_ino, candidate_pin.st_mode) !=
+                        (aborted_pin.st_dev, aborted_pin.st_ino, aborted_pin.st_mode)):
+                    raise PermissionError('abort observation pidfd differs from the attached candidate')
+            elif self.candidate_ready is not None:
                 ready_workers.append(self.candidate_ready)
             if (not _alive(self.master_pidfd) or
                     self.helper.poll() is not None or not _alive(self.helper_pidfd) or

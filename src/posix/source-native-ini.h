@@ -18,6 +18,7 @@
 
 #define KER_SOURCE_NATIVE_INI_PATH_MAX 4096
 #define KER_SOURCE_NATIVE_INI_SEEN_ALL UINT32_C(0x1fff)
+#define KER_SOURCE_NATIVE_INI_KNI_FIELDS UINT32_C(0x3e000)
 #define KER_SOURCE_NATIVE_EAL_PREFIX_MAX 64
 #define KER_SOURCE_NATIVE_INI_BYTES_MAX 16384
 #define KER_SOURCE_NATIVE_INI_LINE_MAX 2047
@@ -124,6 +125,27 @@ ker_source_native_ini_memory_reader(char *line, int capacity, void *opaque)
     return line;
 }
 
+static inline int
+ker_source_native_ini_kni_enabled(void)
+{
+    const char *value = getenv("KER_NGINX_SOURCE_KNI_ENABLE");
+    return value && !strcmp(value, "1");
+}
+
+static inline int
+ker_source_native_ini_serial_enabled(void)
+{
+    const char *path = getenv("KER_NGINX_SOURCE_SERIAL_PATH");
+    return path && path[0] == '/';
+}
+
+static inline uint32_t
+ker_source_native_ini_expected_fields(void)
+{
+    return KER_SOURCE_NATIVE_INI_SEEN_ALL |
+        (ker_source_native_ini_kni_enabled() ? KER_SOURCE_NATIVE_INI_KNI_FIELDS : 0);
+}
+
 /* Validate section records across the complete captured file. The upstream
  * inih callback only reports key/value records, so it cannot reject empty,
  * unknown, or repeated sections on its own. */
@@ -165,13 +187,16 @@ ker_source_native_ini_validate_sections(const char *bytes, size_t length)
                 !memcmp(bytes + first + 1, "dpdk", name_length)) bit = 2u;
             else if (name_length == sizeof("port0") - 1 &&
                 !memcmp(bytes + first + 1, "port0", name_length)) bit = 4u;
+            else if (ker_source_native_ini_kni_enabled() && name_length == sizeof("kni") - 1 &&
+                !memcmp(bytes + first + 1, "kni", name_length)) bit = 8u;
             else return -EINVAL;
             if (seen & bit) return -EINVAL;
             seen |= bit;
         }
         offset = end + (end < length ? 1 : 0);
     }
-    return seen == 7u ? 0 : -EINVAL;
+    uint32_t expected = ker_source_native_ini_kni_enabled() ? 15u : 7u;
+    return seen == expected ? 0 : -EINVAL;
 }
 
 static inline int
@@ -282,6 +307,10 @@ ker_source_native_ini_parse(void *opaque, const char *section,
 {
     struct ker_source_native_ini *config = opaque;
     if (!config || !section || !name || !value) return 0;
+    bool serial = ker_source_native_ini_serial_enabled();
+    const char *profile_flag = serial ? "0" : "1";
+    const char *mask = serial ? "1" : "3";
+    const char *hex_mask = serial ? "0x1" : "0x3";
     if (!strcmp(section, "ker_socket_broker")) {
         if (!strcmp(name, "version") && !(config->seen & (1u << 0)) &&
             !strcmp(value, "1")) {
@@ -295,19 +324,19 @@ ker_source_native_ini_parse(void *opaque, const char *section,
         return 0;
     }
     if (!strcmp(section, "dpdk")) {
-        if (!strcmp(name, "graceful_reload") && !strcmp(value, "1") &&
+        if (!strcmp(name, "graceful_reload") && !strcmp(value, profile_flag) &&
             !(config->seen & (1u << 2))) {
             config->seen |= 1u << 2;
             return 1;
         }
         if (!strcmp(name, "lcore_mask") && !(config->seen & (1u << 3)) &&
-            (!strcmp(value, "3") || !strcmp(value, "0x3"))) {
+            (!strcmp(value, mask) || !strcmp(value, hex_mask))) {
             memcpy(config->lcore_mask, value, strlen(value) + 1);
-            config->source_process_count = 2;
+            config->source_process_count = serial ? 1 : 2;
             config->seen |= 1u << 3;
             return 1;
         }
-        if (!strcmp(name, "primary_slim") && !strcmp(value, "1") &&
+        if (!strcmp(name, "primary_slim") && !strcmp(value, profile_flag) &&
             !(config->seen & (1u << 4))) {
             config->seen |= 1u << 4;
             return 1;
@@ -336,8 +365,26 @@ ker_source_native_ini_parse(void *opaque, const char *section,
         }
         return 0;
     }
+    if (!strcmp(section, "kni") && ker_source_native_ini_kni_enabled()) {
+        static const struct {
+            const char *name;
+            const char *value;
+        } options[] = {
+            {"enable", "1"}, {"method", "reject"}, {"owner_proc_id", "1"},
+            {"tcp_port", "80,443"}, {"udp_port", "53"},
+        };
+        for (size_t index = 0; index < sizeof(options) / sizeof(options[0]); ++index) {
+            uint32_t bit = UINT32_C(1) << (13 + index);
+            if (!strcmp(name, options[index].name) && !strcmp(value, options[index].value) &&
+                    !(config->seen & bit)) {
+                config->seen |= bit;
+                return 1;
+            }
+        }
+        return 0;
+    }
     if (!strcmp(section, "port0")) {
-        if (!strcmp(name, "lcore_list") && !strcmp(value, "1") &&
+        if (!strcmp(name, "lcore_list") && !strcmp(value, profile_flag) &&
             !(config->seen & (1u << 8))) {
             config->seen |= 1u << 8;
             return 1;
@@ -369,8 +416,11 @@ ker_source_native_ini_finish(const struct ker_source_native_ini *config,
     char expected[KER_SOURCE_NATIVE_INI_PATH_MAX];
     const char *slash;
     size_t path_length, directory_length, prefix_length;
-    if (!config || config->seen != KER_SOURCE_NATIVE_INI_SEEN_ALL ||
-        config->source_process_count != 2 || !ini_path || ini_path[0] != '/')
+    bool serial = ker_source_native_ini_serial_enabled();
+    if (!config || config->seen != ker_source_native_ini_expected_fields() ||
+        (serial && ker_source_native_ini_kni_enabled()) ||
+        config->source_process_count != (serial ? 1u : 2u) ||
+        !ini_path || ini_path[0] != '/')
         return -EINVAL;
     int network_status = ker_source_native_ini_network_valid(config);
     if (network_status) return network_status;
@@ -417,6 +467,13 @@ ker_source_native_io_argv_validate(char *const argv[], size_t argc,
         {"--log-dir", true}, {"--log-level", true}, {"--pcap-dir", true},
         {"--pcap-snaplen", true}, {"--pcap-max-bytes", true}
     };
+    static const struct { const char *name; const char *value; } kni[] = {
+        {"--exception-mode", "ports"}, {"--exception-policy", "reject"},
+        {"--exception-tcp-ports", "80,443"}, {"--exception-udp-ports", "53"},
+        {"--exception-iface", "kerkni"},
+    };
+    size_t kni_matches = 0;
+    bool kni_enabled = ker_source_native_ini_kni_enabled();
     size_t split = 0;
     const char *queues = NULL, *rx_lcores = NULL, *port = NULL;
     const char *proof_nonce = NULL, *proof_epoch = NULL, *source_proc = NULL;
@@ -425,7 +482,7 @@ ker_source_native_io_argv_validate(char *const argv[], size_t argc,
     char expected_nonce[33], expected_epoch[32];
     char expected_prefix[KER_SOURCE_NATIVE_EAL_PREFIX_MAX + 1];
     if (!argv || argc < 2 || !config || !nonce || !epoch ||
-        config->seen != KER_SOURCE_NATIVE_INI_SEEN_ALL) return -EINVAL;
+        config->seen != ker_source_native_ini_expected_fields()) return -EINVAL;
     for (size_t i = 0; i < argc; ++i) {
         if (!argv[i] || !*argv[i]) return -EINVAL;
     }
@@ -448,6 +505,14 @@ ker_source_native_io_argv_validate(char *const argv[], size_t argc,
             split++;
         }
         const char *name = options[option_index].name;
+        if (kni_enabled) {
+            for (size_t i = 0; i < sizeof(kni) / sizeof(kni[0]); ++i) {
+                if (strcmp(name, kni[i].name)) continue;
+                if (strcmp(value, kni[i].value)) return -EINVAL;
+                ++kni_matches;
+                break;
+            }
+        }
         if (!strcmp(name, "--queues")) queues = value;
         else if (!strcmp(name, "--rx-lcores")) rx_lcores = value;
         else if (!strcmp(name, "--port")) port = value;
@@ -456,6 +521,7 @@ ker_source_native_io_argv_validate(char *const argv[], size_t argc,
         else if (!strcmp(name, "--queue-proof-source-proc-id")) source_proc = value;
         else if (!strcmp(name, "--rx-decision-fd")) decision_fd = value;
     }
+    if (kni_enabled && kni_matches != sizeof(kni) / sizeof(kni[0])) return -EINVAL;
     if (split >= argc || strcmp(argv[split], "--") || !queues ||
         strcmp(queues, "1") || !rx_lcores || strcmp(rx_lcores, "1") ||
         !port || !*port || !proof_nonce || !proof_epoch || !source_proc ||
