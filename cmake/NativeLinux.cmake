@@ -295,6 +295,8 @@ set(KER_FSTACK_ORIGINAL_SHELL_SOURCE "" CACHE PATH
     "Pinned F-Stack checkout for building the original source-shell caller in CTest")
 set(KER_FSTACK_ORIGINAL_SHELL_DPDK_BUILD "" CACHE PATH
     "Pinned DPDK Meson build tree used by the original shell provenance checker")
+set(KER_FSTACK_ORIGINAL_SHELL_VIRTIO_TESTPMD "" CACHE FILEPATH
+    "Pinned DPDK testpmd from an installation with virtio and af_packet PMDs for the rt12 source-shell case")
 if(BUILD_TESTING AND KER_FSTACK_ORIGINAL_SHELL_SOURCE)
     if(NOT EXISTS "${KER_FSTACK_ORIGINAL_SHELL_DPDK_BUILD}/meson-info/meson-info.json")
         message(FATAL_ERROR "KER_FSTACK_ORIGINAL_SHELL_DPDK_BUILD must point to the pinned DPDK build")
@@ -1177,6 +1179,43 @@ if(BUILD_TESTING)
         "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
     target_link_libraries(ker-member-census-runtime-test PRIVATE ker-posix-member-census-test-runtime)
     include("${PROJECT_SOURCE_DIR}/cmake/NativeRequestRevoke.cmake")
+    if(KER_FSTACK_ORIGINAL_SHELL_SOURCE)
+        if(TARGET ker-fstack-nginx-fault-test-runtime)
+            set(ker_original_shell_cases rt20 rt20b rt21 rt22 rt24 rt26)
+        else()
+            set(ker_original_shell_cases baseline rt01 rt02 rv9 rt23 rt25 rt30 rt31)
+            if(KER_FSTACK_ORIGINAL_SHELL_VIRTIO_TESTPMD)
+                list(APPEND ker_original_shell_cases rt12)
+            endif()
+        endif()
+        set(ker_original_shell_fixture "${CMAKE_CURRENT_BINARY_DIR}/fstack-original-shell")
+        foreach(ker_original_shell_case IN LISTS ker_original_shell_cases)
+            set(ker_original_shell_virtio_args)
+            set(ker_original_shell_processors 6)
+            if(ker_original_shell_case STREQUAL "rt12")
+                set(ker_original_shell_virtio_args --virtio-testpmd "${KER_FSTACK_ORIGINAL_SHELL_VIRTIO_TESTPMD}")
+                set(ker_original_shell_processors 8)
+            endif()
+            add_test(NAME "fstack-original-shell-${ker_original_shell_case}"
+                COMMAND "${Python3_EXECUTABLE}" -B
+                    "${PROJECT_SOURCE_DIR}/tests/posix/fstack-original-shell-guest.py"
+                    --repo "${PROJECT_SOURCE_DIR}" --fixture "${ker_original_shell_fixture}"
+                    --output "${ker_original_shell_fixture}/runs" --case "${ker_original_shell_case}"
+                    --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                    --broker "$<TARGET_FILE:ker-socket-broker-rx-owner-relay-fixture>"
+                    --owner-helper "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --pmd-dir "${ker_session_pmd_dir}" ${ker_original_shell_virtio_args})
+            set(ker_original_shell_timeout 310)
+            if(ker_original_shell_case STREQUAL "baseline")
+                set(ker_original_shell_timeout 440)
+            elseif(ker_original_shell_case STREQUAL "rv9")
+                set(ker_original_shell_timeout 1790)
+            endif()
+            set_tests_properties("fstack-original-shell-${ker_original_shell_case}" PROPERTIES
+                TIMEOUT ${ker_original_shell_timeout} PROCESSORS ${ker_original_shell_processors} PROCESSOR_AFFINITY TRUE
+                LABELS "native-tcp;fstack;source-shell" FIXTURES_REQUIRED fstack-original-shell-caller)
+        endforeach()
+    endif()
     include("${PROJECT_SOURCE_DIR}/cmake/NativeAdmissionRequestIdentity.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/NativeIngressFreezeTests.cmake")
     add_executable(ker-socket-broker-inherited-group-client

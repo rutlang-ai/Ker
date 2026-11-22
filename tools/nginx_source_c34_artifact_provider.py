@@ -1,7 +1,8 @@
 """Private, fixed-input captures for the new matched C34 interop build.
 
-This module deliberately exposes no caller-selected artifact path or digest.
 Captures are build evidence only; they do not grant Source Origin authority.
+The private CLI uses fixed inputs. Repository tests can capture their own
+build outputs from inside a disposable PID namespace.
 """
 import hashlib
 import json
@@ -9,6 +10,7 @@ import os
 from pathlib import Path
 import stat
 import struct
+import subprocess
 import time
 from types import MappingProxyType
 
@@ -248,15 +250,15 @@ class PrivateC34HelperCapture:
             raise AttributeError('private C34 helper capture is immutable')
         object.__setattr__(self, name, value)
 
-    def __init__(self, token, artifacts, deadline_ns):
+    def __init__(self, token, artifacts, deadline_ns, *, fixture_fault=None):
         if token is not _TOKEN:
             raise TypeError('private C34 helper captures require capture()')
         self._sealed = False
         self._artifacts = artifacts
-        self.sha256 = bytes.fromhex(_HELPER_SHA256)
-        self.build_id = _HELPER_BUILD_ID
+        self.sha256 = bytes.fromhex(artifacts[0].sha256)
+        self.build_id = artifacts[0].build_id
         self.source_command_abi = 1
-        self.source_fault = _SOURCE_FAULT
+        self.source_fault = _SOURCE_FAULT if fixture_fault is None else fixture_fault or None
         self._deadline_ns = deadline_ns
         self._consumed = False
         self._sealed = True
@@ -314,26 +316,42 @@ class PrivateC34HelperCapture:
             item.close()
 
 
+def _nginx_source_symbols(nm_data):
+    symbols = {}
+    for line in nm_data.splitlines():
+        fields = line.split()
+        if len(fields) == 3 and fields[2] in _SOURCE_EXPORT_NAMES:
+            if fields[2] in symbols or len(fields[1]) != 1 or not all(
+                    ch in '0123456789abcdefABCDEF' for ch in fields[0]):
+                raise PermissionError('private C34 Nginx symbol inventory is ambiguous')
+            symbols[fields[2]] = int(fields[0], 16), fields[1]
+    if symbols.keys() != _SOURCE_EXPORT_NAMES or any(
+            kind not in ('B', 'D') for _, kind in symbols.values()):
+        raise PermissionError('private C34 Nginx lacks its fixed source observer export inventory')
+    return symbols
+
+
 class PrivateC34ArtifactCapture:
     """Immutable capture of fixed production roots, test actor, and helper."""
     __slots__ = ('_sealed', '_artifacts', 'helper_capture', 'profile_id', 'test_backend_role',
-        'source_root', 'source_head', 'source_symbols', 'source_fault')
+        'source_root', 'source_head', 'source_symbols', 'source_fault', 'is_test_fixture')
 
     def __setattr__(self, name, value):
         if getattr(self, '_sealed', False):
             raise AttributeError('private C34 artifact capture is immutable')
         object.__setattr__(self, name, value)
 
-    def __init__(self, token, artifacts, helper_capture, source_symbols):
+    def __init__(self, token, artifacts, helper_capture, source_symbols, *, fixture_root=None):
         if token is not _TOKEN:
             raise TypeError('private C34 artifact captures require capture()')
         self._sealed = False
         self._artifacts = MappingProxyType(dict(artifacts))
         self.helper_capture = helper_capture
         self.profile_id = 'NEWC34_INTEROP'
-        self.source_root = _SOURCE_ROOT
+        self.is_test_fixture = fixture_root is not None
+        self.source_root = _SOURCE_ROOT if fixture_root is None else fixture_root
         self.source_head = '646a641cfff77f4815e1e29829a09e1ed15a2999'
-        self.source_fault = _SOURCE_FAULT
+        self.source_fault = helper_capture.source_fault
         self.source_symbols = MappingProxyType(dict(source_symbols))
         self.test_backend_role = 'TEST_ONLY_RX_OWNER_RELAY_CONTROL_ADAPTER'
         self._sealed = True
@@ -465,20 +483,9 @@ class PrivateC34ArtifactCapture:
                 held['source_git_head'].identity[2] + 1, 0).decode('ascii').strip()
             if head_text != '646a641cfff77f4815e1e29829a09e1ed15a2999':
                 raise PermissionError('private C34 source root HEAD differs from fresh build manifest')
-            symbols = {}
             nm_data = os.pread(held['nginx_symbols'].fd,
                 held['nginx_symbols'].identity[2] + 1, 0).decode('ascii')
-            for line in nm_data.splitlines():
-                fields = line.split()
-                if len(fields) == 3 and fields[2] in _SOURCE_EXPORT_NAMES:
-                    if fields[2] in symbols or len(fields[1]) != 1 or not all(
-                            ch in '0123456789abcdefABCDEF' for ch in fields[0]):
-                        raise PermissionError('private C34 Nginx symbol inventory is ambiguous')
-                    symbols[fields[2]] = (int(fields[0], 16), fields[1])
-            if (symbols.keys() != _SOURCE_EXPORT_NAMES or any(
-                    symbols[name][1] not in ('B', 'D') for name in _SOURCE_EXPORT_NAMES)):
-                raise PermissionError('private C34 Nginx lacks its fixed source observer export inventory')
-            source_symbols = symbols
+            source_symbols = _nginx_source_symbols(nm_data)
             for graph_name, artifact_name in graph_bindings.items():
                 root = graph_roots.get(graph_name)
                 if root is None:
@@ -498,6 +505,94 @@ class PrivateC34ArtifactCapture:
         except BaseException:
             for item in held.values(): item.close()
             if helper is not None: helper.close()
+            raise
+
+    @classmethod
+    def capture_test_fixture(cls, manifest_path, library, worker, backend, helper_path,
+            deadline_ns, *, fault):
+        """Hold binaries from the repository's verified source-shell build fixture."""
+        if os.getpid() != 1:
+            raise PermissionError('C34 test fixture requires the isolated PID-1 launcher')
+        manifest_path = Path(manifest_path).resolve(strict=True)
+        stage = manifest_path.parent
+        source = stage / 'fstack'
+        nginx = source / 'app/nginx-1.28.0/objs/nginx'
+        runtime_dir = worker.parent
+        runtime = (runtime_dir / 'libfstack.so').resolve(strict=True)
+        release = '646a641cfff77f4815e1e29829a09e1ed15a2999'
+        held = {}
+        helper = None
+
+        def hold(name, path, elf, *, alias=None):
+            resolved = Path(path).resolve(strict=True)
+            alias_target = None
+            alias_identity = None
+            if alias is not None:
+                link = alias.lstat()
+                if not stat.S_ISLNK(link.st_mode) or alias.resolve(strict=True) != resolved:
+                    raise PermissionError('C34 test fixture Nginx resolves a different runtime')
+                alias_target = os.readlink(alias)
+                alias_identity = (link.st_dev, link.st_ino, link.st_mtime_ns, link.st_ctime_ns)
+            fd = _open_nofollow(resolved, deadline_ns)
+            try:
+                info = os.fstat(fd)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+                        info.st_nlink != 1 or not 0 < info.st_size <= 512 * 1024 * 1024):
+                    raise PermissionError(f'C34 test fixture {name} must be an owned regular file')
+                data = os.pread(fd, info.st_size + 1, 0)
+                if len(data) != info.st_size:
+                    raise PermissionError(f'C34 test fixture {name} changed size')
+                digest = hashlib.sha256(data).hexdigest()
+                build_id = _elf_build_id(fd, info.st_size, deadline_ns) if elf else None
+                item = _HeldArtifact(_TOKEN, name, resolved, fd, digest, build_id, info,
+                    alias, alias_target, alias_identity)
+                item.verify(deadline_ns)
+                return item
+            except BaseException:
+                os.close(fd)
+                raise
+
+        try:
+            for name, path, elf in (
+                    ('build_manifest', manifest_path, False),
+                    ('nginx', nginx, True),
+                    ('first_builtin_elf', stage / 'nginx-first.elf', True),
+                    ('shim', stage / 'ff/lib/libker-fstack-nginx-worker-shim.so', True),
+                    ('preload', runtime_dir / 'libker-socket-preload.so', True),
+                    ('posix', library, True), ('io_worker', worker, True),
+                    ('ker_app', runtime_dir / 'ker-app', True),
+                    ('test_backend', backend, True)):
+                held[name] = hold(name, path, elf)
+            held['runtime'] = hold('runtime', runtime, True, alias=stage / 'ff/lib/libfstack.so')
+            if held['nginx'].sha256 != held['first_builtin_elf'].sha256:
+                raise PermissionError('C34 test fixture relink changed the Nginx ELF')
+            checks_path = 'tests/integration/common/reload_checks.py'
+            checks = source / checks_path
+            pinned_checks = subprocess.check_output(['git', '-C', source, 'show',
+                f'{release}:{checks_path}'])
+            if checks.read_bytes() != pinned_checks:
+                raise PermissionError('C34 test fixture upstream build verifier changed')
+            manifest = json.loads(os.pread(held['build_manifest'].fd,
+                held['build_manifest'].identity[2], 0))
+            if (manifest.get('libfstack') != {'path': str(runtime), 'sha256': held['runtime'].sha256}
+                    or manifest.get('nginx') != {'path': str(nginx), 'sha256': held['nginx'].sha256}):
+                raise PermissionError('C34 test fixture manifest does not bind the held binaries')
+            subprocess.run(['/usr/bin/python3', '-B', checks, 'verify-build',
+                manifest_path, nginx, release, fault or ''], check=True, stdout=subprocess.DEVNULL,
+                timeout=max(0.001, (deadline_ns - time.monotonic_ns()) / 1e9))
+            symbols = _nginx_source_symbols(subprocess.check_output(
+                ['nm', '--defined-only', nginx], text=True))
+            helper_item = hold('helper', helper_path, True)
+            helper = PrivateC34HelperCapture(_TOKEN, (helper_item,), deadline_ns,
+                fixture_fault=fault or '')
+            capture = cls(_TOKEN, held, helper, symbols, fixture_root=source)
+            capture.verify(deadline_ns)
+            return capture
+        except BaseException:
+            for item in held.values():
+                item.close()
+            if helper is not None:
+                helper.close()
             raise
 
     def verify(self, deadline_ns):

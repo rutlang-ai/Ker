@@ -2,13 +2,20 @@
 """Run an original F-Stack source-shell test in private Linux namespaces."""
 
 import argparse
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
+import secrets
 import subprocess
 import sys
 import tempfile
+import threading
+import traceback
 import time
 
 SSH_ROOT = Path("/run/fstack-ssh")
@@ -16,6 +23,9 @@ WORKSPACE = Path("/data/workspace")
 SERVER_IP = "169.254.28.1"
 CLIENT_IP = "169.254.28.2"
 SSH_PORT = 2222
+PRODUCTION_CASES = ("precheck", "gr0", "baseline", "rt01", "rt02", "rv9",
+                    "rt12", "rt23", "rt25", "rt30", "rt31")
+FAULT_CASES = ("rt20", "rt20b", "rt21", "rt22", "rt24", "rt26")
 
 
 def run(*command, **kwargs):
@@ -123,15 +133,15 @@ def start_client(config, log_path):
     raise RuntimeError(f"SSH client did not start; see {log_path}")
 
 
-def prepare_source(repo, fixture):
+def prepare_source(repo, fixture, case):
     manifest = Path((fixture / "manifest-path").read_text().strip()).resolve(strict=True)
     if not manifest.is_relative_to(fixture):
         raise RuntimeError("source-shell fixture manifest is outside its build tree")
     build = json.loads(manifest.read_text())
     source = manifest.parent / "fstack"
     nginx = source / "app/nginx-1.28.0/objs/nginx"
-    if build["nginx"]["path"] != str(nginx) or build["fault_injection"] is not False:
-        raise RuntimeError("the original case requires the production source-shell fixture")
+    if build["nginx"]["path"] != str(nginx) or build["fault_injection"] is not (case in FAULT_CASES):
+        raise RuntimeError("the original case requires its matching source-shell build variant")
 
     (WORKSPACE / "f-stack").symlink_to(source, target_is_directory=True)
     for name in ("ker-source-shell-wrapper.py", "nginx-source-shell-helper.py"):
@@ -180,13 +190,17 @@ def verify_original_verdicts(output, cases):
     return events[-1]
 
 
-def prepare_serial_tap(client):
+def prepare_data_link(client):
     enter = ["nsenter", "-t", str(client), "-n"]
     run("ip", "link", "add", "kerlink", "type", "veth", "peer", "name", "kertraffic")
     run("ip", "link", "set", "kerlink", "up")
     run("ip", "link", "set", "kertraffic", "netns", str(client))
     run(*enter, "ip", "addr", "add", "198.18.0.1/24", "dev", "kertraffic")
     run(*enter, "ip", "link", "set", "kertraffic", "up")
+
+
+def prepare_serial_tap(client):
+    prepare_data_link(client)
     run("ip", "tuntap", "add", "dev", "kerpeer", "mode", "tap", "multi_queue")
     run("ip", "link", "set", "kerpeer", "up")
 
@@ -196,11 +210,6 @@ def run_gr0(repo, source, nginx, manifest, run_dir, args):
     from nginx_cycle_control import NginxCycleControl
     import nginx_source_origin as origin
     from nginx_source_scope import CapturedScopeRoot, SourceScopeCapsules
-
-    prefix = manifest.parent / "nginx-prefix"
-    for name in ("html", "logs"):
-        (prefix / name).mkdir(exist_ok=True)
-    shutil.copyfile(source / "app/nginx-1.28.0/html/index.html", prefix / "html/index.html")
 
     output = run_dir / "original-output"
     broker = run_dir / "broker.sock"
@@ -271,13 +280,181 @@ gateway=198.18.0.1
     original.close()
 
 
+def rt12_virtio(testpmd, stop, evidence):
+    def interfaces():
+        listing = run("ip", "-j", "link", "show", capture_output=True, text=True)
+        return {entry["ifname"]: entry for entry in json.loads(listing.stdout)}
+
+    def wait_interfaces(*names):
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline and not stop.is_set():
+            current = interfaces()
+            if all(name in current for name in names):
+                return current
+            time.sleep(0.05)
+        raise RuntimeError(f"rt12 interfaces did not appear: {names}")
+
+    pmds = [item.parent for item in testpmd.parent.parent.glob(
+        "lib*/dpdk/pmds-*/librte_net_virtio.so")]
+    if len(pmds) != 1 or not (pmds[0] / "librte_net_af_packet.so").is_file():
+        raise RuntimeError("rt12 testpmd requires its installed virtio and af_packet PMDs")
+    pmd_dir = pmds[0]
+    libraries = pmd_dir.parent.parent
+    devices = wait_interfaces("kerprobe", "kerkni")
+    run("ip", "link", "set", "kerprobe", "up")
+    for source, target in (("kerlink", "kerprobe"), ("kerprobe", "kerlink")):
+        run("tc", "qdisc", "add", "dev", source, "clsact")
+        run("tc", "filter", "add", "dev", source, "ingress", "pref", "1",
+            "matchall", "action", "mirred", "egress", "redirect", "dev", target)
+    mac = devices["kerkni"]["address"]
+    main_cpu, io_cpu = sorted(os.sched_getaffinity(0))[-2:]
+    with (evidence / "virtio-testpmd.log").open("wb") as log:
+        command = [testpmd, "-l", f"{main_cpu},{io_cpu}", "--main-lcore", str(main_cpu),
+            "--no-huge", "--no-pci", "--no-telemetry", "--iova-mode=va", "-m", "96",
+            "--file-prefix=rt12-virtio", "--vdev=net_af_packet0,iface=kerkni",
+            f"--vdev=net_virtio_user0,path=/dev/vhost-net,iface=veth0,mac={mac}", "--",
+            "-i", "--auto-start", "--no-numa", "--forward-mode=io", "--nb-cores=1",
+            "--total-num-mbufs=8192"]
+        env = {**os.environ, "LD_LIBRARY_PATH": str(libraries)}
+        with subprocess.Popen(command, env=env, stdin=subprocess.PIPE, stdout=log,
+                              stderr=subprocess.STDOUT) as sidecar:
+            try:
+                wait_interfaces("veth0")
+                run("ip", "link", "set", "veth0", "up")
+                run("ip", "addr", "add", "198.18.0.3/24", "dev", "veth0")
+                with (evidence / "virtio-link-before").open("wb") as receipt:
+                    run("ip", "-d", "-o", "link", "show", "veth0", stdout=receipt)
+                while not stop.wait(0.1):
+                    if sidecar.poll() is not None:
+                        raise RuntimeError("rt12 testpmd exited while the original probe was active")
+            finally:
+                if sidecar.poll() is None:
+                    try:
+                        sidecar.communicate(b"show port stats all\nstop\nquit\n", timeout=10)
+                    except subprocess.TimeoutExpired:
+                        sidecar.kill()
+                        sidecar.communicate()
+                        raise
+            if sidecar.returncode != 0 or "veth0" in interfaces():
+                raise RuntimeError("rt12 testpmd did not remove its virtio-user interface")
+
+
+@contextmanager
+def capture_runtime_log(path):
+    sys.stdout.flush()
+    sys.stderr.flush()
+    out_fd = os.dup(1)
+    err_fd = os.dup(2)
+    try:
+        with path.open("wb") as log:
+            os.dup2(log.fileno(), 1, inheritable=True)
+            os.dup2(log.fileno(), 2, inheritable=True)
+            try:
+                yield
+            finally:
+                sys.stdout.flush()
+                sys.stderr.flush()
+    finally:
+        os.dup2(out_fd, 1, inheritable=True)
+        os.dup2(err_fd, 2, inheritable=True)
+        os.close(out_fd)
+        os.close(err_fd)
+
+
+def run_c34(repo, nginx, manifest, prefix, run_dir, args):
+    import nginx_source_origin as origin
+
+    launcher = repo / "tools/ker-run.py"
+    spec = importlib.util.spec_from_file_location("ker_run", launcher)
+    ker_run = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ker_run
+    spec.loader.exec_module(ker_run)
+    artifacts = ker_run._load_source_shell_controller()._c34_profile_module()._provider()
+    fault = origin.SOURCE_HUP_FAULTS.get(args.case)
+    seconds = 1750 if args.case == "rv9" else 410 if args.case == "baseline" else 280
+    deadline = time.monotonic_ns() + seconds * 1_000_000_000
+    with open(run_dir / "caller.conf", "w") as dummy:
+        dummy.write("events {}\n")
+    capture = artifacts.PrivateC34ArtifactCapture.capture_test_fixture(manifest, args.library,
+        args.worker, args.broker, args.owner_helper, deadline, fault=fault)
+    try:
+        cpu, rx_cpu = sorted(os.sched_getaffinity(0))[:2]
+        pmd = args.pmd_dir / "librte_net_tap.so"
+        eal = (f"--lcores=0@{cpu},1@{rx_cpu} --no-huge --no-pci --no-telemetry "
+               f"--iova-mode=va -m 96 -d {pmd} ")
+        exception = []
+        if args.case == "rt12":
+            eal += "--main-lcore=1 --vdev=net_tap0,iface=kerprobe"
+            exception = ["--exception-iface", "kerkni", "--exception-mode", "ports",
+                         "--exception-policy", "reject", "--exception-tcp-ports", "80,443",
+                         "--exception-udp-ports", "53"]
+        else:
+            eal += "--vdev=net_tap0,iface=kerpeer,remote=kerlink"
+        broker = run_dir / "broker.sock"
+        out = run_dir / "original-output"
+        ini = out / f"fstack_{origin.SOURCE_CASE_TAGS[args.case]}.ini"
+        trace = run_dir / "runtime.trace"
+        preload = ":".join(str(capture.artifact(role).path)
+                           for role in ("runtime", "preload", "shim"))
+        os.environ.update(KER_NGINX_SOURCE_BOOTSTRAP_DEADLINE_NS=str(deadline),
+                          KER_RX_OWNER_SOURCE_ROUTE_ENABLE="1",
+                          KER_RX_OWNER_PEER_AUTH_ENABLE="1",
+                          KER_RX_OWNER_RELAY_PROBE_TOKEN=secrets.token_hex(12))
+        sys.argv = list(map(str, [launcher, "--address", "198.18.0.2/24", "--gateway",
+            "198.18.0.1", f"--eal={eal}", "--port", "net_tap0",
+            "--max-mtu", "1500", "--no-rss", "--runtime-service", "--rx-decision",
+            "--broker-readiness", "--queues", "1", "--rx-lcores", "1", *exception,
+            "--stats", run_dir / "native.stats.json",
+            "--control-nginx-binary", nginx, "--control-nginx-config", run_dir / "caller.conf",
+            "--control-nginx-prefix", prefix, "--control-nginx-owner-ready",
+            "--control-nginx-source-bootstrap-required", "--control-nginx-source-shell-profile",
+            "--control-nginx-source-private-c34-profile", "--control-nginx-rx-relay",
+            "--control-nginx-env", f"LD_PRELOAD={preload}",
+            "--control-nginx-env", f"KER_SOCKET_BROKER_PATH={broker}",
+            "--control-nginx-env", f"KER_FSTACK_NGINX_INI={ini}",
+            "--control-nginx-env", f"KER_FSTACK_RUNTIME_TRACE={trace}",
+            "--", args.broker, broker]))
+        if args.case == "rt12":
+            stop = threading.Event()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                sidecar = pool.submit(rt12_virtio, args.virtio_testpmd, stop, run_dir)
+                try:
+                    status = ker_run.main(c34_test_capture=capture)
+                finally:
+                    stop.set()
+                    sidecar.result()
+        else:
+            status = ker_run.main(c34_test_capture=capture)
+        if status != 0:
+            raise RuntimeError(f"C34 native runtime exited {status}")
+    except Exception:
+        traceback.print_exc()
+        raise
+    finally:
+        capture.close()
+    verify_original_verdicts(out, ["precheck", args.case])
+    stats = json.loads((run_dir / "native.stats.json").read_text())
+    if (stats.get("run_shutdown_ack") is not True or stats.get("outstanding") != 0 or
+            stats.get("worker_exit_code") != 0 or stats.get("rx_decision_settled") is not True):
+        raise RuntimeError(f"Missing native STOP or RX settlement for {args.case}")
+
+
+def prepare_nginx_prefix(source, stage):
+    prefix = stage / "nginx-prefix"
+    run("mount", "-t", "tmpfs", "tmpfs", prefix)
+    for name in ("html", "logs"):
+        (prefix / name).mkdir()
+    shutil.copyfile(source / "app/nginx-1.28.0/html/index.html", prefix / "html/index.html")
+    return prefix
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--case", choices=("precheck", "gr0"), required=True)
-    for name in ("library", "worker", "broker", "pmd-dir"):
+    parser.add_argument("--case", choices=PRODUCTION_CASES + FAULT_CASES, required=True)
+    for name in ("library", "worker", "broker", "pmd-dir", "owner-helper", "virtio-testpmd"):
         parser.add_argument(f"--{name}", type=Path)
     parser.add_argument("--parent-namespaces", nargs=3)
     args = parser.parse_args()
@@ -285,11 +462,16 @@ def main():
     fixture = args.fixture.resolve(strict=True)
     out = args.output.resolve()
     inputs = {}
-    if args.case == "gr0":
-        for name in ("library", "worker", "broker", "pmd_dir"):
+    if args.case != "precheck":
+        names = ("library", "worker", "broker", "pmd_dir")
+        if args.case != "gr0":
+            names += ("owner_helper",)
+        if args.case == "rt12":
+            names += ("virtio_testpmd",)
+        for name in names:
             path = getattr(args, name)
             if path is None:
-                parser.error(f"gr0 requires --{name.replace('_', '-')}")
+                parser.error(f"{args.case} requires --{name.replace('_', '-')}")
             inputs[name] = path.resolve(strict=True)
             setattr(args, name, inputs[name])
     kinds = ("pid", "mnt", "net")
@@ -310,16 +492,30 @@ def main():
     ephemeral_filesystems()
     os.environ["TMPDIR"] = "/tmp"
     client = start_client(configure_ssh(), out / "sshd.log")
-    source, nginx, manifest = prepare_source(repo, fixture)
+    source, nginx, manifest = prepare_source(repo, fixture, args.case)
     if args.case == "precheck":
         run("ip", "tuntap", "add", "dev", "kerprobe", "mode", "tap", "multi_queue")
         run("ip", "link", "del", "kerprobe")
         run_precheck(source, nginx, manifest, out)
     else:
-        prepare_serial_tap(client)
-        runtime = Path(tempfile.mkdtemp(prefix="ker-gr0-", dir="/dev/shm"))
+        prefix = prepare_nginx_prefix(source, manifest.parent)
+        if args.case == "rt12":
+            prepare_data_link(client)
+        else:
+            prepare_serial_tap(client)
+        runtime = Path(tempfile.mkdtemp(prefix=f"ker-{args.case}-", dir="/dev/shm"))
         try:
-            run_gr0(repo, source, nginx, manifest, runtime, args)
+            if args.case == "gr0":
+                run_gr0(repo, source, nginx, manifest, runtime, args)
+            else:
+                log = runtime / "kernel-and-nginx.log"
+                try:
+                    with capture_runtime_log(log):
+                        run_c34(repo, nginx, manifest, prefix, runtime, args)
+                except Exception:
+                    with log.open(errors="replace") as stream:
+                        sys.stderr.writelines(deque(stream, maxlen=30))
+                    raise
         finally:
             shutil.copytree(runtime, out / "runtime", ignore_dangling_symlinks=True,
                             ignore=lambda directory, entries: [name for name in entries
