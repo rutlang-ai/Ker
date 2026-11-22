@@ -26,6 +26,16 @@ SSH_PORT = 2222
 PRODUCTION_CASES = ("precheck", "gr0", "baseline", "rt01", "rt02", "rv9",
                     "rt12", "rt23", "rt25", "rt30", "rt31")
 FAULT_CASES = ("rt20", "rt20b", "rt21", "rt22", "rt24", "rt26")
+EPHEMERAL_FILESYSTEMS = (
+    ("/data", (), False),
+    ("/run", (), False),
+    ("/tmp", (), False),
+    ("/dev/hugepages", (), False),
+    ("/dev/shm", (), False),
+    ("/usr/local", (), False),
+    ("/usr/share/empty.sshd", ("-o", "mode=0755"), True),
+    ("/var/empty/sshd", ("-o", "mode=0755"), True),
+)
 
 
 def run(*command, **kwargs):
@@ -40,7 +50,7 @@ def ephemeral_filesystems(readonly_inputs=(), writable_inputs=()):
     # Keep descriptors to accepted inputs that live under a path covered by a
     # tmpfs mount. Their original pathnames are hidden by that mount, but the
     # descriptors still refer to the original trees and can be rebound there.
-    overlays = (Path("/tmp"), Path("/usr/local"))
+    overlays = tuple(Path(path) for path, _, _ in EPHEMERAL_FILESYSTEMS)
     preserved = []
     for writable, paths in ((False, readonly_inputs), (True, writable_inputs)):
         for path in paths:
@@ -54,8 +64,10 @@ def ephemeral_filesystems(readonly_inputs=(), writable_inputs=()):
             fd = os.open(path, flags)
             preserved.append((path, writable, fd))
 
-    for path in ("/data", "/run", "/tmp", "/dev/hugepages", "/dev/shm", "/usr/local"):
-        run("mount", "-t", "tmpfs", "tmpfs", path)
+    for path, options, conditional in EPHEMERAL_FILESYSTEMS:
+        if conditional and not Path(path).is_dir():
+            continue
+        run("mount", "-t", "tmpfs", *options, "tmpfs", path)
 
     # Restore only the supplied trees, leaving the rest of /tmp and /usr/local
     # ephemeral. Output directories are rebound writable; all other accepted
@@ -97,11 +109,6 @@ def ephemeral_filesystems(readonly_inputs=(), writable_inputs=()):
         target = Path(path)
         target.mkdir(exist_ok=True)
         target.chmod(mode)
-    for path in ("/usr/share/empty.sshd", "/var/empty/sshd"):
-        if Path(path).is_dir():
-            run("mount", "-t", "tmpfs", "-o", "mode=0755", "tmpfs", path)
-
-
 def configure_ssh():
     SSH_ROOT.mkdir(mode=0o700)
     key = SSH_ROOT / "client-key"
