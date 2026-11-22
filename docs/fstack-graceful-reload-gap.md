@@ -413,6 +413,12 @@ runtime cases. Build receipts are under `BUILD/fstack-original-shell` and
 per-run evidence is under its `runs` directory. The 100-round `rv9` uses
 the original 15-second interval and takes approximately 27 minutes.
 
+The CTest qualification passed 17/17 across the production and fault builds,
+including targeted reruns for the streaming cases. The CTest `rv9` run
+completed in 27 minutes 14 seconds. All 100 reloads and 7,947 fresh
+connections passed, with flat resource trends, zero RX decision drops,
+native STOP acknowledgment, and zero-exit ECHILD.
+
 ## Packet-channel retirement and worker control lifetime
 
 The standalone I/O worker now treats a retired native packet endpoint as a
