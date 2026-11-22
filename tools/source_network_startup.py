@@ -17,7 +17,8 @@ BOOTSTRAP_DEADLINE_ENV = 'KER_NGINX_SOURCE_BOOTSTRAP_DEADLINE_NS'
 READBACK_ENV = 'KER_SOURCE_NETWORK_READBACK'
 PROFILE_ENV = 'KER_NGINX_SOURCE_SHELL_ENABLE'
 MAX_RECORD_BYTES = 4096
-MAX_DEADLINE_AHEAD_NS = 300_000_000_000
+MAX_DEADLINE_AHEAD_NS = 420_000_000_000
+RV9_DEADLINE_AHEAD_NS = 1_800_000_000_000
 _PROOF_KEYS = ('template_sha256', 'ifindex', 'address', 'netmask', 'broadcast',
                'gateway', 'route_oif', 'route_table', 'deadline_ns')
 _LIFECYCLE_MARKERS = (b'KER_NATIVE_STOPPING\n', b'KER_NATIVE_DONE\n',
@@ -37,9 +38,10 @@ class SourceNetworkExpectation(NamedTuple):
     gateway: str
     deadline_ns: int
     template_file: object
+    repeated: bool = False
 
     def readback_setting(self):
-        return '|'.join(('v1', self.template_sha256, self.address, self.netmask,
+        return '|'.join(('v1-rv9' if self.repeated else 'v1', self.template_sha256, self.address, self.netmask,
             self.broadcast, self.gateway, str(self.deadline_ns)))
 
 
@@ -462,8 +464,8 @@ def prepare_expected(profile_flag, record, bootstrap_deadline, address, gateway,
     if type(record) is not str or len(record.encode('ascii', 'strict')) > 256:
         raise ValueError('readback setting is malformed or oversized')
     fields = record.split('|')
-    if len(fields) != 7 or fields[0] != 'v1':
-        raise ValueError('readback setting must have seven v1 fields')
+    if len(fields) != 7 or fields[0] not in ('v1', 'v1-rv9'):
+        raise ValueError('readback setting must have seven versioned fields')
     version, digest, addr_text, mask_text, broadcast_text, gateway_text, deadline_text = fields
     if len(digest) != 64 or any(ch not in '0123456789abcdef' for ch in digest):
         raise ValueError('readback setting template hash is malformed')
@@ -481,7 +483,8 @@ def prepare_expected(profile_flag, record, bootstrap_deadline, address, gateway,
     if _decimal(bootstrap_deadline, minimum=1) != deadline:
         raise ValueError('readback deadline differs from immutable bootstrap deadline')
     now_ns = time.monotonic_ns() if now_ns is None else now_ns
-    if type(now_ns) is not int or deadline <= now_ns or deadline - now_ns > MAX_DEADLINE_AHEAD_NS:
+    maximum = RV9_DEADLINE_AHEAD_NS if version == 'v1-rv9' else MAX_DEADLINE_AHEAD_NS
+    if type(now_ns) is not int or deadline <= now_ns or deadline - now_ns > maximum:
         raise ValueError('source startup deadline is expired or outside bounded window')
     return {'record': record, 'template_sha256': digest, 'address': str(addr),
         'netmask': str(mask), 'broadcast': str(broadcast), 'gateway': str(route_gateway),
@@ -575,7 +578,9 @@ def parse_startup_prefix(data, expected, now_ns=None):
     if deadline != expected['deadline_ns']:
         raise ValueError('source proof deadline mismatch')
     now_ns = time.monotonic_ns() if now_ns is None else now_ns
-    if deadline <= now_ns or deadline - now_ns > MAX_DEADLINE_AHEAD_NS:
+    maximum = (RV9_DEADLINE_AHEAD_NS if expected.get('record', '').startswith('v1-rv9|')
+        else MAX_DEADLINE_AHEAD_NS)
+    if deadline <= now_ns or deadline - now_ns > maximum:
         raise ValueError('source proof arrived outside its immutable deadline')
     prefix_bytes = data[:second_end + 1]
     tail = data[second_end + 1:]

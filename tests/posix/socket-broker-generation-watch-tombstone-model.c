@@ -3,6 +3,7 @@
  * here are the exact implementation. It does not emulate Linux TCP census. */
 #define _GNU_SOURCE
 #include "../../src/posix/socket-broker-server.c"
+#include <arpa/inet.h>
 #include <sys/wait.h>
 #include <dirent.h>
 
@@ -418,10 +419,151 @@ static int test_recheck_and_close(void)
     return 0;
 }
 
+static int test_source_listener_bind_address(void)
+{
+    struct sb_group group = {.source_shell_listener = true,
+        .address = {.sin_family = AF_INET, .sin_port = htons(80)}};
+    EXPECT(inet_pton(AF_INET, "198.18.0.2", &group.address.sin_addr) == 1,
+        "readback address fixture");
+    struct sockaddr_in request = {.sin_family = AF_INET, .sin_port = htons(80)};
+    struct ker_sb_address args = {.length = sizeof(request)};
+    memcpy(args.bytes, &request, sizeof(request));
+    struct sockaddr_in result;
+    EXPECT(owner_group_bind_address(&group, &args, &result) == 0 &&
+        result.sin_addr.s_addr == group.address.sin_addr.s_addr,
+        "source wildcard resolves to the observed IPv4 service address");
+    group.source_shell_listener = false;
+    EXPECT(owner_group_bind_address(&group, &args, &result) == -EADDRNOTAVAIL,
+        "ordinary concrete plans still reject wildcard binds");
+    group.source_shell_listener = true;
+    request.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    memcpy(args.bytes, &request, sizeof(request));
+    EXPECT(owner_group_bind_address(&group, &args, &result) == -EADDRNOTAVAIL,
+        "source listener rejects a different concrete bind address");
+    return 0;
+}
+
+static int test_retry_watch_lineage(void)
+{
+    struct ker_socket_broker_server server = {0};
+    struct sb_object unused_plan;
+    struct sb_generation_watch watch;
+    fill_published_preclaim(&server, &unused_plan, &watch);
+    size_t slot;
+    int parent_cap = make_capability(&server, -1, KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN,
+        KER_SOCKET_BROKER_CONTROL, &slot);
+    EXPECT(parent_cap >= 0, "retained predecessor plan");
+    server.objects[slot].group_slot = 0;
+    struct sb_group *parent = &server.groups[0];
+    server.objects[slot].group_incarnation = parent->incarnation;
+    struct sb_group child = *parent;
+    child.predecessor_pinned = true;
+    child.predecessor_cap_fd = parent_cap;
+    child.retry_candidate_token = parent->member_owner_token[1];
+    child.retry_candidate_pid = parent->member_owner_pid[1];
+    child.retry_candidate_start_time = parent->member_owner_start_time[1];
+    child.retry_candidate_mark = parent->member_mark[1];
+    child.retry_candidate_cookie = parent->member_cookie[1];
+    parent->successor_issued = true;
+    parent->cutover.phase = KER_SOCKET_GROUP_CUTOVER_ABORTED;
+    parent->activation_state[0] = SB_MEMBER_ACTIVATION_TRANSFERRED;
+    watch.retirement_required = true;
+    watch.successor_owner_token = child.retry_candidate_token;
+    watch.successor_owner_pid = child.retry_candidate_pid;
+    watch.successor_owner_start_time = child.retry_candidate_start_time;
+    watch.successor_mark = child.retry_candidate_mark;
+    watch.successor_listener_cookie = child.retry_candidate_cookie;
+    server.generation_watches[0] = watch;
+    EXPECT(generation_watch_retry_adoption(&server, &child),
+        "retry inherits the exact armed watch lineage");
+    child.slot_issued[1] = true;
+    EXPECT(!generation_watch_retry_adoption(&server, &child),
+        "retry watch requires observing before the new grant");
+    child.slot_issued[1] = false;
+    child.member_cookie[0]++;
+    EXPECT(!generation_watch_retry_adoption(&server, &child),
+        "a different initial listener cannot inherit the watch");
+    child.member_cookie[0]--;
+    server.generation_watches[0].successor_listener_cookie++;
+    EXPECT(!generation_watch_retry_adoption(&server, &child),
+        "a different aborted candidate cannot inherit the watch");
+    server.generation_watches[0] = watch;
+    parent->cutover.phase = KER_SOCKET_GROUP_CUTOVER_COMMITTED;
+    EXPECT(!generation_watch_retry_adoption(&server, &child),
+        "a committed predecessor is outside abort retry");
+    child.retry_candidate_token = 0;
+    child.member_owner_pid[0] = parent->member_owner_pid[1];
+    child.member_owner_start_time[0] = parent->member_owner_start_time[1];
+    child.member_owner_token[0] = parent->member_owner_token[1];
+    child.claim_generation[0] = parent->claim_generation[1];
+    child.member_mark[0] = parent->member_mark[1];
+    child.member_cookie[0] = parent->member_cookie[1];
+    child.member_present[0] = parent->member_present[1] = true;
+    parent->selected_member = 1;
+    parent->activation_state[0] = SB_MEMBER_ACTIVATION_RETIRED;
+    parent->activation_state[1] = SB_MEMBER_ACTIVATION_PUBLISHED;
+    parent->member_present[0] = false;
+    EXPECT(!generation_watch_committed_adoption(&server, &child),
+        "committed watch needs exact predecessor retirement evidence");
+    parent->retired_member_cookie[0] = watch.listener_cookie;
+    EXPECT(generation_watch_committed_adoption(&server, &child),
+        "committed watch follows the selected native listener's identity");
+    child.member_cookie[0]++;
+    EXPECT(!generation_watch_committed_adoption(&server, &child),
+        "a different listener cannot inherit committed watch authority");
+    close(parent_cap);
+    close(server.objects[slot].capability_read_fd);
+    return 0;
+}
+
+static int test_cutover_abort_deadline(void)
+{
+    static struct ker_socket_broker_server server;
+    size_t slot;
+    int cap = make_capability(&server, -1, KER_SOCKET_BROKER_FF_OWNER_CUTOVER,
+        KER_SOCKET_BROKER_CONTROL, &slot);
+    EXPECT(cap >= 0, "make cutover capability");
+    server.objects[slot].group_slot = 0;
+    server.objects[slot].group_incarnation = 1;
+    struct sb_group *group = &server.groups[0];
+    group->live = true;
+    group->incarnation = 1;
+    group->cutover_started = true;
+    group->cutover_object_slot = (int)slot;
+    group->cutover.phase = KER_SOCKET_GROUP_CUTOVER_PREPARED;
+    uint64_t now = host_monotonic_ns();
+    EXPECT(now > 1, "monotonic clock");
+    uint64_t deadline = now + UINT64_C(1000000000);
+    EXPECT(group_cutover_request(&server, cap, false, deadline) == 0 &&
+        group->cutover.phase == KER_SOCKET_GROUP_CUTOVER_ABORTING &&
+        group->cutover.control_deadline_ns == deadline,
+        "abort keeps the caller deadline");
+    EXPECT(group_cutover_request(&server, cap, false, deadline) == 0 &&
+        group_cutover_request(&server, cap, false, deadline + 1) == -EALREADY &&
+        group_cutover_request(&server, cap, false, 0) == -EALREADY &&
+        group_cutover_request(&server, cap, true, deadline) == -EALREADY,
+        "bounded abort rejects renewed budget or a conflicting decision");
+    group->cutover.control_deadline_ns = now - 1;
+    EXPECT(group_cutover_control_expired(group) &&
+        group->cutover.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED &&
+        group->cutover.result == -ETIMEDOUT && group->failed,
+        "expired in-flight abort is quarantined");
+    group->cutover = (struct sb_group_cutover){.phase = KER_SOCKET_GROUP_CUTOVER_PREPARED};
+    group->failed = false;
+    EXPECT(group_cutover_request(&server, cap, false, now - 1) == -ETIMEDOUT &&
+        group->cutover.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED &&
+        !group->cutover.accepted_count && group->selected_member == 0,
+        "expired abort request never enters packet replay");
+    close(cap);
+    close(server.objects[slot].capability_read_fd);
+    return 0;
+}
+
 int main(void)
 {
     if (test_cutover_admission() || test_late_ingress_start_failure() ||
-        test_recheck_and_close()) return 1;
+        test_recheck_and_close() || test_source_listener_bind_address() ||
+        test_retry_watch_lineage() || test_cutover_abort_deadline()) return 1;
     puts("socket broker generation-watch tombstone model: PASS");
     return 0;
 }

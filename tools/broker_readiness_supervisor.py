@@ -321,7 +321,7 @@ class BrokerReadiness:
         return packet
 
     def authorize_private_stop(self, provider, pending, term_evidence,
-            retirement_proof):
+            retirement_proof, *, initial_controller=None):
         """Mint the sole bounded STOP admission for the exact candidate PREEXIT."""
         retirement_provider = getattr(self,
             '_private_initial_retirement_provider', None)
@@ -331,29 +331,28 @@ class BrokerReadiness:
         context = getattr(provider, 'context', None)
         origin = getattr(getattr(context, 'owner_live', None), '__self__', None)
         origin_module = sys.modules.get(type(origin).__module__) if origin is not None else None
-        controller = getattr(retirement_proof, 'old_exit', None)
-        controller = getattr(controller, 'controller', None)
+        initial = getattr(pending, 'key', None) == (0, 0)
+        controller = (initial_controller if initial else
+            getattr(getattr(retirement_proof, 'old_exit', None), 'controller', None))
         controller_module = sys.modules.get('_ker_nginx_source_shell_controller')
         profile_module = sys.modules.get('_ker_nginx_source_c34_profile')
         bootstrap_module = getattr(origin_module, 'bootstrap', None)
         evidence_type = getattr(bootstrap_module, 'SupervisorTermEvidence', None)
         pending_type = getattr(bootstrap_module, 'PendingSourceRetirement', None)
-        proof = getattr(provider, '_initial_retirement_proof', None)
-        registry = getattr(context, '_source_initial_listener_retirements', None)
         pending_entry = (getattr(context, '_pending_preexits', {}).get(
             getattr(pending, 'operation_id', None), (None, None, None)))
         evidence = getattr(context, '_authorized_preexits', {}).get(
             getattr(pending, 'operation_id', None))
         if (retirement_provider is not provider or provider_module is None or
-                type(provider) is not provider_type or proof_type is None or type(proof) is not proof_type or
-                proof is not retirement_proof or type(registry) is not dict or
-                registry.get(id(provider)) is not proof or proof.provider is not provider or
-                proof.context is not context or evidence_type is None or
+                type(provider) is not provider_type or
+                (not initial and (proof_type is None or type(retirement_proof) is not proof_type or
+                    retirement_proof.provider is not provider or retirement_proof.context is not context)) or
+                evidence_type is None or
                 type(term_evidence) is not evidence_type or evidence is not term_evidence or
                 pending_type is None or type(pending) is not pending_type or
                 pending_entry[0] is not pending or pending_entry[2] is not
-                    getattr(context, 'worker_channels', {}).get((1, 1)) or
-                pending.key != (1, 1) or pending.worker_pid <= 0 or
+                    getattr(context, 'worker_channels', {}).get(pending.key) or
+                pending.worker_pid <= 0 or
                 term_evidence.worker_pid != pending.worker_pid or
                 term_evidence.worker_start_ticks != pending.worker_start_ticks or
                 term_evidence.phase != 'stopping' or term_evidence.signal != 'TERM' or
@@ -374,21 +373,21 @@ class BrokerReadiness:
                 getattr(provider, 'broker_readiness', None) is not self or
                 getattr(controller, '_private_candidate_preexit_pending', None) is not pending or
                 getattr(controller, '_private_candidate_preexit_evidence', None) is not term_evidence or
-                getattr(controller, '_private_initial_retirement_proof', None) is not proof or
-                getattr(context, '_completed_master_barriers', set()) != {(1, 5), (1, 6)} or
-                getattr(context, '_source_shell_committed_plans', {}).get((1, 1)) is None or
+                not controller._private_shutdown_binding_matches(context,
+                    pending.key, retirement_proof) or
                 getattr(context, 'control_only', False) is not True or
                 getattr(self, 'ready', False) is not True or getattr(self, 'stopped', True) or
                 self.stop_attempted or self._stop is not None or
                 type(pending.deadline_ns) is not int or
                 time.monotonic_ns() >= pending.deadline_ns or
                 pending.deadline_ns > context.deadline_ns or
-                pending.deadline_ns - time.monotonic_ns() > 100_000_000):
+                pending.deadline_ns - time.monotonic_ns() >
+                    bootstrap_module.PREEXIT_BUDGET_NS):
             raise PermissionError('private broker STOP lacks the exact live PREEXIT/TERM/C34 proof join')
         if self._private_stop_authorization is not None:
             raise PermissionError('private broker STOP authorization is one-use')
         authorization = _PrivateStopAuthorization(_PRIVATE_STOP_TOKEN, self,
-            provider, context, pending, term_evidence, proof, controller,
+            provider, context, pending, term_evidence, retirement_proof, controller,
             pending.deadline_ns)
         self._private_stop_authorization = authorization
         return authorization
@@ -413,9 +412,7 @@ class BrokerReadiness:
                     getattr(pending, 'operation_id', None)) is not evidence or
                 getattr(controller, '_private_candidate_preexit_pending', None) is not pending or
                 getattr(controller, '_private_candidate_preexit_evidence', None) is not evidence or
-                getattr(controller, '_private_initial_retirement_proof', None) is not proof or
-                getattr(provider, '_initial_retirement_proof', None) is not proof or
-                getattr(context, '_source_initial_listener_retirements', {}).get(id(provider)) is not proof or
+                not controller._private_shutdown_binding_matches(context, pending.key, proof) or
                 getattr(provider, 'broker_readiness', None) is not self or
                 getattr(context, 'control_only', False) is not True):
             return False
@@ -435,8 +432,6 @@ class BrokerReadiness:
                         '_private_candidate_preexit_pending', None) or
                     authorization.term_evidence is not getattr(authorization.controller,
                         '_private_candidate_preexit_evidence', None) or
-                    authorization.retirement_proof is not getattr(
-                        authorization.controller, '_private_initial_retirement_proof', None) or
                     not self._private_stop_authorization_live(authorization,
                         consumed=False) or
                     authorization.deadline_ns != authorization.pending.deadline_ns or

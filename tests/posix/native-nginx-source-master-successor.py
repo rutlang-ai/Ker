@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise two successful original source HUPs and a gen-1 old TCP stream.
 
-Uses the unchanged original rv9 fresh-only probe for its rounds=2 duration.
+Uses the unchanged original rv9 fresh-only probe with the matching duration.
 This is a bounded parity slice, not full rv9/resource-trend or shell coverage.
 """
 import argparse
@@ -28,9 +28,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_SHA256 = 'd33fd03ea7a9626130a6029a03505dce54f9ee74d863f3d648f31903a0307f14'
 LC_SHA256 = 'b6539d6c81cd9fceff3c657493b52d962cd4260e09e2d8dec38ecfe88ecca8ac'
-ROUND_COUNT = 2
 ROUND_INTERVAL_SECONDS = 15
-LC_DURATION_SECONDS = ROUND_COUNT * ROUND_INTERVAL_SECONDS + 90
 LC_PROCESS_SETTLE_SECONDS = 5
 TIMING_EVENTS = []
 READY_WORDS = {}
@@ -91,6 +89,7 @@ def arguments():
     parser.add_argument('--source-nginx-module-source', type=Path, required=True)
     parser.add_argument('--root', type=Path, required=True,
         help='host directory retaining all run logs, diagnostics, and receipts')
+    parser.add_argument('--rounds', type=int, choices=range(2, 5), default=2)
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--run-dir', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -126,6 +125,7 @@ def arguments():
 
 
 args = arguments()
+LC_DURATION_SECONDS = args.rounds * ROUND_INTERVAL_SECONDS + 90
 if not args.inside:
     args.root.mkdir(parents=True, exist_ok=True)
     run_dir = args.root / f'run-{time.time_ns()}-{os.getpid()}'
@@ -142,7 +142,7 @@ if not args.inside:
         '--adapter-build', str(args.adapter_build), '--runtime', str(args.runtime),
         '--nginx', str(args.nginx), '--dpdk-plugin-dir', str(args.dpdk_plugin_dir),
         '--source-nginx-module-source', str(args.source_nginx_module_source),
-        '--root', str(args.root), '--run-dir', str(run_dir)]
+        '--root', str(args.root), '--run-dir', str(run_dir), '--rounds', str(args.rounds)]
     try:
         with (run_dir / 'process.log').open('wb') as log:
             result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,
@@ -327,7 +327,7 @@ def execute():
         def expected_original_ready(watch):
             return (int(watch['source_epoch'])<<32)|int(watch['pid'])
         endpoint=socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET);endpoint.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1);endpoint.bind(str(root/'source.sock'));endpoint.listen();endpoint.settimeout(8)
-        deadline=time.monotonic_ns()+180_000_000_000
+        deadline=time.monotonic_ns()+(LC_DURATION_SECONDS+60)*1_000_000_000
         prefix=root/'nginx';(prefix/'logs').mkdir(parents=True);(prefix/'html').mkdir();(prefix/'html/index.html').write_text('original-source-worker\n'); large=bytes(range(256))*4096; (prefix/'html/large.bin').write_bytes(large)
         ini=prefix/'fstack.ini';ini.write_text(f'[ker_socket_broker]\nversion=1\npath={root}/broker.sock\n[dpdk]\ngraceful_reload=1\nlcore_mask=0x3\n')
         module=adapter_build/'ker-fstack-nginx-owner-activation.so'
@@ -378,11 +378,14 @@ def execute():
         barriers=[];gaps=[];rounds=[];prepared=None;previous_hup_ns=None
         actor_fields=('owner_pid','owner_tid','owner_start','owner_role','owner_slot_device',
             'owner_slot_inode','owner_cookie','owner_pidfd')
-        for source_epoch in (1,2):
-            target_generation=1 if source_epoch==1 else 0
-            old_generation=1-target_generation
-            previous_prepared=prepared
-            if source_epoch==2:
+        for source_epoch in range(1, args.rounds + 1):
+            target_generation = source_epoch % 2
+            old_generation = 1 - target_generation
+            previous_prepared = prepared
+            if source_epoch > 1:
+                if source_epoch > 2:
+                    command('OLD_CAPS')
+                    command('DROP_PARENT')
                 def acquire_successor():
                     controller.stdin.write(b'NEXT\n');controller.stdin.flush()
                     cookie=None;seen=[]
@@ -422,7 +425,8 @@ def execute():
                         return transferred,cookie
                     finally:
                         for descriptor in descriptors:os.close(descriptor)
-                candidate_slot=authority.prepare_successful_successor(acquire_successor)
+                candidate_slot = authority.prepare_successful_successor(acquire_successor,
+                    source_epoch=source_epoch)
                 candidate_slot_index=len(caps)-1
                 source_app,source_owner=pair(True);channels.extend([source_app,source_owner])
             else:
@@ -579,9 +583,9 @@ def execute():
         original_log=(prefix/'logs/error.log').read_text()
         starts=set(map(int,re.findall(r'start worker process (\d+)',original_log)))
         exits=set(map(int,re.findall(r'worker process (\d+) exited with code 0',original_log)))
-        require(len(starts)==3 and starts-exits=={manager.owner_pid} and
-            original_log.count('T5_GOLD_QUIT -> T0_IDLE')==2 and
-            'graceful reload aborted' not in original_log,'original source workers/FSM did not settle twice')
+        require(len(starts) == args.rounds + 1 and starts - exits == {manager.owner_pid} and
+            original_log.count('T5_GOLD_QUIT -> T0_IDLE') == args.rounds and
+            'graceful reload aborted' not in original_log, 'original source workers/FSM did not settle')
         authority.stop_slim(channels[0])
         until=time.monotonic()+3
         while not authority.slim_exited() and time.monotonic()<until:time.sleep(.01)
@@ -616,15 +620,17 @@ def execute():
             'native buffers not balanced')
         require(io and io['rx_decision_settled'] and io['outstanding']==0 and io['rx_decision_drops']==0 and
             io['worker_exit_code']==0 and not io['shutdown_timed_out'],'native packet ownership not settled')
-        receipt=dict(status='PASS_ACTUAL_SOURCE_TWO_SUCCESSFUL_HUPS',
-            scope='Two-round rv9 parity slice using unchanged original fresh probe; not full100-round rv9/resource trend or original shell.',
+        pass_status = ('PASS_ACTUAL_SOURCE_TWO_SUCCESSFUL_HUPS' if args.rounds == 2
+            else 'PASS_ACTUAL_SOURCE_SUCCESSIVE_HUPS')
+        receipt=dict(status=pass_status,
+            scope=f'{args.rounds} native rounds using the unchanged original rv9 fresh probe.',
             fixture_sha256=args.fixture_sha256,rounds=rounds,barriers=barriers,gaps=gaps,
             original_probe_duration=LC_DURATION_SECONDS,lc_summary=lc_fields,source_state=list(values),
             native=native,io=io,original_log=original_log,trace=trace,worker_starts=sorted(starts),
             worker_exits_before_stop=sorted(exits),worker_exits=sorted(final_exits),
             active_worker_pid_before_stop=manager.owner_pid)
         (evidence_dir/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
-        print('PASS_ACTUAL_SOURCE_TWO_SUCCESSFUL_HUPS',json.dumps(receipt,sort_keys=True),flush=True)
+        print(pass_status,json.dumps(receipt,sort_keys=True),flush=True)
     finally:
         diagnostic={str(f):f.read_text(errors='replace') for f in root.rglob('*') if f.is_file() and f.suffix in ['.log','.trace','.stderr','.stdout']}
         if (evidence_dir/'m4-lc.log').exists():

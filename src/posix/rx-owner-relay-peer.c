@@ -184,7 +184,8 @@ int ker_rx_owner_relay_peer_begin(struct ker_rx_owner_relay_peer *peer,
         type != SOCK_SEQPACKET) return -EPROTOTYPE;
     if (syscall(SYS_setsockopt, peer->fd, SOL_SOCKET, SO_PASSCRED, &enabled, sizeof(enabled))) return -errno;
     struct ker_rx_owner_relay_header request = *source;
-    request.type = KER_RX_OWNER_RELAY_REQUEST;
+    request.type = peer->cross_master_drain ?
+        KER_RX_OWNER_RELAY_DRAIN_REQUEST : KER_RX_OWNER_RELAY_REQUEST;
     request.owner_pid = identity->owner_pid;
     request.owner_tid = identity->owner_tid;
     request.owner_start_ticks = identity->owner_start_ticks;

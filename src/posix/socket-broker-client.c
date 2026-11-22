@@ -983,6 +983,14 @@ int ker_socket_client_owner_group_cutover_abort(
         KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT);
 }
 
+int ker_socket_client_owner_group_cutover_abort_before(
+    struct ker_socket_client *client, int cutover_cap, uint64_t deadline_ns)
+{
+    if (!client || cutover_cap < 0 || !deadline_ns) return fail(EINVAL);
+    return socket_call(client, cutover_cap, KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT,
+        &deadline_ns, sizeof(deadline_ns), NULL, 0, NULL, NULL);
+}
+
 int ker_socket_client_owner_group_cutover_poll(
     struct ker_socket_client *client, int cutover_cap,
     struct ker_socket_group_cutover_status *status)

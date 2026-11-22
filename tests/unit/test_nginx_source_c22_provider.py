@@ -668,6 +668,49 @@ class SourceC22ProviderBoundaryTests(unittest.TestCase):
 
 
 class SourceC28CommandTransportTests(unittest.TestCase):
+    def test_only_successful_retry_slot_can_transfer_two_descriptors(self):
+        for operation, error, count, valid in (
+                (provider._C28_RETRY_SLOT, 0, 2, True),
+                (provider._C28_RETRY_SLOT, 0, 1, False),
+                (provider._C28_RETRY_SLOT, 0, 0, False),
+                (provider._C28_RETRY_SLOT, errno.EALREADY, 1, False),
+                (provider._C28_RETRY_SLOT, errno.EALREADY, 0, True),
+                (provider._C28_RETRY_ADOPT, 0, 2, False)):
+            with self.subTest(operation=operation, error=error, count=count):
+                parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                read, write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+                with parent, child:
+                    try:
+                        parent.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+                        deadline = time.monotonic_ns() + 1_000_000_000
+                        request = provider._encode_source_c28_request(
+                            operation, 1, deadline, b'b' * 108)
+                        payload = request + provider._C28_RESULT.pack(error, 0, 0, 0, 0, 0)
+                        ancillary = [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                            array.array('i', [write] * count))] if count else []
+                        child.sendmsg([payload], ancillary)
+                        expected = (os.getpid(), os.getuid(), os.getgid())
+                        before = set(os.listdir('/proc/self/fd'))
+                        if valid:
+                            reply = provider._exchange_source_c28(parent, request,
+                                expected, deadline, lambda _: None)
+                            self.assertEqual(reply['errno'], error)
+                            fds = reply.get('fds', ())
+                            try:
+                                self.assertEqual(len(fds), count)
+                                self.assertTrue(all(not os.get_inheritable(fd) for fd in fds))
+                            finally:
+                                for fd in fds:
+                                    os.close(fd)
+                        else:
+                            with self.assertRaises(PermissionError):
+                                provider._exchange_source_c28(parent, request,
+                                    expected, deadline, lambda _: None)
+                        self.assertEqual(set(os.listdir('/proc/self/fd')), before)
+                    finally:
+                        os.close(read)
+                        os.close(write)
+
     def test_request_and_reply_have_exact_explicit_wire_sizes_and_offsets(self):
         bundle = bytes(range(108))
         deadline = time.monotonic_ns() + 1_000_000_000
@@ -702,6 +745,38 @@ class SourceC28CommandTransportTests(unittest.TestCase):
         with self.assertRaises(OSError) as caught:
             instance._source_c28_command(provider._C28_PARK, time.monotonic_ns() + 1_000_000_000)
         self.assertEqual(caught.exception.errno, errno.ENOTSUP)
+
+    def test_abort_settles_the_pending_park_lease_once(self):
+        deadline = time.monotonic_ns() + 50_000_000
+        reply = dict(phase=provider._C28_PHASE_ABORTED, lease=7,
+            listener_cookie=0, received=3, accepted=3)
+        for fault in (None, {'lease': 8}, {'received': 1, 'accepted': 1},
+                {'accepted': 2}, {'listener_cookie': 9}):
+            with self.subTest(fault=fault):
+                instance = provider.SourceShellC22Provider.__new__(
+                    provider.SourceShellC22Provider)
+                instance._source_park_deadline_ns = deadline
+                instance._source_park_evidence = SimpleNamespace(lease=7, received=2)
+                instance._source_committed = False
+                instance._source_command_unresolved = False
+                instance._source_abort_result = None
+                response = {**reply, **(fault or {})}
+                instance._source_c28_command = mock.Mock(return_value=response)
+                with self.assertRaises(PermissionError):
+                    instance.abort_source_group_before(deadline + 1)
+                instance._source_c28_command.assert_not_called()
+                if fault:
+                    with self.assertRaises(PermissionError):
+                        instance.abort_source_group_before(deadline)
+                    self.assertTrue(instance._source_command_unresolved)
+                    self.assertIsNone(instance._source_abort_result)
+                else:
+                    self.assertEqual(instance.abort_source_group_before(deadline), reply)
+                    with self.assertRaises(PermissionError):
+                        instance.abort_source_group_before(deadline)
+                    self.assertEqual(instance._source_abort_result, reply)
+                instance._source_c28_command.assert_called_once_with(
+                    provider._C28_ABORT, deadline)
 
     def test_only_correlated_initial_retire_eagain_is_retryable(self):
         instance = provider.SourceShellC22Provider.__new__(provider.SourceShellC22Provider)

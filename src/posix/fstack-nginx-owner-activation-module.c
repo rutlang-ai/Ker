@@ -19,7 +19,9 @@
 #include <ff_api.h>
 #include "nginx-relay-observation.h"
 
-struct ff_reload_state;
+#ifdef KER_NGINX_OWNER_BUILTIN
+#include "../../third_party/fstack-ipc/ff_reload.h"
+#endif
 
 #include <dlfcn.h>
 #include <openssl/evp.h>
@@ -43,6 +45,7 @@ struct ff_reload_state;
 #include "nginx-cycle-wire.h"
 #include "nginx-owner-ready.h"
 #include "nginx-source-bootstrap.h"
+#include "nginx-source-listener-profile.h"
 #include "source-native-ini.h"
 #include "rx-owner-relay-wire.h"
 #include <time.h>
@@ -67,6 +70,11 @@ static bool worker_prepared;
 static bool candidate_mode;
 static bool delegated_initial_mode;
 static bool source_master_mode;
+#ifdef KER_NGINX_OWNER_BUILTIN
+static ngx_cycle_t *source_serial_daemon_cycle;
+static struct sockaddr_in source_serial_daemon_address;
+static int source_serial_daemon_backlog;
+#endif
 static uint64_t source_shell_cycle_serial;
 static uint32_t source_worker_slot_number;
 static bool source_worker_native_commit_complete;
@@ -77,9 +85,8 @@ static bool source_shell_profile_validated;
 static pid_t source_shell_module_pid;
 static ngx_cycle_t *source_shell_validated_cycle;
 
-/* Only the immutable launch context for the first original HUP is retained.
- * Descriptor capabilities, per-worker values, and all test/fault variables
- * remain outside Nginx's exec environment. */
+/* Retain the immutable launch context. The abort-retry flag is appended only
+ * when the linked fault runtime recognizes the original fault environment. */
 static const char *const source_shell_environment_names[] = {
     "KER_NGINX_SOURCE_SHELL_ENABLE",
     "KER_NGINX_SOURCE_BOOTSTRAP_PATH",
@@ -92,6 +99,13 @@ static const char *const source_shell_environment_names[] = {
     "KER_FSTACK_NGINX_INI",
     "KER_NGINX_SOURCE_FIRST_HUP_ENABLE",
     "KER_FSTACK_RUNTIME_TRACE",
+    "KER_NGINX_SOURCE_ABORT_RETRY_ENABLE",
+    "KER_NGINX_SOURCE_READY_DELAY_ENABLE",
+    "KER_NGINX_SOURCE_ABORT_ENABLE",
+    "KER_NGINX_SOURCE_SYNACK_FAULT_ENABLE",
+    "KER_NGINX_SOURCE_KNI_ENABLE",
+    "KER_NGINX_SOURCE_SUCCESSOR_ENABLE",
+    "KER_NGINX_SOURCE_UPGRADE_ENABLE",
 };
 
 static const size_t source_shell_environment_max_lengths[] = {
@@ -106,6 +120,23 @@ static const size_t source_shell_environment_max_lengths[] = {
     PATH_MAX - 1,
     1,
     PATH_MAX - 1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+};
+
+enum {
+    SOURCE_SHELL_TRACE_INDEX = 10,
+    SOURCE_SHELL_RETRY_INDEX = 11,
+    SOURCE_SHELL_READY_DELAY_INDEX = 12,
+    SOURCE_SHELL_ABORT_INDEX = 13,
+    SOURCE_SHELL_SYNACK_FAULT_INDEX = 14,
+    SOURCE_SHELL_KNI_INDEX = 15,
+    SOURCE_SHELL_SUCCESSOR_INDEX = 16,
 };
 
 _Static_assert(sizeof(source_shell_environment_max_lengths) /
@@ -157,6 +188,15 @@ source_shell_register_environment(ngx_cycle_t *cycle)
 {
     ngx_core_conf_t *ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
     const char *enabled = getenv(source_shell_environment_names[0]);
+    const char *retry = getenv(source_shell_environment_names[SOURCE_SHELL_RETRY_INDEX]);
+    const char *ready_delay = getenv(source_shell_environment_names[SOURCE_SHELL_READY_DELAY_INDEX]);
+    const char *abort_only = getenv(source_shell_environment_names[SOURCE_SHELL_ABORT_INDEX]);
+    const char *synack_fail = getenv(source_shell_environment_names[SOURCE_SHELL_SYNACK_FAULT_INDEX]);
+    const char *kni = getenv(source_shell_environment_names[SOURCE_SHELL_KNI_INDEX]);
+    const char *successor = getenv("KER_NGINX_SOURCE_SUCCESSOR_ENABLE");
+    const char *upgrade = getenv(KER_NGINX_SOURCE_UPGRADE_ENV);
+    const char *fault = getenv("FF_FAULT");
+    const char *delay_ms = getenv("FF_FAULT_DELAY_MS");
     ngx_str_t *configured;
     const char *values[sizeof(source_shell_environment_names) /
         sizeof(source_shell_environment_names[0])] = {0};
@@ -164,6 +204,7 @@ source_shell_register_environment(ngx_cycle_t *cycle)
         sizeof(source_shell_environment_names[0])] = {0};
     ngx_str_t *entries;
     ngx_uint_t i, j;
+    ngx_uint_t retained_count = SOURCE_SHELL_RETRY_INDEX;
 
     if (!enabled) {
         return source_shell_environment_captured ? NGX_ERROR : NGX_DECLINED;
@@ -172,13 +213,34 @@ source_shell_register_environment(ngx_cycle_t *cycle)
         ccf->env.elts == NULL) {
         return NGX_ERROR;
     }
-    if (getenv("KER_NGINX_SOURCE_SUCCESSOR_ENABLE") ||
-        getenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE") || getenv("FF_FAULT")) {
+    if ((kni && strcmp(kni, "1")) ||
+            (successor && (strcmp(successor, "1") || kni || retry || ready_delay ||
+                abort_only || synack_fail || fault || delay_ms || upgrade)) ||
+            (upgrade && (strcmp(upgrade, "1") || kni || retry || ready_delay ||
+                abort_only || synack_fail || fault || delay_ms))) {
         return NGX_ERROR;
+    }
+    if (retry || ready_delay || abort_only || synack_fail || fault || delay_ms) {
+        int (*fault_runtime)(void) = dlsym(RTLD_DEFAULT,
+            "ker_fstack_nginx_source_fault_profile");
+        if (!fault_runtime || !fault_runtime()) {
+            return NGX_ERROR;
+        }
     }
 
     configured = ccf->env.elts;
+    ngx_uint_t fault_declarations = 0, delay_declarations = 0;
     for (i = 0; i < ccf->env.nelts; i++) {
+        if (configured[i].len >= sizeof("FF_FAULT") - 1 &&
+            ngx_memcmp(configured[i].data, "FF_FAULT", sizeof("FF_FAULT") - 1) == 0) {
+            if (configured[i].len == sizeof("FF_FAULT") - 1) ++fault_declarations;
+            else if (configured[i].data[sizeof("FF_FAULT") - 1] == '=') return NGX_ERROR;
+        }
+        if (configured[i].len >= sizeof("FF_FAULT_DELAY_MS") - 1 &&
+            ngx_memcmp(configured[i].data, "FF_FAULT_DELAY_MS", sizeof("FF_FAULT_DELAY_MS") - 1) == 0) {
+            if (configured[i].len == sizeof("FF_FAULT_DELAY_MS") - 1) ++delay_declarations;
+            else if (configured[i].data[sizeof("FF_FAULT_DELAY_MS") - 1] == '=') return NGX_ERROR;
+        }
         for (j = 0; j < sizeof(source_shell_environment_names) / sizeof(source_shell_environment_names[0]); j++) {
             size_t name_len = ngx_strlen(source_shell_environment_names[j]);
             if (configured[i].len >= name_len &&
@@ -188,12 +250,15 @@ source_shell_register_environment(ngx_cycle_t *cycle)
             }
         }
     }
+    if (((retry || ready_delay || abort_only || synack_fail) && fault_declarations != 1) ||
+        (ready_delay && delay_declarations != 1)) return NGX_ERROR;
 
     for (i = 0; i < sizeof(source_shell_environment_names) / sizeof(source_shell_environment_names[0]); i++) {
         const char *value = getenv(source_shell_environment_names[i]);
         size_t max_length = source_shell_environment_max_lengths[i];
         size_t value_len = value ? strnlen(value, max_length + 1) : 0;
-        if ((i != 10 && (!value || value_len == 0)) || value_len > max_length) {
+        if ((i < SOURCE_SHELL_TRACE_INDEX && (!value || value_len == 0)) ||
+                value_len > max_length) {
             return NGX_ERROR;
         }
         if ((i == 0 || i == 9) && strcmp(value, "1") != 0) return NGX_ERROR;
@@ -203,6 +268,7 @@ source_shell_register_environment(ngx_cycle_t *cycle)
             return NGX_ERROR;
         }
         values[i] = value;
+        if (i >= SOURCE_SHELL_RETRY_INDEX && value != NULL) ++retained_count;
         if (source_shell_environment_captured) {
             if ((source_shell_environment_values[i] == NULL) != (value == NULL) ||
                 (value && strcmp(source_shell_environment_values[i], value) != 0)) {
@@ -224,20 +290,57 @@ source_shell_register_environment(ngx_cycle_t *cycle)
         }
     }
 
-    entries = ngx_array_push_n(&ccf->env, sizeof(source_shell_environment_names) /
-        sizeof(source_shell_environment_names[0]));
+    entries = ngx_array_push_n(&ccf->env, retained_count);
     if (entries == NULL) {
         for (i = 0; i < sizeof(copies) / sizeof(copies[0]); i++) free(copies[i]);
         return NGX_ERROR;
     }
-    for (i = 0; i < sizeof(source_shell_environment_names) / sizeof(source_shell_environment_names[0]); i++) {
-        entries[i].len = ngx_strlen(source_shell_environment_names[i]);
-        entries[i].data = (u_char *) source_shell_environment_names[i];
+    for (i = 0, j = 0; i < sizeof(source_shell_environment_names) /
+         sizeof(source_shell_environment_names[0]); i++) {
+        if (i >= SOURCE_SHELL_RETRY_INDEX && values[i] == NULL) continue;
+        entries[j].len = ngx_strlen(source_shell_environment_names[i]);
+        entries[j++].data = (u_char *) source_shell_environment_names[i];
     }
     if (!source_shell_environment_captured) {
         memcpy(source_shell_environment_values, copies, sizeof(copies));
     }
     source_shell_environment_captured = true;
+    return NGX_OK;
+}
+
+static ngx_int_t
+source_serial_register_environment(ngx_cycle_t *cycle)
+{
+    static const char *const names[] = {
+        "KER_NGINX_SOURCE_SERIAL_PATH", "KER_SOCKET_BROKER_PATH",
+        "KER_FSTACK_NGINX_INI", "KER_FSTACK_RUNTIME_TRACE",
+    };
+    ngx_core_conf_t *conf = (ngx_core_conf_t *)ngx_get_conf(cycle->conf_ctx,
+        ngx_core_module);
+    if (!conf || conf->daemon != 1 || conf->environment || !conf->env.elts)
+        return NGX_ERROR;
+    if (getenv("KER_NGINX_SOURCE_SHELL_ENABLE") ||
+        getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH") ||
+        getenv("KER_NGINX_SOURCE_KNI_ENABLE") || getenv("FF_FAULT"))
+        return NGX_ERROR;
+    ngx_str_t *configured = conf->env.elts;
+    for (ngx_uint_t index = 0; index < conf->env.nelts; index++) {
+        for (size_t key = 0; key < sizeof(names) / sizeof(names[0]); key++) {
+            size_t length = strlen(names[key]);
+            if (configured[index].len >= length &&
+                !memcmp(configured[index].data, names[key], length) &&
+                (configured[index].len == length ||
+                    configured[index].data[length] == '='))
+                return NGX_ERROR;
+        }
+    }
+    ngx_str_t *entries = ngx_array_push_n(&conf->env,
+        sizeof(names) / sizeof(names[0]));
+    if (!entries) return NGX_ERROR;
+    for (size_t key = 0; key < sizeof(names) / sizeof(names[0]); key++) {
+        entries[key].len = strlen(names[key]);
+        entries[key].data = (u_char *)names[key];
+    }
     return NGX_OK;
 }
 
@@ -275,9 +378,9 @@ static pid_t rx_owner_relay_supervisor_pid;
 static bool rx_owner_relay_authenticated;
 static bool source_preexit_relay_armed;
 static bool source_preexit_relay_eof;
+static uint32_t source_preexit_worker_role;
 #ifdef KER_NGINX_OWNER_BUILTIN
 static bool source_preexit_eof_notified;
-static uint64_t source_preexit_native_cookie;
 #endif
 static void trace_line(const char *format, ...);
 #ifdef KER_NGINX_SOURCE_FLOWMAP_TEST
@@ -303,13 +406,11 @@ static int cycle_monotonic_ns(uint64_t *now_ns);
 #ifdef KER_NGINX_OWNER_BUILTIN
 static int source_preexit_owner_pump(void)
 {
-    typedef int (*pump_fn)(void);
-    pump_fn pump = (pump_fn)dlsym(RTLD_DEFAULT, "ker_sb_preload_owner_pump");
-    if (!pump || !ker_sb_preload_owner_pump_registered()) return -ENOTCONN;
+    if (!ker_sb_preload_owner_loop_active()) return -ENOTCONN;
     if (!source_preexit_relay_armed) {
         pid_t tid = (pid_t)syscall(SYS_gettid);
-        if (!source_master_mode || !candidate_mode || !source_preexit_native_cookie ||
-            !worker_prepared || source_worker_record.flags != KER_NGINX_SOURCE_WORKER_CANDIDATE ||
+        if (!source_master_mode || !source_preexit_worker_role || !worker_prepared ||
+            source_worker_record.flags != source_preexit_worker_role ||
             source_worker_record.actor_pid != (uint32_t)getpid() ||
             source_worker_record.actor_tid != (uint32_t)tid ||
             !source_worker_cycle_proof.adapter_cycle_serial ||
@@ -323,7 +424,9 @@ static int source_preexit_owner_pump(void)
         source_preexit_eof_notified = false;
         source_preexit_relay_armed = true;
     }
-    int status = pump();
+    /* Native STOP closes admission before the SDK delivers SETTLED.
+     * Keep the separate RX relay moving until its own authenticated EOF. */
+    int status = ker_sb_preload_rx_relay_checkpoint();
     if (status) return status;
     if (source_preexit_relay_eof && !source_preexit_eof_notified) {
         source_preexit_eof_notified = true;
@@ -404,7 +507,7 @@ static int rx_owner_relay_pump(void *context)
         if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC) || ancillary_error ||
             have_credentials || fd_count) return -EMSGSIZE;
         if (!source_preexit_relay_armed || context != &rx_owner_relay_fd ||
-            fd != rx_owner_relay_fd || !source_master_mode || !candidate_mode ||
+            fd != rx_owner_relay_fd || !source_master_mode || !source_preexit_worker_role ||
             !rx_owner_relay_registered || !rx_owner_relay_authenticated ||
             rx_owner_relay_owner_tid != (uint32_t)syscall(SYS_gettid) ||
             source_worker_record.actor_pid != (uint32_t)getpid() ||
@@ -507,9 +610,20 @@ static int rx_owner_relay_pump(void *context)
     if (syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &ts) || ts.tv_sec < 0 ||
         ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000L) return -EIO;
     now = (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
+    /* The original drain ring delivers an already-classified frame with
+     * pkts_from_ring=1. Its receiving worker must not classify it again
+     * using the filter it installed during the preceding HUP. */
+    uint64_t committed_cookie = 0;
+    bool cross_master_drain = header.type == KER_RX_OWNER_RELAY_DRAIN_REQUEST &&
+        source_master_mode && getenv(KER_NGINX_SOURCE_UPGRADE_ENV) &&
+        !ngx_inherited && source_worker_record.source_epoch == 1 &&
+        !ker_nginx_source_bootstrap_worker_commit_cookie(&source_worker_record,
+            &source_worker_cycle_proof, &committed_cookie) &&
+        ff_reload_peer_mirror_draining() && ff_is_drain_generation();
     if (header.magic != KER_RX_OWNER_RELAY_MAGIC ||
         header.version != KER_RX_OWNER_RELAY_VERSION ||
-        header.type != KER_RX_OWNER_RELAY_REQUEST || !header.packet_id ||
+        (header.type != KER_RX_OWNER_RELAY_REQUEST && !cross_master_drain) ||
+        !header.packet_id ||
         !header.deadline_ns || now >= header.deadline_ns ||
         header.worker_epoch != rx_owner_relay_epoch ||
         memcmp(header.run_nonce, rx_owner_relay_nonce,
@@ -570,8 +684,8 @@ static int rx_owner_relay_pump(void *context)
     unsigned char original[KER_RX_OWNER_RELAY_MAX_FRAME];
     memcpy(original, message + sizeof(header), header.frame_bytes);
     uint16_t frame_length = (uint16_t)header.frame_bytes;
-    int32_t dispatcher_result = -1;
-    int decision = rx_owner_relay_dispatch(message + sizeof(header),
+    int32_t dispatcher_result = cross_master_drain ? header.queue_id : -1;
+    int decision = cross_master_drain ? 0 : rx_owner_relay_dispatch(message + sizeof(header),
         &frame_length, header.queue_id, header.queue_count, header.vlan_tci,
         header.vlan_stripped, &dispatcher_result);
     if (source_master_mode)
@@ -965,6 +1079,7 @@ static int
 cycle_control_init(void)
 {
     const char *fd_text = getenv("KER_NGINX_CYCLE_FD");
+    const char *serial_path = getenv("KER_NGINX_SOURCE_SERIAL_PATH");
     const char *nonce_text = getenv("KER_NGINX_CYCLE_NONCE");
     const char *runtime_nonce = getenv("KER_NGINX_CYCLE_RUNTIME_NONCE");
     const char *runtime_epoch = getenv("KER_NGINX_CYCLE_RUNTIME_EPOCH");
@@ -976,10 +1091,16 @@ cycle_control_init(void)
     uint64_t epoch;
     if (cycle_control_initialized) return cycle_control_unresolved ? -1 : 0;
     cycle_control_initialized = true;
-    if (!fd_text) return 0;
-    uint64_t parsed_fd;
-    if (ker_nginx_cycle_parse_decimal(fd_text, INT_MAX, 1, &parsed_fd) ||
-        parsed_fd < 3 ||
+    if (!fd_text && !serial_path) return 0;
+    uint64_t parsed_fd = 0, expected_pid = 0, expected_start = 0;
+    if ((fd_text && serial_path) ||
+        (fd_text && (ker_nginx_cycle_parse_decimal(fd_text, INT_MAX, 1, &parsed_fd) ||
+            parsed_fd < 3)) ||
+        (serial_path &&
+            (ker_nginx_cycle_parse_decimal(getenv("KER_NGINX_CYCLE_OUTER_PID"),
+                 INT_MAX, 1, &expected_pid) ||
+             ker_nginx_cycle_parse_decimal(getenv("KER_NGINX_CYCLE_OUTER_START"),
+                 UINT64_MAX, 1, &expected_start))) ||
         ker_nginx_cycle_parse_hex(nonce_text, cycle_master_nonce,
             sizeof(cycle_master_nonce)) ||
         ker_nginx_cycle_parse_hex(runtime_nonce, cycle_runtime.broker_nonce, 16) ||
@@ -991,7 +1112,27 @@ cycle_control_init(void)
         errno = EINVAL;
         return -1;
     }
-    cycle_control_fd = (int)parsed_fd;
+    if (serial_path) {
+        struct sockaddr_un address = {.sun_family = AF_UNIX};
+        size_t length = strnlen(serial_path, sizeof(address.sun_path));
+        if (serial_path[0] != '/' || length >= sizeof(address.sun_path)) {
+            errno = EINVAL;
+            return -1;
+        }
+        memcpy(address.sun_path, serial_path, length + 1);
+        int fd = (int)syscall(SYS_socket, AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+        if (fd < 0) return -1;
+        if (syscall(SYS_connect, fd, &address,
+                offsetof(struct sockaddr_un, sun_path) + length + 1) < 0) {
+            int error = errno;
+            (void)syscall(SYS_close, fd);
+            errno = error;
+            return -1;
+        }
+        cycle_control_fd = fd;
+    } else {
+        cycle_control_fd = (int)parsed_fd;
+    }
     socklen_t cookie_bytes = sizeof(cycle_control_cookie);
     if (syscall(SYS_getsockopt, cycle_control_fd, SOL_SOCKET, SO_COOKIE,
             &cycle_control_cookie, &cookie_bytes) < 0 ||
@@ -1000,8 +1141,9 @@ cycle_control_init(void)
         syscall(SYS_getsockopt, cycle_control_fd, SOL_SOCKET, SO_TYPE,
             &type, &type_bytes) < 0 || type != SOCK_SEQPACKET ||
         syscall(SYS_getsockopt, cycle_control_fd, SOL_SOCKET, SO_PEERCRED,
-            &peer, &peer_bytes) < 0 || peer_bytes != sizeof(peer) || peer.pid <= 1 ||
+            &peer, &peer_bytes) < 0 || peer_bytes != sizeof(peer) || peer.pid <= (serial_path ? 0 : 1) ||
         peer.uid != getuid() || peer.gid != getgid() ||
+        (serial_path && (uint64_t)peer.pid != expected_pid) ||
         syscall(SYS_setsockopt, cycle_control_fd, SOL_SOCKET, SO_PASSCRED,
             &(int){1}, sizeof(int)) < 0) {
         errno = EPROTO;
@@ -1011,6 +1153,7 @@ cycle_control_init(void)
     cycle_outer_uid = peer.uid;
     cycle_outer_gid = peer.gid;
     if (cycle_read_start_ticks(cycle_outer_pid, &cycle_outer_start) < 0 ||
+        (serial_path && cycle_outer_start != expected_start) ||
         cycle_read_start_ticks(getpid(), &cycle_master_start) < 0) return -1;
     cycle_outer_pidfd = (int)syscall(SYS_pidfd_open, cycle_outer_pid, 0);
     if (cycle_outer_pidfd < 0 ||
@@ -1496,23 +1639,9 @@ static ngx_int_t
 listener_profile_supported(const ngx_listening_t *listener,
     bool source_shell_profile)
 {
-    bool source_shell_plain_rt01 = false;
-
-    if (source_shell_profile && listener && !listener->reuseport &&
-        !listener->belong_to_host && listener->type == SOCK_STREAM &&
-        listener->sockaddr && listener->socklen == sizeof(struct sockaddr_in) &&
-        listener->sockaddr->sa_family == AF_INET &&
-        listener->backlog == NGX_LISTEN_BACKLOG) {
-        const struct sockaddr_in *address =
-            (const struct sockaddr_in *) listener->sockaddr;
-
-        source_shell_plain_rt01 =
-            address->sin_addr.s_addr == htonl(INADDR_ANY) &&
-            address->sin_port == htons(80);
-    }
-
     if (!listener ||
-        (!listener->reuseport && !source_shell_plain_rt01) ||
+        (!listener->reuseport && (!source_shell_profile ||
+            !ker_nginx_source_rt01_plain_listener(listener))) ||
         listener->belong_to_host || listener->type != SOCK_STREAM ||
         !listener->sockaddr ||
         listener->sockaddr->sa_family != AF_INET ||
@@ -1562,7 +1691,8 @@ validate_profile(ngx_cycle_t *cycle, struct sockaddr_in *address,
     char configured_ini[KER_SOURCE_NATIVE_INI_PATH_MAX];
     struct module_config config = {
         .source_profile = getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH") != NULL,
-        .source_shell_profile = shell_enable && !strcmp(shell_enable, "1")};
+        .source_shell_profile = (shell_enable && !strcmp(shell_enable, "1")) ||
+            ker_source_native_ini_serial_enabled()};
     struct source_cycle_snapshot *cycle_snapshot = NULL;
     char ini_bytes[KER_SOURCE_NATIVE_INI_BYTES_MAX];
     size_t ini_bytes_length = 0;
@@ -1844,6 +1974,64 @@ ker_fstack_nginx_owner_activation_respawn_abort(void)
 }
 
 static ngx_int_t
+start_owner_cycle(ngx_cycle_t *cycle, struct sockaddr_in address, int backlog)
+{
+    if (!owner_ready_configured && owner_ready_master_init()) return NGX_ERROR;
+    if (cycle_control_init() < 0) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
+            "C22 invalid serial-cycle control endpoint/profile");
+        cycle_control_unresolved = true;
+        return NGX_ERROR;
+    }
+    if (drain_previous_cycle(cycle->log) != NGX_OK) return NGX_ERROR;
+    if (broker_open) {
+        ker_socket_client_close(&broker);
+        broker_open = false;
+    }
+    if (cycle_control_enabled && cycle_watch_published &&
+        cycle_drain_barrier(cycle->log) < 0) return NGX_ERROR;
+    const char *path = getenv("KER_SOCKET_BROKER_PATH");
+    if (!path || ker_socket_client_open(&broker, path)) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
+            "C22 could not open broker control connection");
+        return NGX_ERROR;
+    }
+    broker_open = true;
+    owner_address = address;
+    owner_backlog = backlog;
+    if (create_owner_plan(cycle->log) != NGX_OK) return NGX_ERROR;
+    if (cycle_control_enabled) {
+        if (cycle_message_sequence == 1) cycle_id = 1;
+        if (cycle_publish_watch(cycle->log) < 0) {
+            cycle_control_unresolved = true;
+            (void)close_cycle_caps();
+            return NGX_ERROR;
+        }
+        cycle_watch_published = true;
+    }
+    return NGX_OK;
+}
+
+#ifdef KER_NGINX_OWNER_BUILTIN
+int
+ker_fstack_nginx_source_serial_daemon_prepared(void)
+{
+    return source_serial_daemon_cycle &&
+        source_serial_daemon_cycle == (ngx_cycle_t *)ngx_cycle;
+}
+
+int
+ker_fstack_nginx_source_serial_daemon_child(void)
+{
+    if (!ker_fstack_nginx_source_serial_daemon_prepared()) return -1;
+    ngx_cycle_t *cycle = source_serial_daemon_cycle;
+    source_serial_daemon_cycle = NULL;
+    return start_owner_cycle(cycle, source_serial_daemon_address,
+        source_serial_daemon_backlog) == NGX_OK ? 0 : -1;
+}
+#endif
+
+static ngx_int_t
 module_init(ngx_cycle_t *cycle)
 {
     typedef int (*abi_matches_fn)(void);
@@ -1873,7 +2061,6 @@ module_init(ngx_cycle_t *cycle)
 #endif
     struct sockaddr_in address;
     int backlog;
-    const char *path;
     ngx_int_t profile_status = validate_profile(cycle, &address, &backlog);
     if (profile_status == NGX_DECLINED) return NGX_OK;
     if (profile_status != NGX_OK) {
@@ -1939,40 +2126,20 @@ module_init(ngx_cycle_t *cycle)
         return NGX_OK;
     }
     if (ngx_test_config) return NGX_OK;
-    if (!owner_ready_configured && owner_ready_master_init()) return NGX_ERROR;
-    if (cycle_control_init() < 0) {
-        ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
-            "C22 invalid serial-cycle control endpoint/profile");
-        cycle_control_unresolved = true;
-        return NGX_ERROR;
-    }
-    if (drain_previous_cycle(cycle->log) != NGX_OK) return NGX_ERROR;
-    if (broker_open) {
-        ker_socket_client_close(&broker);
-        broker_open = false;
-    }
-    if (cycle_control_enabled && cycle_watch_published &&
-        cycle_drain_barrier(cycle->log) < 0) return NGX_ERROR;
-    path = getenv("KER_SOCKET_BROKER_PATH");
-    if (!path || ker_socket_client_open(&broker, path)) {
-        ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
-            "C22 could not open broker control connection");
-        return NGX_ERROR;
-    }
-    broker_open = true;
-    owner_address = address;
-    owner_backlog = backlog;
-    if (create_owner_plan(cycle->log) != NGX_OK) return NGX_ERROR;
-    if (cycle_control_enabled) {
-        if (cycle_message_sequence == 1) cycle_id = 1;
-        if (cycle_publish_watch(cycle->log) < 0) {
-            cycle_control_unresolved = true;
-            (void)close_cycle_caps();
+#ifdef KER_NGINX_OWNER_BUILTIN
+    if (getenv("KER_NGINX_SOURCE_SERIAL_PATH")) {
+        if (!ker_source_native_ini_serial_enabled() ||
+            source_serial_register_environment(cycle) != NGX_OK)
             return NGX_ERROR;
+        if (!cycle_control_initialized) {
+            source_serial_daemon_cycle = cycle;
+            source_serial_daemon_address = address;
+            source_serial_daemon_backlog = backlog;
+            return NGX_OK;
         }
-        cycle_watch_published = true;
     }
-    return NGX_OK;
+#endif
+    return start_owner_cycle(cycle, address, backlog);
 }
 
 /* Called by the existing F-Stack ff_init shim after owner creation and before
@@ -2096,7 +2263,12 @@ int ker_fstack_nginx_owner_activation_worker_commit(void)
             int error = status < 0 ? -status : EPROTO;
             if (current_slot >= 0) (void)syscall(SYS_close, current_slot);
             current_slot = -1;
-            if (status) { errno = error; return -1; }
+            if (status) {
+                trace_line("C22_SOURCE_ADMISSION_FAILED pid=%ld status=%d\n",
+                    (long)getpid(), status);
+                errno = error;
+                return -1;
+            }
         }
         return 0;
     }
@@ -2139,18 +2311,18 @@ static void
 module_exit_process(ngx_cycle_t *cycle)
 {
 #ifdef KER_NGINX_OWNER_BUILTIN
-    typedef int (*pump_fn)(void);
-    pump_fn pump;
     uint64_t operation_id;
     int status;
 
-    if (!source_master_mode || !candidate_mode ||
+    uint32_t worker_role = source_worker_record.flags;
+    if (!source_master_mode || (!candidate_mode && !delegated_initial_mode) ||
         !worker_prepared ||
         !owner_ready.sent ||
         !rx_owner_relay_registered || !rx_owner_relay_authenticated ||
         cycle == NULL || cycle != (ngx_cycle_t *)ngx_cycle ||
         ngx_process != NGX_PROCESS_WORKER || ngx_worker != 0 ||
-        source_worker_record.flags != KER_NGINX_SOURCE_WORKER_CANDIDATE ||
+        (worker_role != KER_NGINX_SOURCE_WORKER_CANDIDATE &&
+            worker_role != KER_NGINX_SOURCE_WORKER_INITIAL) ||
         source_worker_record.actor_pid != (uint32_t)getpid() ||
         source_worker_record.actor_tid != (uint32_t)syscall(SYS_gettid) ||
         !source_worker_cycle_proof.adapter_cycle_serial ||
@@ -2159,10 +2331,38 @@ module_exit_process(ngx_cycle_t *cycle)
         !source_worker_record.ready_cookie) {
         return;
     }
-    pump = (pump_fn)dlsym(RTLD_DEFAULT, "ker_sb_preload_owner_pump");
-    if (!pump || !ker_sb_preload_owner_pump_registered()) {
+    if (worker_role == KER_NGINX_SOURCE_WORKER_INITIAL) {
+        /* An ordinary old-generation exit must never request whole-run STOP. */
+        struct ff_reload_state **symbol = dlsym(RTLD_DEFAULT, "ngx_ff_reload_shm");
+        if (!symbol || !*symbol) return;
+        struct ff_reload_state *state = *symbol;
+        bool aborted = state->epoch == 1 && state->target_gen == 1 &&
+            getenv("KER_NGINX_SOURCE_ABORT_ENABLE");
+        if ((state->epoch != 0 && !aborted) || (!aborted && state->target_gen) ||
+            state->active_gen || state->reload_active || state->rx_owner_gen ||
+            state->rx_stopped || state->fsm_state) return;
+    }
+    if (worker_role == KER_NGINX_SOURCE_WORKER_CANDIDATE &&
+            getenv("KER_NGINX_SOURCE_SUCCESSOR_ENABLE")) {
+        struct ff_reload_state **symbol = dlsym(RTLD_DEFAULT, "ngx_ff_reload_shm");
+        if (!symbol || !*symbol) return;
+        const struct ff_reload_state *state = *symbol;
+        if (source_worker_record.source_epoch != KER_NGINX_SOURCE_COMMITTED_ROUND_LIMIT ||
+                state->epoch != source_worker_record.source_epoch ||
+                state->active_gen != source_worker_record.generation ||
+                state->rx_owner_gen != state->active_gen || state->reload_active ||
+                state->rx_stopped || state->fsm_state)
+            return;
+    }
+    if (worker_role == KER_NGINX_SOURCE_WORKER_CANDIDATE &&
+            getenv(KER_NGINX_SOURCE_UPGRADE_ENV) &&
+            (!ngx_inherited ||
+             source_worker_record.source_epoch != KER_NGINX_SOURCE_UPGRADE_ROUND))
+        return;
+    if (!ker_sb_preload_owner_loop_active() ||
+        (candidate_mode && !ker_sb_preload_owner_pump_registered())) {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
-            "source final-owner settlement has no registered owner pump");
+            "source final-owner settlement has no live owner pump");
         return;
     }
     if (cycle_monotonic_ns(&operation_id) != 0 || operation_id == 0) {
@@ -2171,22 +2371,24 @@ module_exit_process(ngx_cycle_t *cycle)
         return;
     }
     uint64_t native_commit_cookie = 0;
-    status = ker_nginx_source_bootstrap_worker_commit_cookie(&source_worker_record,
-        &source_worker_cycle_proof, &native_commit_cookie);
-    if (status) return;
+    if (worker_role == KER_NGINX_SOURCE_WORKER_CANDIDATE) {
+        status = ker_nginx_source_bootstrap_worker_commit_cookie(&source_worker_record,
+            &source_worker_cycle_proof, &native_commit_cookie);
+        if (status) return;
+    }
     source_preexit_relay_armed = false;
     source_preexit_relay_eof = false;
     source_preexit_eof_notified = false;
-    source_preexit_native_cookie = native_commit_cookie;
+    source_preexit_worker_role = worker_role;
     status = ker_nginx_source_bootstrap_worker_preexit(&source_worker_record,
         &source_worker_cycle_proof, source_worker_slot_number,
-        KER_NGINX_SOURCE_WORKER_CANDIDATE, operation_id,
+        worker_role, operation_id,
         native_commit_cookie, source_worker_record.deadline_ns,
         source_preexit_owner_pump);
     source_preexit_relay_armed = false;
     source_preexit_relay_eof = false;
     source_preexit_eof_notified = false;
-    source_preexit_native_cookie = 0;
+    source_preexit_worker_role = 0;
     if (status) {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, -status,
             "source final-owner settlement is unresolved: %d", status);

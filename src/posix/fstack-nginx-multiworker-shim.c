@@ -12,6 +12,8 @@
 #include <ngx_connection.h>
 #include <ngx_module.h>
 #include <ngx_process_cycle.h>
+#include "nginx-source-listener-profile.h"
+#include "source-native-ini.h"
 #include "nginx-source-origin.h"
 
 #include <dlfcn.h>
@@ -228,6 +230,22 @@ fork(void)
          * profile on Nginx's original fork path. The local module predicate
          * only selects the adapter; the authenticated origin ACK authorizes
          * the private constructor-origin rebind. */
+        predicate_fn serial_prepared = (predicate_fn)dlsym(RTLD_DEFAULT,
+            "ker_fstack_nginx_source_serial_daemon_prepared");
+        if (serial_prepared && serial_prepared()) {
+            origin_child_fn serial_child = (origin_child_fn)dlsym(RTLD_DEFAULT,
+                "ker_fstack_nginx_source_serial_daemon_child");
+            if (main_binary_matches_pinned_build() != 0 || !serial_child) {
+                errno = ENOTSUP;
+                return -1;
+            }
+            pid_t daemon_child = real_fork();
+            if (daemon_child == 0 && serial_child() != 0) {
+                (void)syscall(SYS_exit_group, 125);
+                __builtin_unreachable();
+            }
+            return daemon_child;
+        }
         if (daemon_prepared && daemon_prepared()) {
             origin_prepare_fn prepare = (origin_prepare_fn)dlsym(RTLD_DEFAULT,
                 "ker_nginx_source_daemon_fork_prepare");
@@ -446,6 +464,7 @@ validate_worker_cycle(int argc, char * const argv[], ngx_cycle_t **cycle_out,
     ngx_cycle_t *cycle;
     ngx_core_conf_t *core_conf;
     ngx_listening_t *listeners;
+    const char *source_shell_enable;
     ngx_uint_t worker;
     int primary, seen[2] = {0, 0};
     int source_worker = 0;
@@ -506,9 +525,13 @@ validate_worker_cycle(int argc, char * const argv[], ngx_cycle_t **cycle_out,
         cycle->listening.nalloc > 16)
         return unsupported("listener array is outside the bounded reuseport profile");
     listeners = cycle->listening.elts;
+    source_shell_enable = getenv("KER_NGINX_SOURCE_SHELL_ENABLE");
+    bool source_plain_listener =
+        (source_worker && source_shell_enable && !strcmp(source_shell_enable, "1")) ||
+        (ker_source_native_ini_serial_enabled() && core_conf->worker_processes == 1);
 
-    /* Validate the complete array before modifying any listener or entering
-     * the runtime's ff_init. The two entries must be clones of one TCP endpoint.
+    /* Validate every listener before entering the runtime's ff_init.
+     * For two workers, the entries must be clones of one TCP endpoint.
      */
     for (ngx_uint_t index = 0; index < cycle->listening.nelts; ++index) {
         ngx_listening_t *listener = &listeners[index];
@@ -516,12 +539,14 @@ validate_worker_cycle(int argc, char * const argv[], ngx_cycle_t **cycle_out,
         const char *option_error;
         if (owner >= (ngx_uint_t)core_conf->worker_processes || seen[owner])
             return unsupported("listener clone has a duplicate or invalid worker owner");
-        if (!listener->reuseport || listener->belong_to_host ||
+        if ((!listener->reuseport && (!source_plain_listener ||
+                !ker_nginx_source_rt01_plain_listener(listener))) ||
+            listener->belong_to_host ||
             listener->type != SOCK_STREAM || listener->sockaddr == NULL ||
             (listener->sockaddr->sa_family != AF_INET &&
              listener->sockaddr->sa_family != AF_INET6) ||
             !same_address(listener, &listeners[0]))
-            return unsupported("listener clone is not the expected INET reuseport TCP endpoint");
+            return unsupported("listener is outside the supported TCP endpoint profile");
         if (listener->fd != (ngx_socket_t)-1)
             return unsupported("listener clone already has an fd");
         if (listener->connection != NULL)

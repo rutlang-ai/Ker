@@ -21,6 +21,7 @@ struct ker_rx_owner_relay_peer {
     uint64_t last_packet_id;
     struct ker_rx_owner_relay_header pending;
     bool pending_active;
+    bool cross_master_drain;
 };
 
 /* Relay exactly one already validated PEER reply's immutable frame to the

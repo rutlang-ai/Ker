@@ -154,6 +154,39 @@ class BrokerPrivateStopFaultTests(unittest.TestCase):
 
 
 class SourceShellMainGateTests(unittest.TestCase):
+    def test_first_cutover_services_park_and_commit_before_general_observation(self):
+        module = ker_run._load_source_shell_controller()
+        controller = object.__new__(module.SourceShellController)
+        context = SimpleNamespace(_completed_master_barriers=set())
+        controller.bootstrap_context = context
+        controller._first_candidate_activation_delivered = True
+        controller.c22_provider = object()
+        controller.broker_readiness = object()
+        controller.listener, peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        self.addCleanup(controller.listener.close)
+        self.addCleanup(peer.close)
+        steps = []
+        deadline = time.monotonic_ns() + 1_000_000_000
+
+        def receive(*, terminal_deadline_ns=None):
+            if terminal_deadline_ns is None:
+                steps.append('park')
+                context._completed_master_barriers.add((1, 5))
+                context._master_control_deadlines = {1: deadline}
+                peer.send(b'ready')
+            else:
+                self.assertEqual(terminal_deadline_ns, deadline)
+                self.assertEqual(controller.listener.recv(5), b'ready')
+                steps.append('commit')
+                context._completed_master_barriers.add((1, 6))
+            return True
+
+        controller.pump_bootstrap_listener = receive
+        controller.check_live = lambda: steps.append('live')
+        controller.poll_source_preexit = lambda: steps.append('preexit')
+        self.assertTrue(controller.pump_source_requests(controller.broker_readiness))
+        self.assertEqual(steps, ['park', 'commit', 'live', 'preexit'])
+
     @classmethod
     def setUpClass(cls):
         cls._c31_formatter_directory = tempfile.TemporaryDirectory(
@@ -175,6 +208,10 @@ class SourceShellMainGateTests(unittest.TestCase):
         self._exercise_private_postcommit_stop(live_run_stop=False)
 
     @unittest.skipUnless(hasattr(os, 'pidfd_open'), 'Linux pidfds required')
+    def test_private_retry_retires_old_listener_with_adopted_generation_watch(self):
+        self._exercise_private_postcommit_stop(live_run_stop=False, retry_retirement=True)
+
+    @unittest.skipUnless(hasattr(os, 'pidfd_open'), 'Linux pidfds required')
     def test_private_run_stop_validates_io_before_releasing_waiting_app(self):
         self._exercise_private_postcommit_stop(live_run_stop=True)
 
@@ -182,7 +219,8 @@ class SourceShellMainGateTests(unittest.TestCase):
     def test_private_run_stop_with_mismatched_io_receipt_keeps_app_waiting(self):
         self._exercise_private_postcommit_stop(live_run_stop=True, corrupt_io=True)
 
-    def _exercise_private_postcommit_stop(self, *, live_run_stop, corrupt_io=False):
+    def _exercise_private_postcommit_stop(self, *, live_run_stop, corrupt_io=False,
+            retry_retirement=False):
         module = ker_run._load_source_shell_controller()
         attach = module._attach_module()
         origin_name = '_ker_nginx_source_origin'
@@ -351,6 +389,7 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as bootstrap:
         profile.origin_module = origin
         profile.artifact_capture = artifact_capture
         profile.helper_capture = artifact_capture.helper_capture
+        profile.nonce, profile.epoch = b'S' * 16, 9
         profile.deadline_ns = time.monotonic_ns() + 30_000_000_000
         profile._sealed = True
         controller = object.__new__(module.SourceShellController)
@@ -397,6 +436,7 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as bootstrap:
         verify_packet = wire.pack_verify_result(broker.nonce, broker.epoch, 1, 0,
             old.pid, old_start, 10101, 20202, 30303, 40404, broker.profile, 1)
         verify_requests = []
+        verified_watches = []
         broker_peer_failures = []
         def modeled_broker_peer():
             try:
@@ -415,6 +455,7 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as bootstrap:
                         rights.extend(values)
                 self.assertEqual(len(rights), 1)
                 verify_requests.append((request, os.fstat(rights[0]).st_mode))
+                verified_watches.append((os.fstat(rights[0]).st_dev, os.fstat(rights[0]).st_ino))
                 os.close(rights[0])
                 broker.child.send(verify_packet)
             except BaseException as error:
@@ -460,6 +501,77 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as bootstrap:
             old.pid, old.pid, 0, old_start, 101, 201, 301)
         controller.initial_worker_binding = transport
         controller._initial_transport = transport
+        if retry_retirement:
+            aborted = subprocess.Popen([sys.executable, '-c', 'pass'])
+            aborted_fd = os.pidfd_open(aborted.pid)
+            self.addCleanup(os.close, aborted_fd)
+            aborted_start = ker_run.process_start_ticks(aborted.pid)
+            aborted.wait(timeout=2)
+            aborted_channel, dead_peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+            dead_peer.close()
+            self.addCleanup(aborted_channel.close)
+            retry_fds = [os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC) for _ in range(2)]
+            for read_fd, write_fd in retry_fds:
+                self.addCleanup(os.close, read_fd)
+                self.addCleanup(os.close, write_fd)
+            context._private_retry_fds = tuple(write_fd for _, write_fd in retry_fds)
+            slot_info = os.fstat(context._private_retry_fds[0])
+            context._retry_slot = (slot_info.st_dev, slot_info.st_ino)
+            context._private_retry_grant_attempted = True
+            context._native_retry_cookie = provider._source_retry_cookie = 40404
+            provider._source_park_epoch = 2
+            retry_watch_fd = context._private_retry_fds[1]
+            provider._source_retry_watch_identity = (
+                retry_watch_fd, *provider._fd_diagnostic(retry_watch_fd))
+            context._private_retry_fds = (context._private_retry_fds[0], provider.watch_fd)
+            with self.assertRaisesRegex(PermissionError, 'generation-watch descriptor changed'):
+                provider._initial_retirement_watch()
+            context._private_retry_fds = (context._private_retry_fds[0], retry_watch_fd)
+            context.allow_abort_retry = True
+            context.worker_ready_receivers = {}
+            retry_record = list(candidate_record)
+            retry_record[9] = 2
+            retry_record[24:26] = context._retry_slot
+            aborted_record = list(candidate_record)
+            aborted_record[5], aborted_record[6], aborted_record[11] = aborted.pid, aborted.pid, aborted_start
+            context.workers[(1, 1)] = (aborted_fd, tuple(aborted_record))
+            context.workers[(2, 1)] = (candidate_fds[0], tuple(retry_record))
+            context.worker_channels[(1, 1)] = aborted_channel
+            context.worker_channels[(2, 1)] = candidate_channel
+            context._completed_master_barriers = {(1, 5), (1, 9), (2, 5), (2, 6)}
+            context._source_shell_committed_plans = {(2, 1): {'native_current_cookie': 999}}
+            controller._first_candidate_source_prepared = SimpleNamespace(aborted=True)
+            controller._retry_candidate_ready = (candidate.pid, os.getuid(), os.getgid(), 1,
+                candidate.pid, 0, candidate_start, *context._retry_slot, candidate_ready[9])
+            context._private_retry_ready_identity = controller._retry_candidate_ready
+            controller._retry_candidate_watch = {'pidfd': candidate_fds[0], 'source_epoch': 2,
+                'generation': 1, 'pid': candidate.pid, 'tid': candidate.pid, 'start': candidate_start,
+                'slot_device': context._retry_slot[0], 'slot_inode': context._retry_slot[1],
+                'cookie': candidate_ready[9]}
+            context.deadline_ns = profile.deadline_ns
+            def retire_retry_initial(operation, deadline):
+                self.assertEqual(operation, provider_module._C28_RETIRE_INITIAL_LISTENER)
+                request = provider_module._encode_source_c28_request(operation, 1, deadline,
+                    provider._last_received_bundle['record'])
+                response = {'errno': 0, 'phase': 0, 'lease': 0, 'listener_cookie': 0,
+                    'received': 0, 'accepted': 0}
+                provider._source_last_command = (1, operation, deadline, request, response)
+                return response
+            provider._source_c28_command = retire_retry_initial
+            old_peer.close()
+            self.assertIsNone(controller.poll_source_preexit())
+            broker_peer_thread.join(timeout=2)
+            self.assertFalse(broker_peer_thread.is_alive())
+            self.assertFalse(broker_peer_failures)
+            if controller._private_initial_retirement_proof is None:
+                self.assertIsNone(controller.poll_source_preexit())
+            retirement = controller._private_initial_retirement_proof
+            self.assertIsNotNone(retirement)
+            self.assertEqual(retirement.c34_result['listener_cookie'], 40404)
+            watch_info = os.fstat(retry_watch_fd)
+            self.assertEqual(verified_watches, [(watch_info.st_dev, watch_info.st_ino)])
+            self.assertTrue(controller._valid_private_initial_exit_observation(transport, context))
+            return
         with self.assertRaisesRegex(RuntimeError, 'STOP is held'):
             broker_module.BrokerReadiness.begin_stop(broker)
         observation = controller._check_private_initial_worker_exit_binding(
@@ -699,8 +811,13 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as bootstrap:
             raw_prepared_ack=b'ack', expected_prepared_record=b'ack')
         prepared._source_route_preparation = registration
         controller._first_candidate_relay_anchor = relay_anchor
-        registration.endpoint = relay_anchor
-        registration.endpoint_identity = boot._source_socket_identity(relay_anchor)
+        control, control_peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        self.addCleanup(control.close)
+        self.addCleanup(control_peer.close)
+        registration.endpoint = control
+        registration.endpoint_identity = boot._source_socket_identity(control)
+        registration.candidate_channel = relay_anchor
+        registration.candidate_channel_identity = boot._source_socket_identity(relay_anchor)[:4]
         context._source_route_preparations[id(prepared)] = registration
         context._source_prepared_activation_attempts = {id(prepared)}
         context._source_route_park_joins[id(prepared)] = SimpleNamespace(
@@ -715,8 +832,10 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as bootstrap:
         controller._first_candidate_observed_ready = candidate_ready
         controller._first_candidate_observed_pidfd = candidate_fds[1]
         controller._first_candidate_prepare_attempted = True
+        accepted_channel = candidate_channel.dup()
+        accepted_channel.close()
         controller._first_candidate_worker_grant = controller._first_candidate_worker_grant._replace(
-            cycle_proof=candidate_proof,
+            channel=accepted_channel, cycle_proof=candidate_proof,
             channel_identity=module.SourceShellController._first_candidate_endpoint_identity(
                 candidate_channel),
             channel_cookie=module.SourceShellController._first_candidate_socket_cookie(
@@ -936,7 +1055,9 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
             self.addCleanup(os.close, broker_app_pidfd)
             broker.app = broker_module._identity(stop_child.pid)
             broker.app_pidfd = broker_app_pidfd
-            transport.app, transport.app_pidfd = broker.app, broker.app_pidfd
+            transport.app, transport.app_pidfd = stop_child, app_pidfd
+            transport.broker_app_binding = (broker.app, broker.app_pidfd)
+            transport.nonce, transport.epoch = controller.nonce, controller.epoch
             broker.expected_executable_hash = __import__('hashlib').sha256(
                 Path(f'/proc/{stop_child.pid}/exe').read_bytes()).digest()
             self.assertIsNone(controller.poll_source_preexit(),
@@ -1687,7 +1808,7 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
         supervisor_pidfd = os.pidfd_open(os.getpid(), 0)
         self.addCleanup(os.close, supervisor_pidfd)
         controller.launch.backend_runtime_actor = SimpleNamespace(pid=app.pid,
-            pidfd=app_pidfd)
+            pidfd=app_pidfd, start_ticks=bootstrap.identity._start_ticks(app.pid))
         controller.c22_provider = None
         controller.broker_readiness = None
         controller.launch.process = SimpleNamespace(pid=os.getpid(), poll=lambda: None)
@@ -1725,6 +1846,10 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
 
         broker = Broker()
         broker.parent = parent
+        broker.app = (app.pid, os.getuid(), os.getgid(),
+            controller.launch.backend_runtime_actor.start_ticks)
+        broker.app_pidfd = os.dup(app_pidfd)
+        self.addCleanup(os.close, broker.app_pidfd)
         channels = controller_module.create_source_c31_channels()
         for c31_endpoint in channels:
             self.addCleanup(c31_endpoint.close)
@@ -2004,8 +2129,8 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
                     'KER_NGINX_SOURCE_BOOTSTRAP_PATH')))
                 self.process = object()
 
-            def live_supervisor(self, deadline):
-                events.append(('launch-live', deadline))
+            def wait_supervisor(self):
+                events.append(('launch-wait',))
 
         with tempfile.TemporaryDirectory() as directory:
             os.chmod(directory, 0o700)
@@ -2037,7 +2162,7 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
             controller.start()
             try:
                 self.assertEqual([item[0] for item in events],
-                    ['capsules', 'bootstrap', 'launch-construct', 'launch-live'])
+                    ['capsules', 'bootstrap', 'launch-construct', 'launch-wait'])
                 self.assertIn(str(Path(directory) / 'origin.sock'), events[2][1])
             finally:
                 controller._close_unstarted()
@@ -2770,10 +2895,12 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
             ker_run._source_shell_eal_args([expected, expected], run_id)
 
     @staticmethod
-    def make_process_controller(*, deadline_ns=None, wrong_start=False):
+    def make_process_controller(*, deadline_ns=None, wrong_start=False, command=None):
         controller_type = ker_run._load_source_shell_controller().SourceShellController
-        child = subprocess.Popen([sys.executable, '-c',
-            'import signal,time; signal.signal(signal.SIGTERM, lambda *_: exit(0)); time.sleep(30)'])
+        if command is None:
+            command = ('import signal,time; signal.signal(signal.SIGTERM, '
+                'lambda *_: exit(0)); time.sleep(30)')
+        child = subprocess.Popen([sys.executable, '-c', command])
         pidfd = os.pidfd_open(child.pid)
 
         def start_ticks(pid):
@@ -2837,6 +2964,19 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
             os.close(pidfd)
             if child.poll() is None:
                 child.kill(); child.wait()
+
+    def test_original_supervisor_finishes_naturally_after_private_settlement(self):
+        controller, child, pidfd = self.make_process_controller(
+            command='import time; time.sleep(0.05); raise SystemExit(5)')
+        try:
+            receipt = controller.stop_original(request_stop=False)
+            self.assertEqual(receipt, {'settled': True, 'result': 5})
+            self.assertFalse(controller.shutdown_requested)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+            os.close(pidfd)
 
     def test_original_supervisor_identity_mismatch_is_not_signaled(self):
         controller, child, pidfd = self.make_process_controller(wrong_start=True)
@@ -3380,6 +3520,7 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
             context.shell_mode = True
             context.epoch, context.deadline_ns, context.nonce = epoch, deadline, nonce
             context.binary_hash = binary_hash
+            context._executable_files = {}
             context.master = SimpleNamespace(pid=parent_pid, pidfd=master_pidfd,
                 start_ticks=master_start, executable_hash=binary_hash)
             context.runtime = SimpleNamespace(pid=parent_pid, pidfd=master_pidfd,
@@ -3407,7 +3548,7 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
             context._source_route_sequences = {}
             context.record_struct = boot.SHELL_RECORD
             context._unpack_request = boot.SourceBootstrapSupervisor._unpack_request.__get__(context)
-            context._fresh_candidate_cycle_proof = lambda fields: candidate_proof
+            context._fresh_candidate_cycle_proof = lambda fields: candidate_proof._replace()
             context._cycle_token_live = lambda *_: None
             context.live = lambda *_: None
             block_address = 0x100000
@@ -3559,7 +3700,8 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
             self.assertIs(prepare_call[1][7], context.master)
             self.assertIs(prepare_call[1][10], context.deadline_ns)
             self.assertIs(prepare_call[2]['source_context'], context)
-            self.assertIs(prepare_call[2]['source_cycle_proof'], candidate_proof)
+            self.assertIs(prepare_call[2]['source_cycle_proof'],
+                controller._first_candidate_worker_grant.cycle_proof)
             self.assertEqual(prepare_call[2]['source_epoch'], 1)
             self.assertTrue(controller._first_candidate_activation_delivered)
             self.assertIs(controller._first_candidate_source_prepared, prepared_sentinel)
@@ -3604,6 +3746,14 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
             self.assertNotEqual(relay_cookie, ready_cookie)
             self.assertEqual(set(context.workers), {(0, 0), (1, 1)})
             self.assertEqual(set(context.worker_channels), {(0, 0), (1, 1)})
+            os.write(candidate_release_w, b'x')
+            _, exit_status = os.waitpid(candidate_pid, 0)
+            self.assertEqual(os.waitstatus_to_exitcode(exit_status), 0)
+            context.allow_abort_retry = True
+            context._completed_master_barriers = {(1, 5), (1, 9)}
+            self.assertTrue(attachment.check(aborted_candidate_pidfd=context.workers[(1, 1)][0]))
+            with self.assertRaisesRegex(PermissionError, 'acknowledged watched candidate'):
+                attachment.check(aborted_candidate_pidfd=initial_pidfd)
         finally:
             if attachment is not None:
                 try: attachment.close()
@@ -3640,6 +3790,8 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
                     try: sock.close()
                     except OSError: pass
             if 'context' in locals():
+                for fd, _ in context._executable_files.values():
+                    os.close(fd)
                 candidate_entry = context.workers.get((1, 1))
                 if candidate_entry is not None:
                     try: os.close(candidate_entry[0])
@@ -3837,6 +3989,7 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
             context.shell_mode = True
             context.epoch, context.deadline_ns, context.nonce = epoch, deadline, nonce
             context.binary_hash = binary_hash
+            context._executable_files = {}
             context.master = SimpleNamespace(pid=parent_pid, pidfd=master_pidfd,
                 start_ticks=master_start)
             context.runtime = SimpleNamespace(pid=parent_pid, pidfd=master_pidfd,
@@ -4117,6 +4270,8 @@ with socket.socket(fileno=int(sys.argv[1])) as broker:
                     try: sock.close()
                     except OSError: pass
             if 'context' in locals():
+                for fd, _ in context._executable_files.values():
+                    os.close(fd)
                 candidate_entry = context.workers.get((1, 1))
                 if candidate_entry is not None:
                     try: os.close(candidate_entry[0])

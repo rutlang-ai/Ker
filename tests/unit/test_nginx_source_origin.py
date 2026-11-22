@@ -19,6 +19,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from types import MethodType, SimpleNamespace
@@ -31,6 +32,48 @@ origin = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(origin)
 
 
+class OriginBootstrapModuleTests(unittest.TestCase):
+    def test_context_type_resolves_to_the_retained_bootstrap_module(self):
+        context_type = origin.bootstrap.SourceBootstrapSupervisor
+        self.assertIs(sys.modules[context_type.__module__], origin.bootstrap)
+
+    def test_rt24_fault_requires_matching_artifacts_options_and_environment(self):
+        fault = 'flip_fail_once'
+        option = ('--fault', fault)
+        enabled = {origin.SOURCE_RETRY_ENV: '1'}
+        origin.validate_source_hup_fault('rt24', option, enabled, fault)
+        origin.validate_source_hup_fault('rt01', (), {}, None)
+        for case, args, environment, captured in (
+                ('rt24', option, enabled, None),
+                ('rt24', (), enabled, fault),
+                ('rt24', option * 2, enabled, fault),
+                ('rt24', ('--fault', 'flip_fail'), enabled, fault),
+                ('rt24', option + ('--fault-delay-ms', '1'), enabled, fault),
+                ('rt24', option, {}, fault),
+                ('rt24', option, {**enabled, 'FF_FAULT': fault}, fault),
+                ('rt24', option, {**enabled, 'FF_FAULT_DELAY_MS': '1'}, fault),
+                ('rt01', (), {}, fault),
+                ('rt01', option, enabled, None),
+                ('rt01', (), {'FF_FAULT': fault}, None)):
+            with self.subTest(case=case, args=args, environment=environment, captured=captured):
+                with self.assertRaises(PermissionError):
+                    origin.validate_source_hup_fault(case, args, environment, captured)
+
+    def test_rt20b_accepts_only_the_pinned_original_ready_delay(self):
+        fault = 'ready_delay'
+        env = {origin.SOURCE_READY_DELAY_ENV: '1'}
+        args = ('--fault', fault, '--fault-delay-ms', origin.SOURCE_READY_DELAY_MS)
+        origin.validate_source_hup_fault('rt20b', args, env, fault)
+        for options, environment in (
+                (args[:-2], env), (args[:-1] + ('14999',), env),
+                (args, {origin.SOURCE_RETRY_ENV: '1'}),
+                (args, {**env, origin.SOURCE_RETRY_ENV: '1'}),
+                (args, {**env, 'FF_FAULT_DELAY_MS': origin.SOURCE_READY_DELAY_MS})):
+            with self.subTest(options=options, environment=environment):
+                with self.assertRaises(PermissionError):
+                    origin.validate_source_hup_fault('rt20b', options, environment, fault)
+
+
 def fd_count():
     return len(os.listdir('/proc/self/fd'))
 
@@ -41,6 +84,82 @@ def sha256_file(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(block)
     return digest.hexdigest()
+
+
+@unittest.skipUnless(hasattr(os, 'pidfd_open'), 'Linux pidfds required')
+class OriginalSupervisorExecTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        launch = origin.OriginalShellLaunch.__new__(origin.OriginalShellLaunch)
+        launch.files = []
+        launch.creator_pid = os.getpid()
+        launch.creator_start = origin.identity._start_ticks(os.getpid())
+        launch.pid_namespace = origin.namespace_identity(os.getpid())
+        launch.deadline_ns = time.monotonic_ns() + 2_000_000_000
+        launch.common = root
+        launch.output = str(root / 'output')
+        Path(launch.output).mkdir(mode=0o700)
+        launch.output_fd = -1
+        launch.run_id = None
+        launch.arguments = []
+        launch.bash = launch.pin('/bin/bash')
+        launch.python = launch.pin(sys.executable)
+        for name in ('shell', 'supervisor_script', 'checks_script', 'runtime_script',
+                'launcher_script'):
+            path = root / name
+            path.write_text('from pathlib import Path\nimport sys\nimport time\n'
+                '(Path(sys.argv[2]) / "supervisor.json").write_text("{}")\n'
+                'time.sleep(5)\n')
+            setattr(launch, name, launch.pin(path))
+        self.launch = launch
+        self.addCleanup(self.close_pins)
+
+    def close_pins(self):
+        if self.launch.output_fd >= 0:
+            os.close(self.launch.output_fd)
+        for pin in self.launch.files:
+            pin.close()
+
+    def spawn(self, command, *arguments):
+        launch = self.launch
+        child = subprocess.Popen([str(launch.bash.path), '-c', command, 'bash',
+            *map(str, arguments)], stdin=subprocess.PIPE)
+        self.addCleanup(child.stdin.close)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        launch.process = child
+        launch.pidfd = os.pidfd_open(child.pid)
+        self.addCleanup(os.close, launch.pidfd)
+        launch.start = origin.identity._start_ticks(child.pid)
+        return child
+
+    def test_wait_observes_exec_of_same_child_and_validates_its_invocation(self):
+        launch = self.launch
+        child = self.spawn('read -r _; exec "$1" -B "$2" run "$3" '
+            '"gr_20261121_010203_$$_1234abcd" 14400 -- /bin/bash "$4"',
+            launch.python.path, launch.supervisor_script.path, launch.output,
+            launch.shell.path)
+        launch.bash.matches_process(child.pid, launch.deadline_ns)
+        def release():
+            child.stdin.write(b'go\n')
+            child.stdin.flush()
+        timer = threading.Timer(0.04, release)
+        timer.start()
+        try:
+            launch.wait_supervisor()
+        finally:
+            timer.cancel()
+            timer.join()
+        self.assertEqual(launch.run_id, f'gr_20261121_010203_{child.pid}_1234abcd')
+        self.assertGreaterEqual(launch.output_fd, 0)
+
+    def test_wait_rejects_unexpected_exec(self):
+        self.spawn('exec /bin/sleep 5')
+        with self.assertRaisesRegex(PermissionError, 'unexpected executable'):
+            self.launch.wait_supervisor()
+        self.assertIsNone(self.launch.run_id)
 
 
 class SourceOriginControls(unittest.TestCase):
@@ -89,6 +208,7 @@ class SourceOriginControls(unittest.TestCase):
         value.files = []
         value.artifact_binding = None
         value.consumed = False
+        value.source_case = 'rt01'
         value.epoch = 7
         value.deadline_ns = time.monotonic_ns() + 10_000_000_000
         value.nonce = bytes.fromhex('01' * 16)
@@ -388,6 +508,12 @@ class SourceOriginControls(unittest.TestCase):
         self.assertEqual(len([item for item in ancillary
             if item[0] == socket.SOL_SOCKET and item[1] == socket.SCM_RIGHTS]), 1)
         self.assertEqual(self.launch.origin_proof.opaque_cycle_token, 0x12345678)
+        os.kill(self.origin_pid, signal.SIGTERM)
+        os.waitpid(self.origin_pid, 0)
+        self.origin_pid = None
+        self.launch.check_origin_parent(context)
+        with self.assertRaisesRegex(PermissionError, 'pidfd binding changed'):
+            self.launch.check_origin_parent(object())
         self.actor_fds.extend((self.launch.origin_pidfd, self.launch.master_pidfd))
         self.launch.origin_pidfd = self.launch.master_pidfd = -1
 
@@ -419,6 +545,11 @@ class SourceOriginControls(unittest.TestCase):
         self.assertIs(self.launch.origin_channel, channel)
         self.assertTrue(origin.identity.process_alive(self.launch.origin_pidfd))
         self.assertTrue(origin.identity.process_alive(self.launch.master_pidfd))
+        os.kill(self.origin_pid, signal.SIGTERM)
+        os.waitpid(self.origin_pid, 0)
+        self.origin_pid = None
+        with self.assertRaisesRegex(ProcessLookupError, 'before ACK'):
+            self.launch.check_origin_parent(context)
         self.actor_fds.extend((self.launch.origin_pidfd, self.launch.master_pidfd))
         self.launch.origin_pidfd = self.launch.master_pidfd = -1
 
@@ -750,7 +881,7 @@ class GeneratedArtifactBindingControls(unittest.TestCase):
             b'\ngateway=' + values['gateway'].encode() + b'\n')
 
     def _config(self, **overrides):
-        rendered = origin.render_rt01_config(self.shell_bytes, str(self.output))
+        rendered = origin.render_source_hup_config(self.shell_bytes, str(self.output))
         if 'worker_processes' in overrides:
             rendered = rendered.replace(b'worker_processes  1;',
                 ('worker_processes  ' + overrides['worker_processes'] + ';').encode())
@@ -802,7 +933,7 @@ class GeneratedArtifactBindingControls(unittest.TestCase):
         self.assertEqual(binding.broker_path, '/run/ker/broker.sock')
         self.assertEqual(len(binding.config.sha256), 32)
         self.assertEqual(len(binding.ini.sha256), 32)
-        expected_main = origin.render_rt01_config(self.shell_bytes, str(self.output))
+        expected_main = origin.render_source_hup_config(self.shell_bytes, str(self.output))
         self.assertEqual(binding.config.data, expected_main)
         self.assertEqual(binding.config_sha256, origin.config_dump_transcript_sha256(
             self.launch.expected_config, expected_main, self.mime_bytes).hex())
@@ -854,7 +985,7 @@ class GeneratedArtifactBindingControls(unittest.TestCase):
         del self.launch.files[1:]
 
     def test_pinned_template_is_closed_one_pass_and_output_is_inert(self):
-        rendered = origin.render_rt01_config(self.shell_bytes, str(self.output))
+        rendered = origin.render_source_hup_config(self.shell_bytes, str(self.output))
         self.assertIn(b'worker_processes  1;\n', rendered)
         self.assertIn(b'listen       80;\n', rendered)
         self.assertIn(os.fsencode(str(self.output)) + b'/err_rt01.log', rendered)
@@ -865,7 +996,20 @@ class GeneratedArtifactBindingControls(unittest.TestCase):
                 '/tmp/`id`'):
             with self.subTest(output=bad_output):
                 with self.assertRaises(PermissionError):
-                    origin.render_rt01_config(self.shell_bytes, bad_output)
+                    origin.render_source_hup_config(self.shell_bytes, bad_output)
+
+    def test_active_stream_case_pins_its_own_log_and_ini(self):
+        output = str(self.output)
+        unloaded = origin.render_source_hup_config(self.shell_bytes, output)
+        active = origin.render_source_hup_config(self.shell_bytes, output, 'rt02')
+        self.assertEqual(active, unloaded
+            .replace(b'/err_rt01.log', b'/err_rt02.log')
+            .replace(b'/fstack_rt01.ini', b'/fstack_rt02.ini'))
+        self.assertNotRegex(active, rb'(?m)^worker_shutdown_timeout')
+        repeated = origin.render_source_hup_config(self.shell_bytes, output, 'rv9')
+        self.assertIn(b'worker_shutdown_timeout  15s;\n', repeated)
+        self.assertIn(b'/err_rv9.log', repeated)
+        self.assertIn(b'/fstack_rv9.ini', repeated)
 
     def test_template_rejects_unknown_expansion_duplicate_or_extra_include(self):
         marker = b'worker_processes  $WORKERS;'
@@ -879,7 +1023,7 @@ class GeneratedArtifactBindingControls(unittest.TestCase):
                     b'gen_nginx_conf() {', 1) + b'\ngen_nginx_conf() {\n}\n'):
             with self.subTest(changed=hashlib.sha256(changed).hexdigest()):
                 with self.assertRaises(PermissionError):
-                    origin.render_rt01_config(changed, str(self.output))
+                    origin.render_source_hup_config(changed, str(self.output))
 
     def test_transcript_hash_matches_ordered_nul_terminated_c_encoding(self):
         main_name = '/tmp/rt01.conf'
@@ -915,7 +1059,7 @@ class GeneratedArtifactBindingControls(unittest.TestCase):
             os.fsencode(str(self.output / 'other.conf')) + b'\0'
         before = fd_count()
         with mock.patch.object(origin, 'bounded_cmdline', return_value=wrong):
-            with self.assertRaisesRegex(PermissionError, 'exact rt01 -c launch'):
+            with self.assertRaisesRegex(PermissionError, 'exact HUP -c launch'):
                 self.launch._bind_original_artifacts(os.getpid(), os.getpid(),
                     self.launch.deadline_ns, self.io)
         self.assertEqual(self.launch.files, [self.launch.network_template])
@@ -1060,7 +1204,7 @@ class GeneratedArtifactBindingControls(unittest.TestCase):
         responses = iter((self.argv, wrong))
         with mock.patch.object(origin, 'bounded_cmdline',
                 side_effect=lambda *args: next(responses)):
-            with self.assertRaisesRegex(PermissionError, 'exact rt01 -c launch'):
+            with self.assertRaisesRegex(PermissionError, 'exact HUP -c launch'):
                 self.launch._bind_original_artifacts(os.getpid(), os.getpid(),
                     self.launch.deadline_ns, self.io)
         self.assertEqual(self.launch.files, [self.launch.network_template])
@@ -1099,14 +1243,14 @@ class GeneratedArtifactBindingControls(unittest.TestCase):
                     str(self.template_path)]):
             self.launch.arguments = args
             with self.assertRaises(PermissionError):
-                self.launch._validate_rt01_launch_scope()
+                self.launch._validate_source_launch_scope()
 
     def test_launch_scope_requires_one_canonical_pinned_template_and_matching_target(self):
         base = ['--out', str(self.output), '--target-ip', '192.168.1.2',
             '--cases', 'precheck,rt01', '--workers', '1', '--graceful', '1',
             '--fstack-conf', str(self.template_path)]
         self.launch.arguments = list(base)
-        self.launch._validate_rt01_launch_scope()
+        self.launch._validate_source_launch_scope()
         for args in (
                 base[:-2],
                 base + ['--fstack-conf', str(self.template_path)],
@@ -1115,7 +1259,7 @@ class GeneratedArtifactBindingControls(unittest.TestCase):
             with self.subTest(arguments=args):
                 self.launch.arguments = args
                 with self.assertRaises(PermissionError):
-                    self.launch._validate_rt01_launch_scope()
+                    self.launch._validate_source_launch_scope()
 
 
 class SourceNetworkTemplateCaptureControls(unittest.TestCase):
@@ -1577,6 +1721,32 @@ class OriginalWorkerTermControls(unittest.TestCase):
         self.assertEqual(evidence.receipt_inode, os.fstat(self.output_fd).st_ino)
         self.assertEqual(self.context._authorized_preexits[self.operation_id], evidence)
         self.assertGreaterEqual(len(self.live_checks), 2)
+
+    def test_exited_retry_slim_requires_its_own_original_term(self):
+        self.launch.context = self.context
+        context = self.context
+        context.control_only = True
+        context.allow_abort_retry = True
+        context.slim_pidfd = self.worker_pidfd
+        context.slim_pid = self.worker.pid
+        context.slim_start_ticks = self.pending.worker_start_ticks
+        context._completed_master_barriers = {(1, 5), (1, 9), (2, 5)}
+        context._source_shell_committed_plans = {(2, 1): {}}
+        self._stop_worker()
+        with self.assertRaisesRegex(PermissionError, 'before current-owner shutdown'):
+            context.check_slim_live()
+        context._completed_master_barriers.add((2, 6))
+        self._write_stopping_receipts(members=[], events=[{
+            'run_id': self.RUN_ID, 'event': 'signal_requested',
+            'monotonic': time.monotonic(), 'pid': self.worker.pid,
+            'start_time': context.slim_start_ticks + 1, 'signal': 'TERM'}])
+        with self.assertRaises(BlockingIOError):
+            context.check_slim_live()
+        self.assertIsNone(getattr(context, '_final_slim_term', None))
+        self._write_stopping_receipts(members=[])
+        context.check_slim_live()
+        context.check_slim_live()
+        self.assertNotIn(self.operation_id, context._authorized_preexits)
 
     def test_private_candidate_term_gate_retries_same_pending_through_real_origin_parser(self):
         controller = SimpleNamespace(_private_candidate_preexit_pending=self.pending,

@@ -364,6 +364,7 @@ function(ker_add_fstack_nginx_runtime target output_name)
         src/posix/nginx-source-bootstrap.c
         src/posix/fstack-socket-bridge.c
         src/posix/nginx-source-reload.c
+        src/posix/nginx-source-upgrade-directory.c
         third_party/fstack-flow-map/ff_flow_map.c)
     set_target_properties(${target} PROPERTIES
         OUTPUT_NAME "${output_name}"

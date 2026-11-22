@@ -39,6 +39,9 @@ _C28_ABORT = 3
 _C28_CURRENT_CENSUS = 4
 _C28_RETIRE_INITIAL_LISTENER = 5
 _C28_CLOSE = 6
+_C28_RETRY_ADOPT = 7
+_C28_RETRY_SLOT = 8
+_C28_ADOPT_SUCCESSOR = 9
 _C28_PHASE_PREPARED = 1
 _C28_PHASE_COMMITTED = 4
 _C28_PHASE_ABORTED = 5
@@ -96,7 +99,7 @@ _SOURCE_HASHES = {
 
 
 def _encode_source_c28_request(operation, sequence, deadline_ns, bundle):
-    if (type(operation) is not int or operation not in range(_C28_PARK, _C28_CLOSE + 1) or
+    if (type(operation) is not int or operation not in range(_C28_PARK, _C28_ADOPT_SUCCESSOR + 1) or
             type(sequence) is not int or sequence <= 0 or
             type(deadline_ns) is not int or deadline_ns <= 0 or
             type(bundle) is not bytes or len(bundle) != _RECORD.size):
@@ -126,10 +129,13 @@ def _exchange_source_c28(channel, request, expected_credentials, deadline_ns,
         check_actor, *, allow_helper_exit=False):
     """One correlated transport exchange; this proves framing only, not C28 success."""
     if (type(channel) is not socket.socket or channel.type & 15 != socket.SOCK_SEQPACKET or
+            type(request) is not bytes or len(request) != _C28_REQUEST.size or
             type(expected_credentials) is not tuple or len(expected_credentials) != 3 or
             type(deadline_ns) is not int or not callable(check_actor)):
         raise TypeError('C28 exchange requires the retained seqpacket actor channel')
     channel.setblocking(False)
+    retry_slot = struct.unpack_from('<H', request, 10)[0] in (
+        _C28_RETRY_SLOT, _C28_ADOPT_SUCCESSOR)
     peer = _UCRED.unpack(channel.getsockopt(socket.SOL_SOCKET,
         socket.SO_PEERCRED, _UCRED.size))
     if peer != (os.getpid(), os.getuid(), os.getgid()):
@@ -154,18 +160,23 @@ def _exchange_source_c28(channel, request, expected_credentials, deadline_ns,
     while True:
         if time.monotonic_ns() >= deadline_ns:
             raise TimeoutError('C28 reply deadline expired after command send; outcome unknown')
-        check_actor(deadline_ns)
+        # CLOSE can finish and exit before the SDK reaches this poll. The
+        # exact socket credentials and correlated reply remain authoritative.
+        if not allow_helper_exit:
+            check_actor(deadline_ns)
         remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
         if not select.select([channel], [], [], remaining)[0]:
             raise TimeoutError('C28 helper reply missed its absolute deadline; outcome unknown')
         packet, ancillary, flags, _ = channel.recvmsg(_C28_REPLY_BYTES + 1,
             socket.CMSG_SPACE(_UCRED.size) + socket.CMSG_SPACE(4 * 16),
             getattr(socket, 'MSG_CMSG_CLOEXEC', 0) | getattr(socket, 'MSG_DONTWAIT', 0))
-        credentials, received_fds, invalid = [], [], False
+        credentials, received_fds, rights_seen, invalid = [], [], False, False
         for level, kind, payload in ancillary:
             if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS and len(payload) == _UCRED.size:
                 credentials.append(_UCRED.unpack(payload))
             elif level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                invalid |= rights_seen
+                rights_seen = True
                 values = array.array('i')
                 usable = len(payload) - len(payload) % values.itemsize
                 if usable:
@@ -174,15 +185,20 @@ def _exchange_source_c28(channel, request, expected_credentials, deadline_ns,
             else:
                 invalid = True
         try:
-            if (len(credentials) != 1 or received_fds or invalid or
+            if (len(credentials) != 1 or invalid or
                     time.monotonic_ns() >= deadline_ns):
                 raise PermissionError('C28 helper reply credentials/rights/deadline are invalid')
             reply = _decode_source_c28_reply(packet, request, credentials[0],
                 expected_credentials, flags)
+            if len(received_fds) != (2 if retry_slot and not reply['errno'] else 0):
+                raise PermissionError('C28 reply has the wrong descriptor count')
             if time.monotonic_ns() >= deadline_ns:
                 raise TimeoutError('C28 helper reply arrived after its immutable deadline')
             if not allow_helper_exit:
                 check_actor(deadline_ns)
+            if received_fds:
+                reply['fds'] = tuple(received_fds)
+                received_fds.clear()
             return reply
         finally:
             for fd in received_fds:
@@ -764,6 +780,23 @@ class SourceShellC22Provider:
         if (origin is None or getattr(origin, 'context', None) is not context or
                 getattr(context, 'original_supervisor_identity', None) is None):
             raise PermissionError('C22 provider is not bound to the accepted OriginalShellLaunch')
+        fault = getattr(helper_capture, 'source_fault', None)
+        retry_allowed = type(self) is SourceShellC34InteropProvider and fault == 'flip_fail_once'
+        source_case = getattr(origin, 'source_case', None)
+        successor_flag = {
+            'rv9': 'KER_NGINX_SOURCE_SUCCESSOR_ENABLE',
+            'rt25': 'KER_NGINX_SOURCE_UPGRADE_ENABLE',
+        }.get(source_case)
+        successor_allowed = (type(self) is SourceShellC34InteropProvider and
+            successor_flag is not None and fault is None and
+            origin.environment.get(successor_flag) == '1')
+        if successor_allowed != getattr(context, 'allow_successor', False):
+            raise PermissionError('C22 successor helper requires its captured original source context')
+        if (retry_allowed != getattr(context, 'allow_abort_retry', False) or
+                (retry_allowed and (
+                    getattr(origin.c34_artifact_capture, 'source_fault', None) != fault or
+                    origin.environment.get('KER_NGINX_SOURCE_ABORT_RETRY_ENABLE') != '1'))):
+            raise PermissionError('C22 retry helper requires the accepted fault launch and context')
         self.listener = _source_listener_tuple(context)
         if (not getattr(broker_readiness, 'ready', False) or
                 getattr(broker_readiness, 'stopped', True) or
@@ -812,6 +845,17 @@ class SourceShellC22Provider:
         self._source_park_deadline_ns = None
         self._source_park_result = None
         self._source_park_evidence = None
+        self._source_abort_result = None
+        self._source_retry_allowed = retry_allowed
+        self._source_successor_allowed = successor_allowed
+        self._successor_adoption_epoch = 1
+        self._successor_watch = None
+        self._successor_slot = -1
+        self._successor_retire_by = None
+        self._successor_retire_ack = None
+        self._successor_retire_receipt = None
+        self._source_retry_cookie = None
+        self._source_retry_slot_attempted = False
         self._source_commit_result = None
         self._source_route_receipt_consumed = False
         self._source_committed = False
@@ -832,10 +876,6 @@ class SourceShellC22Provider:
                 context.deadline_ns)
             if digest != helper_capture.sha256 or helper_capture.build_id != _HELPER_BUILD_ID and type(helper_capture) is C22HelperBuildCapture:
                 raise PermissionError('C22 provider capture differs from its fixed ELF receipt')
-            if type(self) is SourceShellC34InteropProvider and (
-                    digest.hex() != 'ac3b9a8dd1754e169ec89632a02d8854c529388e3298d939a3de01e102449310' or
-                    helper_capture.build_id != '8de64befb2531f8af86217930097ffa4668d1f82'):
-                raise PermissionError('private C34 helper does not match its fixed capture')
             broker_path = getattr(origin, 'environment', {}).get('KER_SOCKET_BROKER_PATH')
             if (type(broker_path) is not str or not broker_path.startswith('/') or
                     broker_path != origin.artifact_binding.broker_path):
@@ -846,8 +886,10 @@ class SourceShellC22Provider:
             parent.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
             parent_pidfd = os.pidfd_open(os.getpid(), 0)
             parent_start = _identity(os.getpid())[3]
+            mode = ('--source-shell-abort-retry' if retry_allowed else
+                '--source-shell-successive' if successor_allowed else '--source-shell')
             command = [f'/proc/self/fd/{self._helper_fd}', broker_path,
-                str(child.fileno()), '--source-shell', self.listener[0],
+                str(child.fileno()), mode, self.listener[0],
                 str(self.listener[1]), str(self.listener[2]), context.nonce.hex(),
                 str(context.epoch), broker_readiness.nonce.hex(),
                 str(broker_readiness.epoch), str(os.getpid()), str(parent_start),
@@ -1132,7 +1174,10 @@ class SourceShellC22Provider:
         remaining = (self.context.deadline_ns - time.monotonic_ns()) / 1_000_000_000
         if remaining <= 0:
             raise TimeoutError('C34 verification exceeded the immutable source grant')
-        duplicate = os.dup(self.watch_fd)
+        watch_fd = self.watch_fd
+        if getattr(self, '_source_park_epoch', 1) == 2:
+            watch_fd = self._initial_retirement_watch()[0]
+        duplicate = os.dup(watch_fd)
         try:
             self.broker_readiness.begin_verify(duplicate, sequence,
                 min(6.0, remaining))
@@ -1145,6 +1190,12 @@ class SourceShellC22Provider:
         if getattr(self, '_source_command_abi', None) != _C28_SOURCE_COMMAND_ABI:
             raise OSError(errno.ENOTSUP,
                 'pinned C22 build receipt does not authorize the quiet C28 command ABI')
+        if (operation in (_C28_RETRY_ADOPT, _C28_RETRY_SLOT) and
+                not getattr(self, '_source_retry_allowed', False)):
+            raise OSError(errno.ENOTSUP, 'C28 retry requires the fault-only helper mode')
+        if (operation == _C28_ADOPT_SUCCESSOR and
+                not self._source_successor_allowed):
+            raise OSError(errno.ENOTSUP, 'C28 successor requires the captured repeated source profile')
         if (self._source_command_unresolved or self._source_command_outstanding is not None or
                 self._closed or self._channel is None):
             raise OSError(errno.EBUSY,
@@ -1186,8 +1237,21 @@ class SourceShellC22Provider:
             bytes(request), dict(response))
         return response
 
-    def park_source_group(self, deadline_ns):
-        if self._source_park_deadline_ns is not None:
+    def park_source_group(self, deadline_ns, *, source_epoch=1):
+        if source_epoch == 2 and not getattr(self, '_source_successor_allowed', False):
+            if (getattr(self, '_source_park_epoch', 1) != 1 or
+                    self._source_park_evidence is None or
+                    self._source_abort_result is None or
+                    getattr(self, '_source_retry_slot_delivered', False) is not True or
+                    self._source_retry_cookie != getattr(self.context, '_native_retry_cookie', None) or
+                    self.context._completed_master_barriers != {(1, 5), (1, 9)} or
+                    self.context._activated_workers != {(1, 1), (2, 1)} or
+                    (2, 5) not in self.context._master_barriers or
+                    self._source_committed or self._source_route_receipt_consumed):
+                raise PermissionError('retry C28 PARK lacks the adopted, activated second plan')
+        elif ((source_epoch != 1 and not (getattr(self, '_source_successor_allowed', False)
+                and source_epoch == self._successor_adoption_epoch)) or
+                self._source_park_deadline_ns is not None):
             raise OSError(errno.EALREADY, 'source C28 PARK is one-shot')
         if (type(deadline_ns) is not int or
                 deadline_ns > min(self.context.deadline_ns,
@@ -1195,11 +1259,14 @@ class SourceShellC22Provider:
             raise TimeoutError('C28 PARK deadline exceeds the original 100 ms operation budget')
         response = self._source_c28_command(_C28_PARK, deadline_ns)
         if (response['phase'] != _C28_PHASE_PREPARED or not response['lease'] or
-                response['accepted'] != response['received']):
+                response['accepted'] != 0):
             self._source_command_unresolved = True
-            raise PermissionError('C28 PARK returned no PREPARED lease or packet-count match')
+            raise PermissionError('C28 PARK returned no PREPARED lease or had accepted packets')
+        self._source_park_epoch = source_epoch
         self._source_park_deadline_ns = deadline_ns
         self._source_park_result = response
+        if source_epoch == 2 and not getattr(self, '_source_successor_allowed', False):
+            self._source_abort_result = None
         bootstrap = sys.modules.get(type(self.context).__module__)
         evidence_factory = getattr(bootstrap, '_make_source_c28_park_evidence', None)
         if not callable(evidence_factory):
@@ -1222,6 +1289,9 @@ class SourceShellC22Provider:
         if self._source_park_evidence is None or self._source_park_deadline_ns is None:
             raise PermissionError('source route binding requires the actual C28 PARK ACK')
         preparation = getattr(prepared, '_source_route_preparation', None)
+        if (getattr(preparation, 'source_epoch', None) !=
+                getattr(self, '_source_park_epoch', 1)):
+            raise PermissionError('source PREPARED and C28 PARK came from different rounds')
         bootstrap = sys.modules.get(type(self.context).__module__)
         join = getattr(bootstrap, '_join_source_route_park', None)
         if not callable(join):
@@ -1231,8 +1301,9 @@ class SourceShellC22Provider:
 
     def commit_source_group_before(self, deadline_ns, route_commit_receipt=None):
         if (self._source_park_deadline_ns is None or
-                deadline_ns != self._source_park_deadline_ns or self._source_committed):
-            raise PermissionError('C28 COMMIT must reuse the exact first PARK deadline')
+                deadline_ns != self._source_park_deadline_ns or self._source_committed or
+                getattr(self, '_source_abort_result', None) is not None):
+            raise PermissionError('C28 COMMIT must reuse its exact PARK deadline')
         if getattr(self, '_source_command_abi', None) != _C28_SOURCE_COMMAND_ABI:
             raise OSError(errno.ENOTSUP,
                 'pinned C22 build receipt does not authorize the quiet C28 command ABI')
@@ -1253,25 +1324,171 @@ class SourceShellC22Provider:
         park = self._source_park_evidence
         if (response['phase'] != _C28_PHASE_COMMITTED or park is None or
                 response['lease'] != park.lease or
-                response['accepted'] != park.accepted or
-                response['received'] != park.received or
+                response['received'] < park.received or
                 response['accepted'] != response['received'] or
                 response['listener_cookie'] <= 0):
             self._source_command_unresolved = True
-            raise PermissionError('C28 COMMIT differs from the exact PARK lease/count or has no listener cookie')
+            raise PermissionError('C28 COMMIT did not settle the PARK lease and queue or lacks a listener cookie')
         self._source_committed = True
         self._source_command_unresolved = False
         self._source_commit_result = dict(response)
         return response
 
     def abort_source_group_before(self, deadline_ns):
-        if self._source_park_deadline_ns is None or deadline_ns != self._source_park_deadline_ns:
-            raise PermissionError('C28 ABORT must use the original PARK deadline')
+        park = self._source_park_evidence
+        if (park is None or deadline_ns != self._source_park_deadline_ns or
+                self._source_committed or self._source_abort_result is not None):
+            raise PermissionError('C28 ABORT requires one pending PARK lease and its original deadline')
         response = self._source_c28_command(_C28_ABORT, deadline_ns)
-        if response['phase'] != _C28_PHASE_ABORTED:
+        if (response['phase'] != _C28_PHASE_ABORTED or response['lease'] != park.lease or
+                response['listener_cookie'] != 0 or response['received'] < park.received or
+                response['accepted'] != response['received']):
             self._source_command_unresolved = True
-            raise PermissionError('C28 ABORT returned no actual ABORTED phase')
+            raise PermissionError('C28 ABORT did not settle the PARK lease and queue')
+        self._source_abort_result = dict(response)
         return response
+
+    def adopt_source_retry_before(self, deadline_ns):
+        """Adopt the original listener before releasing the abort barrier."""
+        abort = self._source_abort_result
+        if (abort is None or self._source_retry_cookie is not None or
+                deadline_ns != self._source_park_deadline_ns):
+            raise PermissionError('C28 RETRY adoption requires the acknowledged original ABORT')
+        response = self._source_c28_command(_C28_RETRY_ADOPT, deadline_ns)
+        if (response['phase'] != _C28_PHASE_ABORTED or response['lease'] != abort['lease'] or
+                response['listener_cookie'] <= 0 or response['received'] or response['accepted']):
+            self._source_command_unresolved = True
+            raise PermissionError('C28 RETRY did not preserve the original abort lineage')
+        self._source_retry_cookie = response['listener_cookie']
+        return self._source_retry_cookie
+
+    def take_source_retry_slot(self, deadline_ns):
+        """Return one fresh candidate FIFO and generation watch to the caller."""
+        if self._source_retry_cookie is None or self._source_retry_slot_attempted:
+            raise PermissionError('C28 retry capabilities require one acknowledged adoption')
+        self._source_retry_slot_attempted = True
+        response = self._source_c28_command(_C28_RETRY_SLOT, deadline_ns)
+        fds = response['fds']
+        try:
+            old_watch = os.fstat(self.watch_fd)
+            original = set(self.slot_identities) | {(old_watch.st_dev, old_watch.st_ino)}
+            acquired = []
+            for fd in fds:
+                info = _validate_broker_fifo(fd, 'C28 retry capability')
+                if info.st_uid != os.geteuid():
+                    raise PermissionError('C28 retry descriptor has a different owner')
+                acquired.append((info.st_dev, info.st_ino))
+            if (response['listener_cookie'] != self._source_retry_cookie or
+                    any(response[key] for key in ('phase', 'lease', 'received', 'accepted')) or
+                    len(set(acquired)) != 2 or original.intersection(acquired)):
+                raise PermissionError('C28 retry descriptors do not match the adopted listener')
+            self._source_retry_watch_identity = (fds[1], *self._fd_diagnostic(fds[1]))
+            self._source_retry_slot_delivered = True
+            return fds
+        except BaseException:
+            for fd in fds:
+                os.close(fd)
+            self._source_command_unresolved = True
+            raise
+
+    def take_successor_slot(self, source_epoch, deadline_ns):
+        """Obtain the staged slot and generation watch after predecessor retirement."""
+        previous_epoch = source_epoch - 1
+        if (not self._source_successor_allowed or
+                not 2 <= source_epoch <= 100 or self._successor_adoption_epoch != previous_epoch or
+                self._source_park_epoch != previous_epoch or not self._source_committed or
+                (self._initial_retirement_proof is None if previous_epoch == 1 else
+                    self._successor_retire_receipt is None)):
+            raise PermissionError('C28 successor requires the preceding native retirement')
+        self._successor_adoption_epoch = source_epoch
+        response = self._source_c28_command(_C28_ADOPT_SUCCESSOR, deadline_ns)
+        slot, watch = response['fds']
+        try:
+            identities = []
+            for fd in (slot, watch):
+                value = _validate_broker_fifo(fd, 'C28 native successor capability')
+                if value.st_uid != os.geteuid():
+                    raise PermissionError('C28 successor descriptor owner changed')
+                identities.append((value.st_dev, value.st_ino))
+            if (response['listener_cookie'] != self._source_commit_result['listener_cookie'] or
+                    any(response[key] for key in ('phase', 'lease', 'received', 'accepted')) or
+                    len(set(identities)) != 2 or set(identities).intersection(self.slot_identities) or
+                    self._successor_watch is not None or self._successor_slot >= 0):
+                raise PermissionError('C28 successor capabilities differ from the adopted listener')
+            self._successor_slot = slot
+            self._successor_watch = (watch, self._fd_diagnostic(watch), response['listener_cookie'])
+            self._source_park_deadline_ns = self._source_park_evidence = self._source_park_result = None
+            self._source_commit_result = None
+            self._source_committed = self._source_route_receipt_consumed = False
+            self._successor_retire_by = self._successor_retire_ack = self._successor_retire_receipt = None
+            return slot, response['listener_cookie']
+        except BaseException:
+            os.close(slot)
+            os.close(watch)
+            self._source_command_unresolved = True
+            raise
+
+    def close_successor_slot(self, slot):
+        if slot != self._successor_slot:
+            raise PermissionError('C28 successor slot differs from its one-use grant')
+        os.close(slot)
+        self._successor_slot = -1
+
+    def retire_successive_predecessor(self, source_epoch):
+        """Prove that the preceding owner is dead and its native listener retired."""
+        if (not self._source_successor_allowed or not self._source_committed or
+                source_epoch != self._successor_adoption_epoch or source_epoch <= 1 or
+                self._source_park_epoch != source_epoch):
+            raise PermissionError('successive retirement is outside its committed round')
+        if self._successor_retire_receipt is not None:
+            return self._successor_retire_receipt
+        if self._successor_watch is None:
+            raise PermissionError('successive retirement lost the native generation watch')
+        key = (source_epoch - 1, 1 - source_epoch % 2)
+        old_fd, old = self.context.workers[key]
+        bootstrap = sys.modules[type(self.context).__module__]
+        if bootstrap.identity.process_alive(old_fd):
+            return None
+        now = time.monotonic_ns()
+        if self._successor_retire_by is None:
+            self._successor_retire_by = min(self.context.deadline_ns, now + 5_000_000_000)
+        deadline = self._successor_retire_by
+        if now >= deadline:
+            raise TimeoutError('successive native retirement deadline expired')
+        watch, identity, cookie = self._successor_watch
+        if self._fd_diagnostic(watch) != identity:
+            raise PermissionError('successive retirement watch descriptor changed')
+        if self._successor_retire_ack is None:
+            result = self._source_c28_command(_C28_RETIRE_INITIAL_LISTENER,
+                min(deadline, now + _C28_CUTOVER_BUDGET_NS))
+            if result['errno'] == errno.EAGAIN:
+                return None
+            if any(result.get(name) for name in ('phase', 'lease', 'listener_cookie',
+                    'received', 'accepted')):
+                raise PermissionError('successive native retirement returned a malformed ACK')
+            self._successor_retire_ack = self._source_last_command
+            duplicate = os.dup(watch)
+            try:
+                self.broker_readiness.begin_verify(duplicate, self._verify_sequence + 1,
+                    (deadline - time.monotonic_ns()) / 1_000_000_000)
+            except BaseException:
+                os.close(duplicate)
+                raise
+            self._verify_sequence += 1
+        packet = self.broker_readiness.poll_verify()
+        if packet is None:
+            return None
+        result = self.broker_readiness.last_verify_result
+        if (bootstrap.identity.process_alive(old_fd) or
+                result['owner_pid'] != old[5] or result['owner_start_ticks'] != old[11] or
+                result['listener_cookie'] != cookie or result['status'] != 0 or
+                result['state'] != 1 or result['profile'] != self.broker_readiness.profile):
+            raise PermissionError('successive C34 watch does not prove the exact retired owner')
+        self._successor_retire_receipt = (source_epoch, key, self._successor_retire_ack,
+            bytes(packet))
+        os.close(watch)
+        self._successor_watch = None
+        return self._successor_retire_receipt
 
     def current_source_census(self, deadline_ns):
         return self._source_c28_command(_C28_CURRENT_CENSUS, deadline_ns)
@@ -1290,14 +1507,14 @@ class SourceShellC22Provider:
             '_PrivateInitialWorkerExitObservation', None)
         controller = getattr(old_exit_observation, 'controller', None)
         context = self.context
+        candidate_key = (getattr(self, '_source_park_epoch', 1), 1)
         if (observation_type is None or type(old_exit_observation) is not observation_type or
                 getattr(old_exit_observation, 'provider', None) is not self or
                 getattr(old_exit_observation, 'context', None) is not context or
                 controller is None or getattr(controller, 'c22_provider', None) is not self or
                 not controller._valid_private_initial_exit_observation(
                     old_exit_observation.transport, context) or
-                getattr(context, '_completed_master_barriers', set()) != {(1, 5), (1, 6)} or
-                getattr(context, '_source_shell_committed_plans', {}).get((1, 1), {}).get(
+                getattr(context, '_source_shell_committed_plans', {}).get(candidate_key, {}).get(
                     'native_current_cookie', 0) <= 0 or
                 not self._source_committed or self._source_park_evidence is None or
                 getattr(self, '_source_commit_result', None) is None):
@@ -1330,12 +1547,11 @@ class SourceShellC22Provider:
             return None
         park = self._source_park_evidence
         commit = self._source_commit_result
-        planned_cookie = context._source_shell_committed_plans[(1, 1)]['native_current_cookie']
+        planned_cookie = context._source_shell_committed_plans[candidate_key]['native_current_cookie']
         if (response.get('errno') != 0 or
                 commit.get('phase') != _C28_PHASE_COMMITTED or
                 commit.get('lease') != park.lease or
-                commit.get('received') != park.received or
-                commit.get('accepted') != park.accepted or
+                type(commit.get('received')) is not int or commit['received'] < park.received or
                 commit.get('received') != commit.get('accepted') or
                 commit.get('listener_cookie') != planned_cookie or planned_cookie <= 0 or
                 response.get('phase') != 0 or response.get('lease') != 0 or
@@ -1376,7 +1592,6 @@ class SourceShellC22Provider:
                 exit_observation is None or controller is None or
                 not controller._valid_private_initial_exit_observation(
                     exit_observation.transport, context) or
-                getattr(context, '_completed_master_barriers', set()) != {(1, 5), (1, 6)} or
                 c34_result.get('sequence') != 1 or
                 c34_result.get('nonce') != self.broker_nonce or
                 c34_result.get('epoch') != self.broker_epoch or
@@ -1384,13 +1599,12 @@ class SourceShellC22Provider:
                 c34_result.get('owner_pid') != exit_observation.ready_identity[0] or
                 c34_result.get('owner_start_ticks') != exit_observation.ready_identity[6] or
                 c34_result.get('status') != 0 or c34_result.get('state') != 1 or
+                (getattr(self, '_source_park_epoch', 1) == 2 and
+                    c34_result.get('listener_cookie') != self._source_retry_cookie) or
                 any(type(c34_result.get(name)) is not int or c34_result[name] <= 0
                     for name in ('owner_token', 'claim_generation', 'mark', 'listener_cookie'))):
             raise PermissionError('C34 VERIFY did not prove the exact retired initial native listener')
-        watch_identity = self._watch_fd_identity
-        if (type(watch_identity) is not tuple or self.watch_fd != watch_identity[0] or
-                self._fd_diagnostic(self.watch_fd) != watch_identity[1:]):
-            raise PermissionError('C34 generation-watch descriptor changed before VERIFY proof')
+        self._initial_retirement_watch()
         proof = SourceInitialListenerRetirementProof(
             _INITIAL_RETIREMENT_PROOF_TOKEN, self, context, exit_observation,
             self._source_park_evidence, command, c34_raw, c34_result,
@@ -1406,12 +1620,33 @@ class SourceShellC22Provider:
         self._source_retired_initial_listener = True
         return proof
 
+    def _initial_retirement_watch(self):
+        if getattr(self, '_source_park_epoch', 1) == 2:
+            identity = getattr(self, '_source_retry_watch_identity', None)
+            fds = getattr(self.context, '_private_retry_fds', None)
+            fd = fds[1] if fds is not None else -1
+        else:
+            identity = self._watch_fd_identity
+            fd = self.watch_fd
+        if (type(identity) is not tuple or fd < 0 or fd != identity[0] or
+                self._fd_diagnostic(fd) != identity[1:]):
+            raise PermissionError('C34 generation-watch descriptor changed before VERIFY proof')
+        return identity
+
     def close_source_capabilities_after_settlement(self, settlement_proof, deadline_ns):
         bootstrap = sys.modules.get(type(self.context).__module__)
         proof_type = getattr(bootstrap, 'SourceRetirementProof', None)
+        initial_slots = (self._used_slots == {0} or
+            (self._used_slots == {0, 1} and
+                ((self.context._abort_only() and self._source_abort_result is not None) or
+                 (self.context._unparked_abort_profile() and self._source_park_evidence is None and
+                    getattr(self.context, '_unparked_abort', None) is not None))))
+        initial_settled = (initial_slots and not self._source_committed and
+            not self._source_retired_initial_listener and
+            self.context._completed_retirements.get((0, 0)) is settlement_proof)
+        committed_settled = self._source_retired_initial_listener and self._source_committed
         if (proof_type is None or type(settlement_proof) is not proof_type or
-                not self._source_retired_initial_listener or
-                not self._source_committed):
+                not (initial_settled or committed_settled)):
             raise PermissionError('C22 CLOSE needs real retirement and settled C31/C28 proof')
         self._source_close_authorized = settlement_proof
         return self.close(abort=False)
@@ -1476,6 +1711,8 @@ class SourceShellC22Provider:
                 if not self._wait_helper_until(min(self.context.deadline_ns,
                         time.monotonic_ns() + _TERM_GRACE_NS)):
                     raise TimeoutError('C22 helper did not exit after capability CLOSE')
+                if self.process is None or self.process.returncode != 0:
+                    raise RuntimeError('C22 helper did not complete capability CLOSE successfully')
         cleanup_error = None
         for fd in self.slots:
             if fd >= 0:
@@ -1570,7 +1807,7 @@ class SourceShellC34InteropProvider(SourceShellC22Provider):
                     Path(__file__).with_name('nginx_source_c34_artifact_provider.py').resolve(strict=True) or
                 type(helper_capture) is not c34_module.PrivateC34HelperCapture or
                 helper_capture.source_command_abi != _C28_SOURCE_COMMAND_ABI or
-                helper_capture.sha256.hex() != 'ac3b9a8dd1754e169ec89632a02d8854c529388e3298d939a3de01e102449310' or
-                helper_capture.build_id != '8de64befb2531f8af86217930097ffa4668d1f82'):
+                helper_capture.sha256.hex() != c34_module._HELPER_SHA256 or
+                helper_capture.build_id != c34_module._HELPER_BUILD_ID):
             raise TypeError('private C34 provider requires the fixed helper and reviewed ABI1 capture')
         super().__init__(context, broker_readiness, helper_capture)
