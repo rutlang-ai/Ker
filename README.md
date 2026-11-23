@@ -58,4 +58,19 @@ DPDK 默认启用，从 fork 的本地安装目录查找，要求版本至少为
 
 移植边界见 [Linux 基础代码移植](docs/linux-port.md)、[DPDK 内存与 skb 所有权](docs/dpdk-memory.md) 和 [Linux skb 线性子集](docs/linux-skb.md)。下一阶段接入原始 ARP/IPv4 入口及邻居和发送路径，并补齐设备注册、连接预算与独立控制资源。Ethernet 边界见 [原始接收分类](docs/linux-ethernet.md)。NAPI 边界见 [调度与完成](docs/linux-napi.md)。协议投递边界见 [匹配与所有权](docs/linux-receive.md)。ARP 构造边界见 [报文与导出](docs/linux-arp.md)。ARP 接收边界见 [门控与消息回调](docs/linux-arp-receive.md)。地址边界见 [静态 IPv4 配置](docs/linux-ipv4-address.md)。邻居边界见 [永久表与引用](docs/linux-neighbor.md)。待发送队列见 [原始 FIFO 与限额](docs/linux-skb-queue.md)。Worker 边界见 [轮询与 RX 压力](docs/worker.md)。整体路线见[架构与移植路线](docs/architecture.md)。
 
-F-Stack 外部测试场景的适配范围与追溯见 [测试迁移](docs/fstack-tests.md)，当前已有 8 个真实 DPDK 回归场景。
+The private [Linux timer_list adapter](docs/linux-timer-list.md) associates unchanged
+native timer fields with worker timerqueues, including scoped jiffies, bounded
+callback delivery, shutdown, and lifetime guards.
+
+The private neighbor adapter also accepts explicit offline timing and probe
+parameters through verbatim Linux setters and reachable-time randomization;
+this does not enable dynamic neighbor resolution yet.
+
+The private [neighbor timer monitor](docs/linux-neighbor-timer.md) runs the
+original Linux reachability and retry handler for configured IPv4/MAC mappings,
+with copied probe/notification callbacks and explicit lifecycle pins. During a
+native probe callback, the bounded [ARP probe adapter](docs/linux-arp-probes.md)
+can return Linux's constructed packet as a caller-owned skb. NIC transmission,
+ARP learning and unresolved packet queues remain unsupported.
+
+F-Stack 外部测试场景的适配范围与追溯见 [测试迁移](docs/fstack-tests.md)，当前已有 11 个真实 DPDK 回归场景。
