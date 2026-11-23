@@ -29,6 +29,38 @@ if(KER_WITH_DPDK)
     target_link_libraries(ker-worker-test PRIVATE
         ker_port_headers ker_linux_port ker_dpdk_port PkgConfig::DPDK Threads::Threads)
     add_test(NAME worker COMMAND ker-worker-test)
+    add_executable(ker-flow-test flow.c)
+    target_compile_definitions(ker-flow-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-flow-test PRIVATE
+        ker_port_headers ker_linux_port ker_dpdk_port PkgConfig::DPDK Threads::Threads)
+    add_test(NAME flow COMMAND ker-flow-test)
+    set_tests_properties(flow PROPERTIES TIMEOUT 30)
+    add_executable(ker-flow-chain-test flow-chain.c)
+    target_compile_definitions(ker-flow-chain-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-flow-chain-test PRIVATE
+        ker_port_headers ker_linux_port ker_dpdk_port PkgConfig::DPDK Threads::Threads)
+    add_test(NAME flow-chain COMMAND ker-flow-chain-test)
+    set_tests_properties(flow-chain PROPERTIES TIMEOUT 30)
+    add_executable(ker-flow-ip-options-test flow-ip-options.c)
+    target_compile_definitions(ker-flow-ip-options-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-flow-ip-options-test PRIVATE
+        ker_port_headers ker_linux_port ker_dpdk_port PkgConfig::DPDK Threads::Threads)
+    add_test(NAME flow-ip-options COMMAND ker-flow-ip-options-test)
+    set_tests_properties(flow-ip-options PROPERTIES TIMEOUT 30)
+    add_executable(ker-flow-buckets-test flow-buckets.c)
+    target_compile_definitions(ker-flow-buckets-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-flow-buckets-test PRIVATE
+        ker_port_headers ker_linux_port ker_dpdk_port PkgConfig::DPDK Threads::Threads)
+    add_test(NAME flow-buckets COMMAND ker-flow-buckets-test)
+    set_tests_properties(flow-buckets PROPERTIES TIMEOUT 60)
+    add_executable(ker-flow-steering-test flow-steering.c)
+    target_compile_definitions(ker-flow-steering-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-flow-steering-test PRIVATE
+        ker_port_headers ker_linux_port ker_dpdk_port PkgConfig::DPDK Threads::Threads)
+    add_test(NAME flow-matrix COMMAND ker-flow-steering-test --matrix)
+    add_test(NAME flow-multicore COMMAND ker-flow-steering-test --multicore)
+    set_tests_properties(flow-matrix PROPERTIES TIMEOUT 30)
+    set_tests_properties(flow-multicore PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77)
     set_tests_properties(worker PROPERTIES TIMEOUT 30)
     add_executable(ker-skb-test skb.c)
     target_compile_definitions(ker-skb-test PRIVATE _GNU_SOURCE)
@@ -70,6 +102,34 @@ if(KER_WITH_DPDK)
     target_link_libraries(ker-transport-receive-test PRIVATE ker_transport_receive_port
         ker_icmp_echo_view_port ker_tcp_view_port ker_udp_view_port ker_ipv4_view_port ker_receive_port
         ker_receive_headers ker_eth_headers ker_eth_port ker_linux_port ker_dpdk_port ker_skb_port Threads::Threads)
+    add_executable(ker-fstack-flow-receive-test fstack-flow-receive.c)
+    target_include_directories(ker-fstack-flow-receive-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_compile_definitions(ker-fstack-flow-receive-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-fstack-flow-receive-test PRIVATE ker_transport_receive_port
+        ker_flow_ring_port ker_tx_ring_port
+        ker_icmp_echo_view_port ker_tcp_view_port ker_udp_view_port ker_ipv4_view_port ker_receive_port
+        ker_receive_headers ker_eth_headers ker_skb_headers ker_neighbor_headers ker_eth_port ker_linux_port ker_dpdk_port ker_skb_port Threads::Threads)
+    add_test(NAME fstack-flow-receive COMMAND ker-fstack-flow-receive-test)
+    set_tests_properties(fstack-flow-receive PROPERTIES TIMEOUT 30)
+    add_executable(ker-fstack-flow-owner-receive-test fstack-flow-owner-receive.c)
+    target_include_directories(ker-fstack-flow-owner-receive-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_compile_definitions(ker-fstack-flow-owner-receive-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-fstack-flow-owner-receive-test PRIVATE ker_flow_receive_port
+        ker_transport_receive_port ker_flow_ring_port ker_rx_ring_port ker_tx_ring_port ker_receive_port
+        ker_ipv4_view_port ker_udp_view_port ker_tcp_view_port ker_icmp_echo_view_port
+        ker_receive_headers ker_eth_headers ker_skb_headers ker_neighbor_headers ker_eth_port
+        ker_linux_port ker_dpdk_port ker_skb_port ker_address_port ker_neighbor_port PkgConfig::DPDK Threads::Threads)
+    add_test(NAME fstack-flow-owner-receive COMMAND ker-fstack-flow-owner-receive-test)
+    set_tests_properties(fstack-flow-owner-receive PROPERTIES TIMEOUT 30)
+    add_executable(ker-fstack-flow-concurrent-receive-test fstack-flow-concurrent-receive.c)
+    target_include_directories(ker-fstack-flow-concurrent-receive-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_compile_definitions(ker-fstack-flow-concurrent-receive-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-fstack-flow-concurrent-receive-test PRIVATE ker_transport_receive_port
+        ker_flow_ring_port ker_tx_ring_port ker_icmp_echo_view_port ker_tcp_view_port ker_udp_view_port ker_ipv4_view_port
+        ker_receive_port ker_receive_headers ker_eth_headers ker_skb_headers ker_neighbor_headers ker_eth_port
+        ker_linux_port ker_dpdk_port ker_skb_port ker_address_port ker_neighbor_port PkgConfig::DPDK Threads::Threads)
+    add_test(NAME fstack-flow-concurrent-receive COMMAND ker-fstack-flow-concurrent-receive-test)
+    set_tests_properties(fstack-flow-concurrent-receive PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77)
     add_test(NAME transport-receive COMMAND ker-transport-receive-test)
     set_tests_properties(transport-receive PROPERTIES TIMEOUT 30)
     add_executable(ker-icmp-echo-test icmp-echo.c)
@@ -107,6 +167,13 @@ if(KER_WITH_DPDK)
         ker_dpdk_port PkgConfig::DPDK Threads::Threads)
     add_test(NAME tx-ring COMMAND ker-tx-ring-test)
     set_tests_properties(tx-ring PROPERTIES TIMEOUT 30)
+    add_executable(ker-flow-ring-test flow-ring.c)
+    target_include_directories(ker-flow-ring-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_compile_definitions(ker-flow-ring-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-flow-ring-test PRIVATE ker_flow_ring_port ker_tx_ring_port
+        ker_port_headers ker_skb_headers ker_neighbor_headers ker_linux_port ker_dpdk_port PkgConfig::DPDK Threads::Threads)
+    add_test(NAME flow-ring COMMAND ker-flow-ring-test)
+    set_tests_properties(flow-ring PROPERTIES TIMEOUT 30)
     add_executable(ker-rx-ring-test rx-ring.c)
     target_include_directories(ker-rx-ring-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
     target_compile_definitions(ker-rx-ring-test PRIVATE _GNU_SOURCE)
@@ -420,6 +487,6 @@ if(KER_WITH_DPDK)
     set_tests_properties(skb PROPERTIES TIMEOUT 30)
     set_tests_properties(dpdk-memory PROPERTIES TIMEOUT 30)
     list(JOIN DPDK_LIBRARY_DIRS ":" ker_dpdk_library_path)
-    set_tests_properties(checksum timer refcount dpdk-memory skb worker ethernet fstack-ipv4-ingress-validation fstack-udp-ingress-validation fstack-udp-minimal-boundaries fstack-tcp-ingress-validation ipv4-fields transport-receive icmp-echo icmp-echo-configured-create fstack-chain-export fstack-chain-checksum udp-create udp-configured-create tcp-configured-create udp-ip-options udp-neighbor-create tcp-create tcp-ip-options tcp-neighbor-create tcp-options napi receive arp arp-configured arp-ring arp-concurrent-ring configured-ring ipv4-address neighbor-timer neighbor arp-receive fstack-arp-chain-feedback skb-queue timer-list arp-probe-import neighbor-update-import tx-export tx-export-chain tx-ring rx-ring cross-worker-ring fstack-concurrent-ring ${ker_fstack_tests} PROPERTIES
+    set_tests_properties(checksum timer refcount dpdk-memory skb worker flow flow-buckets flow-chain flow-ip-options fstack-flow-receive fstack-flow-owner-receive fstack-flow-concurrent-receive flow-matrix flow-multicore ethernet fstack-ipv4-ingress-validation fstack-udp-ingress-validation fstack-udp-minimal-boundaries fstack-tcp-ingress-validation ipv4-fields transport-receive icmp-echo icmp-echo-configured-create fstack-chain-export fstack-chain-checksum udp-create udp-configured-create tcp-configured-create udp-ip-options udp-neighbor-create tcp-create tcp-ip-options tcp-neighbor-create tcp-options napi receive arp arp-configured arp-ring arp-concurrent-ring configured-ring ipv4-address neighbor-timer neighbor arp-receive fstack-arp-chain-feedback skb-queue timer-list arp-probe-import neighbor-update-import tx-export tx-export-chain tx-ring rx-ring flow-ring cross-worker-ring fstack-concurrent-ring ${ker_fstack_tests} PROPERTIES
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_dpdk_library_path}:$ENV{LD_LIBRARY_PATH}")
 endif()
