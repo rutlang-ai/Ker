@@ -403,3 +403,8 @@ static int descriptor_utimensat(int fd, const char *path, const struct timespec 
 }
 int utimensat(int fd, const char *path, const struct timespec times[2], int flags)
     __attribute__((alias("descriptor_utimensat")));
+
+int futimens(int fd, const struct timespec times[2])
+{
+    return descriptor_utimensat(fd, NULL, times, 0);
+}
