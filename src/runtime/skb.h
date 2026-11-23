@@ -41,6 +41,23 @@ int ker_skb_clone(struct sk_buff *skb, struct sk_buff **result);
 int ker_skb_make_writable(struct sk_buff *skb, unsigned int headroom, unsigned int tailroom);
 /* Always copies; caller owns returned mbuf. No native offload claims are set. */
 int ker_skb_to_mbuf(struct sk_buff *skb, struct rte_mbuf **result);
+/* Copy a supported owned linear skb into a caller-owned direct DPDK chain.
+ * The source is unchanged and remains caller-owned on every return. The first
+ * segment preserves skb headroom; later segments use DPDK default headroom.
+ * A nonzero limit <= UINT16_MAX bounds each segment's payload and is capped
+ * by actual tailroom. Empty input yields one empty segment. CHECKSUM_PARTIAL,
+ * GSO, nonlinear/queued layouts and unsupported ownership remain rejected;
+ * no offload flags are set and this does not implement Linux nonlinear skb. */
+int ker_skb_to_mbuf_chain_copy(struct sk_buff *skb,
+    unsigned int segment_payload_limit, struct rte_mbuf **result);
+/* Complete an Internet CHECKSUM_PARTIAL linear skb with the same seeded
+ * csum_partial/fold semantics as ker_skb_to_mbuf_software_checksum, then
+ * copy into independently owned direct mbuf segments. The checksum field may
+ * cross a segment boundary. Source bytes/metadata remain unchanged and output
+ * is assigned only on success. GSO, nonlinear/queued/shared/CRC32C layouts
+ * remain rejected; no TX offload flags or nonlinear Linux skb are implied. */
+int ker_skb_to_mbuf_chain_software_checksum(struct sk_buff *skb,
+    unsigned int segment_payload_limit, struct rte_mbuf **result);
 /* Complete a linear CHECKSUM_PARTIAL skb in a private copied mbuf using Linux
  * Internet-checksum semantics. Source bytes/metadata remain unchanged; no TX
  * offload metadata is set. CRC32C, GSO and unsupported skb layouts are rejected. */
