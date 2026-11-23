@@ -8,7 +8,9 @@
 
 #define KER_MEMBER_CENSUS_DIAG_FAMILY_REQUEST 20u
 #define KER_MEMBER_CENSUS_TCP_SYN_RECV 3u
+#define KER_MEMBER_CENSUS_TCP_FIN_WAIT2 5u
 #define KER_MEMBER_CENSUS_TCP_TIME_WAIT 6u
+#define KER_MEMBER_CENSUS_IDIAG_TIMER_TIMEWAIT 3u
 #define KER_MEMBER_CENSUS_TCP_LISTEN 10u
 #define KER_MEMBER_CENSUS_NETLINK_PROTOCOL 4
 #define KER_MEMBER_CENSUS_NLM_F_REQUEST 0x01u
@@ -96,6 +98,7 @@ struct ker_member_census_accumulator {
     uint32_t sequence;
     uint32_t local_port_id;
     uint64_t listener_cookie;
+    bool expect_no_listener;
     uint64_t rows;
     uint64_t total;
     uint64_t state_counts[KER_SOCKET_BROKER_TCP_STATES];

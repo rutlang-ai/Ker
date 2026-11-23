@@ -15,9 +15,9 @@ The in-process `ker-posix` API still isolates its initialized kernel from
 post-init process creation. [`lkl-channel.c`](../src/posix/lkl-channel.c)
 registers an at-fork child handler that exits with status 125;
 [`posix-process.c`](../src/posix/posix-process.c) rejects `posix_spawn`,
-`system` and `popen` after initialization. A separate authenticated
+`system` and `popen` after initialization. The separate authenticated
 [native socket broker](native-socket-broker.md) and its
-[POSIX caller adapter](native-socket-preload.md) now transfer selected original
+[POSIX caller adapter](native-socket-preload.md) support selected original
 Linux TCP socket/epoll capabilities across frontend fork/exec. The verified
 no-FF Nginx lifecycle exercises that bounded caller path. It does not initialize
 the F-Stack Nginx module or provide its full application runtime.
@@ -27,10 +27,10 @@ route selected unchanged `ff_api.h` TCP socket calls through the original-Linux
 broker. The opt-in [bounded FF-enabled Nginx runtime profile](fstack-nginx-runtime.md)
 now binds those leaves to the pinned executable's detached `graceful_reload=0`
 caller path, restores its FF fd offset, and demonstrates a one-worker
-HUP/USR2/WINCH lifecycle over original Linux TCP. It explicitly rejects
-secondary-worker initialization; multiworker `reuseport` clone ownership
-remains unsupported. The profile does not implement generation reload or
-census behavior.
+HUP/USR2/WINCH lifecycle over original Linux TCP. The validated worker shim
+also supports one- and two-worker `reuseport` listener ownership across HUP,
+USR2, and WINCH while retaining `graceful_reload=0`. This caller profile does
+not implement the F-Stack generation reload FSM.
 
 The `native-socket-broker-generation-handoff` caller test exercises the
 broker's fixed two-member original-Linux reuseport selector with two old and
@@ -60,9 +60,48 @@ queued native-to-host bytes and orderly EOF, and observes closing/TIME_WAIT
 rows after worker exit. A separate kind-4 observer provides the send-queue
 measurement; the kind-5 census result itself contains only raw state counts
 and listener identity. This validates the broker's bounded member-census
-primitive, not F-Stack per-process FD aliases, `so_snd`, syncache or source FSM
-counters. It is not the original shell's complete census, fault or lifecycle
-matrix and does not change the blocked inventory entry.
+primitive, not F-Stack per-process FD aliases, `so_snd`, or source FSM counters.
+A separate op-47 owner hook now reports a bounded original-Linux request_sock
+count for `ff_syncache_count`; it excludes full `SYN_RECV` sockets and
+stateless cookies, and does not establish full source-counter equivalence. The
+tests keep the listener live through zero. This is not the original shell's
+complete census, fault or lifecycle matrix and does not change the blocked
+inventory entry.
+
+The private C16 fixture attaches one authenticated FF owner and one IPv4
+listener to an independently running original-Linux broker. It arms the
+broker's marked NFQUEUE admission task before `listen`, pumps the unchanged
+flow-map callback on the FF event-loop owner thread, holds real TAP SYN-ACKs
+until a map verdict, and rejects a real full-map request through the original
+kernel. Its cases include exact owner request revocation, a stopped owner with
+independent broker progress and deadline enforcement, duplicate SYNs,
+authenticated endpoint rejection, and owner/listener cleanup. Errors remain
+quarantined and fail-closed; this fixture does not prove healthy recovery.
+It does not bind the production Nginx dispatcher or generation FSM, and does
+not enable public `graceful_reload=1`; all six C16 controls are narrower than
+the original shell matrix and leave this source entry blocked.
+
+The C17 fixture adds private retirement and rearm of the marked admission
+queue while preserving the same listener. The controller disables the old
+lease, drains notifications while the owner map remains open, then asks the
+owner thread to close that map. Rearm revalidates the retained listener and
+uses a fresh lease before the owner reopens the map. A real connection during
+the retired interval exercises the unchanged map's outside-window
+allow-without-record behavior. Three windows are tested; this bounded profile
+does not establish production Nginx generation/FSM integration, arbitrary
+kernel hook quiescence, or recovery from an uncertain accepted verdict. The
+public graceful-reload path remains unsupported and the source entry remains
+blocked.
+
+This retirement ordering is qualified only for the configured native artifact
+`399c02b3aa05a7ee2a35c13fca64a279198c0d0675a8dc218eddc07399525b8d`, whose
+config is UP, `PREEMPT_NONE`, and `TINY_RCU`. The pinned LKL syscall holds its
+single CPU through synchronous `LOCAL_OUT` NFQUEUE enqueue, whose callback uses
+atomic allocation and nonblocking netlink delivery. Disabling the exact mark
+and lease serializes behind any hook already executing on that CPU; the broker
+then drains queued/deferred notifications before the FF owner closes the map.
+The CMake profile guard rejects other scheduling/RCU configurations; this is
+not a generic kernel quiescence guarantee.
 
 The bounded FF runtime now implements `ff_socket_drain_count` over authenticated
 broker capabilities registered in the current process. It counts application
@@ -75,8 +114,10 @@ through the leaf bridge.
 This hook is not the pinned source's whole process FD-table walk: raw or
 unregistered descriptors are outside its view, and the public FF/POSIX socket
 creation adapters still reject UDP. The graceful-off caller profile does not
-invoke the generation FSM; syncache, send-pending, flow-map and dispatcher hooks
-remain unsupported. The source inventory entry remains blocked.
+invoke the generation FSM. The bounded authenticated `ff_syncache_count()`
+hook observes original-Linux request sockets only; flow-map, dispatcher, and
+generation FSM hooks remain unsupported. The source inventory entry remains
+blocked.
 
 The bounded FF bridge now supports `ff_dup` for registered TCP descriptors via
 the existing namespaced `F_DUPFD` adapter. Tests cover lowest-free slot reuse,
@@ -87,6 +128,101 @@ by the FF bridge. This leaf does not add `ff_dup2` or establish full F-Stack FD
 table equivalence; the broader drain, lifecycle and blocked source inventory
 status are unchanged. The pinned [`ff_dup` implementation](https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/lib/ff_syscall_wrapper.c#L2167-L2189)
 routes F-Stack descriptors through `sys_dup`.
+
+The SDK now has a deferred owner-aware fixed two-member IPv4 reuseport-group
+constructor. Its five calls reserve the tuple (`owner_group_plan`), issue one
+index-scoped slot (`owner_group_slot`), authenticate the owner (`ff_owner_group_claim`),
+create both listeners (`owner_group_publish`), and retrieve aliases for the
+owner's member (`owner_group_member`). The claim capability is a one-use,
+phase-checked receipt that can be reused only to retrieve aliases for that
+same owner, index, group incarnation, and member cookie. It grants neither
+group selection nor delegation. The coordinator retains separate group
+CONTROL authority; each worker gets only its owner CONTROL capability and
+claimed receipt.
+
+Both distinct live owners must claim before publication. The listeners receive
+their respective immutable owner marks from creation; those same marks
+authorize owner payload snapshots and member READ censuses. Fresh FF TCP
+creation is rejected while an owner is associated with this group, so another
+socket cannot pollute the member census. Publication fails if either owner is
+dead or has acquired sticky owned/unowned network history after claiming;
+repeated claims and publication return `EALREADY`. The native TAP test checks
+owner isolation, these lifecycle failures, selector changes, and TCP exchanges
+accepted by both owners. An old accepted stream remains usable after selection
+moves to the second listener, including a descriptorless pending-payload
+snapshot checked against a real ACK-drop capture.
+
+This SDK leaf supports one fixed two-member IPv4 group. It does not bind Nginx
+generation startup, worker dispatcher behavior, repeated generations, or the
+graceful-reload FSM; the source inventory entry remains blocked.
+
+The C21 SDK leaf adds an opt-in activation path for the initial member of a
+staged owner group. The claimed owner receives one unbound original-Linux TCP
+socket tagged with its immutable owner mark; only that actor may set the small
+prebind option allowlist and perform the reserved-tuple `bind` and real
+`listen`. The broker publishes the member cookie and selector-0 group only
+after `listen` succeeds, and the coordinator can retrieve group CONTROL after
+that point. Owner history is checked before every activation operation, and
+the socket cookie and mark are revalidated against the native descriptor.
+Admission-prepared initial owners, repeated replacement, Nginx worker/module
+binding, and the graceful-reload FSM remain outside this initial-member leaf.
+The TAP fixture exercises a real accepted TCP exchange, sticky-history refusal
+without bind/listen effects, capability cleanup, and reuse of the released
+tuple by a fresh non-reuseport listener. This is an SDK prerequisite, not a
+graceful-reload qualification; the source inventory entry remains blocked.
+
+The C25 candidate-activation leaf extends this sequence to a single slot-1
+candidate in the same fixed IPv4 group. Only its authenticated claimed owner
+can request the unbound marked socket, and only after the existing admission
+task reports READY. The owner then uses the ordinary bind/listen path for the
+reserved tuple. The broker pins a stable duplicate into the task after bind
+and before listen, and publishes the candidate cookie/member only after the
+original Linux `listen` succeeds. Candidate validation and failure cleanup
+remain scoped to slot 1; selector zero and the initial listener stay available
+until a separate coordinator selection. Published member aliases share the
+candidate activation lifetime, including when the original activation fd is
+closed. The real TAP fixture checks the pre-listen census, off-tuple bind
+rejection, task registration before listen, alias closure, selector change,
+candidate TCP/map admission, and a held old stream after selection. This does
+not bind the pinned Nginx worker lifecycle or qualify graceful reload; repeated
+generations and the full FSM remain unsupported.
+
+The opt-in C23 source baseline runs unchanged pinned `m4_lc.py` against the
+installed C22 Nginx runtime on `198.18.0.2:80`: 24 persistent connections plus
+one fresh-request worker, 330 seconds, 0.5-second intervals, and a 2-second
+timeout. The source oracle passed with 15,840 persistent requests, 660 fresh
+requests, and zero failures or reconnects. This is a baseline qualification
+only. The separate manual `gr0` mode runs unchanged 25-second `m4_outage.py`,
+sends the real Nginx HUP at the source harness's five-second anchor, and applies
+the unchanged oracle and zero-FSM-log check. In the recorded run it observed
+one 0.028-second refusal window, below the source oracle's 0.3-second minimum;
+`gr0` therefore remains unqualified. The evidence records exact probe
+arguments and hashes, the installed Ker manifest, Nginx/module/runtime hashes,
+probe logs, and original-Linux broker statistics. The config preserves the
+source probe's `/` index response and 300-second keepalive settings. The
+baseline CTest is opt-in because it takes more than five minutes; manual `gr0`
+and composite modes return nonzero when the unchanged oracle rejects a run.
+This work does not advance the source-case inventory or qualify graceful reload.
+
+The opt-in runtime now provides `ff_socket_snd_pending` for ordinary
+ready-copy TCP sockets created through the authenticated FF owner context. Each
+process receives a distinct broker-owned mark bound to its host PID, process
+start time, and pidfd; accepted children and duplicated aliases retain that
+owner. The hook reports original-Linux queued payload bytes, including
+descriptorless full sockets, and clamps to the upstream `int` result range.
+Generic, inherited, or foreign registered sockets cause the query to fail
+closed, even after those descriptors close. Sticky history is stored by the
+broker against the authenticated PID, process start time, and pidfd, so it
+survives session reconnect and `exec`; owner marks remain stable for the live
+process. The same-process native broker is within the trusted boundary. The
+check does not defend against privileged code with direct access to sockets in
+the same LKL instance and the ability to set their marks. The
+profile excludes sendfile and does not enable graceful reload. The private
+C16 fixture exercises one bounded admission window but is not production Nginx
+generation binding. The source still requires end-to-end generation admission,
+dispatcher/FSM integration, healthy recovery, the remaining fault matrix and
+cleanup before a zero result can drive promotion; the source inventory entry
+remains blocked.
 
 The existing [`ker::reload` controller](fstack-reload-controller.md) consumes
 the unchanged nginx FSM policy, but its caller demonstrates raw-record queue
@@ -100,10 +236,11 @@ runtime limits, not missing test-host setup.
 
 Keep packet and connection behavior in the one authoritative original Linux
 kernel socket runtime already used by the broker. The remaining adapter work
-must connect the FF-enabled Nginx caller to that runtime, restore its executable
-FD offset at the right boundaries, and provide real caller-side FF lifecycle,
-event and drain behavior. The real Nginx caller must run its signal-driven FSM
-while workers change. Qualification must observe actual FSM transitions,
+must bind the production FF-enabled Nginx caller to broker-owned admission and
+generation services, restore its executable FD offset at the right boundaries,
+and provide real caller-side FF lifecycle, event and drain behavior. The real
+Nginx caller must run its signal-driven FSM while workers change. Qualification
+must observe actual FSM transitions,
 Nginx/runtime logs, counters, live connection results and cleanup side effects,
 rather than fabricated oracle text or a raw-record queue substitute.
 

@@ -8,15 +8,6 @@ extern "C" {
 #endif
 
 struct ker_socket_broker_server;
-enum ker_socket_broker_rights {
-    KER_SOCKET_BROKER_READ = 1u << 0,
-    KER_SOCKET_BROKER_WRITE = 1u << 1,
-    KER_SOCKET_BROKER_CONTROL = 1u << 2,
-    KER_SOCKET_BROKER_NAME = 1u << 3,
-    KER_SOCKET_BROKER_OPTION = 1u << 4,
-    KER_SOCKET_BROKER_WAIT = 1u << 5,
-    KER_SOCKET_BROKER_ALL = (1u << 6) - 1
-};
 
 /* Creates a same-UID host AF_UNIX SOCK_SEQPACKET listener. No native Linux
  * socket is created by this call. One ker-posix runtime permits one live
@@ -49,6 +40,12 @@ int ker_socket_broker_server_reuseport_group_create(struct ker_socket_broker_ser
 int ker_socket_broker_server_run(struct ker_socket_broker_server *server,
     int stop_when_empty);
 void ker_socket_broker_server_destroy(struct ker_socket_broker_server *server);
+/* Error-reporting teardown variant. If a fail-closed ingress quarantine
+ * cannot be confirmed, returns -1/errno and retains the server and its pinned
+ * descriptors so the caller may retry teardown; no healthy release is
+ * implied. */
+int ker_socket_broker_server_destroy_checked(
+    struct ker_socket_broker_server *server);
 
 #ifdef __cplusplus
 }

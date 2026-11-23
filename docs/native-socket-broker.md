@@ -119,6 +119,35 @@ by its separate original-Linux socket descriptor. This is a bounded broker
 API for two-member IPv4 TCP selection, not arbitrary cBPF support or general
 reuseport-group adoption.
 
+## Staged owner-group publication
+
+`ker_socket_client_owner_group_staged_plan()` creates a separate immutable
+plan mode while preserving the atomic `owner_group_plan()`/`owner_group_publish()`
+contract. After slot 0 is claimed by a fresh owner,
+`owner_group_publish_initial()` creates a real original-Linux listener and a
+selector fixed to member 0. It can serve traffic before a slot-1 owner exists.
+Slot 0 is sealed at this point; slot 1 can be delegated and claimed later.
+`owner_group_publish_candidate()` joins its fresh listener without changing
+selection. A caller must explicitly select member 1. Existing member-0 streams
+remain ordinary original-Linux TCP streams across that selection.
+
+Missing claims and an unpublished initial listener return `EAGAIN` without
+consuming the candidate attempt. Once a claimed candidate reaches preflight, a
+rejection is terminal: the candidate cannot be replaced or retried. Failures
+close only the candidate listener and preserve member 0. The initial listener
+identity, mark, bound tuple, and `SO_ACCEPTCONN` state are revalidated before
+candidate socket effects.
+
+Initial publication requires an unprepared actor. A prepared candidate returns
+`EAGAIN` before socket effects while its admission task is starting or in a
+retryable window transition; this does not consume the candidate attempt. Once
+the task is `READY`, the broker sets the candidate mark, binds it, registers
+that exact native listener with the admission task, and only then calls
+`listen()`. Terminal or quarantined task states fail closed and consume the
+attempt, preserving member 0 and its selector. These SDK controls do not
+qualify Nginx `graceful_reload=1`, a full F-Stack lifecycle, or a graceful-reload
+FSM.
+
 ## Reuseport member census
 
 `ker_socket_client_member_census_create(group, index)` creates a read-only
@@ -129,6 +158,12 @@ unique, nonzero `SO_MARK` before publication. The broker attaches a fixed local
 netlink request, pointer, or descriptor. Snapshot results contain raw TCP
 state counts, the immutable listener cookie, and no queue metrics or F-Stack
 syncache/syncounter aliases.
+
+For a claimed staged member 1 that is not published yet, census creation is
+also permitted. Its snapshot uses the already reserved member mark with
+`listener_cookie=0`; a successful snapshot must have zero `LISTEN` rows. Any
+unexpected listener under that mark fails the snapshot. This lets callers
+verify the candidate has not begun listening while its owner is still starting.
 
 The kind-5 census capability has no TCP descriptor, group reference, or member
 handle. It remains valid after all group/member handles close: snapshots may
@@ -161,10 +196,16 @@ Linux send queue until `EAGAIN` while the host delays reads. A separate
 existing TCP observer capability records a positive send-queue value; it is
 not added to the census result. The native worker then closes its accepted,
 member, and group descriptors and exits before the host drains the queued
-bytes. The host verifies every byte and orderly FIN while retaining only
-metadata capabilities; the census observes closing/TIME_WAIT states and
-confirms both listener rows disappear. The test does not synthesize TCP
-packets or claim a full-table census outside this bounded two-member group.
+bytes. The host verifies every byte and orderly FIN while keeping both peer
+sockets open; the census observes the resulting `FIN_WAIT2` rows, then the
+host closes the peers and the census observes `TIME_WAIT`. On Linux 6.12.113,
+an orphaned `FIN_WAIT2` may already be represented by a timewait object. Its
+inet-diag row retains the `FIN_WAIT2` state and socket cookie but has timer
+`TIMEWAIT`, inode zero, and only the mark attribute. The parser accepts this
+sparse form only for that exact state/timer/inode combination while still
+requiring the member mark and unique nonzero cookie. It also confirms both
+listener rows disappear. The test does not synthesize TCP packets or claim a
+full-table census outside this bounded two-member group.
 
 Adding these typed operations advances the private broker wire protocol to
 version 2; client and broker must be built from compatible API versions.

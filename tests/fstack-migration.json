@@ -1189,7 +1189,7 @@
       "id": "tests/integration/test_graceful_reload.sh::entrypoint",
       "kind": "shell-e2e",
       "status": "blocked",
-      "reason": "The original operational entrypoint requires real nginx/F-Stack HUP/USR2 reload behavior, live remote TCP probes, reload/drain state and fault/cleanup oracles. Ker's initialized native Linux process cannot fork/daemonize; spawn/shell helpers are rejected, and native descriptors cannot be inherited through exec or SCM_RIGHTS. The existing caller controller exercises raw-record queues, not nginx's live-connection FSM; the packet-session runtime has one packet consumer and no replacement-service handoff. This is a runtime/process-handoff boundary, not only a missing test host; running F-Stack alone is an upstream baseline. See docs/fstack-graceful-reload-gap.md.",
+      "reason": "The original operational entrypoint still requires the real Nginx/F-Stack HUP/USR2 generation FSM, live remote TCP probes, source counters, drain behavior, fault cases and cleanup. Ker now supports selected cross-process socket capabilities through an original-Linux broker, and a private C16 fixture qualifies one authenticated IPv4 owner/listener with original-kernel SYN-ACK gating, imported flow-map admission, request revocation, independent broker progress, owner authentication and fail-closed cleanup. That fixture does not bind the production Nginx dispatcher or generation FSM, enable public graceful_reload=1, or prove healthy recovery and the full source matrix. Running F-Stack alone remains an upstream baseline. See docs/fstack-graceful-reload-gap.md.",
       "ker_tests": []
     },
     {

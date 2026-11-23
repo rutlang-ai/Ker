@@ -8,6 +8,7 @@ struct ker_member_census_identity {
     uint32_t mark;
     uint16_t local_port;
     uint64_t listener_cookie;
+    bool expect_no_listener;
 };
 
 struct ker_member_census_diag_state {

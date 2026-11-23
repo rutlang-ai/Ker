@@ -757,6 +757,7 @@ struct generation_frame_drain_context {
     struct rte_mempool *message_pool;
     struct rte_mbuf *packet;
     bool nonframe_reap;
+    bool active_u2_seen;
     unsigned unrelated_count;
 };
 static bool generation_frame_is_expected_u2(const struct rte_mbuf *packet)
@@ -805,6 +806,13 @@ static int generation_frame_dequeue_attempt(void *opaque)
             context->packet->pkt_len<14||context->packet->pkt_len>1518||
             context->packet->data_len!=context->packet->pkt_len)return -EUCLEAN;
         if(generation_frame_is_expected_u2(context->packet)) {
+            if(context->active_u2_seen) {
+                struct rte_mbuf *duplicate=context->packet;
+                if(ker_generation_packet_release(context->rings,&context->identity,duplicate))
+                    return -EUCLEAN;
+                context->packet=NULL;return -EPROTO;
+            }
+            context->active_u2_seen=true;
             printf("KER_GENERATION_ACTIVE_DEQUEUE_HELD {}\n");fflush(stdout);
             raise(SIGSTOP);
             return 1;
@@ -1090,7 +1098,7 @@ static int generation_frame_drain_control(char command, void *opaque)
         if(closed<0||(size_t)closed>=sizeof(record)-(size_t)used)return -EOVERFLOW;
         printf("%s",record);fflush(stdout);return 1;
     }
-    uint32_t tx_before=0,pool_before=0,tx_after=0,pool_after=0;
+    uint32_t tx_before=0,pool_before=0,tx_resume=0,pool_resume=0,tx_after=0,pool_after=0;
     bool active_death=getenv("KER_SESSION_TEST_FRAME_DEATH_PRODUCER_ACTIVE_CONSUMER")!=NULL;
     context->unrelated_count=0;
     if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_before,&pool_before)||
@@ -1134,13 +1142,28 @@ static int generation_frame_drain_control(char command, void *opaque)
     uintptr_t pointer=(uintptr_t)packet;
     uint64_t tag=ker_generation_packet_pool_tag(context->rings);
     uint16_t length=packet->pkt_len;
-    if(!tag||ker_generation_packet_release(context->rings,&context->identity,packet)||
-        ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_after,&pool_after)||
-        tx_after!=0||pool_after+context->unrelated_count+1!=pool_before||
-        (active_death&&tx_before!=context->unrelated_count+1))return -EUCLEAN;
-    printf("KER_SESSION_FRAME_DRAINED {\"sequence\":0,\"object_index\":%u,\"pool_tag\":%llu,\"packet_pointer\":\"%p\",\"length\":%u,\"tx_before\":%u,\"tx_after\":%u,\"pool_in_use_before\":%u,\"pool_in_use_after\":%u,\"unrelated_count\":%u,\"frame_hex\":\"%s\"}\n",
-        object_index,(unsigned long long)tag,(void *)pointer,(unsigned)length,tx_before,tx_after,
-        pool_before,pool_after,context->unrelated_count,frame_hex);fflush(stdout);
+    if(!tag||ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_resume,&pool_resume))
+        return -EUCLEAN;
+    unsigned unrelated_before_resume=context->unrelated_count;
+    if(ker_generation_packet_release(context->rings,&context->identity,packet))return -EUCLEAN;
+    /* The original Linux producer can commit MLD after the consumer has
+     * dequeued and stopped on U2. Once resumed, drain only those exact MLD
+     * frames through the same bounded identity-reporting observer. */
+    if(active_death) {
+        struct timespec deadline;
+        if(clock_gettime(CLOCK_MONOTONIC,&deadline))return -errno;
+        deadline.tv_sec+=5;
+        int trailing=ker_session_peer_dequeue_until(generation_frame_dequeue_attempt,
+            context,&deadline);
+        if(trailing!=0)return -EUCLEAN;
+    }
+    unsigned trailing_count=context->unrelated_count-unrelated_before_resume;
+    if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_after,&pool_after)||
+        tx_after!=0||pool_after+trailing_count+1!=pool_resume||
+        (active_death&&(tx_resume!=trailing_count||pool_resume!=trailing_count+1)))return -EUCLEAN;
+    printf("KER_SESSION_FRAME_DRAINED {\"sequence\":0,\"object_index\":%u,\"pool_tag\":%llu,\"packet_pointer\":\"%p\",\"length\":%u,\"tx_before\":%u,\"tx_resume\":%u,\"tx_after\":%u,\"pool_in_use_before\":%u,\"pool_in_use_resume\":%u,\"pool_in_use_after\":%u,\"unrelated_count\":%u,\"frame_hex\":\"%s\"}\n",
+        object_index,(unsigned long long)tag,(void *)pointer,(unsigned)length,tx_before,tx_resume,tx_after,
+        pool_before,pool_resume,pool_after,context->unrelated_count,frame_hex);fflush(stdout);
     return 1;
 }
 #endif

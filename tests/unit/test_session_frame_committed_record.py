@@ -106,7 +106,8 @@ class FrameCommittedRecordTests(unittest.TestCase):
             'sequence': 0, 'object_index': u2_commit['object_index'],
             'pool_tag': u2_commit['pool_tag'], 'packet_pointer': u2_commit['packet_pointer'],
             'length': u2_commit['length'], 'frame_hex': u2_commit['frame_hex'],
-            'tx_before': 2, 'tx_after': 0, 'pool_in_use_before': 2,
+            'tx_before': 2, 'tx_resume': 0, 'tx_after': 0,
+            'pool_in_use_before': 2, 'pool_in_use_resume': 1,
             'pool_in_use_after': 0, 'unrelated_count': 1,
         }
         # The previous one-packet equations reject this valid, exact two-object drain.
@@ -120,13 +121,44 @@ class FrameCommittedRecordTests(unittest.TestCase):
                 u2_release, u2_commit, [mld_commit], [], payload)
         with self.assertRaisesRegex(RuntimeError, 'bounded MLD accounting'):
             RUNNER.validate_active_consumer_frame_drain(
-                dict(u2_release, tx_before=1), u2_commit, [mld_commit], [mld_release], payload)
+                dict(u2_release, tx_resume=1), u2_commit, [mld_commit], [mld_release], payload)
         tree = ast.parse(RUNNER_SOURCE.read_text())
         self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
             node.func.id == 'validate_active_consumer_frame_drain' and
             [argument.id for argument in node.args if isinstance(argument, ast.Name)] ==
                 ['drained', 'committed', 'unrelated_commits', 'unrelated_drained', 'payload']
             for node in ast.walk(tree)))
+
+    def test_active_consumer_releases_exact_mld_committed_after_held_u2(self):
+        import json
+        payload = b'KER-A09-HANDOFF-UDP seq=2\n'
+        u2 = {'port': 0, 'queue': 0, 'generation': 0, 'object_index': 1,
+            'pool_tag': 7, 'tx_lease_id': 101, 'packet_pointer': '0x1000',
+            'length': len(CAPTURED_U2), 'frame_hex': CAPTURED_U2.hex()}
+        mld = {'port': 0, 'queue': 0, 'generation': 0, 'object_index': 2,
+            'pool_tag': 7, 'tx_lease_id': 102, 'packet_pointer': '0x2000',
+            'length': len(RUNNER.CI_HANDOFF_MLD_FRAME),
+            'frame_hex': RUNNER.CI_HANDOFF_MLD_FRAME.hex()}
+        output = 'KER_SESSION_FRAME_COMMITTED ' + json.dumps(mld) + '\n'
+        trailing = RUNNER.active_consumer_trailing_commits(output)
+        self.assertEqual(trailing, [mld])
+        release = {'object_index': 2, 'lease_id': 102, 'pool_tag': 7,
+            'packet_pointer': '0x2000', 'length': mld['length'], 'frame_hex': mld['frame_hex']}
+        drained = {'sequence': 0, 'object_index': 1, 'pool_tag': 7,
+            'packet_pointer': '0x1000', 'length': u2['length'], 'frame_hex': u2['frame_hex'],
+            'tx_before': 1, 'tx_resume': 1, 'tx_after': 0,
+            'pool_in_use_before': 1, 'pool_in_use_resume': 2,
+            'pool_in_use_after': 0, 'unrelated_count': 1}
+        self.assertIs(RUNNER.validate_active_consumer_frame_drain(
+            drained, u2, trailing, [release], payload, 1), drained)
+        with self.assertRaisesRegex(RuntimeError, 'trailing MLD commit evidence'):
+            RUNNER.active_consumer_trailing_commits('KER_SESSION_FRAME_COMMITTED {bad}\n')
+        with self.assertRaisesRegex(RuntimeError, 'consumer changed unrelated committed frame'):
+            RUNNER.validate_active_consumer_frame_drain(
+                drained, u2, trailing, [dict(release, lease_id=999)], payload, 1)
+        with self.assertRaisesRegex(RuntimeError, 'bounded MLD accounting'):
+            RUNNER.validate_active_consumer_frame_drain(
+                dict(drained, tx_resume=0), u2, trailing, [release], payload, 1)
 
     def test_wrong_outer_port_and_udp_destination_port_are_rejected(self):
         payload = b'KER-A09-HANDOFF-UDP seq=2\n'

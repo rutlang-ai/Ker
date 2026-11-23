@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -295,6 +296,71 @@ int ker_sb_preload_register_network_locked(int app_fd)
     }
     network_fds[slot] = (struct network_entry){.app_fd = app_fd,
         .private_fd = private_fd, .identity = identity};
+    bool owned = false;
+    if (ker_sb_preload_ff_owner_active_locked()) {
+        struct ker_socket_client *client = ker_sb_preload_client_locked();
+        int owner_cap = ker_sb_preload_ff_owner_capability_locked();
+        int matches = client && owner_cap >= 0 ?
+            ker_socket_client_ff_owner_match(client, owner_cap, private_fd) : -1;
+        if (matches < 0) {
+            int error = errno;
+            ker_sb_preload_remove_network_locked(app_fd);
+            errno = error;
+            return -1;
+        }
+        owned = matches == 1;
+    }
+    if (!owned)
+        ker_sb_preload_note_unowned_network_locked();
+    return 0;
+}
+
+int ker_sb_preload_network_registry_empty_locked(void)
+{
+    bool found = false;
+    for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
+        if (network_fds[i].app_fd < 0) continue;
+        struct fd_identity current;
+        if (descriptor_identity(network_fds[i].app_fd, &current)) {
+            if (errno == EBADF) {
+                ker_sb_preload_remove_network_locked(network_fds[i].app_fd);
+                continue;
+            }
+            return -1;
+        }
+        if (current.device != network_fds[i].identity.device ||
+            current.inode != network_fds[i].identity.inode) {
+            ker_sb_preload_remove_network_locked(network_fds[i].app_fd);
+            continue;
+        }
+        found = true;
+    }
+    if (found) { errno = EBUSY; return -1; }
+    return 0;
+}
+
+int ker_sb_preload_ff_owner_matches_locked(int owner_cap,
+    struct ker_socket_client *client)
+{
+    if (owner_cap < 0 || !client) { errno = ENOTCONN; return -1; }
+    for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
+        if (network_fds[i].app_fd < 0) continue;
+        struct fd_identity current;
+        if (descriptor_identity(network_fds[i].app_fd, &current)) {
+            if (errno != EBADF) return -1;
+            ker_sb_preload_remove_network_locked(network_fds[i].app_fd);
+            continue;
+        }
+        if (current.device != network_fds[i].identity.device ||
+            current.inode != network_fds[i].identity.inode) {
+            ker_sb_preload_remove_network_locked(network_fds[i].app_fd);
+            continue;
+        }
+        int matches = ker_socket_client_ff_owner_match(client, owner_cap,
+            network_fds[i].private_fd);
+        if (matches < 0) return -1;
+        if (!matches) { errno = EXDEV; return -1; }
+    }
     return 0;
 }
 
@@ -536,7 +602,14 @@ int ker_sb_preload_epoll_wait_mixed_locked(int fd, struct epoll_event *events,
             int got = ker_socket_client_epoll_wait(client, pins.broker_fd, events,
                 remote_budget);
             int error = errno; ker_sb_preload_unlock();
-            if (got < 0) { saved_errno = error; goto finished; }
+            if (got < 0) {
+                char message[96];
+                int length = snprintf(message, sizeof(message),
+                    "ker composite remote epoll wait errno=%d\n", error);
+                if (length > 0) (void)syscall(SYS_write, STDERR_FILENO,
+                    message, (size_t)length);
+                saved_errno = error; goto finished;
+            }
             count += got;
         }
         if (!remote_first) {
@@ -555,7 +628,14 @@ int ker_sb_preload_epoll_wait_mixed_locked(int fd, struct epoll_event *events,
             int got = ker_socket_client_epoll_wait(client, pins.broker_fd,
                 events + count, room);
             int error = errno; ker_sb_preload_unlock();
-            if (got < 0) { saved_errno = error; goto finished; }
+            if (got < 0) {
+                char message[96];
+                int length = snprintf(message, sizeof(message),
+                    "ker composite remote epoll wait errno=%d\n", error);
+                if (length > 0) (void)syscall(SYS_write, STDERR_FILENO,
+                    message, (size_t)length);
+                saved_errno = error; goto finished;
+            }
             count += got;
         }
         if (remote_first && count < maximum) {
@@ -563,6 +643,18 @@ int ker_sb_preload_epoll_wait_mixed_locked(int fd, struct epoll_event *events,
                 maximum - count, 0, mask);
             if (got < 0) { saved_errno = errno; goto finished; }
             count += got;
+        }
+        /* Admission map operations belong to this FF owner thread. Service
+         * them on every pass, including sustained readiness, after observing
+         * readiness so a slow bounded callback cannot consume a later event
+         * beyond the caller's absolute deadline. The callback is nonblocking
+         * and runs without the preload descriptor lock. */
+        int pump_status = ker_sb_preload_owner_pump();
+        if (pump_status) {
+            if (count) { result = count; goto finished; }
+            saved_errno = pump_status < 0 && pump_status >= -4095 ?
+                -pump_status : EPROTO;
+            goto finished;
         }
         if (count || timeout == 0) { result = count; goto finished; }
         int64_t now = monotonic_milliseconds();
@@ -765,18 +857,26 @@ static int initialize_inherited_capabilities(void)
                 int error = errno; ker_sb_preload_unlock(); errno = error; return -1;
             }
         } else if ((kind == KER_SOCKET_BROKER_REUSEPORT_GROUP ||
-                    kind == KER_SOCKET_BROKER_MEMBER_CENSUS) && status_flags == 0) {
-            /* Group and census descriptors are opaque metadata/control
-             * capabilities, not application sockets or composite epolls.
-             * Preserve them across exec without adding them to either map. */
+                    kind == KER_SOCKET_BROKER_MEMBER_CENSUS ||
+                    kind == KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+                    kind == KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT) &&
+                   status_flags == 0) {
+            /* Group, census, and deferred owner-group descriptors are opaque
+             * metadata/control capabilities, not application sockets or
+             * composite epolls. Preserve them across exec without adding
+             * them to either map. */
             continue;
         } else if (kind == KER_SOCKET_BROKER_TCP_OBSERVER && status_flags == 0) {
             /* Observer capabilities carry metadata authority only. Preserve
              * the inherited host descriptor without treating it as a socket
              * or retaining any TCP descriptor in the preload map. */
             continue;
+        } else if (kind == KER_SOCKET_BROKER_FF_OWNER && status_flags == 0) {
+            /* Owner contexts are private control capabilities. They are
+             * intentionally never entered in the application socket map. */
+            continue;
         } else {
-            (void)status_flags; ker_sb_preload_unlock(); errno = EPROTO; return -1;
+            ker_sb_preload_unlock(); errno = EPROTO; return -1;
         }
     }
     ker_sb_preload_unlock();

@@ -105,8 +105,101 @@ walks the whole process fd table, counts each IPv4/IPv6 socket alias including
 UDP, and excludes sockets whose live `SO_ACCEPTCONN` is set. Ker's adapter only
 counts authenticated broker capabilities registered in this process; direct
 FF/POSIX UDP creation and raw, unregistered fd bypasses remain unsupported.
-Reload state remains unsupported. Flow-map, dispatcher, syncache, and
-send-pending hooks abort with an explicit diagnostic if reached.
+Reload state remains unsupported. `ff_syncache_count()` now queries the
+authenticated process owner's original-Linux request sockets through bounded
+sequential IPv4/IPv6 INET_DIAG dumps. It is a non-atomic request_sock profile,
+not a complete F-Stack syncache equivalence: full `SYN_RECV` sockets and
+stateless syncookies are excluded. Flow-map, dispatcher, and generation FSM
+hooks still abort with an explicit diagnostic if reached. The runtime supplies
+a bounded `ff_socket_snd_pending` adapter for ordinary ready-copy TCP sockets created
+through its authenticated per-process FF owner context. The broker binds a
+unique owner mark to the caller's authenticated PID, process start time, and
+pidfd; duplicated sockets retain that owner and accepted sockets inherit it.
+The owner record survives session close and `exec` while that process remains
+alive, so reinitialization cannot rotate the mark and forget descriptorless
+queues. Owner initialization refuses any earlier generic/unowned network
+socket history; later generic, inherited, or foreign broker sockets make the
+pending query fail closed, even after their descriptors close. Failures abort
+with an errno diagnostic because the upstream hook has no error result
+channel. Successful byte counts are clamped to the upstream `int` range. This
+reports the C9 original-Linux ready-copy payload snapshot; sendfile is outside
+the profile, and the hook does not enable graceful promotion. See the
+[remaining graceful-reload limits](fstack-graceful-reload-gap.md).
+
+The C16 native fixture qualifies a private opt-in admission attachment for one
+IPv4 listener and one authenticated FF owner. The owner attaches before creating
+any broker-owned socket; the broker derives the mark from its authenticated
+owner record, arms the original-Linux queue before allowing `listen`, and runs
+the admission deadline independently of the FF owner loop. The FF fixture pumps
+the unchanged imported flow-map operations on its own event-loop thread. Tests
+cover real TAP SYN/SYN-ACK ordering, map-full rejection and request revocation,
+owner stalls while unrelated broker RPC continues, duplicate SYNs, endpoint
+authentication, and owner/listener teardown. Failures quarantine the opt-in
+owner and remain fail-closed; this does not qualify healthy recovery.
+
+This is a private fixture boundary, not a production Nginx generation binding.
+It does not add an Nginx dispatcher or FSM callback, enable public
+`graceful_reload=1`, or implement packet dispatch. The runtime DSO now links
+the unchanged upstream `ff_flow_map.c`, so its map lifecycle and lookup/admit
+symbols resolve in the same DSO as the original reload context and
+`ff_global_cfg`. The table remains process-local and single-threaded by the
+upstream contract. It is active only when the caller attaches a valid original
+reload block and enables graceful reload; the supported Nginx runtime profile
+still sets graceful reload to zero and leaves reload state detached. The
+original dispatcher registration hooks remain fail-closed. The DSO map test
+and C16 app do not compile duplicate map, reload, or configuration definitions
+into the executable; they verify the actual DSO symbol ownership.
+
+The default Nginx runtime remains detached and graceful reload remains
+unsupported.
+The C16 test-only pump-failure and received-FD trace hooks are compiled only
+with `BUILD_TESTING`; they are absent from tests-off installs. When the optional
+product runtime is disabled, native testing builds an uninstalled fallback DSO
+from the same runtime sources and shared CMake helper; the installed
+product runtime remains opt-in. The six C16 tests run with either runtime
+target, including `BUILD_TESTING=ON` plus the default runtime option `OFF`.
+Run the fixture set with `ctest -R '^native-c16-'`; it includes
+`native-c16-broker-owner-admission-tap`, `native-c16-owner-pump-failure`,
+`native-c16-owner-auth-negative`, `native-c16-owner-hello-fd-negative`,
+`native-c16-owner-death-cleanup`, and `native-c16-listener-close-cleanup`.
+
+The C17 private window-cycle fixture retires the marked queue while retaining
+the same live listener, closes the imported flow map only after the old queue
+drains, serves an outside-window connection through the original map's
+allow-without-record behavior, and rearms with a fresh queue lease. It verifies
+three real admission windows and two retirement/rearm transitions. This is
+limited to the guarded UP/PREEMPT_NONE/TINY_RCU IPv4 profile and does not prove
+production Nginx generation binding, generic queue quiescence, or healthy
+recovery after an uncertain verdict. Public `graceful_reload=1` remains
+unsupported.
+
+The serialization guard is tied to the configured native artifact, not a
+general Linux claim: manifest fingerprint
+`399c02b3aa05a7ee2a35c13fca64a279198c0d0675a8dc218eddc07399525b8d` has
+`CONFIG_SMP` unset, `CONFIG_PREEMPT_NONE=y`, and `CONFIG_TINY_RCU=y`. In that
+profile the LKL syscall owns its single CPU while the synchronous IPv4
+`LOCAL_OUT` hook runs through `nf_hook_slow`, `nf_queue`, and the NFQUEUE
+enqueue callback; the queue copy uses atomic allocation and nonblocking
+netlink delivery. Returning from the mark-disable ioctl therefore serializes
+after any hook already running on that LKL CPU. C17 then consumes deferred and
+queued notifications before it asks the FF owner thread to close the map. The
+source audit is against the pinned original tree at
+`/dev/shm/ker-c15-native-full/source-399c02b3aa05a7ee`: `arch/lkl/kernel/syscalls.c`
+holds the LKL CPU from syscall entry through interrupt processing before
+`lkl_cpu_put()`, implemented in `arch/lkl/kernel/cpu.c`; the IPv4 `LOCAL_OUT`
+hook runs through `net/ipv4` and `net/netfilter/core.c`, `net/netfilter/nf_queue.c`,
+and `net/netfilter/nfnetlink_queue.c`. A different scheduling/RCU profile is
+rejected at configure time. This proof does not establish a generic network
+quiescence barrier for another kernel build.
+
+`native-c17-retire-pending-cancellation` requests retirement while a real SYN's
+PREPARED reply is pending. A test-only nonblocking delay keeps the owner
+response pending while the outer event loop acknowledges RETIRE_BEGIN. After
+the packet decision deadline, the broker revokes the exact request, completes
+the known-unsent cancellation, and only then invokes the map-close callback;
+that callback verifies the map is still active with one insertion and one
+revoke and that the key is absent. DROP acknowledgement has a separate bounded
+cleanup deadline. The delayed-response hook exists only in testing builds.
 
 The bounded FF socket bridge implements `ff_dup` for registered application
 INET/INET6 sockets by dispatching to the namespaced preload `F_DUPFD` path. It
@@ -168,3 +261,55 @@ This qualifies bounded one- and two-worker, `graceful_reload=0` Nginx caller
 paths. It does not qualify the F-Stack generation-reload state machine, UDP,
 fault injection, the original shell matrix, or shell cleanup oracle. Those requirements remain in
 [`fstack-graceful-reload-gap.md`](fstack-graceful-reload-gap.md).
+
+The C22 owner-activation module adds one narrower opt-in profile for a single
+IPv4 TCP `reuseport` listener and exactly one worker. The master validates the
+pinned runtime configuration and reserves a staged plan plus slot zero before
+fork. The child inherits only that slot, closes its plan and master RPC copies,
+then the existing F-Stack shim claims and activates the unbound member after
+the authenticated owner starts and before Nginx's original socket/bind/listen
+sequence. Ker does not replace those Nginx or Linux calls. The broker validates
+the exact address, socket cookie, mark, role, and listen backlog; it allows the
+pinned caller's second same-backlog `listen()` invocation without changing the
+published selector.
+
+Both initial and HUP cycles require the Nginx dynamic module to be loaded. The
+module verifies the running executable's GNU build ID before reading any
+build-specific Nginx structure. It parses the bounded path from the actual
+`fstack_conf` directive and requires `KER_FSTACK_NGINX_INI` to name that same
+`graceful_reload=0` file. `nginx -t` validates the profile but creates no
+broker plan; `nginx -s reload` follows the original signaller path without
+creating broker state. Unsupported listener layouts/options fail closed. Negative tests
+cover the wrong worker count, extra or missing listeners, IPv6, forbidden
+listener options, `graceful_reload=1`, a mismatched INI environment path, and a
+missing worker shim; they require rejection before plan creation and TCP
+socket opens. The C22 TAP test proves
+HTTP before and after the pinned legacy HUP path, authenticates the old worker's
+exit through the broker's pidfd-gated admin receipt, and waits for a mark-scoped
+census to show `LISTEN=0` and no queued payload before reserving a new mark.
+Original-Linux TIME_WAIT rows may remain and are not forcibly cleared. The test
+also repeats HUP, checks the master's socket descriptor count does not grow,
+proves each cycle receives a distinct listener cookie, and waits for each
+mark-scoped census to reach `LISTEN=0` at cleanup.
+
+The pinned shim also recognizes only the reaped worker-respawn `fork()` callsite
+in the exact Nginx ELF build. It drains the dead worker's mark, releases the old
+plan/slot, and creates a fresh slot before the original fork; the child then
+uses the same authenticated prepare path. The TAP test kills the serving worker
+twice with `SIGKILL`, verifies a new listener cookie and original-Linux HTTP
+service each time, and checks every respawn mark reaches `LISTEN=0` at shutdown.
+The old census capability is retained if a bounded drain attempt times out, but
+the shim refuses that fork rather than reuse a stale claim. A later explicit
+cycle attempt can retry the retained census. Automatic retry after a failed
+respawn attempt and recovery when the worker dies before publishing its
+listener are not claimed.
+
+This Nginx HUP path intentionally has an outage while the old worker exits and
+the new cycle starts. It does not claim active-stream preservation, does not
+override Nginx signal handling, and does not qualify `graceful_reload=1` or a
+second worker. Build and install the module only with the same clean pinned
+source, generated configuration, and executable inputs required by the worker
+shim; the installed `nginx-owner-activation-build.json` records that boundary.
+Run `ctest -R 'native-nginx-fstack-owner-activation|fstack-nginx-worker-shim-build-id-boundary'`
+for the positive TAP cycle, unsupported-profile matrix, and wrong-main-build-ID
+guard.
