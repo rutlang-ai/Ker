@@ -28,8 +28,8 @@ off_t lseek(int fd, off_t offset, int whence)
     ker_fd_put(entry);
     return ker_native_result(value);
 }
-/* Forward host I/O through libc to preserve its cancellation points. */
-#define HOST_POSITIONED(name, ...) \
+/* Forward host file operations through libc to preserve its cancellation points. */
+#define HOST_CANCELABLE_FILE_CALL(name, ...) \
     __typeof__(&name) host = dlsym(RTLD_NEXT, #name); \
     if (!host) { errno = ENOSYS; return -1; } \
     return host(__VA_ARGS__);
@@ -39,7 +39,7 @@ ssize_t name(int fd, qualifier void *bytes, size_t length, off_t offset) \
 { \
     struct ker_fd *entry = ker_fd_get(fd); \
     if (!entry) { \
-        HOST_POSITIONED(name, fd, bytes, length, offset) \
+        HOST_CANCELABLE_FILE_CALL(name, fd, bytes, length, offset) \
     } \
     long value = lkl_sys_##native_name(entry->native, bytes, length, offset); \
     ker_fd_put(entry); \
@@ -52,7 +52,7 @@ ssize_t name(int fd, const struct iovec *vectors, int count, off_t offset flags_
 { \
     struct ker_fd *entry = ker_fd_get(fd); \
     if (!entry) { \
-        HOST_POSITIONED(name, fd, vectors, count, offset flags_arg) \
+        HOST_CANCELABLE_FILE_CALL(name, fd, vectors, count, offset flags_arg) \
     } \
     unsigned long low = (uint64_t)offset, high = (uint64_t)offset >> 32; \
     long value = lkl_sys_##name(entry->native, (const struct lkl_iovec *)vectors, count, low, high flags_arg); \
@@ -65,7 +65,6 @@ VECTOR(preadv, , , 0)
 VECTOR(pwritev, , , 0)
 VECTOR(preadv2, COMMA int flags, COMMA flags, 0)
 VECTOR(pwritev2, COMMA int flags, COMMA flags, 1)
-#undef HOST_POSITIONED
 _Static_assert(sizeof(off_t) == sizeof(off64_t), "Linux host offset ABI");
 extern __typeof(lseek64) lseek64 __attribute__((alias("lseek")));
 extern __typeof(pread64) pread64 __attribute__((alias("pread")));
@@ -88,7 +87,9 @@ extern __typeof(ftruncate64) ftruncate64 __attribute__((alias("ftruncate")));
 int name(int fd) \
 { \
     struct ker_fd *entry = ker_fd_get(fd); \
-    if (!entry) return syscall(SYS_##name, fd); \
+    if (!entry) { \
+        HOST_CANCELABLE_FILE_CALL(name, fd) \
+    } \
     long value = lkl_sys_##name(entry->native); \
     ker_fd_put(entry); \
     return ker_native_result(value); \
@@ -126,7 +127,9 @@ int futimes(int fd, const struct timeval times[2])
 int fallocate(int fd, int mode, off_t offset, off_t length)
 {
     struct ker_fd *entry = ker_fd_get(fd);
-    if (!entry) return syscall(SYS_fallocate, fd, mode, offset, length);
+    if (!entry) {
+        HOST_CANCELABLE_FILE_CALL(fallocate, fd, mode, offset, length)
+    }
     long value = lkl_sys_fallocate(entry->native, mode, offset, length);
     ker_fd_put(entry);
     return ker_native_result(value);
@@ -156,11 +159,15 @@ ssize_t readahead(int fd, off64_t offset, size_t count)
 int sync_file_range(int fd, off64_t offset, off64_t count, unsigned flags)
 {
     struct ker_fd *entry = ker_fd_get(fd);
-    if (!entry) return syscall(SYS_sync_file_range, fd, offset, count, flags);
+    if (!entry) {
+        HOST_CANCELABLE_FILE_CALL(sync_file_range, fd, offset, count, flags)
+    }
     long value = lkl_sys_sync_file_range(entry->native, offset, count, flags);
     ker_fd_put(entry);
     return ker_native_result(value);
 }
+#undef HOST_CANCELABLE_FILE_CALL
+
 int posix_fadvise(int fd, off_t offset, off_t length, int advice)
 {
     int saved = errno;
