@@ -193,7 +193,7 @@ def start_client(config, log_path):
     raise RuntimeError(f"SSH client did not start; see {log_path}")
 
 
-def prepare_source(repo, fixture, case):
+def source_shell_inputs(fixture, case):
     manifest = Path((fixture / "manifest-path").read_text().strip()).resolve(strict=True)
     if not manifest.is_relative_to(fixture):
         raise RuntimeError("source-shell fixture manifest is outside its build tree")
@@ -203,6 +203,14 @@ def prepare_source(repo, fixture, case):
     if build["nginx"]["path"] != str(nginx) or build["fault_injection"] is not (case in FAULT_CASES):
         raise RuntimeError("the original case requires its matching source-shell build variant")
 
+    runtime = Path(build["libfstack"]["path"])
+    linked_runtime = (manifest.parent / "ff/lib/libfstack.so").resolve(strict=True)
+    if runtime != linked_runtime:
+        raise RuntimeError("source-shell runtime differs from its build fixture")
+    return source, nginx, manifest, runtime
+
+
+def prepare_source(repo, source):
     (WORKSPACE / "f-stack").symlink_to(source, target_is_directory=True)
     for name in ("ker-source-shell-wrapper.py", "nginx-source-shell-helper.py"):
         shutil.copyfile(repo / "tools" / name, WORKSPACE / name)
@@ -216,7 +224,6 @@ def prepare_source(repo, fixture, case):
     system_conf.mkdir(parents=True)
     shutil.copyfile(source / "app/nginx-1.28.0/conf/mime.types", system_conf / "mime.types")
     sys.path.insert(0, str(repo / "tools"))
-    return source, nginx, manifest
 
 
 def run_precheck(source, nginx, manifest, run_dir):
@@ -549,7 +556,11 @@ def main():
     if os.getpid() != 1 or os.geteuid() != 0 or any(
             parent == child for parent, child in zip(args.parent_namespaces, current)):
         raise RuntimeError("guest setup requires private PID, mount and network namespaces")
-    readonly_inputs = [repo, fixture]
+    source, nginx, manifest, runtime_library = source_shell_inputs(fixture, args.case)
+    # The standalone precheck reads the manifest runtime, and the built-in
+    # Nginx addon links its sibling preload library even without a worker.
+    readonly_inputs = [repo, fixture, runtime_library,
+                       runtime_library.with_name("libker-socket-preload.so")]
     readonly_inputs.extend(inputs.values())
     # C34 captures runtime libraries beside the worker, and the build manifest
     # points at the pinned DPDK Meson tree through this source-tree symlink.
@@ -560,8 +571,7 @@ def main():
         libraries = args.pmd_dir.parent.parent
         if libraries not in (Path("/tmp"), Path("/usr/local")):
             readonly_inputs.append(libraries)
-    manifest = Path((fixture / "manifest-path").read_text().strip()).resolve(strict=True)
-    readonly_inputs.append((manifest.parent / "fstack/dpdk/build").resolve(strict=True))
+    readonly_inputs.append((source / "dpdk/build").resolve(strict=True))
     if args.case == "rt12":
         # The sidecar testpmd has its own install prefix and PMD tree; it may
         # differ from Ker's --pmd-dir and may itself live under /usr/local.
@@ -576,7 +586,7 @@ def main():
     ephemeral_filesystems(readonly_inputs, (out,))
     os.environ["TMPDIR"] = "/tmp"
     client = start_client(configure_ssh(), out / "sshd.log")
-    source, nginx, manifest = prepare_source(repo, fixture, args.case)
+    prepare_source(repo, source)
     if args.case == "precheck":
         run("ip", "tuntap", "add", "dev", "kerprobe", "mode", "tap", "multi_queue")
         run("ip", "link", "del", "kerprobe")
