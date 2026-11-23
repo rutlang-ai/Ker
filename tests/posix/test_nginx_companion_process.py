@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+from unittest import mock
 
 
 def require(value, message):
@@ -217,6 +218,60 @@ def exercise_bad_receive(supervisor, wire, server, helper_path, config, prefix,
         cleanup_manager(manager)
 
 
+def exercise_master_pidfd_open_failure(supervisor, wire, server, helper_path,
+                                       config, prefix, environment):
+    manager = supervisor.NginxCompanion(server, config, prefix, environment)
+    manager.helper_path = helper_path
+    manager.helper_script_hash = supervisor._sha256(helper_path)
+    pid_file = prefix / 'failed-master.pid'
+    # Run the real helper with only its first pidfd_open call failing. The
+    # supervisor supplies its own pidfd over the normal START exchange.
+    inject = """import errno, os, runpy, sys
+from pathlib import Path
+pid_file = Path(sys.argv.pop(1))
+sys.argv.pop(0)
+original = os.pidfd_open
+def fail_once(pid, flags):
+    os.pidfd_open = original
+    pid_file.write_text(str(pid))
+    raise OSError(errno.EMFILE, 'injected master pidfd failure')
+os.pidfd_open = fail_once
+runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+    popen = subprocess.Popen
+
+    def spawn_helper(command, **kwargs):
+        return popen([command[0], '-c', inject, str(pid_file), *command[1:]], **kwargs)
+
+    try:
+        with mock.patch.object(subprocess, 'Popen', side_effect=spawn_helper):
+            try:
+                manager.start(timeout=5)
+            except ValueError as error:
+                master_pid = int(pid_file.read_text())
+                require(f'kind={wire.ERROR} ' in str(error) and
+                    f'error=(5, 1, {master_pid}, 0, 0,' in str(error),
+                    f'expected a settled startup ERROR for the spawned master: {error}')
+            else:
+                raise RuntimeError('helper reported successful startup without a master pidfd')
+        require(manager.helper.wait(timeout=5) == 1 and not Path(f'/proc/{master_pid}').exists(),
+            'helper failed to reap its master before publishing the startup failure')
+    finally:
+        cleanup_manager(manager)
+        # Clean a leaked fixture process if the regression reappears. Only the
+        # isolated test subreaper can wait on a master orphaned by the helper.
+        if pid_file.exists():
+            pid = int(pid_file.read_text())
+            try:
+                waited, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
+            else:
+                if not waited:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+
+
 def exercise_owner_death_signal_race(helper_module):
     """A failed pidfd SIGQUIT must still reap descendants owned by the helper."""
     child_code = '''import os, sys, time
@@ -382,6 +437,8 @@ def main():
             'KER_SOCKET_BROKER_PATH': str(broker_path),
             'KER_FSTACK_NGINX_INI': str(ini),
         }
+        exercise_master_pidfd_open_failure(supervisor, wire, args.server.resolve(),
+            args.helper.resolve(), config, prefix, environment)
         directives = helper_module.validate_control_nginx_config(config.read_bytes())
         selected, selected_identity = helper_module.effective_fstack_ini(
             config, directives, ini)
