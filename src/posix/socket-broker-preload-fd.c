@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -314,6 +315,64 @@ int ker_sb_preload_network_fd_locked(int app_fd, int *broker_fd)
     return 0;
 }
 
+int ker_sb_preload_socket_drain_count(void)
+{
+    if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
+    ker_sb_preload_lock();
+    struct ker_socket_client *client = ker_sb_preload_client_locked();
+    if (!client) {
+        int saved_errno = errno;
+        ker_sb_preload_unlock();
+        errno = saved_errno;
+        return -1;
+    }
+
+    int count = 0;
+    for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
+        int app_fd = network_fds[i].app_fd;
+        if (app_fd < 0) continue;
+
+        struct fd_identity current;
+        if (descriptor_identity(app_fd, &current)) {
+            if (errno == EBADF) {
+                ker_sb_preload_remove_network_locked(app_fd);
+                continue;
+            }
+            goto error;
+        }
+        if (current.device != network_fds[i].identity.device ||
+            current.inode != network_fds[i].identity.inode) {
+            ker_sb_preload_remove_network_locked(app_fd);
+            continue;
+        }
+        int broker_fd = network_fds[i].private_fd;
+
+        int domain = -1;
+        socklen_t length = sizeof(domain);
+        if (ker_socket_client_getsockopt(client, broker_fd, SOL_SOCKET, SO_DOMAIN,
+                &domain, &length) < 0) goto error;
+        if (length != sizeof(domain)) { errno = EPROTO; goto error; }
+        if (domain != AF_INET && domain != AF_INET6) continue;
+
+        int accepting = 0;
+        length = sizeof(accepting);
+        if (ker_socket_client_getsockopt(client, broker_fd, SOL_SOCKET,
+                SO_ACCEPTCONN, &accepting, &length) < 0) goto error;
+        if (length != sizeof(accepting)) { errno = EPROTO; goto error; }
+        if (!accepting) ++count;
+    }
+    ker_sb_preload_unlock();
+    return count;
+
+error:
+    {
+        int saved_errno = errno;
+        ker_sb_preload_unlock();
+        errno = saved_errno;
+        return -1;
+    }
+}
+
 int ker_sb_preload_any_native_locked(int fd)
 {
     int broker_fd = -1;
@@ -348,25 +407,36 @@ int ker_sb_preload_duplicate_network_locked(int fd, int minimum, bool cloexec)
         if (!errno) errno = EBADF;
         return -1;
     }
+    if (minimum < 0) { errno = EINVAL; return -1; }
+    struct rlimit descriptor_limit;
+    if (getrlimit(RLIMIT_NOFILE, &descriptor_limit) < 0) return -1;
+    if ((rlim_t)minimum >= descriptor_limit.rlim_cur) { errno = EINVAL; return -1; }
     struct ker_socket_client *client = ker_sb_preload_client_locked();
     if (!client) return -1;
     int duplicate = ker_socket_client_dup(client, broker_fd);
     if (duplicate < 0) return -1;
-    int target = (int)syscall(SYS_fcntl, duplicate,
-        cloexec ? F_DUPFD_CLOEXEC : F_DUPFD, minimum);
-    int error = errno;
-    if (target < 0) { (void)syscall(SYS_close, duplicate); errno = error; return -1; }
-    if (target != duplicate) (void)syscall(SYS_close, duplicate);
-    if (ker_sb_preload_register_network_locked(target)) {
-        error = errno; (void)syscall(SYS_close, target); errno = error; return -1;
+    int target = duplicate;
+    if (duplicate < minimum) {
+        target = (int)syscall(SYS_fcntl, duplicate,
+            cloexec ? F_DUPFD_CLOEXEC : F_DUPFD, minimum);
+        int error = errno;
+        (void)syscall(SYS_close, duplicate);
+        if (target < 0) { errno = error; return -1; }
     }
-    if (!cloexec) {
-        int descriptor_flags = (int)syscall(SYS_fcntl, target, F_GETFD);
-        if (descriptor_flags < 0 || syscall(SYS_fcntl, target, F_SETFD,
-                descriptor_flags & ~FD_CLOEXEC) < 0) {
-            error = errno; ker_sb_preload_remove_network_locked(target);
-            (void)syscall(SYS_close, target); errno = error; return -1;
-        }
+    if (ker_sb_preload_register_network_locked(target)) {
+        int error = errno;
+        (void)syscall(SYS_close, target);
+        errno = error;
+        return -1;
+    }
+    int descriptor_flags = (int)syscall(SYS_fcntl, target, F_GETFD);
+    if (descriptor_flags < 0 || syscall(SYS_fcntl, target, F_SETFD,
+            cloexec ? descriptor_flags | FD_CLOEXEC : descriptor_flags & ~FD_CLOEXEC) < 0) {
+        int error = errno;
+        ker_sb_preload_remove_network_locked(target);
+        (void)syscall(SYS_close, target);
+        errno = error;
+        return -1;
     }
     return target;
 }
@@ -694,6 +764,17 @@ static int initialize_inherited_capabilities(void)
             if (ker_sb_preload_register_inherited_epoll_locked(fd)) {
                 int error = errno; ker_sb_preload_unlock(); errno = error; return -1;
             }
+        } else if ((kind == KER_SOCKET_BROKER_REUSEPORT_GROUP ||
+                    kind == KER_SOCKET_BROKER_MEMBER_CENSUS) && status_flags == 0) {
+            /* Group and census descriptors are opaque metadata/control
+             * capabilities, not application sockets or composite epolls.
+             * Preserve them across exec without adding them to either map. */
+            continue;
+        } else if (kind == KER_SOCKET_BROKER_TCP_OBSERVER && status_flags == 0) {
+            /* Observer capabilities carry metadata authority only. Preserve
+             * the inherited host descriptor without treating it as a socket
+             * or retaining any TCP descriptor in the preload map. */
+            continue;
         } else {
             (void)status_flags; ker_sb_preload_unlock(); errno = EPROTO; return -1;
         }
