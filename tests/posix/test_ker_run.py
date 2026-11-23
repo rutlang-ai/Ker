@@ -18,10 +18,11 @@ SPEC.loader.exec_module(ker_run)
 
 
 WORKER = f'''#!{sys.executable}
-import json, os, signal, sys, time
+import json, os, select, signal, socket, sys, time
 from pathlib import Path
 args = sys.argv
 fd = int(args[args.index('--control-fd') + 1])
+packet_fd = int(args[args.index('--packet-fd') + 1])
 port = args[args.index('--port') + 1]
 if port == 'aux0' and os.environ.get('FAKE_AUX_MALFORMED') == '1':
     print('KER_IO_DONE not-json', flush=True)
@@ -29,24 +30,51 @@ if port == 'aux0' and os.environ.get('FAKE_AUX_MALFORMED') == '1':
 if port == 'aux0' and os.environ.get('FAKE_AUX_SIGNAL') == '1':
     Path(os.environ['FAKE_AUX_PID_FILE']).write_text(str(os.getpid()))
     def stop(signum, frame):
-        print('KER_IO_DONE {{}}', flush=True)
+        print('KER_IO_DONE {{"outstanding": 0}}', flush=True)
         Path(os.environ['FAKE_AUX_DONE_FILE']).write_text(str(time.monotonic_ns()))
         sys.exit(0)
     signal.signal(signal.SIGTERM, stop)
-    print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:02'}}), flush=True)
+    print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:02', 'tx_offload_features': 0}}), flush=True)
     while True: signal.pause()
-print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:01'}}), flush=True)
-while os.read(fd, 1):
-    pass
-print('KER_IO_DONE {{}}', flush=True)
+print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:01', 'tx_offload_features': 0}}), flush=True)
+if port == 'aux0' and os.environ.get('FAKE_AUX_PID_FILE'):
+    Path(os.environ['FAKE_AUX_PID_FILE']).write_text(str(os.getpid()))
+if os.environ.get('FAKE_PRIMARY_PID_FILE'):
+    Path(os.environ['FAKE_PRIMARY_PID_FILE']).write_text(str(os.getpid()))
+if os.environ.get('FAKE_WORKER_EXIT_EARLY') == '1':
+    print('KER_IO_DONE {{"outstanding": 0}}', flush=True)
+    sys.exit(0)
+if os.environ.get('FAKE_EXIT_AFTER_STOP_FILE'):
+    while not Path(os.environ['FAKE_EXIT_AFTER_STOP_FILE']).exists():
+        time.sleep(0.005)
+elif os.environ.get('FAKE_EXIT_ON_PACKET_EOF') == '1':
+    packet = socket.socket(fileno=os.dup(packet_fd))
+    while True:
+        readable, _, _ = select.select([fd, packet], [], [], 0.05)
+        if fd in readable and not os.read(fd, 1):
+            break
+        if packet in readable and packet.recv(1, socket.MSG_PEEK) == b'':
+            break
+else:
+    while os.read(fd, 1): pass
+if port == 'aux0' and os.environ.get('FAKE_AUX_DUPLICATE') == '1':
+    print('KER_IO_DONE ' + json.dumps({{'outstanding': int(os.environ['FAKE_AUX_DUPLICATE_FIRST'])}}), flush=True)
+    print('KER_IO_DONE ' + json.dumps({{'outstanding': int(os.environ['FAKE_AUX_DUPLICATE_LAST'])}}), flush=True)
+else:
+    print('KER_IO_DONE {{"outstanding": 0}}', flush=True)
 sys.exit(int(os.environ.get('FAKE_AUX_WORKER_EXIT' if port == 'aux0' else 'FAKE_WORKER_EXIT', '0')))
 '''
 
 APP_GUARD = f'''#!{sys.executable}
 import os, sys
 status = b'KER_NATIVE_READY\\n'
-if os.environ.get('FAKE_NATIVE_DONE') == '1':
-    status += b'KER_NATIVE_DONE\\n'
+if 'FAKE_NATIVE_TERMINAL' in os.environ:
+    status += os.environ['FAKE_NATIVE_TERMINAL'].encode()
+else:
+    if os.environ.get('FAKE_NATIVE_STOPPING') == '1':
+        status += b'KER_NATIVE_STOPPING\\n'
+    if os.environ.get('FAKE_NATIVE_DONE') == '1':
+        status += b'KER_NATIVE_DONE\\n'
 os.write(int(os.environ['KER_STARTUP_FD']), status)
 os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
 '''
@@ -118,6 +146,76 @@ class KerRunMainTests(unittest.TestCase):
         self.assertEqual(self.run_launcher(0, native_done=False, signal_app=True),
                          128 + signal.SIGTERM)
 
+    def test_primary_exit_after_stopping_and_done_is_graceful(self):
+        pid_file = self.root / 'primary.pid'
+        stop_file = self.root / 'primary.stop'
+        pid_file.unlink(missing_ok=True)
+        stop_file.unlink(missing_ok=True)
+        app = f'''import os, sys, time
+from pathlib import Path
+os.close(int(os.environ['KER_PACKET_FD']))
+Path(os.environ['FAKE_EXIT_AFTER_STOP_FILE']).write_text('stop')
+pid_file = Path(os.environ['FAKE_PRIMARY_PID_FILE'])
+deadline = time.monotonic() + 3
+while time.monotonic() < deadline:
+    if pid_file.exists():
+        pid = pid_file.read_text()
+        try:
+            state = Path('/proc/' + pid + '/stat').read_text().rsplit(')', 1)[1].split()[0]
+        except FileNotFoundError:
+            break
+        if state == 'Z': break
+    time.sleep(0.005)
+else:
+    raise SystemExit('primary worker did not exit after packet endpoint close')
+sys.exit(0)
+'''
+        self.assertEqual(self.run_launcher(0, native_done=True, app_source=app,
+            extra_env={'FAKE_NATIVE_STOPPING': '1', 'FAKE_EXIT_AFTER_STOP_FILE': str(stop_file),
+                       'FAKE_PRIMARY_PID_FILE': str(pid_file)}), 0)
+
+    def test_primary_exit_rejects_duplicate_out_of_order_and_incomplete_markers(self):
+        pid_file = self.root / 'primary-malformed.pid'
+        stop_file = self.root / 'primary-malformed.stop'
+        cases = {
+            'duplicate': 'KER_NATIVE_STOPPING\nKER_NATIVE_STOPPING\nKER_NATIVE_DONE\n',
+            'out-of-order': 'KER_NATIVE_DONE\nKER_NATIVE_STOPPING\n',
+            'incomplete': 'KER_NATIVE_STOPPING\nKER_NATIVE_INCOMPLETE\nKER_NATIVE_DONE\n',
+            'malformed': 'KER_NATIVE_STOPPING\nKER_NATIVE_STOPPING extra\nKER_NATIVE_DONE\n',
+        }
+        for name, terminal in cases.items():
+            with self.subTest(name=name):
+                pid_file.unlink(missing_ok=True)
+                stop_file.unlink(missing_ok=True)
+                app = f'''import os, sys, time
+from pathlib import Path
+os.close(int(os.environ['KER_PACKET_FD']))
+Path(os.environ['FAKE_EXIT_AFTER_STOP_FILE']).write_text('stop')
+pid_file = Path(os.environ['FAKE_PRIMARY_PID_FILE'])
+deadline = time.monotonic() + 3
+while time.monotonic() < deadline:
+    if pid_file.exists():
+        pid = pid_file.read_text()
+        try: state = Path('/proc/' + pid + '/stat').read_text().rsplit(')', 1)[1].split()[0]
+        except FileNotFoundError: break
+        if state == 'Z': break
+    time.sleep(0.005)
+else: raise SystemExit('primary worker did not exit')
+'''
+                result, stderr = self.run_launcher(0, native_done=False, app_source=app,
+                    capture_stderr=True, extra_env={'FAKE_NATIVE_TERMINAL': terminal,
+                        'FAKE_EXIT_AFTER_STOP_FILE': str(stop_file),
+                        'FAKE_PRIMARY_PID_FILE': str(pid_file)})
+                self.assertEqual(result, 125)
+                self.assertIn('invalid native shutdown marker sequence', stderr)
+
+    def test_primary_exit_before_stopping_remains_fatal(self):
+        app = 'import time; time.sleep(1)'
+        result, stderr = self.run_launcher(0, native_done=False, app_source=app,
+            capture_stderr=True, extra_env={'FAKE_WORKER_EXIT_EARLY': '1'})
+        self.assertEqual(result, 125)
+        self.assertIn('DPDK worker stopped while the application was running', stderr)
+
     def graceful_auxiliary_loss(self):
         self.aux_pid_file.unlink(missing_ok=True)
         self.aux_done_file.unlink(missing_ok=True)
@@ -176,6 +274,22 @@ sys.exit(0)
     def test_malformed_auxiliary_completion_remains_an_infrastructure_failure(self):
         self.assertEqual(self.run_launcher(0, native_done=True, config=self.config,
             extra_env={'FAKE_AUX_MALFORMED': '1'}), 125)
+
+    def test_duplicate_auxiliary_completion_is_failure_and_children_recover(self):
+        for first, last in ((0, 0), (1, 0), (0, 1)):
+            with self.subTest(first=first, last=last):
+                result, stderr = self.run_launcher(0, native_done=True, config=self.config,
+                    capture_stderr=True, extra_env={
+                        'FAKE_AUX_DUPLICATE': '1',
+                        'FAKE_AUX_DUPLICATE_FIRST': str(first),
+                        'FAKE_AUX_DUPLICATE_LAST': str(last),
+                        'FAKE_AUX_PID_FILE': str(self.aux_pid_file)})
+                self.assertEqual(result, 125)
+                self.assertIn('duplicate additional DPDK worker completion record: aux', stderr)
+                pid = int(self.aux_pid_file.read_text())
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(pid, 0)
+        self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
 
 
 if __name__ == '__main__':

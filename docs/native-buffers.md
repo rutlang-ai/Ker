@@ -150,3 +150,102 @@ four allocation/send validation scenarios with `native-fstack-zc-validation`.
 Two FreeBSD header-field cases are architecture-specific; seven empty-chain,
 write-cursor and zero-send cases remain blocked under issue225. These source
 scenarios do not establish ff_zc ABI equivalence or copy-free transport.
+
+`ker_posix_buffer_write(base, offset, data, length)` 在已登记的原版 Linux VMA
+请求范围内写入，返回复制字节数或`-1/errno`。必须提供精确base、非NULL且可读的
+source和合法offset/length；检查使用减法，拒绝size_t加法溢出和page-rounded余量。
+支持memmove重叠语义，合法零长度调用返回0且不改变字节。拒绝返回EINVAL且不
+修改字节或登记，native未启动/已关闭时返回ENETDOWN。它不改变分配长度，不维护
+packet header或隐式写游标；调用者仍须在写入被zerocopy引用的字节之前等到全部
+完成通知，并同步直接访问、send、resize、free与shutdown。
+
+三个standalone原版Linux测试分别覆盖容量拒绝、NULL数据拒绝和实际多页/重叠/
+零长度写入；不是网络、PMD、mbuf链或端到端零拷贝证据。
+
+动态库集成测试通过dlsym获取有界写入接口，先用它填充登记VMA，再用已连接的
+原版Linux loopback UDP socket验证非法写入不投递datagram、不产生zerocopy
+completion且不改变字节。有效后继发送收到精确数据，首个completion ID仍为0；
+另一个由有界写入准备的VMA参与8192字节scatter-gather传输。显式runtime退出后
+write返回ENETDOWN，所有映射、option guard和worker mbuf必须清零。
+`native-fstack-zc-validation`的六项source marker必须完整且唯一，不能用少跑或
+重复marker掩盖缺失。null PMD仅负责启动真实runtime，loopback结果不计外部wire；
+完整`native-fstack-native-buffers` virtio软件数据通路回归另行验证。
+
+跨线程扩展`native-fstack-buffer-write-parallel/handoff`通过真实pthread与原版
+Linux VMA验证独立buffer的写入/错误码隔离，以及生产者join后转交消费者、扩容、
+旧base拒绝和后续写入释放。parallel没有共享可写buffer；handoff明确先同步，
+不作为未同步write/free/send竞争安全的承诺。两例均检查全部分配/释放及残留映射
+shutdown回收；没有网络或FreeBSD隐式cursor/mbuf ABI证明。
+
+`ker_posix_buffer_writer_create/append/view/destroy` 提供有所有者的单VMA写入游标。
+create容量为0..INT_MAX；零容量拥有最小一字节backing，逻辑容量和已写长度仍为0，
+不改变raw buffer_alloc(0)的EINVAL。append成功后才增加逻辑长度，溢出/NULL拒绝
+保留游标和字节，合法零长度不改变状态。view返回借用的只读指针及可选长度/容量；
+失败不改变输出。owner就是登记记录。destroy成功时立即释放VMA，但为防止分配器
+复用登记地址后让stale handle指向新owner，会把已销毁登记元数据保留到native
+shutdown；这是有意的per-runtime内存开销。unmap失败保留owner供重试，runtime
+shutdown也回收未销毁owner。
+
+writer数据的raw free/write和非零realloc返回EBUSY；view只能按已写长度发送，
+修改/销毁前必须等待全部zerocopy completion并同步owner访问/交接。它不提供
+FreeBSD M_PKTHDR、m_next/per-node m_len，也不改变Linux零字节UDP的行为。
+
+Writer动态集成在原版Linux IPv4/IPv6 loopback上验证空owner、累计append、失败
+保留、raw bypass拒绝及完成后的再次append。零append无datagram/completion，
+普通Linux零字节UDP仍产生真实datagram与ID0；后续4/8字节发送保留准确编号及
+scatter-gather字节。销毁发生在完成之后；runtime退出同时回收raw残留和空writer，
+因此这些app场景的buffer_shutdown_releases必须为2。九个source marker完整且唯一。
+
+Writer故障扩展`native-fstack-buffer-writer-constructor/retry`只定点注入当前线程的
+登记malloc ENOMEM、mmap ENOMEM或munmap EIO，正常路径始终调用原版实现。
+构造失败不污染已有owner，mmap失败释放临时登记；销毁失败保留owner供查询、
+同步交接及后继append，另一个owner不受影响，真实重试成功后不能重复unmap。
+精确回收全部VMA和一个残留空owner，不计FreeBSD分配器ABI或无同步访问证明。
+
+`ker_posix_buffer_writer_send(owner, fd, offset, length, flags)`发送已写payload的
+非空范围，长度0、NULL owner、INT_MAX/范围溢出在发送前返回EINVAL。只接受
+imported native socket，host fd返回EBADF、native非socket返回ENOTSOCK；数据进入
+与普通sendto共用的原版Linux/zerocopy guard/SIGPIPE适配路径，无host fallback。
+返回实际接受字节数或原版Linux错误，flags不改写，短发送由调用者推进offset。
+成功和失败均保留writer/cursor，调用者必须等待completion后才append/destroy。
+普通send的零字节UDP行为不变；这里是显式owned-payload入口的非空合同。
+
+`ker_posix_buffer_writer_create_segmented(capacity, segment_capacity)` 提供多VMA
+owned writer，两个参数必须为1..INT_MAX且节点数不超过IOV_MAX。append按顺序填充
+各段，单次输入先快照以保留跨段别名语义；分配失败、越界和NULL不改变字节或总游标。
+`ker_posix_buffer_writer_segment`按索引返回借用视图、每段已写长度/容量和总已写长度。
+单VMA view/send对分段owner返回EOPNOTSUPP，调用者可以用这些段构建native sendmsg。
+这些视图不能跨未同步append/destroy/shutdown或尚未完成的zerocopy引用使用。
+
+销毁先释放子段再释放owner段。首个unmap就失败时仍允许访问；部分释放后若失败，
+所有视图/append返回EBUSY，destroy重试仅处理剩余段。所有登记描述符身份保留到
+shutdown，避免旧handle冒充新owner；VMA本身成功unmap后立即释放。构造失败的
+rollback unmap若失败，登记仍保留给shutdown回收，不伪造成功。
+
+`native-fstack-buffer-segments-layout/failures`使用真实LinuxVMA验证128+50字节
+源布局、跨段追加、输入别名、错误原子性、旧handle、部分销毁及精确回收；失败探针
+只替换指定malloc/mmap/munmap。此证据不包括socket/PMD传输和全链路无复制。
+
+分段socket集成通过dlsym解析实际动态库API，分别在原版LinuxIPv4/IPv6 UDP上
+验证128+50字节节点、总游标178、sendmsg精确接收及真实completion。拒绝单视图
+send、溢出append或非法节点不会投递数据或消耗完成编号；实际完成后追加78字节
+填满尾段，再发送跨节点100字节子范围。两次completion后才销毁owner，并验证
+旧handle无法操作replacement。runtime退出时所有VMA/guard/worker mbuf清零。
+zc-validation必须包含全部11个唯一source marker；null PMD下payload仍是Linux
+loopback，完整virtio软件数据通路回归另行执行相同owner场景，不宣称全链路无复制。
+
+`native-fstack-buffer-segments-parallel/handoff`补充线程生命周期：四个pthread各自
+拥有独立8195字节owner，跨4096/4096/3字节节点追加，验证每段字节/长度、失败
+保留、replacement创建后的旧handle拒绝及errno隔离。同步交接用producer join、
+consumer join、releaser join明确转移owner；不承诺未同步共享owner访问。计数分别
+要求99/9个VMA完整释放，含3个shutdown残留回收。仅扩展已有源场景，不新增计数。
+
+`native-fstack-buffer-segments-constructor-matrix/destroy-matrix`逐一验证四节点
+owner的mmap失败位置、三种构造rollback unmap失败，以及全部销毁失败位置
+（包含最后的root）。失败只注入调用线程的指定调用，正常syscall仍为原版Linux。
+活跃sentinel的字节/节点/游标全程不变；成功syscall增量证明rollback只残留一个
+节点，shutdown回收全部三种残留。部分销毁后重复失败仍保持EBUSY，后继成功
+只unmap剩余节点；旧handle不能碰replacement。最终19/36次分配释放与5/2个
+shutdown残留精确匹配，不以全零最终计数掩盖中途多释放或遗失。
+
+Segmented writers can send any nonempty written range directly with `ker_posix_buffer_writer_send`, including ranges crossing VMA boundaries. The adapter snapshots registered iovecs and submits original Linux sendmsg; it never flattens payloads or changes the writer cursor. Callers retain ownership and await zerocopy completion before mutation or destruction.

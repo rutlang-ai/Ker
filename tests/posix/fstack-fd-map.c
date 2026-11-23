@@ -16,6 +16,11 @@
 #include <lkl_host.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s (errno=%d)\n", __FILE__, __LINE__, #x, errno); exit(1); } } while (0)
+
+/* This standalone fd-table test starts LKL directly rather than through the
+ * POSIX lifecycle; fd-table's own mappings identify its native descriptors. */
+bool ker_native_ready(void) { return false; }
+
 static int native_socket(int type)
 {
     long fd = lkl_sys_socket(LKL_AF_INET, type, 0);

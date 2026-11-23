@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Build pinned Linux TCP/socket code with the LKL architecture in a generated tree."""
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import os
@@ -42,11 +44,44 @@ def output(repo, *args):
     return subprocess.check_output(['git', '-C', str(repo), *args], text=True).strip()
 
 
+@contextmanager
+def repository_lock(repo):
+    # A shallow fetch computes its update before Git takes shallow.lock.
+    # Serialize the complete presence-check/fetch across builder processes,
+    # including callers reaching one bare cache through different symlinks.
+    cache = Path(repo).resolve()
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    with (cache.parent / (cache.name + '.fetch.lock')).open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def fetch(repo, url, revision):
-    present = subprocess.run(['git', '-C', str(repo), 'cat-file', '-e', revision + '^{commit}'],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if present.returncode:
-        git(repo, 'fetch', '--depth=1', '--no-tags', url, revision)
+    with repository_lock(repo):
+        # Disable detached maintenance before inspecting or fetching this cache.
+        git(repo, 'config', 'gc.auto', '0')
+        git(repo, 'config', 'maintenance.auto', 'false')
+        present = subprocess.run(['git', '-C', str(repo), 'cat-file', '-e', revision + '^{commit}'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if present.returncode:
+            git(repo, 'fetch', '--depth=1', '--no-tags', url, revision)
+
+
+@contextmanager
+def artifact_lock(build):
+    """Serialize source preparation, compilation and proof publication per output."""
+    build = Path(build).resolve()
+    build.mkdir(parents=True, exist_ok=True)
+    # Keep this inode stable across invocations; never unlink an advisory lock.
+    with (build / '.ker-native-build.lock').open('a+') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream, fcntl.LOCK_UN)
 
 
 def main():
@@ -67,6 +102,11 @@ def main():
         parser.error('the native POSIX backend currently supports x86_64 Linux')
     if args.jobs < 1:
         parser.error('--jobs must be positive')
+    with artifact_lock(args.build):
+        build_artifacts(args)
+
+
+def build_artifacts(args):
     manifest_path = ROOT / 'config/native-linux.json'
     manifest = json.loads(manifest_path.read_text())
     overlay = ROOT / 'src/posix/lkl-overlay'
@@ -74,9 +114,9 @@ def main():
     cache = args.cache.resolve()
     build = args.build.resolve()
     build.mkdir(parents=True, exist_ok=True)
-    if not cache.exists():
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        run(['git', 'init', '--bare', cache])
+    with repository_lock(cache):
+        if not cache.exists():
+            run(['git', 'init', '--bare', cache])
     linux = manifest['linux']
     lkl = manifest['lkl']
     fetch(cache, linux['repository'], linux['revision'])

@@ -13,10 +13,17 @@ import sys
 import tempfile
 
 SOURCE_CASES = {
+    'test_ff_zc_mbuf_write_multi_segment',
     'test_ff_zc_mbuf_get_negative_len_returns_error',
+    'test_ff_zc_mbuf_get_zero_len_returns_minimal_chain',
+    'test_ff_zc_mbuf_write_accumulates_pkthdr_len',
+    'test_ff_zc_mbuf_write_zero_len_noop',
+    'test_ff_zc_mbuf_write_overflow_returns_error',
+    'test_ff_zc_mbuf_write_null_data_returns_error',
     'test_ff_zc_send_mb_null_returns_einval',
     'test_ff_zc_send_nbytes_overflow_returns_einval',
     'test_ff_zc_send_valid_args_proceeds',
+    'test_ff_zc_send_zero_nbytes_returns_einval',
 }
 
 
@@ -63,7 +70,7 @@ def main():
                 'native/EAL shutdown acknowledgement or mbuf reclamation missing')
         require(record['io']['driver'] == 'net_null', 'original null PMD did not run')
         require(native['buffer_allocations'] >= 75 and native['buffer_allocations'] == native['buffer_releases']
-                and native['buffer_shutdown_releases'] == 1
+                and native['buffer_shutdown_releases'] == 2
                 and native['buffers_live'] == native['buffer_bytes'] == native['buffer_option_guards_live'] == 0,
                 'native VMA/option-guard lifetime failure: ' + str(native))
         for case in cases:

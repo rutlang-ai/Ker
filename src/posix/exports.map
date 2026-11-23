@@ -1,13 +1,31 @@
 {
     global:
-        ker_posix_capabilities; ker_posix_kernel_release;
+        ker_posix_capabilities; ker_posix_kernel_release; ker_posix_get_current_time;
         ker_posix_run; ker_posix_stop_run;
-        ker_posix_buffer_alloc; ker_posix_buffer_free; ker_posix_buffer_realloc;
+        ker_posix_buffer_alloc; ker_posix_buffer_free; ker_posix_buffer_realloc; ker_posix_buffer_write;
+        ker_posix_buffer_writer_create; ker_posix_buffer_writer_create_segmented; ker_posix_buffer_writer_segment; ker_posix_buffer_writer_append;
+        ker_posix_buffer_writer_view; ker_posix_buffer_writer_destroy; ker_posix_buffer_writer_send;
+        fdopen; _IO_fdopen; fileno; fileno_unlocked; freopen; freopen64;
+        posix_spawn; posix_spawnp; system; __libc_system; popen; _IO_popen;
         socket; bind; connect; listen; accept; accept4; shutdown;
         getsockname; getpeername; getsockopt; setsockopt; sockatmark;
         send; recv; sendto; recvfrom; sendmsg; recvmsg; sendmmsg; recvmmsg;
-        read; write; readv; writev; close; dup; dup2; dup3; fcntl; fcntl64; ioctl;
+        read; write; readv; writev; close; close_range; dup; dup2; dup3; fcntl; fcntl64; ioctl;
         poll; __poll; ppoll; select; pselect; epoll_create; epoll_create1; epoll_ctl; epoll_wait; epoll_pwait; epoll_pwait2;
-        fstat; fstat64; __fxstat; __fxstat64;
+        ftruncate; ftruncate64; fsync; fdatasync;
+        fchmod; fchown;
+        futimens; futimes;
+        fallocate; fallocate64; posix_fallocate; posix_fallocate64;
+        readahead; sync_file_range; posix_fadvise; posix_fadvise64;
+        if_nametoindex; if_indextoname; if_nameindex; if_freenameindex; getifaddrs; freeifaddrs;
+        fgetxattr; fsetxattr; flistxattr; fremovexattr;
+        mmap; mmap64;
+        sendfile; sendfile64; splice; copy_file_range; tee; vmsplice;
+        __read_chk; __pread_chk; __pread64_chk; __recv_chk; __recvfrom_chk; __poll_chk; __ppoll_chk;
+        lseek; lseek64; pread; pread64; pwrite; pwrite64;
+        preadv; preadv64; pwritev; pwritev64; preadv2; preadv64v2; pwritev2; pwritev64v2;
+        fstatfs; fstatfs64;
+        fstatvfs; fstatvfs64; fstat; fstat64; __fxstat; __fxstat64;
+        utimensat; fchmodat; fchownat; faccessat; statx; fstatat; fstatat64; __fxstatat; __fxstatat64;
     local: *;
 };

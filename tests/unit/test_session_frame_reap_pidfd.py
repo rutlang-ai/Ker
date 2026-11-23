@@ -36,10 +36,12 @@ class DeferredFramePidfdTests(unittest.TestCase):
             'static bool deferred_frame_consumer_matches(int consumer_pidfd,int saved_pidfd)\n')
         identity_equal = c_function(source,
             'static bool frame_identity_equal(const struct ker_generation_identity *a,\n')
+        same_identity = c_function(source,
+            'static bool same_generation_identity(const struct ker_generation_identity *a,\n')
         identity = c_function(source,
             'static struct ker_generation_identity generation_identity(const struct client *client)\n')
         binder = c_function(source, 'static int bind_deferred_frame_peer(unsigned target_index)\n')
-        harness = r'''#define _GNU_SOURCE
+        harness = (r'''#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -88,7 +90,8 @@ static struct test_directory *directory = &test_zone;
 static uint64_t pmd_key(const struct client *client) {
     return 1 + ((uint64_t)client->slot * KER_SESSION_GENERATIONS + client->generation) * KER_SESSION_PROCESSES + client->process;
 }
-''' + dead + '\n' + live + '\n' + matches + '\n' + identity_equal + '\n' + identity + '\n' + binder + r'''
+''' + dead + '\n' + live + '\n' + matches + '\n' + identity_equal + '\n' +
+            same_identity + '\n' + identity + '\n' + binder + r'''
 int main(void) {
     pid_t peer = fork();
     if (peer < 0) return 10;
@@ -140,7 +143,7 @@ int main(void) {
     puts("PASS: actual deferred binder bound/retried live peer and rejected its dead duplicate");
     return 0;
 }
-'''
+''')
         with tempfile.TemporaryDirectory(prefix='ker-frame-pidfd-') as temporary:
             source_path = Path(temporary) / 'pidfd-test.c'
             binary_path = Path(temporary) / 'pidfd-test'

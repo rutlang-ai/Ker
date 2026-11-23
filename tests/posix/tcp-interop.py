@@ -2,6 +2,7 @@
 """Test imported Linux TCP against an independent host TCP endpoint over DPDK."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import errno
 import http.server
 from contextlib import contextmanager
 import json
@@ -29,17 +30,23 @@ def ready(process, port):
 
 
 @contextmanager
-def server(command, port, log, env, captured=None):
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True, env=env)
+def server(command, port, log, env, captured=None, cleanup_fault_qdiscs=False,
+           completion_ack=False):
+    process = subprocess.Popen(command, stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE if completion_ack else None, stderr=log, text=True, env=env)
     try:
         ready(process, port)
         yield process
+        if completion_ack:
+            # Release only after the peer client completed its checks successfully.
+            os.write(process.stdin.fileno(), b'\xa5')
         output, _ = process.communicate(timeout=30)
         if captured is not None:
             captured.append(output)
         if process.returncode:
             raise RuntimeError(f'server exited {process.returncode}: {output}')
     finally:
+        active_exception = sys.exc_info()[0] is not None
         if process.poll() is None:
             process.terminate()
             try:
@@ -47,6 +54,18 @@ def server(command, port, log, env, captured=None):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+        if process.stdout is not None and not process.stdout.closed:
+            process.stdout.close()
+        if process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
+        if cleanup_fault_qdiscs:
+            try:
+                remove_tcp_fault_qdiscs(env)
+            except Exception as error:
+                if not active_exception:
+                    raise
+                print('TCP fault qdisc cleanup failed while preserving an earlier error: ' + str(error),
+                      file=sys.stderr, flush=True)
 
 
 def client(command, env):
@@ -55,6 +74,173 @@ def client(command, env):
         raise RuntimeError(f'client exited {result.returncode}: {result.stdout}\n{result.stderr}')
     print(result.stdout.strip(), flush=True)
     return result.stdout
+
+
+def stdio_exit(args, launcher, work, env, log):
+    if not args.stdio_exit_app:
+        return
+    for native in (False, True):
+        port = 28790 + int(native)
+        app = str(args.stdio_exit_app)
+        stats_path = work / 'stdio-exit.json'
+        command = [app, 'client', '198.18.0.1', str(port)]
+        if native:
+            command = [*launcher, '--stats', str(stats_path), '--', *command]
+        captured = []
+        with server([app, 'server', '198.18.0.1', str(port)], port, log, env, captured=captured):
+            client(command, env)
+        if 'PASS: independent host received exact buffered exit payload and EOF' not in ''.join(captured):
+            raise RuntimeError('stdio exit peer did not validate payload/EOF')
+        if native:
+            stats = json.loads(stats_path.read_text())
+            if stats['native']['active_opens'] != 1 or not stats['tx'] or not stats['rx'] or stats['outstanding']:
+                raise RuntimeError('stdio exit did not use original TCP or leaked: ' + str(stats))
+
+    for native in (False, True):
+        port = 28792 + int(native)
+        app = str(args.stdio_exit_app)
+        command = [app, 'client-error', '198.18.0.1', str(port)]
+        if native:
+            command = [*launcher, '--', *command]
+        captured = []
+        with server([app, 'server-error', '198.18.0.1', str(port)], port, log, env, captured=captured):
+            result = subprocess.run(command, capture_output=True, text=True, env=env, timeout=40)
+            if 'PASS: application returns with buffered native FILE output' not in result.stdout:
+                raise RuntimeError('stdio failure client did not reach buffered exit: ' + result.stdout + result.stderr)
+            if native:
+                if (result.returncode == 0 or
+                        'buffered native stdio could not flush before shutdown' not in result.stderr or
+                        'native Linux shutdown did not complete' not in result.stderr):
+                    raise RuntimeError('native buffered exit failure was not reported: ' + result.stdout + result.stderr)
+            elif result.returncode != 0:
+                raise RuntimeError('host buffered-error baseline failed: ' + result.stdout + result.stderr)
+        if 'PASS: independent host saw failed buffered stream EOF without payload' not in ''.join(captured):
+            raise RuntimeError('stdio failure peer missed exact empty EOF')
+    print('PASS: native buffered exit flush failure is explicit after orderly teardown', flush=True)
+
+
+def validate_fault_evidence(client_output, native_stats, client_endpoint):
+    match = re.search(r"TCP_INFO total_retrans=(\d+)", client_output)
+    if not match or int(match[1]) == 0:
+        raise RuntimeError(f'{client_endpoint} TCP retransmission was not exercised')
+    if not native_stats['out_of_order_queued']:
+        raise RuntimeError('native TCP out-of-order reassembly was not exercised: ' + str(native_stats))
+
+
+FAULT_QDISC_COMMAND = ['netem', 'delay', '2ms', '1ms', 'loss', '2%',
+                       'reorder', '20%', '50%', 'seed', '42']
+
+
+def install_tcp_fault_qdiscs(env):
+    evidence = {}
+    for device in ('kerlink', 'kerhost'):
+        result = subprocess.run(['tc', '-j', '-s', 'qdisc', 'show', 'dev', device],
+                                check=True, env=env, capture_output=True, text=True)
+        entries = json.loads(result.stdout)
+        roots = [entry for entry in entries if entry.get('root')]
+        if (len(roots) > 1 or
+                (roots and roots[0].get('kind') not in ('netem', 'noqueue')) or
+                (roots and roots[0].get('kind') == 'netem' and roots[0].get('handle') != '8001:')):
+            raise RuntimeError(f'{device} has unexpected root qdisc before fault setup: {result.stdout}')
+        if roots and roots[0].get('kind') == 'netem':
+            subprocess.run(['tc', 'qdisc', 'del', 'dev', device, 'root'], check=True, env=env)
+        subprocess.run(['tc', 'qdisc', 'add', 'dev', device, 'root', 'handle', '8001:',
+                        *FAULT_QDISC_COMMAND],
+                       check=True, env=env)
+        result = subprocess.run(['tc', '-j', '-s', 'qdisc', 'show', 'dev', device],
+                                check=True, env=env, capture_output=True, text=True)
+        entries = json.loads(result.stdout)
+        matching = [entry for entry in entries if entry.get('kind') == 'netem' and entry.get('root')]
+        if len(matching) != 1 or matching[0].get('handle') != '8001:':
+            raise RuntimeError(f'{device} root netem not installed after EAL startup: {result.stdout}')
+        item = matching[0]
+        nested = item.get('stats', {})
+        baseline = {key: item.get(key, nested.get(key)) for key in ('packets', 'bytes', 'drops', 'overlimits')}
+        if any(not isinstance(value, int) or value < 0 for value in baseline.values()):
+            raise RuntimeError(f'{device} netem has invalid initial counters: {item}')
+        evidence[device] = baseline
+    return evidence
+
+
+def tcp_fault_qdisc_counters(env, baseline):
+    evidence = {}
+    for device in ('kerlink', 'kerhost'):
+        result = subprocess.run(['tc', '-j', '-s', 'qdisc', 'show', 'dev', device],
+                                check=True, env=env, capture_output=True, text=True)
+        entries = json.loads(result.stdout)
+        matching = [entry for entry in entries if entry.get('kind') == 'netem' and entry.get('root')]
+        if len(matching) != 1 or matching[0].get('handle') != '8001:':
+            raise RuntimeError(f'{device} root netem disappeared during fault test: {result.stdout}')
+        item = matching[0]
+        nested = item.get('stats', {})
+        counters = {key: item.get(key, nested.get(key)) for key in ('packets', 'bytes', 'drops', 'overlimits')}
+        for key in ('packets', 'drops'):
+            if (not isinstance(counters[key], int) or
+                    counters[key] <= baseline[device][key]):
+                raise RuntimeError(f'{device} netem {key} counter did not advance in this run: '
+                                   f'{baseline[device]=} {item=}')
+        evidence[device] = counters
+    return evidence
+
+
+def remove_tcp_fault_qdiscs(env):
+    errors = []
+    for device in ('kerlink', 'kerhost'):
+        result = subprocess.run(['tc', '-j', '-s', 'qdisc', 'show', 'dev', device],
+                                check=True, env=env, capture_output=True, text=True)
+        roots = [entry for entry in json.loads(result.stdout) if entry.get('root')]
+        if not roots or (len(roots) == 1 and roots[0].get('kind') == 'noqueue'):
+            continue
+        if len(roots) != 1 or roots[0].get('kind') != 'netem' or roots[0].get('handle') != '8001:':
+            errors.append(f'{device} has an unowned root qdisc: {result.stdout}')
+            continue
+        subprocess.run(['tc', 'qdisc', 'del', 'dev', device, 'root'], check=True, env=env)
+    if errors:
+        raise RuntimeError('refusing to remove a qdisc not owned by this TCP fault fixture: ' + '; '.join(errors))
+
+
+def gated_client(command, port, env, gate_path):
+    # Wait for TAP/EAL initialization before installing qdiscs: TAP startup
+    # replaces the root qdisc. The client remains blocked before connect(), so
+    # the installed counters are a baseline for only post-release TCP traffic.
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    try:
+        ready(process, port)
+        installed = install_tcp_fault_qdiscs(env)
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                gate_fd = os.open(gate_path, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError as error:
+                if error.errno != errno.ENXIO or process.poll() is not None:
+                    raise RuntimeError('gated client stopped before fault release') from error
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('gated client did not open the fault-release FIFO') from error
+                time.sleep(0.01)
+        try:
+            if os.write(gate_fd, b'\xa5') != 1:
+                raise RuntimeError('short write to fault-release FIFO')
+        finally:
+            os.close(gate_fd)
+        output, error = process.communicate(timeout=40)
+        if process.returncode or 'PASS:' not in output:
+            raise RuntimeError(f'gated client exited {process.returncode}: {output}\n{error}')
+        print(output.strip(), flush=True)
+        return output, installed
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        try:
+            process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
 
 
 def application_environment(args, launcher, work, env):
@@ -1612,14 +1798,20 @@ def udp_compat(args, launcher, work, env, log):
             stats_path = work / ('udp-' + mode + '-' + role + '.json')
             listen = [str(args.udp_app), 'server', address, str(port), mode]
             connect = [str(args.udp_app), 'client', address, str(port), mode]
+            if mode == 'batch':
+                listen.append('--wait-for-peer')
             native = [*launcher, '--stats', str(stats_path), '--']
             if native_server:
                 listen = native + listen
             else:
                 connect = native + connect
             captured = []
-            with server(listen, port, log, env, captured=captured):
-                client(connect, env)
+            try:
+                with server(listen, port, log, env, captured=captured,
+                             completion_ack=(mode == 'batch')):
+                    client(connect, env)
+            except Exception as error:
+                raise RuntimeError(f'UDP {mode} {role} failed: {error}') from error
             output = ''.join(captured)
             if 'PASS:' not in output:
                 raise RuntimeError('UDP server did not confirm datagrams: ' + output)
@@ -1819,10 +2011,6 @@ def inside(args):
         if args.udp_mtu_app:
             # The host-reference endpoints share loopback; match the wire MTU.
             commands.append(['ip', 'link', 'set', 'lo', 'mtu', '1500'])
-        if args.faults:
-            for device in ['kerlink', 'kerhost']:
-                commands.append(['tc', 'qdisc', 'add', 'dev', device, 'root', 'netem',
-                    'delay', '2ms', '1ms', 'loss', '2%', 'reorder', '20%', '50%', 'seed', '42'])
         if args.jumbo_app:
             for device in ('lo', 'kerpeer', 'kerhost', 'kerlink'):
                 commands.append(['ip', 'link', 'set', device, 'mtu', '9000'])
@@ -1927,12 +2115,22 @@ def inside(args):
                         listen = native + listen
                     else:
                         connect = native + connect
-                    with server(listen, port, log, env):
-                        received = client(connect, env)
+                    with server(listen, port, log, env, cleanup_fault_qdiscs=args.faults):
+                        installed_fault_qdiscs = None
+                        if args.faults and native_server:
+                            installed_fault_qdiscs = install_tcp_fault_qdiscs(env)
                         if args.faults and not native_server:
-                            match = re.search(r"TCP_INFO total_retrans=(\d+)", received)
-                            if not match or int(match[1]) == 0:
-                                raise RuntimeError("native TCP retransmission was not exercised")
+                            gate_path = work / 'tcp-fault-release.fifo'
+                            os.mkfifo(gate_path)
+                            connect[-3:] = ['gated-client', address, str(port), str(gate_path)]
+                            received, installed_fault_qdiscs = gated_client(connect, port, env, gate_path)
+                        else:
+                            received = client(connect, env)
+                        if args.faults:
+                            qdisc_counters = tcp_fault_qdisc_counters(env, installed_fault_qdiscs)
+                            print('TCP_FAULT_QDISC ' + json.dumps({
+                                'installed': installed_fault_qdiscs, 'after': qdisc_counters,
+                            }, sort_keys=True), flush=True)
                     stats = json.loads(stats_path.read_text())
                     if not (stats['tx'] > 0 and stats['rx'] > 0 and stats['outstanding'] == 0):
                         raise RuntimeError('no verified DPDK traffic or incomplete reclamation: ' + str(stats))
@@ -1958,10 +2156,11 @@ def inside(args):
                         if 'ker.io ready port=net_tap0' not in text or 'ker.io stopped status=0' not in text:
                             raise RuntimeError('worker lifecycle log is missing: ' + text)
                     native_stats = stats['native']
+                    if args.faults:
+                        validate_fault_evidence(received, native_stats,
+                            'host' if native_server else 'native')
                     if not native_stats['passive_opens' if native_server else 'active_opens']:
                         raise RuntimeError('native kernel did not record the TCP open')
-                    if args.faults and (not native_stats['retransmitted_segments'] or not native_stats['out_of_order_queued']):
-                        raise RuntimeError('native retransmission/reordering was not exercised: ' + str(native_stats))
                     if args.zero_window and not native_stats['zero_window_probes']:
                         raise RuntimeError('native zero-window probing was not exercised: ' + str(native_stats))
                     print(('native passive' if native_server else 'native active') + ': ' + json.dumps(stats), flush=True)
@@ -2092,15 +2291,23 @@ def inside(args):
                 stream_compat(args, launcher, work, env, log)
                 application_compat(args, launcher, work, env)
                 udp_cork(args, launcher, work, env, log)
+                stdio_exit(args, launcher, work, env, log)
                 if args.fd_app:
                     stats_path = work / 'fd-app.json'
                     fd_output = client([*launcher, '--stats', str(stats_path), '--', str(args.fd_app)], env)
                     stats = json.loads(stats_path.read_text())
                     if args.fd_coexistence:
                         if ('PASS: independent host/native UDP same tuple, mixed epoll and both close orders' not in fd_output
-                                or stats['native']['udp_in_datagrams'] != 3
-                                or stats['native']['udp_out_datagrams'] != 3):
+                                or stats['native']['udp_in_datagrams'] != (3 + int(args.fd_payload_faults) + 3 * int(args.fd_reuseport_filter))
+                                or stats['native']['udp_out_datagrams'] != (3 + 2 * int(args.fd_payload_faults) + 3 * int(args.fd_reuseport_filter))):
                             raise RuntimeError('host/native coexistence missed isolated kernel UDP accounting: ' + str(stats))
+                    if args.fd_payload_faults or args.fd_reuseport_filter:
+                        expected = {'udp_in_errors': int(args.fd_payload_faults), 'udp_no_ports': 0,
+                                    'udp6_in_datagrams': int(args.fd_payload_faults) + 3 * int(args.fd_reuseport_filter),
+                                    'udp6_out_datagrams': 2 * int(args.fd_payload_faults) + 3 * int(args.fd_reuseport_filter),
+                                    'udp6_in_errors': int(args.fd_payload_faults), 'udp6_no_ports': 0}
+                        if any(stats['native'][key] != value for key, value in expected.items()):
+                            raise RuntimeError('payload copy-fault accounting differs from original UDP: ' + str(stats))
                     if (stats['outstanding'] or not stats['native']['active_opens'] or
                             not stats['native']['passive_opens']):
                         raise RuntimeError('fd scenarios did not use native TCP or leaked: ' + str(stats))
@@ -2146,6 +2353,9 @@ def main():
     parser.add_argument('--udp-cork-app', type=Path)
     parser.add_argument('--fd-app', type=Path)
     parser.add_argument('--fd-coexistence', action='store_true')
+    parser.add_argument('--stdio-exit-app', type=Path)
+    parser.add_argument('--fd-payload-faults', action='store_true')
+    parser.add_argument('--fd-reuseport-filter', action='store_true')
     parser.add_argument('--dualstack-app', type=Path)
     parser.add_argument('--epoll-app', type=Path)
     parser.add_argument('--message-app', type=Path)

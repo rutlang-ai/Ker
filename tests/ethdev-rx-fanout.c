@@ -5,7 +5,7 @@
 #include "runtime/skb.h"
 #include "runtime/worker.h"
 #include <errno.h>
-#include <linux/if_ether.h>
+#include "compat/ethernet-abi.h"
 #include <rte_eth_ring.h>
 #include <rte_ethdev.h>
 #include <rte_ring.h>
@@ -94,7 +94,7 @@ static void inject(struct rte_ring *ring, uint8_t marker)
     for (unsigned int i = 0; i < 3; ++i) {
         struct rte_mbuf *segment = rte_pktmbuf_alloc(source.mbufs);
         CHECK(segment);
-        uint8_t *bytes = rte_pktmbuf_append(segment, lengths[i]);
+        uint8_t *bytes = (uint8_t *)rte_pktmbuf_append(segment, lengths[i]);
         CHECK(bytes);
         memcpy(bytes, expected + offset, lengths[i]);
         if (head) CHECK(rte_pktmbuf_chain(head, segment) == 0);

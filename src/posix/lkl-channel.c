@@ -92,14 +92,21 @@ static struct in6_addr add_ipv6_address(int index, const char *configuration)
     if (result) fail("IPv6 interface configuration", result);
     return address6;
 }
+static atomic_bool process_isolation;
+bool ker_native_process_isolated(void)
+{
+    return atomic_load_explicit(&process_isolation, memory_order_acquire);
+}
 static void fork_child(void)
 {
     static const char error[] = "ker: fork after native kernel initialization is unsupported; launch each process with ker-run\n";
     (void)syscall(SYS_write, STDERR_FILENO, error, sizeof(error) - 1);
     syscall(SYS_exit_group, 125);
 }
+int ker_native_host_usercopy_probe(void);
 __attribute__((constructor)) static void initialize(void)
 {
+    atomic_store_explicit(&process_isolation, true, memory_order_release);
     int fd = (int)parse_number(required("KER_PACKET_FD"), INT_MAX), type = 0;
     socklen_t length = sizeof(type);
     if (syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_TYPE, &type, &length) || type != SOCK_DGRAM)
@@ -137,7 +144,9 @@ __attribute__((constructor)) static void initialize(void)
     ker_native_host_clock_init(&lkl_host_ops);
     ker_native_host_timer_init(&lkl_host_ops);
     lkl_host_ops.print = NULL;
-    int result = lkl_init(&lkl_host_ops);
+    int result = ker_native_host_usercopy_probe();
+    if (result) fail("host fault-safe usercopy is unavailable", result);
+    result = lkl_init(&lkl_host_ops);
     if (result) fail("kernel initialization", result);
     device = ker_packet_device_create(fd);
     if (!device) fail("packet device allocation", -errno);
@@ -311,6 +320,7 @@ __attribute__((constructor)) static void initialize(void)
 int ker_native_finalize(void)
 {
     if (!atomic_exchange_explicit(&ready, false, memory_order_acq_rel)) return 0;
+    int stdio_error = ker_native_stdio_shutdown();
     ker_fd_close_all();
     int drained = ker_native_drain(drain_timeout);
     if (drained) {
@@ -357,6 +367,11 @@ int ker_native_finalize(void)
     long halted = lkl_sys_halt();
     lkl_cleanup();
     if (!drained && halted) drained = halted < 0 ? (int)halted : -EIO;
+    if (!drained && stdio_error) {
+        static const char message[] = "ker: buffered native stdio could not flush before shutdown\n";
+        (void)syscall(SYS_write, STDERR_FILENO, message, sizeof(message) - 1);
+        drained = stdio_error;
+    }
     const char *status = drained ? "KER_NATIVE_INCOMPLETE\n" : "KER_NATIVE_DONE\n";
     (void)syscall(SYS_write, startup_fd, status, strlen(status));
     syscall(SYS_close, startup_fd);

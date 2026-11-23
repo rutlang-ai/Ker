@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #define KER_FD_LIMIT 65536
 
-enum ker_fd_kind { KER_FD_SOCKET, KER_FD_EPOLL };
+enum ker_fd_kind { KER_FD_SOCKET, KER_FD_EPOLL, KER_FD_NETLINK, KER_FD_PACKET };
 struct ker_fd {
     int native, host;
     enum ker_fd_kind kind;
@@ -13,6 +13,9 @@ struct ker_fd {
 };
 struct ker_fd *ker_fd_get(int fd);
 long ker_fd_put(struct ker_fd *entry);
+/* Pinned Linux F_DUPFD_QUERY compares two application descriptor namespaces. */
+#define KER_F_DUPFD_QUERY 1027
+int ker_fd_same_file(int fd, int other);
 /* Export consumes the native fd and optional private host epoll fd on all
  * paths. A real host placeholder reserves the returned application fd. */
 int ker_fd_export(int native, enum ker_fd_kind kind, int host, int flags,

@@ -428,6 +428,10 @@ launcher 清除 ambient `KER_NATIVE_VIP_ADDRESSES`，仅传递最终验证过的
 ### MTU 部署上限
 
 `--max-mtu 2000` 或 `[network] max_mtu=2000` 将当前 launcher 的 MTU 上限限制为 2000；默认 9000，合法范围 1280–9000。
+`[dpdk] mtu_enable=0` 或 `--no-mtu-enable` 将所有接口的有效 `max_mtu` 限制到1500，
+同时保留更低的显式上限。该策略也限制运行中的 MTU 变更，附加接口不能扩大它；
+`--mtu-enable` 可覆盖 INI 禁用值。省略策略保持 Ker 已有的启用行为。
+
 `mtu` 大于 `max_mtu` 在设备/库初始化前返回 2；CLI 可分别覆盖 INI 中的请求值或上限。
 此值同时限制启动配置与运行中的 primary interface MTU。large 模式按 max_mtu 预留完整帧容量，
 以支持运行时增长而无需替换仍可能由 PMD 持有的 pool；默认 9000 因而比旧版固定 1500 的 pool 占用更多内存。
@@ -1280,6 +1284,8 @@ longjmp 或从回调跳过其返回路径。run 会关闭原生 fd、等待内�
 消耗当前实例，之后 capabilities 为0、kernel_release 为NULL，socket/再次 run 返回
 ENETDOWN；应用仍可继续执行普通宿主操作。进程析构不会再次停内核。
 
+当前内核发送队列等待仅检查 TCP/TCP6；应用退出时仍留在原生 Linux 中的 UDP 输出排空尚未验证。
+
 接口依赖 launcher 继承的私有 SOCK_SEQPACKET 确认通道，该 fd 在原生构造时标记
 CLOEXEC。它没有实现 F-Stack 同进程 ff_run/ff_dpdk_run 符号或多 lcore/耦合轮询 ABI；
 业务回调仍完全由调用方提供。`--stats` 的 run_shutdown、run_shutdown_workers、
@@ -1386,7 +1392,8 @@ SO_ZEROCOPY 未启用时，Linux 原有的忽略标志/复制发送行为保持�
 指针失效，迟到的 alloc/free 返回 ENETDOWN。`native.buffer_*` 记录映射与控制锁
 回收，不作为物理页或 NIC 零拷贝证明。`rx_shutdown_discarded` 单列停止交付后
 回收的已读 RX 后缀，避免早期 run 停止时队列计数有包却无去向。
-13项源案例的owned-chain/write-cursor合同尚未等价映射，继续由issue225保留。
+13项源案例仍不等价于FreeBSD owned-chain/write-cursor ABI；其中容量溢出和NULL
+数据写入错误现由原生有界写入适配，剩余未完成项继续由issue225保留。
 当前Unix packet record和worker仍复制，不能计为端到端零拷贝；但上游默认DPDK
 路径也复制，移除这些复制并非全部13项socket快路径测试的额外前提。
 
@@ -1398,3 +1405,143 @@ SO_ZEROCOPY 未启用时，Linux 原有的忽略标志/复制发送行为保持�
 宿主在成员断开前后各发起一轮（RX 6 个），不以降低计数检查规避失败。
 RSS 控制测试还注入一次成功但已改变的 key readback，要求 MTU/restart 后的
 生产适配层拒绝 key 变化，而不是覆盖初始快照后误判为保留。
+
+原生 fd 的 `lseek`、`pread`/`pwrite` 与 vectored/v2 positioned I/O（含 64 位 ABI 别名）
+委托给原始 Linux，而非宿主 O_PATH 占位 fd。socket 的显式偏移返回 ESPIPE；
+v2 的 offset=-1 保留 Linux 流式读写行为。socket-contracts 同时检查失败不消费 TCP 数据、
+普通宿主文件超过 8GiB 的稀疏偏移读写及文件当前位置保持。
+
+`ftruncate`/`ftruncate64`、`fsync` 和 `fdatasync` 也按 fd 所属内核分派。
+原生 socket 返回 Linux EINVAL，失败不消费待收 TCP 数据；宿主文件保留真实截断、补零和同步行为。
+
+`fstatfs`/`fstatfs64` 返回原始 Linux socketfs 信息，而不是宿主占位 fd 的文件系统。
+字段在 Ker 层显式转换；重复 fd 的 fsid 一致，关闭一个副本不影响另一个，NULL 输出返回 EFAULT。
+
+`fchmod` 与 `fchown` 对原生 fd 修改原始 Linux inode；重复 fd 共享该元数据。
+该行为由导入内核实施，现有 TCP 连接的数据传输不因 socket inode 权限变化而被适配层改写。
+`futimens`/`futimes` 将原生 socket 的 inode 时间戳交由原始 Linux 更新，支持 NULL、
+UTIME_OMIT 与纳秒/微秒输入，并保留宿主文件行为；非法时间值返回 EINVAL。
+
+`fallocate`/`fallocate64` 与 `posix_fallocate`/`posix_fallocate64` 按 fd 所属内核执行：
+原生 socket 由 Linux 返回 ENODEV，宿主文件保留预分配、KEEP_SIZE 和打洞语义，
+失败不影响原生 TCP 待收数据。
+
+`readahead`、`sync_file_range` 和 `posix_fadvise`（含64位别名）按 fd 所属内核执行。
+原生 socket 分别遵循 Linux EINVAL、ESPIPE，以及当前固定内核关闭 CONFIG_ADVISE_SYSCALLS
+时的 ENOSYS 边界；fadvise 返回正错误码并保持 errno，宿主文件行为不变。
+
+fd xattr 操作使用原始 Linux inode：可读取/枚举 socketfs 的 system.sockprotoname，
+缓冲区不足返回 ERANGE，固定内核对 socket 的 user xattr 写入按其权限规则返回 EPERM。
+宿主文件保留 user xattr 的 CREATE/REPLACE/remove 语义。
+原生 socket 的 FIONREAD、FIONBIO、SIOCOUTQ ioctl 对 NULL 整数参数返回 EFAULT，
+避免进程内 LKL uaccess 解引用空地址；错误不消费 TCP/宿主管道数据，也不改变 nonblocking 状态。
+
+原生运行时活动期间，`close_range(..., CLOSE_RANGE_CLOEXEC)` 更新宿主 fd 的 exec 标记；
+关闭或 UNSHARE 操作显式返回 EOPNOTSUPP（包括仅覆盖宿主 fd 的范围），避免关闭私有
+控制通道或留下可错误路由复用 fd 的原生注册。此时请逐个调用 close；运行时不活动且无注册时
+保留宿主 close_range 行为，非法范围/标志仍优先返回 EINVAL。
+
+`mmap`/`mmap64` 对原生 fd 询问原始 Linux；当前 NOMMU 内核对 socket 返回 EINVAL，epoll 返回 ENODEV；未对齐偏移
+返回 EINVAL。宿主 MMU 内核的只读 TCP 映射是独立的成功行为；MAP_ANONYMOUS 始终忽略 fd 并使用宿主内存，普通宿主文件映射保留原有共享写回语义。
+
+sendfile/sendfile64、splice、tee 和 copy_file_range 仅在输入输出属于同一个内核时执行；
+跨宿主/原生 fd 显式返回 EOPNOTSUPP，避免把占位 fd 当作数据来源/目标，错误不推进偏移。
+vmsplice 按单个 fd 的所属内核分派。宿主文件、UNIX socket 和 pipe 的实际传输保持正常，
+两个原生 fd 的操作仍交给原始 Linux 检查类型、权限和错误。
+
+glibc `_FORTIFY_SOURCE=2` 的 checked read/pread/recv/recvfrom/poll/ppoll 入口保留真实
+缓冲区越界中止，再走同一个 fd 分派；优化后的 fortified 应用不再绕过原生 socket facade。
+独立 -O2 fortified 测试验证真实 TCP、MSG_PEEK、定位读错误、就绪状态及 SIGABRT 边界。
+原生运行时活动时，`if_nametoindex`/`if_indextoname` 查询原始 Linux 的接口表，
+不会把宿主 TAP 名称与原生 eth 接口混淆；未启动原生运行时时继续查询宿主。
+测试把全部可见接口的名称/编号与同一内核的 SIOCGIFNAME 结果交叉验证。
+AF_NETLINK socket 也由原始 Linux 提供，可查询原生 RTM_GETLINK/RTM_GETADDR 多段
+路由消息；不会回退到宿主 netlink。NLMSG 序号、内核发送者、接口身份和 IPv4 地址均按
+同一导入内核验证；仅通用 FIONBIO 接受整数指针，未实现的 netlink FIONREAD 保留 ENOTTY。
+netlink 端口号属于导入内核；应用应以 bind(pid=0)/getsockname 取得端口，不能把宿主 PID
+当作原生 netlink 身份。复制 fd 并关闭原 fd 后仍可完成 dump。
+原生 Linux 构建器以 bare cache 的规范路径锁住存在性检查及 shallow fetch，
+防止并发 CI 在计算 shallow 更新时互相覆盖；缓存初始化也使用同一锁。不同构建的
+编译阶段仍可并行，已存在的 commit 不重复 fetch，异常后锁自动释放。
+
+`if_nameindex`/`if_freenameindex` 从原始 Linux 的 RTM_GETLINK dump 构造完整接口列表，
+包括没有 IPv4 地址的接口；名称与编号属于同一导入内核，列表可独立持有和释放。
+适配层验证消息边界、序号、内核来源和 dump 中断，错误时释放所有部分分配。
+
+`getifaddrs`/`freeifaddrs` 将原始 Linux 的 link/address dump 转为 AF_PACKET、IPv4
+与 IPv6 地址列表，保留接口标志、硬件地址、统计、前缀掩码、广播/对端和 IPv6 link-local
+scope。列表与接口名称枚举独立持有；接口在两次 dump 间变化时有界重试，错误释放部分结果，
+不会把宿主 TAP 地址当作原生接口地址。
+
+固定原生内核启用未修改的 Linux CONFIG_PACKET，AF_PACKET 的 SOCK_DGRAM/SOCK_RAW
+socket 进入导入内核而非宿主。初始合同覆盖原生 loopback UDP/TCP 的双布局捕获与普通 TCP 收发共存、sockaddr_ll
+元数据、MSG_PEEK/TRUNC、忽略 outgoing、失败 bind 后恢复、fd 复制和回收；宿主参考在
+独立 user/net namespace 中运行。此项不宣称 PACKET_MMAP 或 packet socket 的外部 NIC 路径。
+
+packet socket 的经典 BPF 合同覆盖 SOCK_RAW 与 SOCK_DGRAM：返回零的过滤器丢弃捕获副本但
+不影响 UDP 接收，返回长度截断捕获，非法替换保留原过滤器，detach 恢复完整捕获；
+SO_LOCK_FILTER 阻止替换、解除和解锁，且锁定状态随 dup 共享。过滤执行来自原始 Linux。
+
+fstatat/fstatat64（含 __fxstatat ABI）对原生 fd 的空路径按导入 Linux inode 查询；
+复制 fd 共享 inode，非空相对路径保留原始 ENOTDIR 等错误。绝对路径继续使用宿主
+文件系统，普通宿主 fd 的 AT_EMPTY_PATH 行为保持；失败不消费 socket 数据。
+
+statx 同样按 fd 归属查询原始 Linux，保留该内核的结果 mask、时间和设备号；固定 Linux
+UAPI 布局以编译期大小及关键偏移断言校验。空路径/NULL 输出、非法 mask/flags 和相对
+路径错误不消费 TCP 数据；绝对路径与普通宿主 fd 查询仍属于宿主文件系统。
+
+faccessat 使用原始 faccessat2 对原生 fd 检查 sockfs 权限，保留 AT_EACCESS/
+AT_EMPTY_PATH 及非法 mode/flags 的边界。权限检查不再误查宿主占位对象；宿主绝对路径
+与普通宿主 fd 仍由宿主内核检查，错误不改变 fd 生命周期或消费排队 TCP 数据。
+
+packet 接收元数据合同同时检查 PACKET_AUXDATA 原始长度、SO_TIMESTAMPNS 时间及
+控制缓冲不足时的 MSG_CTRUNC。小接收队列故意产生捕获丢包，PACKET_STATISTICS 的
+接收/丢弃数量必须与已发送包及实际可读捕获一致，查询后统计清零；UDP 正常接收仍全部成功。
+
+fchmodat/fchownat 的原生空路径操作修改导入 Linux sockfs inode，权限和所有者通过
+复制 fd 共享，权限变化立即反映在 faccessat；非法标志或相对路径失败不修改 inode。
+宿主绝对路径及普通宿主 fd 仍修改宿主文件，不影响 socket 通信。
+
+utimensat 对原生 fd 的空路径及 NULL fd-only 操作委托原始 Linux，显式转换到固定
+__kernel_timespec ABI；纳秒、UTIME_NOW/OMIT、双 OMIT 不查路径的语义来自原始内核。
+复制 fd 共享时间，非法纳秒及路径错误不改变 inode；宿主文件路径仍操作宿主文件。
+
+独立 raw ICMP 合同通过原始 Linux IPv4/IPv6 loopback 发送 echo 请求并接收内核生成的
+reply，验证 ICMP_FILTER/ICMP6_FILTER、IPv4 IP 头与校验和、IPv6 源地址、id/sequence/
+payload、非阻塞与复制 fd 生命周期，并保留普通 TCP 共存。宿主参考处于独立 user/net
+namespace；该合同不宣称外部 NIC 或 DPDK 线缆路径上的 raw ICMP 互通。
+
+raw IPv4 的 IP_HDRINCL 合同以原始 AF_PACKET 捕获内核发送结果，检查源地址、total length、
+IP checksum 的内核填充及显式 id/TOS/TTL/options/payload 保持；过短头、非法 IHL 和超长
+包必须拒绝且没有捕获副本，后续有效发送和普通 ICMP echo 仍成功。
+
+原生内核的 usercopy 现在由新增的 Ker LKL 架构头适配宿主 MM：同进程
+process_vm_readv/writev 处理受保护、未映射和跨页缓冲，原始 Linux 继续决定错误顺序、
+部分复制和 syscall 副作用。generic get_user 在失败时清零临时值，clear_user 按页块清零；
+原始 Linux 的字符串及 copy-user 实现保留。所有 upstream 文件不变。
+
+初始化会探测成功读写和 PROT_NONE 故障；宿主拒绝或缺少 process_vm 时明确失败，
+不会回退到不安全 memcpy。此适配限 Linux x86_64，复制的应用缓冲必须支持宿主
+process_vm 访问；不支持 GUP 的设备映射仍是显式边界。metadata facade 也使用安全
+路径探测和输出复制，NULL/flags 的校验交回原始内核，双 UTIME_OMIT 在探测路径前委托。
+
+安全复制增加 syscall 开销。本机单线程微基准中，64B 与 64KiB 的读取复制分别约
+0.99us 和 9.56us；该数字不是网络吞吐保证。现有注册 payload/zerocopy 路径没有被替换，
+六种 virtio/vhost 原生 buffer 配置仍通过同一门禁。
+
+poll/ppoll 将应用 pollfd 输入复制为稳定快照，再分别查询宿主及导入 Linux；完成等待后
+只回写 revents，保留 fd/events。受保护输入、只读输出和跨页回写失败返回 EFAULT，
+已回写的前缀与原始内核一致，排队的 TCP/宿主管道数据不被消费。零 count 不触碰数组。
+公共 timespec 等待入口也以安全复制获取超时；非法宿主 timeout 指针的参考测试直接使用
+syscall，避免把 libc 自身的非故障保护复制误认为内核合同。
+
+select/pselect 使用私有 fd-set 快照，按原始 Linux 的 long-word 对齐 nfds 前缀复制，
+不触碰超出此前缀的字节或 nfds=0 的集合。非法 fd 不回写集合；输出故障保留已写入的
+前置集合且不消费数据。timeval 先安全读入，剩余时间的可选回写失败不覆盖等待结果，
+因此可读但只读的 timeval 与原始内核一样不会导致成功后的进程崩溃。
+
+`SO_ATTACH_BPF` and `SO_ATTACH_REUSEPORT_EBPF` return `EOPNOTSUPP` for imported sockets: host eBPF program descriptors have no original-kernel ownership bridge. Host sockets keep their host syscall behavior. Classic socket and reuseport BPF programs remain original Linux operations; rejected eBPF attachment does not replace an installed classic filter.
+
+After imported-kernel initialization, `posix_spawn`/`posix_spawnp` return `EOPNOTSUPP` without changing the output PID; `system(command)` and `popen` fail with `errno=EOPNOTSUPP`. `system(NULL)` reports no supported shell facility. These libc helpers can bypass `pthread_atfork` via clone, so they cannot safely copy the in-process kernel. The boundary remains active during shutdown; launch independent applications through the external Ker launcher.
+
+Native `fdopen` streams use libc's byte-oriented cookie buffering with reads, writes, seeks and close routed to the owning original Linux descriptor. `fileno`/`fileno_unlocked` report the application fd; append mode updates its original file status flags. Host streams retain libc behavior. Native cookie streams are byte-oriented and `freopen`/`freopen64` explicitly return `EOPNOTSUPP`. Normal teardown flushes pending stdio before descriptor retirement and kernel shutdown, reports native flush failures, and invalidates cookie fd references to prevent a later close from affecting a reused host fd.

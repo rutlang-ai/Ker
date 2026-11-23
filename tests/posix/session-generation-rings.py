@@ -3,7 +3,10 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 import time
+
+from dpdk_runtime import private_runtime_environment
 
 
 def main():
@@ -21,8 +24,10 @@ def main():
     prefix = f"ker-nr19-{os.getpid()}-{time.monotonic_ns() & 0xfffffff:x}"
     command = [args.test, "--no-pci", f"--file-prefix={prefix}",
                "--proc-type=primary", "--", "primary"]
-    completed = subprocess.run(command, check=False)
-    return completed.returncode
+    with tempfile.TemporaryDirectory(prefix="ker-nr19-runtime-") as runtime:
+        env = private_runtime_environment(runtime)
+        completed = subprocess.run(command, check=False, env=env)
+        return completed.returncode
 
 
 if __name__ == "__main__":

@@ -4,16 +4,21 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <poll.h>
+#include <signal.h>
+#include <pthread.h>
+#include <sys/syscall.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 #define ERROR(call, code) do { errno = 0; CHECK((call) == -1); CHECK(errno == (code)); } while (0)
+extern const char *ker_posix_kernel_release(void) __attribute__((weak));
 struct pair {int sender, receiver;};
 static int listener(struct sockaddr_in *address)
 {
@@ -213,10 +218,136 @@ static void zero_timeouts(void)
     CHECK(poll(NULL, 0, 0) == 0);
     finish(p);
 }
+static void poll_memory_faults(void)
+{
+    struct pair p = connected(); int pipes[2]; CHECK(pipe(pipes) == 0);
+    CHECK(write(p.sender, "n", 1) == 1 && write(pipes[1], "h", 1) == 1); queued(p.receiver, 1);
+    long page = sysconf(_SC_PAGESIZE); CHECK(page >= (long)(2 * sizeof(struct pollfd)));
+    char *memory = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(memory != MAP_FAILED && mprotect(memory + page, (size_t)page, PROT_NONE) == 0);
+    struct pollfd fds[2] = {{p.receiver, POLLIN, 0x55}, {pipes[0], POLLIN, 0x55}};
+    const struct timespec zero = {0}; void *bad = memory + page;
+    fprintf(stderr, "poll fault probe: protected poll array\n");
+    ERROR(poll(bad, 1, 0), EFAULT);
+    ERROR(ppoll(bad, 1, &zero, NULL), EFAULT);
+    if (ker_posix_kernel_release) ERROR(ppoll(fds, 2, bad, NULL), EFAULT);
+    else ERROR(syscall(SYS_ppoll, fds, 2, bad, NULL, _NSIG / 8), EFAULT);
+    CHECK(fds[0].revents == 0x55 && fds[1].revents == 0x55);
+    /* libc may copy invalid timeout pointers itself; compare the kernel
+     * contract directly on the host, and the public Ker entry when native. */
+    if (ker_posix_kernel_release) ERROR(pselect(0, NULL, NULL, NULL, bad, NULL), EFAULT);
+    else ERROR(syscall(SYS_pselect6, 0, NULL, NULL, NULL, bad, NULL), EFAULT);
+    CHECK(poll(bad, 0, 0) == 0 && ppoll(bad, 0, &zero, NULL) == 0);
+    memcpy(memory, fds, sizeof(fds)); CHECK(mprotect(memory, (size_t)page, PROT_READ) == 0);
+    ERROR(poll((void *)memory, 2, 0), EFAULT);
+    CHECK(mprotect(memory, (size_t)page * 2, PROT_READ | PROT_WRITE) == 0);
+    struct pollfd *split = (void *)(memory + page - sizeof(struct pollfd));
+    memcpy(split, fds, sizeof(fds)); CHECK(mprotect(memory + page, (size_t)page, PROT_READ) == 0);
+    ERROR(ppoll(split, 2, &zero, NULL), EFAULT);
+    CHECK(split[0].fd == p.receiver && split[0].events == POLLIN && split[0].revents == POLLIN);
+    CHECK(split[1].fd == pipes[0] && split[1].events == POLLIN && split[1].revents == 0x55);
+    CHECK(mprotect(memory + page, (size_t)page, PROT_READ | PROT_WRITE) == 0);
+    CHECK(poll(split, 2, 0) == 2 && split[0].revents == POLLIN && split[1].revents == POLLIN);
+    char byte; CHECK(read(p.receiver, &byte, 1) == 1 && byte == 'n');
+    CHECK(read(pipes[0], &byte, 1) == 1 && byte == 'h');
+    CHECK(munmap(memory, (size_t)page * 2) == 0 && close(pipes[0]) == 0 && close(pipes[1]) == 0);
+    finish(p);
+}
+static void select_memory_faults(void)
+{
+    struct pair p = connected(); CHECK(write(p.sender, "s", 1) == 1); queued(p.receiver, 1);
+    int maximum = (p.sender > p.receiver ? p.sender : p.receiver) + 1; CHECK(maximum <= FD_SETSIZE);
+    long page = sysconf(_SC_PAGESIZE); CHECK(page >= (long)(3 * sizeof(fd_set)));
+    char *memory = mmap(NULL, (size_t)page * 4, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(memory != MAP_FAILED && mprotect(memory + page * 3, (size_t)page, PROT_NONE) == 0);
+    void *bad = memory + page * 3; struct timeval zero = {0}; const struct timespec zero_ns = {0};
+    ERROR(select(maximum, bad, NULL, NULL, &zero), EFAULT);
+    ERROR(pselect(maximum, NULL, bad, NULL, &zero_ns, NULL), EFAULT);
+    if (ker_posix_kernel_release) ERROR(select(0, NULL, NULL, NULL, bad), EFAULT);
+    else ERROR(syscall(SYS_select, 0, NULL, NULL, NULL, bad), EFAULT);
+    CHECK(select(0, bad, (void *)((char *)bad + sizeof(fd_set)), (void *)((char *)bad + 2 * sizeof(fd_set)), &zero) == 0);
+    CHECK(pselect(0, bad, (void *)((char *)bad + sizeof(fd_set)), (void *)((char *)bad + 2 * sizeof(fd_set)), &zero_ns, NULL) == 0);
+    fd_set tail; memset(&tail, 0xa5, sizeof(tail));
+    size_t prefix = ((size_t)maximum + sizeof(unsigned long) * 8 - 1) /
+        (sizeof(unsigned long) * 8) * sizeof(unsigned long);
+    memset(&tail, 0, prefix); FD_SET(p.receiver, &tail); fd_set original = tail;
+    CHECK(pselect(maximum, &tail, NULL, NULL, &zero_ns, NULL) == 1 && FD_ISSET(p.receiver, &tail));
+    CHECK(memcmp((char *)&tail + prefix, (char *)&original + prefix, sizeof(tail) - prefix) == 0);
+    fd_set *reads = (void *)memory, *writes = (void *)(memory + page), *errors = (void *)(memory + page * 2);
+    FD_ZERO(reads); FD_ZERO(writes); FD_ZERO(errors);
+    FD_SET(p.receiver, reads); FD_SET(p.sender, reads); FD_SET(p.receiver, writes); FD_SET(p.receiver, errors);
+    CHECK(mprotect(writes, (size_t)page, PROT_READ) == 0);
+    ERROR(select(maximum, reads, writes, errors, &zero), EFAULT);
+    CHECK(FD_ISSET(p.receiver, reads) && !FD_ISSET(p.sender, reads));
+    CHECK(FD_ISSET(p.receiver, errors));
+    CHECK(mprotect(writes, (size_t)page, PROT_READ | PROT_WRITE) == 0);
+    CHECK(select(maximum, reads, writes, errors, &zero) == 2 && !FD_ISSET(p.receiver, errors));
+    struct timeval *readonly = (void *)(memory + page * 2); *readonly = (struct timeval){.tv_usec = 2000};
+    CHECK(mprotect(readonly, (size_t)page, PROT_READ) == 0); FD_ZERO(reads); FD_SET(p.receiver, reads); errno = 0;
+    if (ker_posix_kernel_release) CHECK(select(maximum, reads, NULL, NULL, readonly) == 1);
+    else CHECK(syscall(SYS_select, maximum, reads, NULL, NULL, readonly) == 1);
+    CHECK(errno == 0 && readonly->tv_usec == 2000);
+    int invalid = dup(p.receiver); CHECK(invalid >= 0 && invalid < FD_SETSIZE && close(invalid) == 0);
+    fd_set invalid_set; FD_ZERO(&invalid_set); FD_SET(invalid, &invalid_set); original = invalid_set;
+    ERROR(select(invalid + 1, &invalid_set, NULL, NULL, &zero), EBADF);
+    CHECK(memcmp(&invalid_set, &original, sizeof(original)) == 0);
+    char byte; CHECK(read(p.receiver, &byte, 1) == 1 && byte == 's');
+    CHECK(munmap(memory, (size_t)page * 4) == 0); finish(p);
+}
+static volatile sig_atomic_t poll_signals;
+static void poll_signal_handler(int number) { (void)number; ++poll_signals; }
+/* A copy-out error can leave the temporarily unblocked signal pending on
+ * host Linux. Consume it while blocked before starting the next scenario. */
+static void clear_pending_poll_signal(const sigset_t *blocked)
+{
+    sigset_t pending; CHECK(sigpending(&pending) == 0);
+    if (sigismember(&pending, SIGUSR1)) {
+        struct timespec zero = {0};
+        CHECK(sigtimedwait(blocked, NULL, &zero) == SIGUSR1);
+    }
+}
+static void interrupted_poll_output(void)
+{
+    struct pair p = connected(); int pipes[2]; CHECK(pipe(pipes) == 0);
+    struct sigaction action = {.sa_handler = poll_signal_handler}, old_action;
+    sigemptyset(&action.sa_mask);
+    CHECK(sigaction(SIGUSR1, &action, &old_action) == 0);
+    sigset_t blocked, original, waiting;
+    sigemptyset(&blocked); sigaddset(&blocked, SIGUSR1);
+    CHECK(pthread_sigmask(SIG_BLOCK, &blocked, &original) == 0);
+    waiting = original; sigdelset(&waiting, SIGUSR1);
+    struct timespec timeout = {.tv_sec = 1};
+    struct pollfd descriptors[] = {{p.receiver, POLLIN, 777}, {pipes[0], POLLIN, 777}};
+    poll_signals = 0;
+    CHECK(pthread_kill(pthread_self(), SIGUSR1) == 0);
+    ERROR(ppoll(descriptors, 2, &timeout, &waiting), EINTR);
+    CHECK(poll_signals == 1 && descriptors[0].revents == 0 && descriptors[1].revents == 0);
+    long page = sysconf(_SC_PAGESIZE); CHECK(page > 0);
+    struct pollfd *readonly = mmap(NULL, (size_t)page, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(readonly != MAP_FAILED);
+    memcpy(readonly, descriptors, sizeof(descriptors)); readonly[0].revents = 777;
+    CHECK(mprotect(readonly, (size_t)page, PROT_READ) == 0);
+    CHECK(pthread_kill(pthread_self(), SIGUSR1) == 0);
+    ERROR(ppoll(readonly, 2, &timeout, &waiting), EFAULT);
+    CHECK(readonly[0].revents == 777);
+    clear_pending_poll_signal(&blocked);
+    CHECK(write(p.sender, "r", 1) == 1); queued(p.receiver, 1);
+    CHECK(pthread_kill(pthread_self(), SIGUSR1) == 0);
+    CHECK(ppoll(descriptors, 2, &timeout, &waiting) == 1);
+    CHECK(descriptors[0].revents == POLLIN && descriptors[1].revents == 0);
+    clear_pending_poll_signal(&blocked);
+    char byte; CHECK(read(p.receiver, &byte, 1) == 1 && byte == 'r');
+    CHECK(pthread_sigmask(SIG_SETMASK, &original, NULL) == 0);
+    CHECK(sigaction(SIGUSR1, &old_action, NULL) == 0);
+    CHECK(munmap(readonly, (size_t)page) == 0);
+    CHECK(close(pipes[0]) == 0 && close(pipes[1]) == 0); finish(p);
+}
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"listener-readiness-and-accept", accept_readiness},
+        {"interrupted-poll-output-copy-and-readiness-precedence", interrupted_poll_output},
         {"read-write-duplicate-entry-and-bit-counts", read_write_and_counts},
         {"mixed-host-native-and-pselect-timeout", mixed_host_native},
         {"invalid-and-negative-descriptors", invalid_and_ignored},
@@ -224,6 +355,8 @@ int main(void)
         {"receive-low-watermark", receive_low_watermark},
         {"buffered-eof-is-readable", eof_readiness},
         {"zero-and-invalid-timeouts", zero_timeouts},
+        {"poll-protected-input-output-and-timeout", poll_memory_faults},
+        {"select-protected-sets-timeval-and-output-prefix", select_memory_faults},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         cases[i].run();
