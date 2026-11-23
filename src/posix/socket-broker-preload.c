@@ -1815,7 +1815,7 @@ int epoll_ctl(int epfd, int operation, int fd, struct epoll_event *event)
     }
     struct epoll_event local_event;
     const struct epoll_event *selected = NULL;
-    if (event) {
+    if (operation != EPOLL_CTL_DEL && event) {
         if (copy_in(&local_event, event, sizeof(local_event))) {
             ker_sb_preload_unlock(); return -1;
         }
