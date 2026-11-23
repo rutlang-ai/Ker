@@ -1,0 +1,346 @@
+{
+  "schema": 1,
+  "scope": "Exported Ker POSIX UDP transport and current native IPv4/IPv6 adaptation; original Linux protocols with DPDK net_tap",
+  "features": [
+    {
+      "id": "udp.contracts.creation",
+      "description": "IPv4/IPv6 socket flags, fd aliases, bind conflicts and unconnected errors",
+      "kind": "functional",
+      "ctests": [
+        "host-udp-contract-matrix",
+        "native-udp-contract-matrix"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.contracts.messages",
+      "description": "Zero-length datagrams, vector I/O, message batches, peek and truncation",
+      "kind": "functional",
+      "ctests": [
+        "host-udp-contract-matrix",
+        "native-udp-contract-matrix"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.contracts.events",
+      "description": "Readiness, FIONREAD and queue drain",
+      "kind": "functional",
+      "ctests": [
+        "host-udp-contract-matrix",
+        "native-udp-contract-matrix"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.contracts.connect",
+      "description": "Connected source filters, AF_UNSPEC disconnect and recovery",
+      "kind": "functional",
+      "ctests": [
+        "host-udp-contract-matrix",
+        "native-udp-contract-matrix"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.contracts.timeouts",
+      "description": "SO_RCVTIMEO, MSG_WAITFORONE and nonempty recvmmsg timeout pointer",
+      "kind": "functional",
+      "ctests": [
+        "host-udp-contract-matrix",
+        "native-udp-contract-matrix"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.contracts.metadata",
+      "description": "IPv4/IPv6 pktinfo, TTL/hop limit, TOS/tclass, software timestamp and CTRUNC",
+      "kind": "functional",
+      "ctests": [
+        "host-udp-contract-matrix",
+        "native-udp-contract-matrix"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.contracts.errors",
+      "description": "IPv4/IPv6 connected/unconnected ICMP error queues and SO_ERROR clearing",
+      "kind": "functional",
+      "ctests": [
+        "host-udp-contract-matrix",
+        "native-udp-contract-matrix"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.contracts.cork",
+      "description": "IPv4/IPv6 UDP_CORK, MSG_MORE, flush and close-without-flush",
+      "kind": "functional",
+      "ctests": [
+        "host-udp-contract-matrix",
+        "native-udp-contract-matrix"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.contracts.pressure",
+      "description": "IPv4/IPv6 receive queue exhaustion, SO_RXQ_OVFL and recovery",
+      "kind": "functional",
+      "ctests": [
+        "host-udp-contract-matrix",
+        "native-udp-contract-matrix"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.contracts.segmentation",
+      "description": "UDP_SEGMENT and UDP_GRO byte/metadata boundaries",
+      "kind": "functional",
+      "ctests": [
+        "host-udp-contract-matrix",
+        "native-udp-contract-matrix"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.contracts.reuseport",
+      "description": "IPv4/IPv6 reuseport stable-flow delivery, member removal and rebind",
+      "kind": "functional",
+      "ctests": [
+        "host-udp-contract-matrix",
+        "native-udp-contract-matrix"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.contracts.dualstack",
+      "description": "IPv4-mapped UDP, IPV6_V6ONLY and independent IPv4 binding",
+      "kind": "functional",
+      "ctests": [
+        "host-udp-contract-matrix",
+        "native-udp-contract-matrix"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.basic4",
+      "description": "IPv4 UDP API combinations against independent Linux peers",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-interop"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.error4",
+      "description": "External IPv4 ICMP error queue and recovery",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-errors"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.metadata4",
+      "description": "External IPv4 packet info/source selection/timestamps",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-ancillary"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.cork4",
+      "description": "External IPv4 cork and MSG_MORE",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-cork"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.jumbo",
+      "description": "9000-byte MTU and jumbo UDP boundaries",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-jumbo-mtu"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.fragment4",
+      "description": "IPv4 MTU, fragmentation and 65507-byte datagrams",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-mtu"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.lowwater",
+      "description": "UDP receive-low-water and MSG_WAITALL semantics",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-lowwater"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.waitforone",
+      "description": "Blocking batch receive MSG_WAITFORONE",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-waitforone"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.truncation",
+      "description": "Consuming truncation and per-entry batch lengths",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-receive-truncation"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.timeouts",
+      "description": "External socket receive timeouts and recovery",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-timeouts"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.multicast4",
+      "description": "IPv4 ASM join/leave/fanout/rejoin and metadata",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-multicast"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.sources4",
+      "description": "IPv4 source-specific multicast and third-source rejection",
+      "kind": "functional",
+      "ctests": [
+        "native-udp-source-multicast4"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.reuseport",
+      "description": "External IPv4 reuseport connected members and source demux",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-reuseport"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.broadcast4",
+      "description": "IPv4 subnet broadcast and SO_BROADCAST permissions",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-broadcast"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.limited4",
+      "description": "255.255.255.255 broadcast, three send APIs and unicast recovery",
+      "kind": "functional",
+      "ctests": [
+        "native-udp-limited-broadcast"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network.connect4",
+      "description": "External IPv4 source filtering and UDP disconnect",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-udp-connect-lifecycle"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network6.features",
+      "description": "IPv6 external pktinfo/timestamps/error queues/fragments/segmentation/ASM/SSM; both roles",
+      "kind": "functional",
+      "ctests": [
+        "native-udp-network6"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network6.address",
+      "description": "IPv6 interface/DAD/NDP and on-link IPv6 UDP both directions",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-ipv6-interop"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.network6.route",
+      "description": "IPv6 global/link-local default gateways and actual routed UDP hop-limit decrease",
+      "kind": "functional",
+      "ctests": [
+        "native-fstack-ipv6-route"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.path_mtu",
+      "description": "IPv4/IPv6 real-router ICMP PMTU1280, route-cache update, local EMSGSIZE and recovery",
+      "kind": "functional",
+      "ctests": [
+        "native-udp-path-mtu"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.wire_errors",
+      "description": "IPv4/IPv6 checksum acceptance/rejection, reverse fragments, reassembly timeout ICMP, reordered/duplicate datagrams",
+      "kind": "functional",
+      "ctests": [
+        "native-udp-wire-errors"
+      ],
+      "note": ""
+    },
+    {
+      "id": "udp.signal",
+      "description": "Host SIGUSR1 interruption of native blocking UDP",
+      "kind": "unsupported-boundary",
+      "ctests": [
+        "host-udp-signal-reference",
+        "native-udp-signal-boundary"
+      ],
+      "note": "Host recvfrom returns EINTR; native recvfrom remains blocked until configured SO_RCVTIMEO, then EAGAIN. This successful boundary probe is not a compatibility pass."
+    },
+    {
+      "id": "deployment.physical_nic",
+      "description": "Physical NIC checksum/segmentation offload and multi-queue/RSS validation",
+      "kind": "manual",
+      "ctests": [],
+      "note": "This environment uses net_tap, single queue and disabled hardware offloads; software UDP_SEGMENT is separately exercised."
+    },
+    {
+      "id": "deployment.endurance",
+      "description": "Long-duration resource/concurrency/fault/end-to-end performance acceptance",
+      "kind": "manual",
+      "ctests": [],
+      "note": "The automated matrix is bounded functional validation, not a long-duration stability or throughput qualification."
+    },
+    {
+      "id": "runtime.extended_apis",
+      "description": "Native sendfile/splice/io_uring, genuine zero-copy and libc-internal DNS resolver compatibility",
+      "kind": "manual",
+      "ctests": [],
+      "note": "These runtime/application integration paths are outside the exported socket validation and are not claimed supported by this report."
+    }
+  ]
+}

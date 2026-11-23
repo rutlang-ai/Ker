@@ -1,17 +1,37 @@
 # F-Stack 测试场景迁移
 
+全量范围、源快照、433 项清单及未完成项见 [全量迁移清单](fstack-migration.md)。
+下表仅列既有场景适配，不能作为上游全部测试迁移完成的声明。
+
 F-Stack 的 tests/unit 和 tests/integration 主要针对 lib/ff_* glue layer；
 unit 使用多种 stub/wrap，部分 integration 启动实际 EAL，但也用 stub 替代
 FreeBSD mbuf/veth。这不是可直接搬入 Ker 的 Linux TCP/IP 一致性套件。
 当前迁移固定到 F-Stack dev commit 646a641cfff77f4815e1e29829a09e1ed15a2999。
 
 适配场景由下表逐项列出，各自运行独立 CTest。测试实现重新编写，使用 Ker CHECK
-harness 和真实 EAL/mempool，不复制 ff_* glue、
-FreeBSD 栈、cmocka mock/stub 或覆盖率脚本。没有通过宿主机 socket 的结果
+harness 和真实 EAL/mempool，不将 ff_* glue、
+FreeBSD 栈或 cmocka mock/stub 当作 Ker 实现。上游测试和脚本另存为完整只读快照，
+用于来源审计，不自动运行或计为 Ker 通过。没有通过宿主机 socket 的结果
 冒充 Ker 网络栈通过，也不因 EAL 初始化失败跳过用例。
 
 | Ker CTest | 上游场景 | 适配边界 |
 |---|---|---|
+| native-fstack-idle-wait | test_ff_load_config_valid_minimal_ini 的 idle_sleep 子集 | INI/CLI 微秒等待、实际 ppoll 超时计数、静默后独立宿主 TCP/UDP 和控制关闭；默认保留 Ker 1ms，完整配置合同仍 partial |
+| native-fstack-promiscuous | test_ff_load_config_valid_minimal_ini 的 promiscuous 配置子集 | 真实 PMD 开关/回读、INI/CLI、外来 MAC 帧 RX 抓包与原始 Linux socket 过滤；完整最小配置合同仍 partial |
+| native-fstack-ipv4-vlan-route | valid_vlan_vip.ini 的 VLAN gateway（相关扩展） | 原始 Linux VLAN IPv4 主表默认路由；独立路由器和远端双向 TCP/UDP、TTL、tagged PCAP/ARP、INI/CLI 及 off-link 失败回收。不是多表/多默认网关迁移 |
+| native-fstack-ipv6-vlan-route | valid_inet6.ini 的 VLAN gateway6（相关扩展） | 原始 Linux VLAN IPv6 默认路由；独立路由器与远端 TCP/UDP、hop limit、tagged PCAP/NDP、INI/CLI 和启动失败回收。源 INET6-disabled ignore 用例仍 blocked |
+| native-fstack-ephemeral-ports | test_ff_rss_tbl_set_portrange_inverted_range（partial） | 配置通过原始 Linux sysctl 生效；IPv4/IPv6 TCP/UDP 分配、耗尽/复用、保留端口和独立 IPv4 对端验证。RSS 队列专属端口表仍未迁移 |
+| native-fstack-config-lifecycle | test_ff_config.c 的 6 项配置加载场景 | 8 个独立检查验证 CLI/INI、缺失文件和加载隔离；3 项适配、3 项部分覆盖，未知节/完整 schema 差异保留。仅配置层证据，不计 NIC/内核互通 |
+| native-fstack-launcher-config / native-fstack-launcher-config-interop | test_ff_ini_parser.c：18 项场景适配，1 项多行部分覆盖 | 实际 launcher 的标准库 INI 解析、类型校验、CLI 覆盖和配置文件相对路径；真实 DPDK/原始 Linux TCP 双角色及日志/capture 验证。不是 F-Stack config schema/callback ABI 兼容层。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-worker-log / native-fstack-worker-log-interop | test_ff_log.c 的 13 项场景 | 真实 DPDK 日志文件、追加、实例文件名、流切换、级别过滤、格式与返回值；检查 flush/close 失败。Ker 使用自身分类，不模拟 FreeBSD 分类；独立 Linux TCP 对端验证实际 worker 和 launcher 错误传播。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-thread-runtime | test_ff_pthread_create_arg_passed / test_ff_pthread_create_malloc_failure；FreeBSD basic / join_retval / failfast 合同为架构排除 | LKL 真实线程、参数和分配失败，扩展验证 TLS/析构/回收、信号量、互斥、join 错误恢复与当前线程 detach 边界；真实 Linux 启停确认线程回调被调用。FreeBSD pcurthread 继承和返回值槽仍未迁移。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-host-runtime | test_ff_malloc_normal / test_ff_free_null / test_ff_clock_gettime_monotonic / test_ff_clock_gettime_ns_advances / test_ff_mmap_munmap_roundtrip / test_ff_mmap_prot_writeonly / test_ff_mmap_prot_readonly | 直接验证原生 LKL 主机回调的内存、单调时钟和映射权限；碰撞不得破坏原有映射。LKL 使用精确地址，区别于 F-Stack 的 NULL 地址分配接口。真实 Linux 启停确认内存/时钟回调被使用；固定地址 mmap 由回调测试覆盖，当前非 MMU 内核启动不走该路径。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-message-io | test_ff_host_msg_name_shutdown_bridges / test_ff_host_readv_writev / test_ff_host_ioctl_fionbio / test_ff_host_dup / test_ff_host_dup2 | 6 个公共 POSIX 场景分别在宿主 Linux 与完整导入内核运行：message/vector I/O、地址查询、半关闭、FIONBIO、dup/dup2；Ker 扩展覆盖零长度 iovec、短读、PEEK/DONTWAIT、FIONREAD、共享状态与跨后端 fd 替换。原生连接计数必须增长；UNIX socket 明确走宿主透传。上游场景只测试 FF_KERNEL_COEXIST 宿主桥接，本适配不声称上游已验证用户态 TCP。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-stream-io | test_ff_host_msg_name_shutdown_bridges / test_ff_host_readv_writev | Ker-specific 独立对端扩展：vector、message、batched-message 三种 API × 原生客户端/服务端，共六种组合；每方向校验 256 KiB + 13 字节、非阻塞进度、半关闭和 EOF，逐实例断言 DPDK TX/RX、原生 open 和回收。上游只有小型宿主桥接，不覆盖本测试的原生 TCP、DPDK 或 sendmmsg/recvmmsg 扩展。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-udp-interop | test_ff_dpdk_if_send_udp_csum；adapter/syscall/main_stack_udp.c（示例） | Ker-specific 原生 UDP socket 扩展：三种 API × 原生客户端/服务端，对独立宿主 Linux 验证 0/1/33/257 字节 datagram、epoll、peer tuple、peek/truncation、connected UDP 和 batch。Batch 对端在校验全部四个回复后通过控制管道确认，服务端据此保持存活到验证完成；用例不声称 native kernel teardown 会排空尚未交给设备的 UDP 输出。原生 UDP SNMP 计数及 DPDK 收发/回收必须通过。上游 checksum 用例只验证 TX offload，UDP 示例不是自动测试；本批调用完整原始 Linux UDP，不走基础报文构造路径。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-epoll | test_ff_epoll_create_returns_fd / test_ff_epoll_ctl_add_event / test_ff_epoll_ctl_mod_event / test_ff_epoll_ctl_del_event / test_ff_epoll_wait_* / EPOLLET / EPOLLONESHOT cases | 8 个真实 POSIX TCP 场景分别在宿主 Linux 与完整导入内核上运行并比较结果，覆盖参数、ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot 重置、仅写就绪、半关闭 EOF 与 RST/ERR/HUP；原生连接计数和 mbuf 回收必须通过。同一 CTest 还运行独立宿主对端的 DPDK 互通。上游用 cmocka 合成 kqueue 事件，本适配不复制 stub/FreeBSD 行为；Linux 的 create(0) 返回 EINVAL，半关闭检查 RDHUP，未声称覆盖无效指针和未知 kqueue filter。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-readiness / host-fstack-readiness-reference | test_ff_host_kqueue_ctl_poll / test_ff_host_ioctl_fionbio | Ker-specific poll/select 扩展：同一公共 POSIX 程序在宿主基线和原生内核分别检查 8 个场景，包括监听、混合 pipe/TCP、计数、无效 fd、带外数据、低水位及 EOF。原生连接计数与回收须通过。上游仅为 FF_KERNEL_COEXIST 宿主 readiness/FIONBIO 桥接，本批不声称上游已有这些 poll/select 测试。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-socket-contracts / host-fstack-socket-contracts-reference | test_ff_host_msg_name_shutdown_bridges / test_ff_host_ioctl_fionbio / test_ff_host_dup | Ker-specific TCP socket 契约扩展：6 个宿主/原生场景覆盖创建与 accept 标志、地址长度截断、socket option 错误恢复、bind 冲突和重复 fd 的 fstat 身份/生命周期。上游仅测试 host bridge，本批以 Linux 语义断言，不复制 FreeBSD 行为。原生 open 与回收计数必须通过。需 KER_WITH_NATIVE_TCP=ON |
 | flow-icmpv4 | test_ff_dpdk_if_send_multiseg | Stateless ICMP quotation parsing extracts the quoted UDP flow key for generic packet steering. Segmentation, truncation, length, options and fragment boundaries preserve input ownership; it creates no connection or send evidence and is not an F-Stack ICMP or NIC/RSS test |
 | fstack-mbuf-release | test_ff_dpdk_pktmbuf_free_basic | 实际 Ker packet pool alloc/free，验证可用对象数恢复 |
 | fstack-clock-monotonic | test_ff_get_tsc_ns_monotonic | Ker CLOCK_MONOTONIC ns，验证非递减，不复制 TSC 算法 |
@@ -118,3 +138,319 @@ EAL 测试初始化，显式检查全部 descriptor、queue 和 pool 回收。DP
 
 该套件是外部场景驱动的补充，既有 Linux 原始代码、DPDK 所有权和失败回滚
 测试继续保留。当前公共网络 capability 仍仅为 checksum。
+
+## poll/select 就绪语义扩展
+
+`host-fstack-readiness-reference` 与 `native-fstack-readiness` 分别运行同一套
+8 个公共 POSIX 场景：监听接入和 accept 后恢复空闲、重复 poll 条目与 select
+多集合计数、宿主 pipe/原生 TCP 混合等待、负数/已关闭 fd、带外数据
+`POLLPRI/exceptfds`、`SO_RCVLOWAT`、缓冲数据后的 EOF、零值/非法 timeout。
+`pselect` 的 timeout 必须保持不变，原生场景必须记录 imported-kernel TCP open
+并回收 packet buffers。数据到达通过有界等待同步，不把 send 返回当作对端已就绪。
+
+这些是受固定 F-Stack host readiness/FIONBIO 桥接场景启发的 Ker 扩展，
+上游没有用这些案例验证 poll/select 或原生 TCP。宿主基线单独列出，不冒充
+用户态栈通过；原生 CTest 另行执行独立宿主对端的 TCP/DPDK 互通和启动失败检查。
+本批不修改协议实现，也不作性能或 io_uring 支持声明。
+
+```sh
+ctest --test-dir build-native-tcp -R '^(host-fstack-readiness-reference|native-fstack-readiness)$' --output-on-failure
+```
+
+## 完整原生 Linux 的 epoll 场景
+
+`native-fstack-epoll` 将固定版本 `tests/unit/test_ff_epoll.c` 的 API 场景迁移为
+真实连接测试，区别于上表中基础库的报文 view 与 adapter 测试。C 程序仅使用公共
+POSIX 接口；先以宿主 Linux 为基线，再由 `ker-run` 在独立原生内核运行。两个后端的
+8 项断言必须分别全部通过，输出也必须相同；不能用基线结果代替原生结果。
+原生运行记录至少 8 次 active/passive open 和 `outstanding=0`。这部分 loopback
+连接不会经过 DPDK；同一测试中的主动/被动 1 MiB 独立宿主对端互通另行验证
+DPDK TX/RX 与原生连接计数。
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-epoll$' --output-on-failure
+```
+
+F-Stack 的原始测试检查 FreeBSD kqueue 转换和 mock 调用；这里检查原始 Linux
+的运行行为。Linux 的 `epoll_create(0)`、半关闭及错误标志按 Linux 语义断言，
+不强行匹配上游 stub 的结果。完整来源、原始文件 SHA-256、具体案例及未覆盖项
+见 [provenance](../tests/fstack-provenance.json) 的 `native-fstack-epoll`。
+
+## TCP socket 契约扩展
+
+`host-fstack-socket-contracts-reference` 和 `native-fstack-socket-contracts`
+分别用同一公共 POSIX 程序运行 6 个场景。检查创建时的 NONBLOCK/CLOEXEC、
+SO_TYPE/DOMAIN/PROTOCOL，普通 accept 不继承监听 fd 的非阻塞/close-on-exec
+标志，而 accept4 按显式参数设置它们。
+
+地址查询用 0 字节和仅够 sa_family 的缓冲区，必须返回完整地址长度且保持尾部
+sentinel 不变；双端 getpeername/getsockname tuple 必须一致。Option 测试覆盖
+KEEPALIVE、NODELAY、KEEPIDLE、错误值/未知 option 以及随后正常 I/O。
+bind 冲突后监听者继续接受连接；F_DUPFD_CLOEXEC 的 alias 必须保留同一 socket
+inode，关闭原 fd 后仍可传输，并验证 dup2/dup3 同号参数的不同规则。
+
+这些是固定 F-Stack host bridge 场景的 Ker 扩展，预期结果依据 Linux 契约，
+不声称上游案例或 FreeBSD 已有相同覆盖。局部契约用 loopback 检查，原生 CTest
+另行执行既有独立宿主 TCP/DPDK 互通、原生计数、回收和启动失败检查。
+
+```sh
+ctest --test-dir build-native-tcp -R '^(host-fstack-socket-contracts-reference|native-fstack-socket-contracts)$' --output-on-failure
+```
+
+## Message/vector I/O 与描述符桥接
+
+`native-fstack-message-io` 迁移固定版本 `test_ff_host_interface.c` 中
+`FF_KERNEL_COEXIST` 下的五个宿主桥接测试，并加入 Ker 兼容性边界检查。
+6 个场景仅调用普通 POSIX API，分别在宿主 Linux 和 Ker 原生 Linux 上执行，
+比较结果并检查至少 6 次原生 active/passive open。AF_UNIX socketpair 的
+vector roundtrip 明确验证宿主透传，不计作原生 TCP 覆盖。
+
+覆盖 `sendmsg/recvmsg`、`readv/writev`、四个端点地址查询、半关闭后反向发送，
+以及 `FIONBIO/FIONREAD`、`MSG_PEEK/MSG_DONTWAIT`、dup 共享的 `O_NONBLOCK`、
+独立的 `FD_CLOEXEC` 和 host/native 双向 `dup2` 替换。Vector 接收循环允许合法
+TCP 短读；message 接收的小缓冲区必须保留后续流数据，不能按 datagram 截断。
+这些附加检查是 Ker 扩展，不冒充上游原始用例。
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-message-io$' --output-on-failure
+```
+
+这些局部连接使用 loopback，不经过 DPDK；同一 CTest 另行执行现有的独立
+宿主对端双向 TCP/DPDK 互通，并验证 TX/RX、原生连接计数和 mbuf 回收。
+本批未增加 ancillary data、IPv6、零拷贝、fork 或 io_uring 支持。
+
+## 独立宿主对端的 message/vector stream I/O
+
+`native-fstack-stream-io` 将消息/vector 桥接场景推进到真实 DPDK `net_tap`、
+veth 和独立宿主 Linux TCP 对端。原生客户端和服务端各运行三种模式：
+`writev/readv`、`sendmsg/recvmsg`、`sendmmsg/recvmmsg`，共六种组合。
+每方向以不同 seed 校验 256 KiB + 13 字节，使用小发送缓存和非阻塞 socket，
+处理短进度、EAGAIN、半关闭及 EOF；输出实际 short/retry 计数，不把次数固定为
+调度或性能要求。TCP batch 不保证消息边界，接收按实际 msg_len 重组字节流。
+
+客户端和服务端都必须报告校验成功；每个原生实例独立断言对应 active/passive
+open、DPDK TX/RX 非零和 `outstanding=0`。这区别于已有
+`native-fstack-message-io` 的局部 loopback 场景，不能用宿主桥接成功替代原生结果。
+固定上游来源仍为小型 host-only message/vector 桥接；batch 与大流量独立对端
+属于 Ker 扩展，不声称 F-Stack 原始案例已有相同覆盖。
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-stream-io$' --output-on-failure
+```
+
+## 原生 UDP socket 的独立对端验证
+
+`native-fstack-udp-interop` 使用完整导入内核的 UDP，验证现有 POSIX 转换层的
+UDP socket 路径，区别于基础库的 UDP packet view/constructor 测试。固定上游
+checksum 场景仅提供 UDP 动机；额外记录的 UDP/epoll 示例也不是自动化验收，
+不能将它等同于本批测试覆盖。
+
+验收分为 sendto/recvfrom、sendmsg/recvmsg、sendmmsg/recvmmsg 三种模式，
+每种交换原生客户端/服务端角色，并要求独立宿主 Linux 对端参与。零长度报文
+必须接收并回复，随后同一 socket 继续处理非空报文。原生计数来自 Linux 的
+`/proc/net/snmp`，不能用宿主 socket 或 DPDK 包计数代替原生 UDP 收发证据。
+Batch 模式仅在客户端逐个验证四个回复后，才经本地控制管道释放服务端；因此
+此用例不覆盖应用退出时 native Linux 尚未交给设备的 UDP 输出排空语义。
+详细断言与边界见 [UDP 验证说明](native-udp-validation.md)。
+
+原生启动与设备集成：`ctest --test-dir build -R '^native-fstack-startup-lifecycle$' --output-on-failure`。
+使用真实 DPDK/net_tap 和原始 Linux，检查启动诊断、接口地址/状态/MTU、双角色流量、清理及启动失败不执行应用。
+F-Stack run/stop 回调 ABI 和自然内核内部故障仍未覆盖；初始化/启动/接口错误注入见 startup-failures。
+
+宿主失败路径：`ctest --test-dir build -R '^native-fstack-host-(failure-.*|runtime)$' --output-on-failure`。
+同一时钟/panic 适配器分别以断言开启和 `NDEBUG` 编译，真实时钟正常前进；注入时钟失败及 panic 均须 SIGABRT。
+原生内核启动/关闭测试确认使用安装后的实际时钟回调，上游源码保持不变。
+
+空 UDP 可读性：`ctest --test-dir build -R '^native-fstack-(epoll|udp-interop)$' --output-on-failure`。
+前者对照宿主/原生内核，覆盖 IPv4/IPv6 回环、LT/ET/ONESHOT 和三种 wait 接口；
+后者通过独立 IPv4 宿主验证包含空报文的流量均无 HUP/EOF。
+
+Jumbo MTU：`ctest --test-dir build -R '^native-fstack-(jumbo-mtu|launcher-config|startup-lifecycle)$' --output-on-failure`。
+配置 `--mtu 9000` 或 `[network] mtu=9000`，对端及所有中间链路也需配置为 9000。
+测试通过实际双向 9014 字节以太网抓包验证 jumbo 收发，保持原始内核协议实现。
+
+TCP ECN：`ctest --test-dir build -R '^native-fstack-(tcp-ecn|launcher-config)$' --output-on-failure`。
+`--tcp-ecn off|passive|on` 或 `[network] tcp_ecn` 控制私有原生内核；未配置保留 Linux 默认策略。
+测试比较实际宿主握手、TCP_INFO 及 SYN/SYN-ACK 抓包，CE 拥塞响应与外部 IPv6 ECN 尚未覆盖。
+
+`native-fstack-fd-map` 对应 `test_ff_native_fd_map`，使用真实 Linux socket 和实际 Ker fd 表验证映射生命周期、固定位置替换、引用及边界。无需网络设备，需 `KER_WITH_NATIVE_TCP=ON`。
+`native-fstack-errno` 对应 `test_ff_os_errno_mapping`，覆盖 81 项 Linux/LKL 到宿主 errno 的符号映射、未知错误及成功值，使用生产转换函数和真实内核调用。需 `KER_WITH_NATIVE_TCP=ON`。
+
+`native-fstack-lcore-mask` 对应六个 lcore mask 源场景，结合 `native-fstack-launcher-config` 验证提前拒绝、CLI 优先级及真实 EAL 选核。
+INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_count、main_lcore、main_cpu 和资源回收；需要两个可用且 ID 小于 128 的 CPU。
+
+`native-fstack-worker-traffic` 对应 `test_ff_get_traffic_zero_init` 和 `test_ff_dpdk_stop_smoke`。
+在私有 namespace 中通过实际 net_tap/AF_PACKET 验证空闲零统计、双向精确帧/字节计数、非法 TX 长度方向计数、重复停止和 mbuf 回收。
+测试用 SIGSTOP/SIGCONT 作为排程屏障，在 worker 读取前写入两个控制字节并关闭管道；实际停止仍由控制通道和 EOF 驱动。
+
+`native-fstack-entropy` 对应 `test_ff_arc4rand_buf_filled` 和 `test_ff_arc4random_distribution`。
+直接运行真实 Linux RNG，覆盖宿主熵注入、非阻塞读取、失败和短读/EINTR、重复种子注入及私有临时节点清理；需 `KER_WITH_NATIVE_TCP=ON`。
+
+`native-fstack-realtime` 对应 `test_ff_clock_gettime_realtime`，使用真实 Linux 校验启动同步的 epoch、纳秒、前进和单调时钟隔离，并注入宿主/原生错误验证失败传播与恢复。
+
+`native-fstack-worker-clock` 对应 `test_ff_get_tsc_ns_basic` 的单调纳秒场景，测试实际 worker 适配器的真实时钟前进、换算边界和失败传播。
+`native-fstack-worker-clock-interop` 在真实 DPDK net_tap worker READY 后注入一次 EIO，检查失败退出及 mbuf/EAL 清理；不改变协议定时器，不声称 TSC API 等价。
+
+`native-fstack-startup-failures` 验证正常启动、原生 realtime EIO、原始 Linux 网关拒绝和 worker ethdev 查找失败。
+所有失败均需返回 125、阻止应用 main、回收 worker mbuf 并完成真实 EAL cleanup。
+测试专用链接库包装 LKL init、netdev add、kernel start 和 if up，分别注入 EIO，
+以精确阶段记录验证真实前置调用、失败位置以及后续阶段未执行；
+成功控制调用真实激活函数，生产库无 hook。这不是自然硬件故障或完整 F-Stack ABI 等价。
+
+`native-fstack-packet-device` 对应设备上下文创建/释放两个源场景，连接生产 packet-device 回调，检查真实 fd/eventfd 生命周期、内存失败回滚、scatter/gather、背压、截断及停止唤醒。
+不依赖 DPDK 设备或运行内核；需原生构建提供的 LKL 头文件，以及可读取自身线程 syscall 状态的 Linux `/proc`。
+
+`native-fstack-vip-addresses` 验证真实主地址/VIP 安装、掩码、未配置地址拒绝、三个目的地址入站 TCP 和两个 VIP 源地址出站 TCP。
+结合 `native-fstack-launcher-config` 验证 `[network] vip_addresses`、重复 `--vip-address`、CLI 替换、32 项上限及非法输入在启动前返回 2。
+
+`native-fstack-launcher-config` 验证独立 `max_mtu`、相等边界、9000/2000 拒绝和 CLI 覆盖。
+`native-fstack-jumbo-mtu` 先验证低上限在启动前拒绝，再覆盖到 9000 执行真实 jumbo TCP/UDP、DF 和抓包检查，补齐 `test_mtu_port_over_max_fails`。
+
+
+`native-fstack-ipv6-vip` 将固定 IPv6 fixture 的 VIP 功能需求适配为同一原生 Linux
+接口上的多地址配置。五次真实 net_tap 启动验证 INI、CLI 替换、省略/继承值清理、
+32 个 VIP 上限，以及由 Linux DAD 拒绝宿主已占用 VIP。
+主地址和两个 /128 VIP 均验证双向 TCP/UDP、显式源地址、宿主 NDP、内核计数及 mbuf 清理。
+`test_ff_load_config_inet6_fixture_ignored` 仍 blocked，因为其 INET6-disabled 语义与此不同；
+不增加 adapted/partial 计数。IPv6 VLAN 另见后续测试；RA/SLAAC 和独立 FreeBSD VIP 接口仍未迁移。
+
+
+`native-fstack-ipv6-vlan` 以真实 original Linux VLAN 100/200 和独立宿主 peer 验证
+双向 IPv6 TCP/UDP、VLAN VIP、混合 IPv4、设备绑定与 IPv6 packet metadata。
+INI/large、CLI/scatter、16×8 地址上限和重复地址拒绝共四次原生启动，
+含完整帧、标签、UDP checksum、NDP、原始内核计数及 mbuf 清理证据。
+错误 VLAN/untagged UDP 先通过 worker RX，再以实际 socket 收包验证未被交付。
+固定 `test_ff_load_config_inet6_fixture_ignored` 仍 blocked，不增加迁移通过计数。
+
+
+`native-fstack-thread-runtime` 的 TLS 失败路径扩展使用实际 Ker 回调，分别在默认、
+DEBUG 和 NDEBUG 构建中验证 key 创建的 EAGAIN/ENOMEM、设置的 ENOMEM，
+以及删除失败时的显式终止。创建失败需回收包装对象并允许下一次真实创建；
+设置失败需保留空槽或旧值，之后真实替换、清空及删除仍成功。
+删除失败由链接包装器注入，不向 pthread 传递失效 key；void 回调不能报告错误，
+因此必须中止，不能把仍注册的 key 当作已释放。故障仅作用于测试调用线程，
+原始 Linux 启停和实际 TCP/UDP 回归在故障关闭时执行。
+这是线程适配层的 Ker 扩展，不改变上游源案例迁移计数或 FreeBSD 上下文边界。
+
+
+宿主定时器适配由 Ker 持有 opaque timer_t 包装对象，保留 pinned LKL 的
+相对 CLOCK_REALTIME/SIGEV_THREAD 行为和原始 Linux clock-event 实现。
+分配或 timer_create 失败返回 NULL，保留 errno 并完整回收存储；
+timer_settime 失败直接返回错误；void timer_free 无法报告删除失败，因此明确
+abort，不能静默释放仍有效的 handle。0 纳秒解除定时，interval 始终为0。
+
+`native-fstack-host-timer-debug/release` 使用真实 POSIX timer 验证失败恢复、
+秒/纳秒换算、通过 timer_gettime 检查解除定时，以及把100秒期限重新设为1纳秒后的真实单次回调。
+删除失败的子进程在父进程创建任何线程或 timer 之前 fork；成功路径不模拟。
+原始 Linux 必须实际分配、设定、触发和释放这些 timer，并唤醒一次带超时 poll。
+另以实际 DPDK TCP/UDP 和启动生命周期做回归。固定 F-Stack clock 案例仅为来源
+动机，本批是 Ker 适配扩展，不增加迁移来源案例数，也不修改上游源码。
+不宣称 timer_delete 等待已经执行中的 SIGEV_THREAD 回调结束；墙钟调整、周期
+定时器、回调静止保证、精确延迟和性能仍未验证。
+
+宿主页内存扩展：`native-fstack-host-pages-debug/release` 在现有 host-interface
+映射场景上覆盖分配失败恢复、固定地址回退清理与 page_free 失败边界；
+成功操作始终执行真实 mmap/munmap，失败的 void 释放回调明确终止。
+两项扩展不增加来源案例计数，具体边界见 native-tcp.md。
+
+宿主线程栈扩展：现有 `native-fstack-thread-runtime` 三种构建变体验证主/子
+线程真实栈范围、可选 size、查询失败后的属性清理和恢复。它是现有线程场景的
+Ker 扩展，不增加来源案例计数，也不宣称已运行 KASAN 内核。
+
+INI 重复键：`native-fstack-config-lifecycle` 与
+`native-fstack-launcher-config-interop` 共同适配
+`test_ff_load_config_repeat_keys_no_leak`；最终值生效、CLI 优先、重复加载隔离，
+并验证真实 DPDK/Linux 的最终地址与 EAL 参数。该来源项从 blocked 转为
+scenario-adapted（126 adapted、224 blocked、20 partial）。
+
+描述符共存：`native-fstack-fd-map` 进一步覆盖相同内部 fd 数值的宿主 UDP/
+原生 Linux TCP 对象、Ker export/lookup 往返和两种关闭顺序；使用真实
+宿主 socket、原生 socket 和 fd 预留，来源 `test_ff_kernel_fd_encode_roundtrip`
+按映射表架构适配，固定偏移编码 ABI 不在覆盖范围。清单为 127 adapted、
+223 blocked、20 partial。
+
+TCP_CORK/MSG_MORE 扩展：`native-fstack-tcp-cork` 验证双向暂缓、dup 共享选项、
+解除后的完整字节流与普通写入恢复；宿主参考及原生两种角色均运行。
+这是已有 socket/dup 场景的 Linux 功能扩展，不增加已迁移来源案例数。
+
+TCP MSS 扩展：`native-fstack-tcp-mss` 验证连接前 TCP_MAXSEG、监听继承、
+错误后恢复和双向完整字节流；实际抓包检查握手 MSS 与原生发送分段上限。
+来源案例数不变，剩余仍为 223 blocked + 20 partial。
+
+INI 长键名：`native-fstack-launcher-config` 与 `native-fstack-network-sysctl`
+适配 `test_ini_parse_stream_long_key_name` 的完整名称保留，覆盖 60 字符、
+128/129 字符边界、重复/CLI 顺序及真实内核未知键失败后的回收。清单更新为
+128 adapted、222 blocked、20 partial，剩余 242 项。
+
+
+TCP keepalive 扩展：`native-fstack-tcp-keepalive` 检查选项共享与监听继承、
+无效参数恢复，并通过原生发送抓包验证空闲探测及后续收发。它扩展已有 socket
+迁移场景，不增加源案例迁移数；当前仍有 222 个 blocked、20 个 partial。
+
+
+SO_PEEK_OFF 扩展：`native-fstack-tcp-peek-offset` 探测宿主支持，仅在宿主明确返回
+`EOPNOTSUPP`/`ENOPROTOOPT` 时跳过宿主参考；原生客户端和服务器的游标断言始终必跑，
+宿主对端仍验证普通 peek、精确字节和 EOF。测试验证偏移预览、dup 共享游标、
+消费后的回退、重置和完整字节流恢复。这是已有 socket 场景的 Linux 扩展，
+未新增源案例迁移数；仍有 222 个 blocked、20 个 partial。
+
+
+IPv4 TCP TOS/TTL 扩展：`native-fstack-tcp-ip-options` 将监听继承、dup 共享、
+错误恢复和连接后更新与原生发送抓包关联验证。这扩展已有 socket 场景，
+不增加源案例迁移数；仍有 222 个 blocked、20 个 partial。
+
+
+TCP_USER_TIMEOUT 扩展：`native-fstack-tcp-user-timeout` 以独立宿主对端形成
+真实零窗口，验证原生探测、超时错误及描述符清理。它扩展已有 socket 迁移场景，
+不增加源案例迁移数；仍有 222 个 blocked、20 个 partial。
+
+
+TCP_NOTSENT_LOWAT 扩展：`native-fstack-tcp-notsent-lowat` 验证非阻塞发送背压、
+阈值单独改变导致的可写状态切换，以及对端恢复读取后的完整传输。
+本项扩展已有 socket 场景，源案例仍有 222 个 blocked、20 个 partial。
+
+
+延迟端口绑定扩展：`native-fstack-bind-address-no-port` 以真实单端口范围验证
+地址绑定与端口保留的区别，以及三个不同目的连接的源端口共享。该项扩展已迁移
+socket 场景，不等价于 F-Stack RSS 端口表；仍有 222 个 blocked、20 个 partial。
+
+
+TCP_WINDOW_CLAMP 扩展：`native-fstack-tcp-window-clamp` 将共享选项和初始窗口
+限制关联到实际原生握手抓包，并验证超过初始窗口大小的双向流。原版 Linux 在
+数据阶段可重算 clamp，测试不声明永久窗口上限。此项扩展已有 socket 场景，
+源案例仍有 222 个 blocked、20 个 partial。
+
+
+TCP_LINGER2 扩展：`native-fstack-tcp-linger2` 检查真实 FIN_WAIT2、保留别名的
+接收能力及最后关闭后的 RST/CLOSE_WAIT 错误，协议行为均来自原版 Linux。
+本项扩展已有 socket 场景，源案例仍有 222 个 blocked、20 个 partial。
+
+
+TCP_CONGESTION 扩展：`native-fstack-tcp-congestion` 验证 Reno 选择、监听继承、
+错误恢复以及连接中恢复 CUBIC 后的真实流量，不增加 Ker 自有拥塞控制逻辑。
+本项扩展已有 socket 场景，源案例仍有 222 个 blocked、20 个 partial。
+
+
+配置分配失败：`native-fstack-launcher-config` 在测试专用子进程中分别使实际接口、
+vdev、bond 配置 builder 的一次 dict 分配抛出 MemoryError，验证真实 CLI
+返回2且没有 worker/应用动作，随后相同输入的无故障加载恢复成功。成功解析和
+分配不做模拟；bond 恢复仅使用测试子进程提供的 `--dpdk-limits` JSON 合同。
+`native-fstack-launcher-config-interop` 另行使用实际 worker 和原版 Linux TCP。
+不覆盖 C calloc ABI 或整个宿主进程的持续内存耗尽。
+
+
+配置数组 OOM 扩展：同一配置 CTest 分别在真实 VLAN 记录 BUILD_LIST、CLI
+VLAN 地址数组、INI/CLI 合并后 RX 核列表分配处注入失败，检查拒绝及真实恢复。
+CPython opcode trace 只存在于测试子进程。仅 VLAN 记录对应一条新增源场景；
+RX owner 列表不等于 F-Stack 全局 proc_lcore 表，不计入该源用例迁移。
+
+
+宿主/native 共存：`host-fstack-socket-contracts-reference` 验证同内核 UDP
+元组冲突；`native-fstack-socket-contracts` 的 `--fd-coexistence` 验证两个
+内核同元组 UDP 独立流量、混合 epoll 完整64位标签、双关闭顺序与精确 native
+UDP 计数。见 [共存合同及四条尚未迁移的配置断言](stack-coexistence.md)。
+
+
+进程模式：`native-fstack-eal-file-prefix` 还验证主/附加接口显式 secondary
+在 worker exec 前拒绝，已有 primary 存活并完成 TCP/UDP，auto 实际选择 primary
+及 CLI primary 覆盖旧 INI secondary。见[六项仍未完成的源进程合同](process-modes.md)。

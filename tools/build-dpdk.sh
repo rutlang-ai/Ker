@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ker_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-ker_dpdk_source="$ker_root/third_party/dpdk"
+ker_dpdk_source="${KER_DPDK_SOURCE_DIR:-$ker_root/third_party/dpdk}"
 ker_dpdk_build="${KER_DPDK_BUILD_DIR:-$ker_dpdk_source/build}"
 ker_dpdk_prefix="${KER_DPDK_PREFIX:-$ker_dpdk_source/install}"
 if [[ ! -f "$ker_dpdk_source/meson.build" ]]; then
@@ -14,12 +14,12 @@ if [[ -f "$ker_dpdk_build/meson-private/coredata.dat" ]]; then
 fi
 meson setup "${ker_meson_options[@]}" "$ker_dpdk_build" "$ker_dpdk_source" \
     --prefix "$ker_dpdk_prefix" --libdir lib64 \
-    -Denable_libs=eal,ring,mempool,mbuf,ethdev \
+    "-Denable_libs=${KER_DPDK_LIBS:-eal,ring,mempool,mbuf,ethdev}" \
     "-Denable_drivers=${KER_DPDK_DRIVERS:-mempool/ring,net/ring}" \
     -Ddisable_apps='*' -Dtests=false -Dplatform=generic
 meson compile -C "$ker_dpdk_build" -j "${KER_DPDK_JOBS:-4}"
 meson install -C "$ker_dpdk_build" --no-rebuild
-if [[ "$ker_dpdk_prefix" == "$ker_dpdk_source/install" ]]; then
+if [[ "$ker_dpdk_source" == "$ker_root/third_party/dpdk" && "$ker_dpdk_prefix" == "$ker_dpdk_source/install" ]]; then
     ker_dpdk_gitdir=$(git -C "$ker_dpdk_source" rev-parse --absolute-git-dir)
     if ! git -C "$ker_dpdk_source" check-ignore -q install/; then
         printf '\n# ker local DPDK installation\n/install/\n' >> "$ker_dpdk_gitdir/info/exclude"

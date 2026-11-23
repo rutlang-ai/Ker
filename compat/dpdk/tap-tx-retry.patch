@@ -1,0 +1,140 @@
+--- a/drivers/net/tap/rte_eth_tap.c
++++ b/drivers/net/tap/rte_eth_tap.c
+@@ -2,6 +2,7 @@
+  * Copyright(c) 2016-2017 Intel Corporation
+  */
+ 
++#include <eal_export.h>
+ #include <rte_atomic.h>
+ #include <rte_branch_prediction.h>
+ #include <rte_byteorder.h>
+@@ -42,6 +43,17 @@
+ #include <tap_flow.h>
+ #include <tap_netlink.h>
+ #include <tap_tcmsgs.h>
++
++/* Ker compatibility ABI: rejected offload mbufs retain caller ownership. */
++static const struct eth_dev_ops ops;
++RTE_EXPORT_SYMBOL(ker_dpdk_tap_tx_retry_abi)
++int ker_dpdk_tap_tx_retry_abi(uint16_t port);
++int
++ker_dpdk_tap_tx_retry_abi(uint16_t port)
++{
++	return rte_eth_dev_is_valid_port(port) &&
++		rte_eth_devices[port].dev_ops == &ops ? 1 : 0;
++}
+ 
+ /* Linux based path to the TUN device */
+ #define TUN_TAP_DEV_PATH        "/dev/net/tun"
+@@ -588,6 +600,7 @@
+ 
+ 	for (i = 0; i < num_mbufs; i++) {
+ 		struct rte_mbuf *mbuf = pmbufs[i];
++		struct rte_mbuf *checksum_copy = NULL;
+ 		struct tun_pi pi = { .flags = 0, .proto = 0x00 };
+ 		struct rte_mbuf *seg = mbuf;
+ 		uint64_t l4_ol_flags;
+@@ -642,16 +655,15 @@
+ 			if (rte_pktmbuf_data_len(mbuf) < hdrlens)
+ 				return -1;
+ 
+-			/* To change checksums (considering that a mbuf can be
+-			 * indirect, for example), copy l2, l3 and l4 headers
+-			 * in a new segment and chain it to existing data
++			/* Keep the caller's complete chain and checksum seeds intact
++			 * on every rejection. A private full copy also works for GSO
++			 * indirect segments, without transferring their ownership.
+ 			 */
+-			seg = rte_pktmbuf_copy(mbuf, mbuf->pool, 0, hdrlens);
+-			if (seg == NULL)
++			checksum_copy = rte_pktmbuf_copy(mbuf, mbuf->pool, 0,
++					UINT32_MAX);
++			if (checksum_copy == NULL)
+ 				return -1;
+-			rte_pktmbuf_adj(mbuf, hdrlens);
+-			rte_pktmbuf_chain(seg, mbuf);
+-			pmbufs[i] = mbuf = seg;
++			mbuf = seg = checksum_copy;
+ 
+ 			l3_hdr = rte_pktmbuf_mtod_offset(mbuf, void *, mbuf->l2_len);
+ 			if (mbuf->ol_flags & RTE_MBUF_F_TX_IP_CKSUM) {
+@@ -690,8 +702,10 @@
+ 
+ skip_l4_cksum:
+ 		/* tun_pi header + packet segments must fit in iovecs */
+-		if (unlikely(mbuf->nb_segs > TAP_MAX_TX_SEGS))
++		if (unlikely(mbuf->nb_segs > TAP_MAX_TX_SEGS)) {
++			rte_pktmbuf_free(checksum_copy);
+ 			return -1;
++		}
+ 
+ 		for (j = 0; j < mbuf->nb_segs; j++) {
+ 			iovecs[k].iov_len = rte_pktmbuf_data_len(seg);
+@@ -702,11 +716,12 @@
+ 
+ 		/* copy the tx frame data */
+ 		n = writev(process_private->fds[txq->queue_id], iovecs, k);
++		rte_pktmbuf_free(checksum_copy);
+ 		if (n <= 0)
+ 			return -1;
+ 
+ 		(*num_packets)++;
+-		(*num_tx_bytes) += rte_pktmbuf_pkt_len(mbuf);
++		(*num_tx_bytes) += rte_pktmbuf_pkt_len(pmbufs[i]);
+ 	}
+ 	return 0;
+ }
+@@ -737,13 +752,11 @@
+ 		int num_tso_mbufs;
+ 		uint16_t hdrs_len;
+ 		uint64_t tso;
++		uint64_t caller_flags = mbuf_in->ol_flags;
+ 
+ 		tso = mbuf_in->ol_flags & RTE_MBUF_F_TX_TCP_SEG;
+ 		if (tso) {
+ 			struct rte_gso_ctx *gso_ctx = &txq->gso_ctx;
+-
+-			/* TCP segmentation implies TCP checksum offload */
+-			mbuf_in->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
+ 
+ 			/* gso size is calculated without RTE_ETHER_CRC_LEN */
+ 			hdrs_len = mbuf_in->l2_len + mbuf_in->l3_len +
+@@ -755,15 +768,18 @@
+ 				break;
+ 			}
+ 			gso_ctx->gso_size = tso_segsz;
++			/* TCP segmentation implies TCP checksum offload. */
++			mbuf_in->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
+ 			/* 'mbuf_in' packet to segment */
+ 			num_tso_mbufs = rte_gso_segment(mbuf_in,
+ 				gso_ctx, /* gso control block */
+ 				(struct rte_mbuf **)&gso_mbufs, /* out mbufs */
+ 				RTE_DIM(gso_mbufs)); /* max tso mbufs */
+-
+ 			/* ret contains the number of new created mbufs */
+-			if (num_tso_mbufs < 0)
++			if (num_tso_mbufs < 0) {
++				mbuf_in->ol_flags = caller_flags;
+ 				break;
++			}
+ 
+ 			if (num_tso_mbufs >= 1) {
+ 				mbuf = gso_mbufs;
+@@ -789,6 +805,8 @@
+ 		ret = tap_write_mbufs(txq, num_mbufs, mbuf,
+ 				&num_packets, &num_tx_bytes);
+ 		if (ret == -1) {
++			/* GSO may have cleared TCP_SEG before the write failed. */
++			mbuf_in->ol_flags = caller_flags;
+ 			txq->stats.errors++;
+ 			/* free tso mbufs */
+ 			if (num_tso_mbufs > 0)
+@@ -797,7 +815,7 @@
+ 		}
+ 		num_tx++;
+ 		if (num_tso_mbufs == 0) {
+-			/* tap_write_mbufs may prepend a segment to mbuf_in */
++			/* tap_write_mbufs leaves caller chains unchanged. */
+ 			rte_pktmbuf_free(mbuf[0]);
+ 		} else {
+ 			/* free original mbuf */
