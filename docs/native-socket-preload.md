@@ -8,6 +8,15 @@ host epoll descriptors. The preload library links to `ker::socket-client`,
 not `libker-posix` or LKL. The broker remains the only process that loads and
 runs the original Linux networking stack.
 
+The private runtime-service lease client verifies the directly launched
+supervisor executable with OpenSSL EVP. Native builds therefore require the
+OpenSSL Crypto development package (`libssl-dev` on Debian/Ubuntu), and the
+preload library has a private runtime dependency on the matching Crypto shared
+library (`libcrypto.so.3` on the supported Ubuntu build). OpenSSL types are not
+part of the installed SDK ABI. This lease client is a private runtime building
+block; it does not itself enable the upstream Nginx F-Stack module or graceful
+reload profile.
+
 The current profile supports `AF_INET` and `AF_INET6` `SOCK_STREAM` sockets,
 socket setup and naming calls, `accept4`, `shutdown`, the documented broker
 socket options, scalar and vectored read/write, `send`/`recv`, and mixed

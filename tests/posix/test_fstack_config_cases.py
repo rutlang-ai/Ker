@@ -37,6 +37,21 @@ def cfg(case):
 
 
 class SourceCases(unittest.TestCase):
+    def test_dynamic_import_finds_launcher_sibling_from_unrelated_directory(self):
+        script = (
+            "import importlib.util, pathlib, sys, types; "
+            "sys.modules['rx_decision_wire']=types.SimpleNamespace(MAGIC=0); "
+            f"source=pathlib.Path({str(SOURCE)!r}); "
+            "spec=importlib.util.spec_from_file_location('ker_run_external', source); "
+            "module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+            "assert module.rx_decision_wire.MAGIC == 0x4b525844; "
+            "assert pathlib.Path(module.rx_decision_wire.__file__).resolve() == source.with_name('rx_decision_wire.py')"
+        )
+        with tempfile.TemporaryDirectory(prefix='ker-run-import-cwd-') as cwd:
+            result = subprocess.run([sys.executable, '-I', '-c', script], cwd=cwd,
+                text=True, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix='ker-config-case-')
         self.addCleanup(directory.cleanup)

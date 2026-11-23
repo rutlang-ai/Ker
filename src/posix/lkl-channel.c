@@ -16,6 +16,9 @@
 #include "packet-device.h"
 #include "mtu-control.h"
 #include "extra-interfaces.h"
+#include "ff-admission-task.h"
+#include "ff-ingress-controller.h"
+#include "rx-decision-consumer.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -47,6 +50,28 @@ static struct lkl_netdev *device;
 static int startup_fd = -1;
 static unsigned int drain_timeout = 5000;
 static char release[65];
+enum native_finalize_state {
+    NATIVE_FINALIZE_LIVE,
+    NATIVE_FINALIZE_PREPARING,
+    NATIVE_FINALIZE_PREPARED,
+    NATIVE_FINALIZE_FINISHING,
+    NATIVE_FINALIZE_FINISHED
+};
+static pthread_mutex_t finalize_lock = PTHREAD_MUTEX_INITIALIZER;
+static enum native_finalize_state finalize_state = NATIVE_FINALIZE_LIVE;
+static int finalize_result;
+static ker_native_drain_progress_fn finalize_progress;
+static void *finalize_progress_context;
+static bool finalize_cleanup_thread_created;
+static pthread_t finalize_cleanup_thread;
+static pthread_t finalize_progress_owner;
+static bool finalize_prepare_active;
+static pthread_mutex_t finalize_cleanup_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t finalize_cleanup_changed = PTHREAD_COND_INITIALIZER;
+static bool finalize_cleanup_started;
+static bool finalize_cleanup_done;
+static int finalize_cleanup_stdio_error;
+static int finalize_cleanup_progress_error;
 uint64_t ker_posix_capabilities(void)
 {
     return ker_native_ready() ? KER_CAP_DPDK_IO | KER_CAP_LINUX_STACK | KER_CAP_IPV4 | KER_CAP_TCP : 0;
@@ -318,17 +343,204 @@ __attribute__((constructor)) static void initialize(void)
         fail("startup acknowledgement", -EIO);
 
 }
-int ker_native_finalize(void)
+static void *finalize_cleanup_worker(void *unused)
 {
-    if (!atomic_exchange_explicit(&ready, false, memory_order_acq_rel)) return 0;
+    (void)unused;
+    pthread_mutex_lock(&finalize_cleanup_lock);
+    while (!finalize_cleanup_started)
+        pthread_cond_wait(&finalize_cleanup_changed, &finalize_cleanup_lock);
+    pthread_mutex_unlock(&finalize_cleanup_lock);
+
+    /* These original operations may wait inside Linux (notably positive
+     * SO_LINGER close). Keep them off the decision-owner thread so its only
+     * work while they run is bounded RX-decision progress. */
     ker_member_census_runtime_shutdown();
     int stdio_error = ker_native_stdio_shutdown();
     ker_fd_close_all();
-    int drained = ker_native_drain(drain_timeout);
+
+    pthread_mutex_lock(&finalize_cleanup_lock);
+    finalize_cleanup_stdio_error = stdio_error;
+    finalize_cleanup_done = true;
+    pthread_cond_broadcast(&finalize_cleanup_changed);
+    pthread_mutex_unlock(&finalize_cleanup_lock);
+    return NULL;
+}
+
+int ker_native_finalize_prepare(ker_native_drain_progress_fn progress,
+    void *context, int *drain_result)
+{
+    if (!drain_result) return -EINVAL;
+    *drain_result = 0;
+    bool resume_cleanup = false;
+    pthread_mutex_lock(&finalize_lock);
+    if (finalize_state == NATIVE_FINALIZE_PREPARED ||
+        finalize_state == NATIVE_FINALIZE_FINISHED) {
+        *drain_result = finalize_result;
+        pthread_mutex_unlock(&finalize_lock);
+        return 0;
+    }
+    if (finalize_state == NATIVE_FINALIZE_PREPARING) {
+        if (!finalize_cleanup_thread_created || progress != finalize_progress ||
+            context != finalize_progress_context ||
+            !pthread_equal(pthread_self(), finalize_progress_owner) ||
+            finalize_prepare_active) {
+            pthread_mutex_unlock(&finalize_lock);
+            return -EBUSY;
+        }
+        finalize_prepare_active = true;
+        resume_cleanup = true;
+    } else if (finalize_state != NATIVE_FINALIZE_LIVE) {
+        pthread_mutex_unlock(&finalize_lock);
+        return -EBUSY;
+    } else if (!ker_native_ready()) {
+        finalize_state = NATIVE_FINALIZE_FINISHED;
+        pthread_mutex_unlock(&finalize_lock);
+        return 0;
+    } else {
+        /* Publish the one-shot phase before touching descriptors. A cleanup-only
+         * retry observes PREPARING and resumes the same helper/callback context. */
+        finalize_state = NATIVE_FINALIZE_PREPARING;
+        finalize_progress = progress;
+        finalize_progress_context = context;
+        finalize_cleanup_progress_error = 0;
+        if (progress) {
+            finalize_progress_owner = pthread_self();
+            finalize_prepare_active = true;
+            pthread_mutex_lock(&finalize_cleanup_lock);
+            finalize_cleanup_started = false;
+            finalize_cleanup_done = false;
+            finalize_cleanup_stdio_error = 0;
+            pthread_mutex_unlock(&finalize_cleanup_lock);
+            int created = pthread_create(&finalize_cleanup_thread, NULL,
+                finalize_cleanup_worker, NULL);
+            if (created) {
+                finalize_state = NATIVE_FINALIZE_LIVE;
+                finalize_progress = NULL;
+                finalize_progress_context = NULL;
+                finalize_prepare_active = false;
+                pthread_mutex_unlock(&finalize_lock);
+                return -created;
+            }
+            finalize_cleanup_thread_created = true;
+        }
+    }
+    pthread_mutex_unlock(&finalize_lock);
+
+    int stdio_error = 0;
+    int drained = 0;
+    if (progress) {
+        if (!resume_cleanup) {
+            /* Close admission before releasing the helper to flush and close. */
+            ker_fd_native_shutdown_begin();
+            pthread_mutex_lock(&finalize_cleanup_lock);
+            finalize_cleanup_started = true;
+            pthread_cond_broadcast(&finalize_cleanup_changed);
+            pthread_mutex_unlock(&finalize_cleanup_lock);
+        }
+        struct timespec deadline;
+        if (clock_gettime(CLOCK_MONOTONIC, &deadline)) {
+            int error = errno;
+            pthread_mutex_lock(&finalize_lock);
+            finalize_prepare_active = false;
+            pthread_mutex_unlock(&finalize_lock);
+            return -error;
+        }
+        deadline.tv_sec += drain_timeout / 1000;
+        deadline.tv_nsec += (long)(drain_timeout % 1000) * 1000000L;
+        if (deadline.tv_nsec >= 1000000000L) {
+            deadline.tv_sec++;
+            deadline.tv_nsec -= 1000000000L;
+        }
+        for (;;) {
+            pthread_mutex_lock(&finalize_cleanup_lock);
+            bool done = finalize_cleanup_done;
+            pthread_mutex_unlock(&finalize_cleanup_lock);
+            if (done) break;
+            int advanced = progress(context);
+            if (advanced && !finalize_cleanup_progress_error)
+                finalize_cleanup_progress_error = advanced;
+            struct timespec now;
+            if (clock_gettime(CLOCK_MONOTONIC, &now)) {
+                int error = errno;
+                pthread_mutex_lock(&finalize_lock);
+                finalize_prepare_active = false;
+                pthread_mutex_unlock(&finalize_lock);
+                return -error;
+            }
+            if (now.tv_sec > deadline.tv_sec ||
+                (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
+                pthread_mutex_lock(&finalize_lock);
+                finalize_prepare_active = false;
+                pthread_mutex_unlock(&finalize_lock);
+                return -EBUSY;
+            }
+            struct timespec delay = {.tv_nsec = 1000000};
+            while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {}
+        }
+        int joined = pthread_join(finalize_cleanup_thread, NULL);
+        if (joined) {
+            pthread_mutex_lock(&finalize_lock);
+            finalize_prepare_active = false;
+            pthread_mutex_unlock(&finalize_lock);
+            return -joined;
+        }
+        pthread_mutex_lock(&finalize_cleanup_lock);
+        stdio_error = finalize_cleanup_stdio_error;
+        pthread_mutex_unlock(&finalize_cleanup_lock);
+        pthread_mutex_lock(&finalize_lock);
+        finalize_cleanup_thread_created = false;
+        pthread_mutex_unlock(&finalize_lock);
+        drained = finalize_cleanup_progress_error;
+        if (!drained)
+            drained = ker_native_drain_with_progress(drain_timeout, progress, context);
+    } else {
+        /* Preserve the legacy synchronous path when no decision owner needs
+         * progress while native cleanup waits. */
+        ker_member_census_runtime_shutdown();
+        ker_fd_native_shutdown_begin();
+        stdio_error = ker_native_stdio_shutdown();
+        ker_fd_close_all();
+        drained = ker_native_drain_with_progress(drain_timeout, NULL, NULL);
+    }
+    int result = drained ? drained : stdio_error;
     if (drained) {
         static const char error[] = "ker: native Linux send queues did not drain before shutdown\n";
         (void)syscall(SYS_write, STDERR_FILENO, error, sizeof(error) - 1);
+    } else if (stdio_error) {
+        static const char error[] = "ker: buffered native stdio could not flush before shutdown\n";
+        (void)syscall(SYS_write, STDERR_FILENO, error, sizeof(error) - 1);
     }
+
+    pthread_mutex_lock(&finalize_lock);
+    finalize_result = result;
+    finalize_state = NATIVE_FINALIZE_PREPARED;
+    finalize_prepare_active = false;
+    *drain_result = finalize_result;
+    pthread_mutex_unlock(&finalize_lock);
+    return 0;
+}
+
+int ker_native_finalize_finish(int *finalize_result_out)
+{
+    if (!finalize_result_out) return -EINVAL;
+    *finalize_result_out = 0;
+    pthread_mutex_lock(&finalize_lock);
+    if (finalize_state == NATIVE_FINALIZE_FINISHED) {
+        *finalize_result_out = finalize_result;
+        pthread_mutex_unlock(&finalize_lock);
+        return 0;
+    }
+    if (finalize_state != NATIVE_FINALIZE_PREPARED) {
+        pthread_mutex_unlock(&finalize_lock);
+        return -EBUSY;
+    }
+    finalize_state = NATIVE_FINALIZE_FINISHING;
+    int drained = finalize_result;
+    pthread_mutex_unlock(&finalize_lock);
+
+    /* Keep the native stack available through the RX progress drain and its
+     * worker settlement. New app operations are rejected from this point. */
+    atomic_store_explicit(&ready, false, memory_order_release);
     static const char stopping[] = "KER_NATIVE_STOPPING\n";
     (void)syscall(SYS_write, startup_fd, stopping, sizeof(stopping) - 1);
     struct ker_native_buffer_counters buffers;
@@ -363,22 +575,42 @@ int ker_native_finalize(void)
             (void)syscall(SYS_write, startup_fd, json, (size_t)length);
     }
     ker_extra_interfaces_remove();
-    lkl_netdev_remove(device->id);
-    lkl_netdev_free(device);
+    if (device) {
+        lkl_netdev_remove(device->id);
+        lkl_netdev_free(device);
+        device = NULL;
+    }
     ker_mtu_control_close_all();
     long halted = lkl_sys_halt();
     lkl_cleanup();
     if (!drained && halted) drained = halted < 0 ? (int)halted : -EIO;
-    if (!drained && stdio_error) {
-        static const char message[] = "ker: buffered native stdio could not flush before shutdown\n";
-        (void)syscall(SYS_write, STDERR_FILENO, message, sizeof(message) - 1);
-        drained = stdio_error;
-    }
     const char *status = drained ? "KER_NATIVE_INCOMPLETE\n" : "KER_NATIVE_DONE\n";
     (void)syscall(SYS_write, startup_fd, status, strlen(status));
     syscall(SYS_close, startup_fd);
     startup_fd = -1;
-    return drained;
+    pthread_mutex_lock(&finalize_lock);
+    finalize_result = drained;
+    finalize_state = NATIVE_FINALIZE_FINISHED;
+    *finalize_result_out = finalize_result;
+    pthread_mutex_unlock(&finalize_lock);
+    return 0;
+}
+
+int ker_native_finalize(void)
+{
+    /* The legacy destructor cannot safely invoke an application callback.
+     * An opted-in consumer must be settled by ker_posix_run first. */
+    if (ker_rx_decision_consumer_registered()) return -EBUSY;
+    int ingress = ker_posix_ff_ingress_controller_prepare_runtime_shutdown();
+    if (ingress) return ingress;
+    ker_ff_admission_task_runtime_shutdown();
+    int prepare_error = 0;
+    int prepared = ker_native_finalize_prepare(NULL, NULL, &prepare_error);
+    if (prepared) return prepared;
+    int finish_error = 0;
+    int finished = ker_native_finalize_finish(&finish_error);
+    if (finished) return finished;
+    return prepare_error ? prepare_error : finish_error;
 }
 __attribute__((destructor)) static void finalize(void)
 {

@@ -337,15 +337,27 @@ int ker_c24_ingress_freeze_test_run(int listener_fd, const char *prefix)
 	}
 	if (expiry_mode) {
 		(void)snprintf(failure_stage, sizeof(failure_stage), "expire-check");
-		while (now_ns() < held.deadline_ns + UINT64_C(10000000))
+		/* The kernel lease starts during the ARM ioctl in queue_start(),
+		 * after the host captures any conservative start timestamp. The held
+		 * packet's host timestamp therefore cannot prove lease expiry. Poll
+		 * the authoritative CHECK result with an independent bound that
+		 * includes setup and scheduling delay. */
+		uint64_t check_deadline = now_ns() + UINT64_C(35000000000);
+		uint64_t check_polls = 0;
+		for (;;) {
+			result = ker_ff_ingress_freeze_queue_check(queue);
+			check_polls++;
+			if (result == -ETIMEDOUT) break;
+			if (result) goto out;
+			uint64_t now = now_ns();
+			if (now >= check_deadline) { result = -ETIMEDOUT; goto out; }
 			sleep_ns(UINT64_C(10000000));
-		result = ker_ff_ingress_freeze_queue_check(queue);
-		if (result != -ETIMEDOUT) { if (!result) result = -EPROTO; goto out; }
+		}
 		result = ker_ff_ingress_freeze_queue_quarantine(&queue);
 		if (result) goto out;
 		(void)snprintf(state, sizeof(state),
-			"mode=expiry first_id=%u deadline_ns=%llu check=ETIMEDOUT quarantine=ok",
-			held.id, (unsigned long long)held.deadline_ns);
+			"mode=expiry first_id=%u kernel_check_polls=%llu check=ETIMEDOUT quarantine=ok",
+			held.id, (unsigned long long)check_polls);
 		result = write_state(evidence_path, state);
 		if (result) goto out;
 		result = write_state(state_path, "EXPIRED_QUARANTINED");

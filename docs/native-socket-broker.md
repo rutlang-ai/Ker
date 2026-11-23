@@ -148,6 +148,35 @@ attempt, preserving member 0 and its selector. These SDK controls do not
 qualify Nginx `graceful_reload=1`, a full F-Stack lifecycle, or a graceful-reload
 FSM.
 
+## Broker-owned ingress cutover
+
+`owner_group_cutover_begin()` creates one opaque coordinator receipt for the
+staged group. Setup is asynchronous: `STARTING` does not mean the ingress gate
+is armed; poll until `PREPARED` before relying on it. The gate has a 30-second
+lease and holds at most 64 matching original SYN packets. While the receipt is
+nonterminal, ordinary group selection is locked out. The broker validates the
+listener and candidate task identities again before changing selection.
+
+After the caller's own readiness policy is satisfied, commit selects member 1
+while the gate is armed, then cuts off further q88 queueing, reconciles the
+exact captured packet IDs and releases each original packet once. The API does
+not create an application readiness barrier. Abort keeps selection on member 0
+and releases captured packets there only after the same exact-ID
+reconciliation succeeds.
+These outcomes apply to one 0-to-1 attempt; replacement candidates and later
+generation cycles are unsupported.
+
+An unconfirmed quarantine or any uncertain post-selection/packet-ACK outcome
+is terminal and must not be treated as a healthy rollback. `QUARANTINING` means
+kernel quarantine is still unconfirmed; `QUARANTINED` means the kernel
+confirmed it. `FAILED` is reserved for setup proven never armed. If shutdown
+cannot confirm quarantine, `ker_posix_run()` returns `EBUSY` with original
+Linux still live. After the condition blocking quarantine is resolved, call
+`ker_posix_run()` again with the identical callback and argument; that
+cleanup-only continuation retries teardown without invoking the callback.
+The coordinator does not qualify Nginx `graceful_reload=1` or establish Nginx
+readiness.
+
 ## Reuseport member census
 
 `ker_socket_client_member_census_create(group, index)` creates a read-only
