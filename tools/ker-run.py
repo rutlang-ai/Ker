@@ -1007,6 +1007,9 @@ def control_nginx_profile(args, *, private_c34_controller=False):
         source_bootstrap_required or source_shell_profile or private_c34_profile)
     if not requested:
         return None
+    if source_bootstrap_required and not private_c34_profile:
+        raise ValueError('Nginx source bootstrap requires the private C34 controller '
+            'to bind the pinned master before startup')
     if (not args.broker_readiness or not args.runtime_service or
             (args.rx_decision != rx_owner_relay) or
             (rx_owner_relay and not owner_ready_required) or

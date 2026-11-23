@@ -287,6 +287,41 @@ class PrivateC34ArtifactTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ker_run._select_source_shell_controller(selected, existing, expected, control)
 
+    def test_source_bootstrap_requires_private_c34_master_binding(self):
+        ker_run = load_module('_c34_source_bootstrap_boundary_test', KER_RUN_PATH)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / 'nginx.conf'
+            config.write_text('events {}\n')
+            owner_module = root / 'owner.so'
+            owner_module.touch()
+            args = ker_run.parse_arguments([
+                '--address', '192.168.1.2/24', '--gateway', '192.168.1.1',
+                '--eal=--no-huge', '--port', 'eth0', '--runtime-service',
+                '--rx-decision', '--broker-readiness', '--queues', '1', '--rx-lcores', '1',
+                '--control-nginx-binary', '/bin/true', '--control-nginx-config', str(config),
+                '--control-nginx-prefix', str(root), '--control-nginx-owner-ready',
+                '--control-nginx-rx-relay', '--control-nginx-owner-module', str(owner_module),
+                '--control-nginx-env', 'LD_PRELOAD=libfstack.so:libker-socket-preload.so:libker-fstack-nginx-worker-shim.so',
+                '--control-nginx-env', 'KER_SOCKET_BROKER_PATH=' + str(root / 'broker.sock'),
+                '--control-nginx-env', 'KER_FSTACK_NGINX_INI=' + str(root / 'fstack.ini'),
+                '--control-nginx-source-bootstrap-required', '--', '/bin/true'])
+            with mock.patch.object(ker_run, 'parse_arguments', return_value=args), \
+                    mock.patch.object(ker_run.subprocess, 'Popen') as popen, \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(ker_run.main(), 2)
+                self.assertRegex(stderr.getvalue(), 'source bootstrap requires .*private C34')
+                popen.assert_not_called()
+            args.control_nginx_source_bootstrap_required = False
+            self.assertEqual(ker_run.control_nginx_profile(args)[5:], (False, False, False))
+            args.control_nginx_source_bootstrap_required = True
+            args.control_nginx_source_shell_profile = True
+            args.control_nginx_owner_module = None
+            self.assertEqual(ker_run.control_nginx_profile(args,
+                private_c34_controller=True)[5:], (True, True, True))
+            args.control_nginx_source_private_c34_profile = True
+            self.assertEqual(ker_run.control_nginx_profile(args)[5:], (True, True, True))
+
     def test_sdk_private_selector_captures_fixed_artifact_tuple_without_launch(self):
         self._require_private_capture()
         ker_run = load_module('_c34_sdk_capture_ker_run_test', KER_RUN_PATH)
