@@ -46,7 +46,16 @@ static int host_poll(struct pollfd *fds, nfds_t count, int64_t timeout, const si
         .tv_nsec = timeout < 0 ? 0 : timeout % INT64_C(1000000000)};
     return syscall(SYS_ppoll, fds, count, timeout < 0 ? NULL : &value, mask, _NSIG / 8);
 }
-static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout, const sigset_t *mask)
+/* Linux reports hangup in the read set and errors in the read/write sets.
+ * Only priority data belongs in exceptfds. */
+static short select_revents(short requested, short returned)
+{
+    if (returned & POLLHUP) returned |= POLLIN;
+    if (returned & POLLERR) returned |= POLLIN | POLLOUT;
+    return returned & (requested | POLLNVAL);
+}
+static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout,
+    const sigset_t *mask, bool selecting)
 {
     if (count > KER_FD_LIMIT) { errno = EINVAL; return -1; }
     struct ker_fd **pinned = calloc(count ? count : 1, sizeof(*pinned));
@@ -101,9 +110,22 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout, const sigs
         if (h < 0) { result = -1; saved = errno; break; }
         for (nfds_t i = 0; i < count; ++i) {
             fds[i].revents = host[i].revents | native[i].revents;
+            if (selecting) fds[i].revents = select_revents(fds[i].events, fds[i].revents);
             result += fds[i].revents != 0;
         }
         if (result || timeout == 0 || (timeout >= 0 && now_ns() >= deadline)) break;
+        if (selecting && (n || h)) {
+            /* An implicit HUP/ERR can remain level-triggered indefinitely.
+             * Recheck every descriptor, including the one reporting ERR, at
+             * the mixed-domain polling interval without restarting the timeout. */
+            int64_t pause = INT64_C(1000000);
+            if (timeout >= 0) {
+                remaining = deadline - now_ns();
+                if (remaining <= 0) break;
+                if (remaining < pause) pause = remaining;
+            }
+            if (host_poll(NULL, 0, pause, mask) < 0) { result = -1; saved = errno; break; }
+        }
     }
     for (nfds_t i = 0; i < count; ++i) ker_fd_put(pinned[i]);
     free(pinned); free(host_snapshot); free(host); free(native);
@@ -112,7 +134,7 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout, const sigs
 }
 int poll(struct pollfd *fds, nfds_t count, int timeout)
 {
-    return poll_ns(fds, count, timeout < 0 ? -1 : (int64_t)timeout * 1000000, NULL);
+    return poll_ns(fds, count, timeout < 0 ? -1 : (int64_t)timeout * 1000000, NULL, false);
 }
 int __poll(struct pollfd *, nfds_t, int) __attribute__((alias("poll")));
 
@@ -141,7 +163,7 @@ int ppoll(struct pollfd *fds, nfds_t count, const struct timespec *timeout, cons
     if (duration_ns(timeout, &duration)) return -1;
     sigset_t old;
     if (mask_enter(mask, &old)) return -1;
-    return mask_leave(mask, &old, poll_ns(fds, count, duration, mask));
+    return mask_leave(mask, &old, poll_ns(fds, count, duration, mask, false));
 }
 
 int epoll_create1(int flags)
@@ -287,21 +309,23 @@ static int select_ns(int maximum, fd_set *reads, fd_set *writes, fd_set *errors,
             (errors && FD_ISSET(fd, errors) ? POLLPRI : 0);
         if (events) fds[count++] = (struct pollfd){fd, events, 0};
     }
-    int ready = poll_ns(fds, count, duration, mask);
+    int ready = poll_ns(fds, count, duration, mask, true);
     if (ready < 0) return -1;
+    for (nfds_t i = 0; i < count; ++i) {
+        if (fds[i].revents & POLLNVAL) { errno = EBADF; return -1; }
+    }
     if (reads) FD_ZERO(reads);
     if (writes) FD_ZERO(writes);
     if (errors) FD_ZERO(errors);
     int result = 0;
     for (nfds_t i = 0; i < count; ++i) {
-        if (fds[i].revents & POLLNVAL) { errno = EBADF; return -1; }
-        if (reads && (fds[i].events & POLLIN) && (fds[i].revents & (POLLIN | POLLHUP | POLLERR))) {
+        if (fds[i].revents & POLLIN) {
             FD_SET(fds[i].fd, reads); result++;
         }
-        if (writes && (fds[i].events & POLLOUT) && (fds[i].revents & (POLLOUT | POLLERR))) {
+        if (fds[i].revents & POLLOUT) {
             FD_SET(fds[i].fd, writes); result++;
         }
-        if (errors && (fds[i].events & POLLPRI) && (fds[i].revents & POLLPRI)) {
+        if (fds[i].revents & POLLPRI) {
             FD_SET(fds[i].fd, errors); result++;
         }
     }
