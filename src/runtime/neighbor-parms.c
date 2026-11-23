@@ -38,10 +38,10 @@ int ker_neighbor_configure(struct ker_neighbor_table *table, const struct ker_ne
     if (atomic_read(&table->native->entries) || refcount_read(&table->native->parms.refcnt) != 1 ||
         table->address->device->context->live || table->address->device->napi_live ||
         table->address->device->protocol_live) return -EBUSY;
-    /* Linux stores parameters and randomized reachable_time in signed ints.
-     * Bound the complete 1/2..3/2 reachable range before mutating any fields. */
+    /* The monitor needs a positive randomized reachable_time, and Linux stores
+     * it in a signed int. Validate the full range before mutating any fields. */
     if (!config->retrans_ticks || config->retrans_ticks > INT_MAX ||
-        !config->reachable_ticks || config->reachable_ticks > (unsigned int)(INT_MAX / 3) * 2 ||
+        config->reachable_ticks < 2 || config->reachable_ticks > (unsigned int)(INT_MAX / 3) * 2 ||
         !config->delay_ticks || config->delay_ticks > INT_MAX ||
         config->ucast_probes > INT_MAX || config->mcast_probes > INT_MAX ||
         config->mcast_reprobes > INT_MAX ||

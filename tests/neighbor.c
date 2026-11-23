@@ -50,6 +50,8 @@ static void parameters(void)
     CHECK(ker_neighbor_configure(&table, &bad) == -EINVAL);
     bad = timing; bad.reachable_ticks = 0;
     CHECK(ker_neighbor_configure(&table, &bad) == -EINVAL);
+    bad.reachable_ticks = 1;
+    CHECK(ker_neighbor_configure(&table, &bad) == -EINVAL);
     bad = timing; bad.delay_ticks = 0;
     CHECK(ker_neighbor_configure(&table, &bad) == -EINVAL);
     bad = timing; bad.mcast_probes = UINT_MAX;
