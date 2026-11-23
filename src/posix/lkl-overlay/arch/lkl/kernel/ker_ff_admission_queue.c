@@ -22,6 +22,7 @@
 #include <net/net_namespace.h>
 #include <net/sock.h>
 #include <net/tcp.h>
+#include <asm/host_ops.h>
 #include <uapi/asm/ker_ff_admission_queue.h>
 
 static_assert(sizeof(struct ker_ff_admission_queue_control) == 32);
@@ -348,7 +349,7 @@ put_socket:
 	} else if (control.operation == KER_FF_INGRESS_FREEZE_RELEASE) {
 		if (control.listener_fd || control.expected_mark ||
 		    control.expected_cookie || !control.lease ||
-		    control.deadline_ns || control.local_address || control.local_port) {
+		    control.local_address || control.local_port) {
 			error = -EINVAL;
 			goto out;
 		}
@@ -363,6 +364,13 @@ put_socket:
 		}
 		if (!ker_ff_ingress_hook_inventory_valid()) {
 			error = -EOPNOTSUPP;
+			goto out;
+		}
+		/* The broker supplies an absolute host CLOCK_MONOTONIC deadline.
+		 * Decide while we still own the exact disarmed lease under the lock. */
+		if (control.deadline_ns && lkl_ops->time() >= control.deadline_ns) {
+			WRITE_ONCE(ker_ff_ingress_quarantined, 1);
+			error = -ETIMEDOUT;
 			goto out;
 		}
 		WRITE_ONCE(ker_ff_ingress_address, 0);

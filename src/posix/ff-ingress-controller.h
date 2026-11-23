@@ -40,6 +40,8 @@ int ker_posix_ff_ingress_controller_quarantine(
     struct ker_posix_ff_ingress_controller **controller);
 int ker_posix_ff_ingress_controller_close(
     struct ker_posix_ff_ingress_controller *controller);
+int ker_posix_ff_ingress_controller_close_before(
+    struct ker_posix_ff_ingress_controller *controller, uint64_t control_deadline_ns);
 /* Called by ker_posix_run before admission/runtime shutdown. On failure the
  * kernel remains live and a later same-run cleanup continuation may retry. */
 int ker_posix_ff_ingress_controller_prepare_runtime_shutdown(void);

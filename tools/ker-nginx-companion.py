@@ -1449,9 +1449,10 @@ def run(args):
         print(f'ker-nginx-companion startup/owner setup failed: '
             f'{type(error).__name__}: {error}', file=sys.stderr)
         if master is not None:
+            pidfd_alive = process_alive(master_pidfd) if master_pidfd >= 0 else None
             print(f'ker-nginx-companion Nginx master state before cleanup: '
                 f'returncode={master.poll()!r} pid={master.pid} '
-                f'pidfd_alive={process_alive(master_pidfd)}', file=sys.stderr)
+                f'pidfd_alive={pidfd_alive}', file=sys.stderr)
             if master.poll() is None:
                 try:
                     if master_pidfd >= 0:

@@ -54,7 +54,6 @@ struct ker_ff_ingress_freeze_queue {
 	struct ker_ff_ingress_freeze_state state;
 	uint64_t lease;
 	uint64_t deadline_ns;
-	int released;
 	bool accept_pending;
 	uint32_t pending_packet_id;
 	uint32_t pending_sequence;
@@ -272,12 +271,13 @@ static int queue_control_fd(void)
 }
 
 static int set_kernel_operation(struct ker_ff_ingress_freeze_queue *queue,
-				uint32_t operation)
+				uint32_t operation, uint64_t control_deadline_ns)
 {
 	struct ker_ff_ingress_freeze_control request = {
 		.version = KER_FF_ADMISSION_QUEUE_VERSION,
 		.operation = operation,
 		.lease = queue->lease,
+		.deadline_ns = control_deadline_ns,
 	};
 	int fd = queue_control_fd();
 	if (fd < 0) return fd;
@@ -285,6 +285,9 @@ static int set_kernel_operation(struct ker_ff_ingress_freeze_queue *queue,
 		(unsigned long)&request);
 	long closed = lkl_sys_close((unsigned int)fd);
 	if (result < 0) return (int)result;
+	/* A successful RELEASE ioctl has consumed the lease. Closing its
+	 * transient device fd cannot change or roll back that outcome. */
+	if (operation == KER_FF_INGRESS_FREEZE_RELEASE) return 0;
 	if (operation == KER_FF_INGRESS_FREEZE_DISARM) {
 		queue->state.attempt_count = request.attempt_count;
 		queue->state.expired_count = request.expired_count;
@@ -389,7 +392,7 @@ failure:
 	 * the broker controller if quarantine itself fails. */
 	if (*arm_succeeded) {
 		int quarantine = queue->lease ? set_kernel_operation(queue,
-			KER_FF_INGRESS_FREEZE_QUARANTINE) : -EPROTO;
+			KER_FF_INGRESS_FREEZE_QUARANTINE, 0) : -EPROTO;
 		if (quarantine < 0) {
 			*output = queue;
 			return quarantine;
@@ -439,7 +442,7 @@ int ker_ff_ingress_freeze_queue_check(
 		.version = KER_FF_ADMISSION_QUEUE_VERSION,
 		.operation = KER_FF_INGRESS_FREEZE_CHECK,
 	};
-	if (!queue || queue->state.quarantined || queue->released) return -EINVAL;
+	if (!queue || queue->state.quarantined || queue->fd < 0) return -EINVAL;
 	request.lease = queue->lease;
 	int fd = queue_control_fd();
 	if (fd < 0) return fd;
@@ -644,7 +647,7 @@ failure:
 int ker_ff_ingress_freeze_queue_disarm(struct ker_ff_ingress_freeze_queue *queue)
 {
 	if (!queue || !queue->state.armed || queue->state.quarantined) return -EBUSY;
-	int status = set_kernel_operation(queue, KER_FF_INGRESS_FREEZE_DISARM);
+	int status = set_kernel_operation(queue, KER_FF_INGRESS_FREEZE_DISARM, 0);
 	if (!status)
 		status = ker_ff_ingress_state_disarm(&queue->state,
 			queue->state.attempt_count, queue->state.expired_count,
@@ -689,36 +692,37 @@ int ker_ff_ingress_freeze_queue_quarantine(
 {
 	if (!queue_pointer || !*queue_pointer) return -EINVAL;
 	struct ker_ff_ingress_freeze_queue *queue = *queue_pointer;
-	if (queue->fd < 0) return -EINVAL;
 	int status = set_kernel_operation(queue,
-		KER_FF_INGRESS_FREEZE_QUARANTINE);
+		KER_FF_INGRESS_FREEZE_QUARANTINE, 0);
 	if (status < 0) return status;
 	ker_ff_ingress_state_quarantine(&queue->state);
 	/* Netlink release flushes q88's queued original skbs. Keep the LKL gate and
 	 * lease allocated: future matches continue to fail closed at NFQUEUE. */
-	status = (int)lkl_sys_close((unsigned int)queue->fd);
-	if (status < 0) return status;
-	queue->fd = -1;
+	if (queue->fd >= 0) {
+		status = (int)lkl_sys_close((unsigned int)queue->fd);
+		queue->fd = -1;
+		if (status < 0) return status;
+	}
 	free(queue);
 	*queue_pointer = NULL;
 	return status;
 }
 
-int ker_ff_ingress_freeze_queue_close(struct ker_ff_ingress_freeze_queue *queue)
+int ker_ff_ingress_freeze_queue_close(struct ker_ff_ingress_freeze_queue *queue,
+				      uint64_t control_deadline_ns)
 {
-	int status = 0;
 	if (!queue) return -EINVAL;
 	if (!ker_ff_ingress_state_can_close(&queue->state)) return -EBUSY;
-	if (!queue->released) {
-		status = set_kernel_operation(queue, KER_FF_INGRESS_FREEZE_RELEASE);
-		if (status) return status;
-		queue->released = 1;
-	}
+	/* All retained packets are settled. Drop the empty netlink queue first
+	 * so RELEASE is the final, deadline-dependent kernel operation. */
 	if (queue->fd >= 0) {
-		status = (int)lkl_sys_close((unsigned int)queue->fd);
+		int status = (int)lkl_sys_close((unsigned int)queue->fd);
+		queue->fd = -1;
 		if (status < 0) return status;
 	}
-	if (status < 0) return status;
+	int status = set_kernel_operation(queue, KER_FF_INGRESS_FREEZE_RELEASE,
+		control_deadline_ns);
+	if (status) return status;
 	free(queue);
-	return status;
+	return 0;
 }
