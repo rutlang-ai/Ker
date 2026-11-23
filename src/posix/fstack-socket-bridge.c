@@ -880,17 +880,7 @@ static int ff_kqueue_collect(struct ff_kqueue_context *context,
             errno = EAGAIN;
             return count ? count : -2;
         }
-        if (emitted < 0) {
-            int error = errno;
-            if (count) {
-                pthread_mutex_lock(&context->lock);
-                context->pending_error = error;
-                pthread_mutex_unlock(&context->lock);
-                return count;
-            }
-            errno = error;
-            return -1;
-        }
+        if (emitted < 0) goto failed;
         count += emitted;
         if (count >= maximum) return count;
     }
@@ -906,17 +896,7 @@ static int ff_kqueue_collect(struct ff_kqueue_context *context,
             errno = EAGAIN;
             return count ? count : -2;
         }
-        if (emitted < 0) {
-            int error = errno;
-            if (count) {
-                pthread_mutex_lock(&context->lock);
-                context->pending_error = error;
-                pthread_mutex_unlock(&context->lock);
-                return count;
-            }
-            errno = error;
-            return -1;
-        }
+        if (emitted < 0) goto failed;
         count += emitted;
         if (count >= maximum) return count;
     }
@@ -924,7 +904,7 @@ static int ff_kqueue_collect(struct ff_kqueue_context *context,
         int queue_index = (int)((start + n) % 3);
         struct epoll_event ready;
         int got = ker_sb_posix_epoll_wait(queues[queue_index], &ready, 1, 0);
-        if (got < 0) return -1;
+        if (got < 0) goto failed;
         if (!got) continue;
         if (initial_event && queue_index == initial_queue &&
             ready.data.u64 == initial_event->data.u64) continue;
@@ -939,19 +919,17 @@ static int ff_kqueue_collect(struct ff_kqueue_context *context,
             errno = EAGAIN;
             return count ? count : -2;
         }
-        if (emitted < 0) {
-            int error = errno;
-            if (count) {
-                pthread_mutex_lock(&context->lock);
-                context->pending_error = error;
-                pthread_mutex_unlock(&context->lock);
-                return count;
-            }
-            errno = error;
-            return -1;
-        }
+        if (emitted < 0) goto failed;
         count += emitted;
     }
+    return count;
+
+failed:
+    if (!count) return -1;
+    int error = errno;
+    pthread_mutex_lock(&context->lock);
+    context->pending_error = error;
+    pthread_mutex_unlock(&context->lock);
     return count;
 }
 
