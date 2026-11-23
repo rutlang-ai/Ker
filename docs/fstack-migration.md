@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 362 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 363 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 0 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 1 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 0 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为362 scenario-adapted、0 partial、1 blocked，共1项行为未完成；架构专用与 harness-only 不计通过。
+**363 个可适配场景均已映射到 Ker CTest。** 原版 graceful reload 的 17 个 CTest 用例覆盖了最后一个 shell 场景。清单中还有 15 项架构专用断言和 55 项上游工具链自测。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
