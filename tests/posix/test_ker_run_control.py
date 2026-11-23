@@ -61,6 +61,14 @@ def _send_record(sock, record, fd=None):
             raise AssertionError('short relay test record send')
 
 
+def _wait_for_request(channel):
+    poller = select.poll()
+    poller.register(channel, select.POLLIN)
+    events = poller.poll(2000)
+    if not events or not events[0][1] & select.POLLIN:
+        raise AssertionError('relay request did not arrive')
+
+
 class KerRunControlTests(unittest.TestCase):
     def test_startup_poll_is_nonblocking_and_rejects_early_request(self):
         outer, inner = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -450,18 +458,14 @@ class KerRunControlTests(unittest.TestCase):
         outer, inner = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         inner.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         nonce = bytes.fromhex('223344556677889900aabbccddeeff11')
-        poll_gate_r, poll_gate_w = os.pipe2(os.O_CLOEXEC)
         child = os.fork()
         if child == 0:
             outer.close()
-            os.close(poll_gate_w)
             try:
                 instance = relay.KerRunControl(inner.detach(), nonce, 31)
                 instance.state = 'READY'
                 instance.readiness = _Readiness(b'C' * 16, 37, b'P' * 32)
-                if os.read(poll_gate_r, 1) != b'P':
-                    os._exit(40)
-                os.close(poll_gate_r)
+                _wait_for_request(instance.channel)
                 try:
                     instance.poll(lambda: None)
                 except PermissionError:
@@ -472,11 +476,9 @@ class KerRunControlTests(unittest.TestCase):
             except BaseException:
                 os._exit(42)
         inner.close()
-        os.close(poll_gate_r)
         sender = os.fork()
         if sender == 0:
             inner.close()
-            os.close(poll_gate_w)
             try:
                 read_fd, write_fd = os.pipe()
                 try:
@@ -489,15 +491,9 @@ class KerRunControlTests(unittest.TestCase):
                 os._exit(0)
             except BaseException:
                 os._exit(43)
-        outer.close()
         _, sender_status = os.waitpid(sender, 0)
-        try:
-            os.write(poll_gate_w, b'P')
-        except BrokenPipeError:
-            pass
-        finally:
-            os.close(poll_gate_w)
         _, child_status = os.waitpid(child, 0)
+        outer.close()
         self.assertEqual(os.waitstatus_to_exitcode(sender_status), 0)
         self.assertNotEqual(sender, child, 'request sender must be a relay sibling')
         self.assertEqual(os.waitstatus_to_exitcode(child_status), 0)
@@ -513,10 +509,12 @@ class KerRunControlTests(unittest.TestCase):
                 instance = relay.KerRunControl(inner.detach(), nonce, 23)
                 instance.state = 'READY'
                 instance.readiness = _Readiness(b'B' * 16, 27, b'P' * 32)
-                instance.poll(lambda: None)
+                _wait_for_request(instance.channel)
+                try:
+                    instance.poll(lambda: None)
+                except (PermissionError, ValueError, ConnectionError):
+                    os._exit(0)
                 os._exit(31)
-            except (PermissionError, ValueError, ConnectionError):
-                os._exit(0)
             except BaseException:
                 os._exit(32)
         inner.close()
