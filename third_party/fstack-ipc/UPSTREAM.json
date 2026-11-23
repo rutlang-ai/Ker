@@ -1,0 +1,27 @@
+{
+  "repository": "https://github.com/F-Stack/f-stack",
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "mode": "unchanged source and headers; Ker adapter supplies borrowed-EAL lifetime and exported symbols",
+  "files": {
+    "ff_ipc.c": {
+      "source_file": "tools/compat/ff_ipc.c",
+      "sha256": "7cb1a189bbd01cbf36a644b5aa42e8392e2ddaafd4970740884fc4d963fe7d61",
+      "git_blob": "23079ac69acb16dcc50c0bbe61f31f21d768be5b"
+    },
+    "ff_ipc.h": {
+      "source_file": "tools/compat/ff_ipc.h",
+      "sha256": "dc30ab7981b615a653847df43572af40aa87e78933103354867813408476a853",
+      "git_blob": "07bfcdd52ca5cd2997fd5d7739fda43165f352ba"
+    },
+    "ff_msg.h": {
+      "source_file": "lib/ff_msg.h",
+      "sha256": "c3f300b0203f642cb8d7aa9f568bc5154919a94770afa61d3fe207be8422af6b",
+      "git_blob": "67d05e8a8b9610ef154ea6f83f27f9a9f90bad51"
+    },
+    "ff_reload.h": {
+      "source_file": "lib/ff_reload.h",
+      "sha256": "f89125af9be0158168de3467e2f40845124194dea4e0c6e2eecc345293599194",
+      "git_blob": "6c1259b332cce54ac54621cf4632da50513a3797"
+    }
+  }
+}
