@@ -237,9 +237,7 @@ accept/reject policies. It requires both charged classes, their sum equal to
 selected, no admission drops, and no repeated charge under the existing three
 ARP channel EAGAIN injections, while real host/native IPv4/IPv6 TCP/UDP completes.
 
-Six KNI source cases remain for generation/non-owner/named allocation
-contracts. Fragment/encapsulation, full multicast/generation fanout and automatic cross-stack ephemeral ownership gaps
-remain explicit; admission limits do not implement those behaviors.
+The KNI source scopes cover named table/slot allocation, owner/nonowner selection, short TX and full-ring queue ownership; see the linked KNI documents. Fragment/encapsulation, full multicast/generation fanout and automatic cross-stack ephemeral ownership gaps remain explicit; admission limits do not implement those behaviors.
 
 
 The pinned `test_ipfw_pr_cfg_handler_isolated` body checks an invalid process

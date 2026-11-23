@@ -15,6 +15,11 @@ extern struct ff_config example_rss_configuration;
 #define ff_rss_tbl_get_portrange example_rss_tbl_get_portrange
 #define ff_rss_check example_rss_check
 #define ff_rss_check6 example_rss_check6
+#define ff_rss_reta_log2 example_rss_reta_log2
+#define ff_rss_thash_build_key example_rss_thash_build_key
+#define ff_rss_thash_ctx_init example_rss_thash_ctx_init
+#define ff_rss_adjust_sport example_rss_adjust_sport
+#define ff_rss_adjust_sport6 example_rss_adjust_sport6
 #define ff_rss_tbl6_init example_rss_tbl6_init
 #define ff_rss_tbl6_set_portrange example_rss_tbl6_set_portrange
 #define ff_rss_tbl6_get_portrange example_rss_tbl6_get_portrange
@@ -29,6 +34,12 @@ int ff_rss_check(void *context, uint32_t saddr, uint32_t daddr,
     uint16_t sport, uint16_t dport);
 int ff_rss_check6(void *context, const uint8_t *saddr, const uint8_t *daddr,
     uint16_t sport, uint16_t dport);
+int ff_rss_thash_ctx_init(void);
+int ff_rss_thash_build_key(uint16_t port_id, uint16_t reta_size);
+int ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
+    uint16_t dport, uint16_t *out_sport, uint16_t first, uint16_t last);
+int ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6, const uint8_t *daddr6,
+    uint16_t dport, uint16_t *out_sport, uint16_t first, uint16_t last);
 int ff_rss_tbl6_init(void);
 int ff_rss_tbl6_set_portrange(uint16_t first, uint16_t last);
 int ff_rss_tbl6_get_portrange(const uint8_t *saddr, const uint8_t *daddr,

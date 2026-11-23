@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/F-Stack/f-stack",
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
-  "mode": "unchanged reload runtime, directory backend and configuration layout; Ker adapters borrow caller state/EAL, no protocol code",
+  "mode": "Unchanged original reload, generation-directory and drain-ring sources; caller runtime and minimal test compatibility headers isolate the original ring lifecycle from FreeBSD packet processing.",
   "files": {
     "ff_reload.c": {
       "source_file": "lib/ff_reload.c",
@@ -22,6 +22,16 @@
       "source_file": "lib/ff_log.h",
       "sha256": "243b0018e7458045831ee7b6ef734112d0790c20856d9470af3ede302013f8a4",
       "git_blob": "b1106755d215c1068968999d63beba6b392dfeca"
+    },
+    "ff_drain_ring.c": {
+      "source_file": "lib/ff_drain_ring.c",
+      "sha256": "acf28ff7a26710ccfefa64989907628f1117271d9a758f5237b5fafa24bb1680",
+      "git_blob": "eee86726e4f949f457c7bdc6bee1a71ff3d83b0b"
+    },
+    "ff_drain_ring.h": {
+      "source_file": "lib/ff_drain_ring.h",
+      "sha256": "fafaa691d240b21bf5b178c71c424c40b9c02d22d2725b32fa0314d1fdd57602",
+      "git_blob": "26e30b86f47ac01c28c7f4eddcd02dc2b6876e13"
     }
   },
   "headers": "ff_reload.h and ff_msg.h are the unchanged shared dependencies in ../fstack-ipc/UPSTREAM.json"
