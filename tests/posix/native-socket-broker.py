@@ -129,6 +129,11 @@ def run_preloaded_frontend(args, rpc_path, broker, capabilities):
         'KER_SOCKET_BROKER_PATH': str(rpc_path),
         'PYTHONDONTWRITEBYTECODE': '1',
     }
+    # Only the forked probe loses access to the relative broker endpoint.
+    with tempfile.TemporaryDirectory(dir=rpc_path.parent) as empty:
+        subprocess.run([str(args.preload_client.resolve()), '--broker-unavailable', empty],
+            cwd=rpc_path.parent, env=environment | {'KER_SOCKET_BROKER_PATH': rpc_path.name},
+            check=True, timeout=10)
     frontend = subprocess.Popen([str(args.preload_client), str(capabilities[0]),
         str(capabilities[1])], pass_fds=tuple(capabilities), stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
