@@ -65,6 +65,7 @@ int ker_ff_ingress_freeze_queue_quarantine(
 	struct ker_ff_ingress_freeze_queue **queue);
 /* Close is allowed only after exact lease disarm and all delivered packet IDs
  * have matched verdict acknowledgements. */
-int ker_ff_ingress_freeze_queue_close(struct ker_ff_ingress_freeze_queue *queue);
+int ker_ff_ingress_freeze_queue_close(struct ker_ff_ingress_freeze_queue *queue,
+				      uint64_t control_deadline_ns);
 
 #endif
