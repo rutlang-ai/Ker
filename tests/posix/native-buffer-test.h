@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <limits.h>
+#include <stdatomic.h>
+#include <time.h>
 static void *(*buffer_allocate)(size_t);
 static int (*buffer_release)(void *);
 static void *(*buffer_resize)(void *, size_t);
@@ -326,6 +328,82 @@ static void buffer_writers(void)
     puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_zero_len_noop");
     puts("BUFFER_SOURCE_CASE test_ff_zc_send_zero_nbytes_returns_einval");
 }
+struct concurrent_send {
+    int fd, flags;
+    const void *data;
+    atomic_bool done;
+    ssize_t result;
+    int error;
+};
+static void *concurrent_zerocopy_send(void *opaque)
+{
+    struct concurrent_send *call = opaque;
+    call->result = sendto(call->fd, call->data, 4096, MSG_ZEROCOPY | call->flags, NULL, 0);
+    call->error = errno;
+    atomic_store(&call->done, true);
+    return NULL;
+}
+static void zerocopy_alias_dontwait(void)
+{
+    int listener = socket(AF_INET, SOCK_STREAM, 0), sender = socket(AF_INET, SOCK_STREAM, 0);
+    check(listener >= 0 && sender >= 0, "zerocopy contention sockets");
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    socklen_t length = sizeof(address);
+    int small = 4096;
+    check(!setsockopt(listener, SOL_SOCKET, SO_RCVBUF, &small, sizeof(small)) &&
+          !bind(listener, (void *)&address, length) && !getsockname(listener, (void *)&address, &length) &&
+          !listen(listener, 1) && !connect(sender, (void *)&address, length), "zerocopy contention connect");
+    int peer = accept(listener, NULL, NULL);
+    check(peer >= 0, "zerocopy contention accept");
+    struct timeval timeout = {.tv_sec = 4};
+    check(!setsockopt(sender, SOL_SOCKET, SO_SNDBUF, &small, sizeof(small)) &&
+          !setsockopt(sender, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)), "bound zerocopy sender queue");
+    buffer_socket(sender, 0, true);
+    unsigned char *data = buffer_allocate(4096); check(data, "zerocopy contention mapping");
+    memset(data, 0x6d, 4096);
+    bool filled = false;
+    for (unsigned i = 0; i < 100000; i++) {
+        ssize_t result = sendto(sender, data, 4096, MSG_ZEROCOPY | MSG_DONTWAIT, NULL, 0);
+        if (result >= 0) { check(result > 0, "zerocopy queue fill made progress"); buffer_sent(result, false); continue; }
+        check(errno == EAGAIN || errno == EWOULDBLOCK, "fill native TCP send queue");
+        filled = true;
+        break;
+    }
+    check(filled, "nonblocking zerocopy fills TCP send queue");
+    int alias = dup(sender); check(alias >= 0, "duplicate contention socket");
+    struct concurrent_send blocking = {.fd = sender, .data = data};
+    struct concurrent_send nonblocking = {.fd = alias, .flags = MSG_DONTWAIT, .data = data};
+    atomic_init(&blocking.done, false); atomic_init(&nonblocking.done, false);
+    pthread_t first, second;
+    check(!pthread_create(&first, NULL, concurrent_zerocopy_send, &blocking), "start blocking zerocopy send");
+    struct timespec pause = {.tv_nsec = 100000000}; nanosleep(&pause, NULL);
+    check(!pthread_create(&second, NULL, concurrent_zerocopy_send, &nonblocking), "start alias nonblocking send");
+    bool prompt = false;
+    for (unsigned i = 0; i < 1000; i++) {
+        if (atomic_load(&nonblocking.done)) { prompt = true; break; }
+        pause.tv_nsec = 1000000; nanosleep(&pause, NULL);
+    }
+    bool first_still_blocked = !atomic_load(&blocking.done);
+    /* Drain the peer to release both calls even when a regression serializes
+     * the MSG_DONTWAIT sender behind the blocked first syscall. */
+    unsigned char drain[65536];
+    while (!atomic_load(&blocking.done) || !atomic_load(&nonblocking.done)) {
+        while (recv(peer, drain, sizeof(drain), MSG_DONTWAIT) > 0) { }
+        pause.tv_nsec = 1000000; nanosleep(&pause, NULL);
+    }
+    while (recv(peer, drain, sizeof(drain), MSG_DONTWAIT) > 0) { }
+    check(!pthread_join(first, NULL) && !pthread_join(second, NULL), "join zerocopy contention sends");
+    if (!prompt || nonblocking.result != -1 || (nonblocking.error != EAGAIN && nonblocking.error != EWOULDBLOCK))
+        fprintf(stderr, "alias nonblocking prompt=%d result=%zd error=%d first_still_blocked=%d blocking_result=%zd blocking_error=%d\n",
+                prompt, nonblocking.result, nonblocking.error, first_still_blocked, blocking.result, blocking.error);
+    check(prompt && nonblocking.result == -1 && (nonblocking.error == EAGAIN || nonblocking.error == EWOULDBLOCK),
+          "dup-alias MSG_DONTWAIT returns EAGAIN while zerocopy send is blocked");
+    check(blocking.result >= 0, "blocked zerocopy send released by peer drain");
+    check(first_still_blocked, "first zerocopy send remains blocked before peer drain");
+    buffer_sent(blocking.result, false); buffer_complete(sender);
+    check(!close(alias) && !close(sender) && !close(peer) && !close(listener) && !buffer_release(data),
+          "zerocopy contention cleanup");
+}
 static void buffer_guards(void)
 {
     int receiver = socket(AF_INET, SOCK_DGRAM, 0), fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -463,6 +541,7 @@ static void buffer_guards(void)
     check(!pthread_join(toggler, NULL) && !close(alias), "option updates and alias joined");
     check(!close(fd) && !close(receiver) && !buffer_release(registered) && !buffer_release(second), "guard mapping/socket cleanup");
     free(host_bytes);
+    zerocopy_alias_dontwait();
     buffer_writers();
     memset(family_copied, 0, sizeof(family_copied)); memset(family_direct, 0, sizeof(family_direct));
     memset(copied_bytes, 0, sizeof(copied_bytes)); memset(direct_bytes, 0, sizeof(direct_bytes));

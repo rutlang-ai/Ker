@@ -98,7 +98,7 @@ struct ff_owner_admission_client_state {
     struct ker_ff_admission_map_ops ops;
     int fd;
 };
-static _Thread_local struct ff_owner_admission_client_state owner_admission_state;
+static _Thread_local struct ff_owner_admission_client_state owner_admission_state = {.fd = -1};
 
 static int ff_owner_admission_pump(void *context)
 {
@@ -456,21 +456,22 @@ int ker_sb_preload_ff_owner_admission_attach(
         goto failure;
     }
     int channel_fd = fd;
+    fd = -1; /* Successful channel_open consumed the endpoint. */
     stage = "private FD registration";
     ker_sb_preload_lock();
     if (!ker_sb_preload_ff_owner_active_locked() || owner_pump_callback ||
         ker_sb_preload_track_private_fd_locked(channel_fd)) {
         error = errno ? errno : ESTALE;
+    } else {
+        owner_admission_state.fd = channel_fd;
     }
     ker_sb_preload_unlock();
     if (error) goto failure;
-    fd = -1; /* channel owns the endpoint */
     ker_sb_preload_lock();
     stage = "owner pump registration";
     if (!ker_sb_preload_ff_owner_active_locked() || owner_pump_callback) {
         error = ESTALE;
     } else {
-        owner_admission_state.fd = channel_fd;
         owner_admission_state.channel = channel;
         owner_admission_state.ops = *ops;
         if (ker_sb_preload_owner_pump_register(ff_owner_admission_pump,
@@ -485,19 +486,17 @@ int ker_sb_preload_ff_owner_admission_attach(
 failure:
     owner_admission_trace_failure(stage, error);
     if (channel) {
-        ker_sb_preload_lock();
-        ker_sb_preload_untrack_private_fd_locked(owner_admission_state.fd >= 0 ?
-            owner_admission_state.fd : fd);
-        ker_sb_preload_unlock();
+        if (owner_admission_state.fd >= 0) {
+            ker_sb_preload_lock();
+            ker_sb_preload_untrack_private_fd_locked(owner_admission_state.fd);
+            ker_sb_preload_unlock();
+        }
         ker_ff_admission_channel_close(channel);
         memset(&owner_admission_state, 0, sizeof(owner_admission_state));
         owner_admission_state.fd = -1;
     } else if (fd >= 0) {
-        ker_sb_preload_lock();
-        ker_sb_preload_untrack_private_fd_locked(fd);
-        ker_sb_preload_unlock();
+        (void)syscall(SYS_close, fd);
     }
-    if (fd >= 0) (void)syscall(SYS_close, fd);
     errno = error ? error : EPROTO;
     return -1;
 }
