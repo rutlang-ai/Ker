@@ -258,6 +258,24 @@ class NativeTestSelectorTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "required tests skipped"):
                 native_tests.report_junit(report, expected={"required-a"}, required={"required-a"})
 
+    def test_legacy_success_requires_the_fixture_control_hup_line_and_exact_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "fixture.py"
+            source.write_text(self.fixture_source(False), encoding="utf-8")
+            log = Path(temporary) / "session.log"
+            lines = self.session_log(native_tests.MANDATORY_SESSION_PROFILES, False)
+            actual_hup = "PASS: control HUP with a pending ACK aborted before PREPARE and drained the unchanged owner"
+            actual_error = ("PASS: bad-prepare-error after PREPARE terminates exact actors with status125 "
+                            "and no PARKED/grant/DRAINED success")
+            for mode, line in (("handoff-control-hup", actual_hup), ("bad-prepare-error", actual_error)):
+                with self.subTest(mode=mode):
+                    self.assertIn(line, lines)
+                    # The other mode-specific PASS lines remain, as does a copy in diagnostics.
+                    log.write_text("\n".join([value for value in lines if value != line] +
+                                             [json.dumps({"stdout": line})]), encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, f"lacks profile success marker for {mode}"):
+                        native_tests.verify_session_profiles(log, source)
+
     def test_session_profile_verifier_supports_exact_legacy19_and_structured27_sets(self):
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "session.log"
