@@ -2224,7 +2224,7 @@ static void fortified_io(void)
 }
 enum file_cancel_operation {
     CANCEL_PREAD, CANCEL_PWRITEV2, CANCEL_FSYNC, CANCEL_FDATASYNC,
-    CANCEL_FALLOCATE, CANCEL_SYNC_FILE_RANGE
+    CANCEL_FALLOCATE, CANCEL_SYNC_FILE_RANGE, CANCEL_COPY_FILE_RANGE
 };
 
 struct file_cancel_call {
@@ -2240,6 +2240,11 @@ static void *cancel_host_file_operation(void *opaque)
 
     CHECK(pthread_cancel(pthread_self()) == 0);
     switch (call->operation) {
+    case CANCEL_COPY_FILE_RANGE: {
+        off64_t source = 0, destination = 32;
+        CHECK(copy_file_range(call->fd, &source, call->fd, &destination, 1, 0) == 1);
+        break;
+    }
     case CANCEL_PREAD: CHECK(pread(call->fd, &byte, 1, 0) == 1); break;
     case CANCEL_PWRITEV2: CHECK(pwritev2(call->fd, &vector, 1, 0, 0) == 1); break;
     case CANCEL_FSYNC: CHECK(fsync(call->fd) == 0); break;
@@ -2282,7 +2287,7 @@ static void positioned_operations(void)
     CHECK(pread64(fd, &byte, 1, far) == 1 && byte == 'x');
     byte = 'y'; CHECK(pwritev64v2(fd, &vector, 1, far + 1, 0) == 1);
     byte = '?'; CHECK(preadv64(fd, &vector, 1, far + 1) == 1 && byte == 'y');
-    for (enum file_cancel_operation operation = CANCEL_PREAD; operation <= CANCEL_SYNC_FILE_RANGE; ++operation) {
+    for (enum file_cancel_operation operation = CANCEL_PREAD; operation <= CANCEL_COPY_FILE_RANGE; ++operation) {
         struct file_cancel_call call = {.fd = fd, .operation = operation};
         pthread_t thread;
         void *result;
@@ -2455,6 +2460,41 @@ static void fchmodat2_eperm_flags_zero_bypass(void)
     CHECK(close(dirfd) == 0 && close(file) == 0);
     CHECK(unlink(path) == 0 && rmdir(directory) == 0);
 }
+static void host_metadata_enosys_fallback(void)
+{
+    struct pair sockets = connected();
+    int directory = open("/dev", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(directory >= 0);
+    struct stat expected;
+    CHECK(fstatat(directory, "null", &expected, 0) == 0);
+    struct sock_filter filter[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_faccessat2, 1, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_statx, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog program = {.len = sizeof(filter) / sizeof(filter[0]), .filter = filter};
+    CHECK(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0);
+    CHECK(prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0);
+
+    int fds[] = {AT_FDCWD, directory, sockets.client};
+    const char *paths[] = {"/dev/null", "null", "/dev/null"};
+    struct statx info;
+    for (size_t i = 0; i < sizeof(fds) / sizeof(fds[0]); ++i) {
+        CHECK(faccessat(fds[i], paths[i], F_OK, 0) == 0);
+        CHECK(statx(fds[i], paths[i], 0, STATX_BASIC_STATS, &info) == 0);
+        CHECK((info.stx_mask & STATX_INO) && info.stx_ino == expected.st_ino);
+    }
+    if (dlsym(RTLD_DEFAULT, "ker_posix_capabilities")) {
+        CHECK(faccessat(sockets.client, "", F_OK, AT_EMPTY_PATH) == 0);
+        CHECK(statx(sockets.client, "", AT_EMPTY_PATH, STATX_TYPE, &info) == 0);
+        CHECK(S_ISSOCK(info.stx_mode));
+    }
+    CHECK(close(directory) == 0);
+    finish(sockets);
+}
+
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
@@ -2510,6 +2550,7 @@ int main(void)
         {"host-native-identical-udp-tuple", host_native_same_tuple},
         {"host-fchmodat2-ENOSYS-flags-zero-fallback", fchmodat2_enosys_fallback},
         {"host-fchmodat2-EPERM-flags-zero-bypass", fchmodat2_eperm_flags_zero_bypass},
+        {"host-access-and-statx-ENOSYS-fallback", host_metadata_enosys_fallback},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         cases[i].run(); printf("PASS: fstack socket contract %s\n", cases[i].name); fflush(stdout);

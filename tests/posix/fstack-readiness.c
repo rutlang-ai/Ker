@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
@@ -173,6 +174,44 @@ static void urgent_data(void)
     wait_for(p.receiver, POLLIN);
     char buffer[6];
     CHECK(recv(p.receiver, buffer, sizeof(buffer), 0) == 6 && memcmp(buffer, "normal", 6) == 0);
+    finish(p);
+}
+static void unrequested_terminal_events(void)
+{
+    struct pair p = connected();
+    CHECK(shutdown(p.receiver, SHUT_RDWR) == 0);
+    wait_for(p.receiver, POLLHUP);
+    int pipefd[2];
+    CHECK(pipe(pipefd) == 0 && close(pipefd[0]) == 0);
+    wait_for(pipefd[1], POLLERR);
+    int maximum = pipefd[1] > p.receiver ? pipefd[1] : p.receiver;
+    CHECK(maximum < FD_SETSIZE);
+    fd_set exceptions;
+    FD_ZERO(&exceptions);
+    FD_SET(p.receiver, &exceptions);
+    FD_SET(pipefd[1], &exceptions);
+
+    fd_set pending = exceptions;
+    struct timeval timeout = {.tv_usec = 20000};
+    CHECK(select(maximum + 1, NULL, NULL, &pending, &timeout) == 0);
+    CHECK(!FD_ISSET(p.receiver, &pending) && !FD_ISSET(pipefd[1], &pending));
+    CHECK(timeout.tv_sec == 0 && timeout.tv_usec == 0);
+
+    /* Both terminal conditions persist while another descriptor becomes ready. */
+    int timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+    CHECK(timer >= 0 && timer < FD_SETSIZE);
+    if (timer > maximum) maximum = timer;
+    fd_set reads;
+    FD_ZERO(&reads);
+    FD_SET(timer, &reads);
+    struct itimerspec tick = {.it_value = {.tv_nsec = 20000000}};
+    CHECK(timerfd_settime(timer, 0, &tick, NULL) == 0);
+    const struct timespec limit = {.tv_sec = 2};
+    CHECK(pselect(maximum + 1, &reads, NULL, &exceptions, &limit, NULL) == 1);
+    CHECK(FD_ISSET(timer, &reads));
+    CHECK(!FD_ISSET(p.receiver, &exceptions) && !FD_ISSET(pipefd[1], &exceptions));
+    CHECK(limit.tv_sec == 2 && limit.tv_nsec == 0);
+    CHECK(close(timer) == 0 && close(pipefd[1]) == 0);
     finish(p);
 }
 static void receive_low_watermark(void)
@@ -352,6 +391,7 @@ int main(void)
         {"mixed-host-native-and-pselect-timeout", mixed_host_native},
         {"invalid-and-negative-descriptors", invalid_and_ignored},
         {"urgent-data-exception-set", urgent_data},
+        {"unrequested-terminal-events", unrequested_terminal_events},
         {"receive-low-watermark", receive_low_watermark},
         {"buffered-eof-is-readable", eof_readiness},
         {"zero-and-invalid-timeouts", zero_timeouts},
