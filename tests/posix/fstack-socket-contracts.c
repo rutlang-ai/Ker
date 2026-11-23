@@ -255,6 +255,7 @@ static void descriptor_at_timestamps(void)
     CHECK(utimensat(alias, protected_memory, omitted, 0) == 0);
     CHECK(utimensat(alias, protected_memory, omitted, 0x40000000) == 0);
     ERROR(utimensat(alias, "", protected_memory, AT_EMPTY_PATH), EFAULT);
+    ERROR(futimens(alias, protected_memory), EFAULT);
     struct timespec ordinary[2] = {{.tv_nsec = UTIME_NOW}, {.tv_nsec = UTIME_NOW}};
     ERROR(utimensat(alias, protected_memory, ordinary, 0), EFAULT);
     ERROR(utimensat(alias, protected_memory, NULL, 0), EFAULT);
@@ -2221,6 +2222,26 @@ static void fortified_io(void)
     finish(p);
     checked_entry_cancellation();
 }
+struct positioned_cancel_call {
+    int fd;
+    bool vector;
+};
+
+static void *cancel_host_positioned(void *opaque)
+{
+    const struct positioned_cancel_call *call = opaque;
+    char byte = 'x';
+    struct iovec vector = {&byte, 1};
+
+    CHECK(pthread_cancel(pthread_self()) == 0);
+    if (call->vector) {
+        CHECK(pwritev2(call->fd, &vector, 1, 0, 0) == 1);
+    } else {
+        CHECK(pread(call->fd, &byte, 1, 0) == 1);
+    }
+    return NULL;
+}
+
 static void positioned_operations(void)
 {
     struct pair p = connected();
@@ -2253,6 +2274,13 @@ static void positioned_operations(void)
     CHECK(pread64(fd, &byte, 1, far) == 1 && byte == 'x');
     byte = 'y'; CHECK(pwritev64v2(fd, &vector, 1, far + 1, 0) == 1);
     byte = '?'; CHECK(preadv64(fd, &vector, 1, far + 1) == 1 && byte == 'y');
+    for (int operation = 0; operation < 2; ++operation) {
+        struct positioned_cancel_call call = {.fd = fd, .vector = operation != 0};
+        pthread_t thread;
+        void *result;
+        CHECK(pthread_create(&thread, NULL, cancel_host_positioned, &call) == 0);
+        CHECK(pthread_join(thread, &result) == 0 && result == PTHREAD_CANCELED);
+    }
     CHECK(lseek(fd, 0, SEEK_CUR) == 3 && close(fd) == 0);
 }
 static volatile sig_atomic_t positioned_sigpipe_count;

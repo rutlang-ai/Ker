@@ -28,11 +28,19 @@ off_t lseek(int fd, off_t offset, int whence)
     ker_fd_put(entry);
     return ker_native_result(value);
 }
+/* Forward host I/O through libc to preserve its cancellation points. */
+#define HOST_POSITIONED(name, ...) \
+    __typeof__(&name) host = dlsym(RTLD_NEXT, #name); \
+    if (!host) { errno = ENOSYS; return -1; } \
+    return host(__VA_ARGS__);
+
 #define POSITIONED(name, native_name, qualifier) \
 ssize_t name(int fd, qualifier void *bytes, size_t length, off_t offset) \
 { \
     struct ker_fd *entry = ker_fd_get(fd); \
-    if (!entry) return syscall(SYS_##native_name, fd, bytes, length, offset); \
+    if (!entry) { \
+        HOST_POSITIONED(name, fd, bytes, length, offset) \
+    } \
     long value = lkl_sys_##native_name(entry->native, bytes, length, offset); \
     ker_fd_put(entry); \
     return ker_native_result(value); \
@@ -43,8 +51,10 @@ POSITIONED(pwrite, pwrite64, const)
 ssize_t name(int fd, const struct iovec *vectors, int count, off_t offset flags_decl) \
 { \
     struct ker_fd *entry = ker_fd_get(fd); \
+    if (!entry) { \
+        HOST_POSITIONED(name, fd, vectors, count, offset flags_arg) \
+    } \
     unsigned long low = (uint64_t)offset, high = (uint64_t)offset >> 32; \
-    if (!entry) return syscall(SYS_##name, fd, vectors, count, low, high flags_arg); \
     long value = lkl_sys_##name(entry->native, (const struct lkl_iovec *)vectors, count, low, high flags_arg); \
     ker_fd_put(entry); \
     if (stream_signal && offset == -1) return ker_native_write_result(value, 0); \
@@ -55,6 +65,7 @@ VECTOR(preadv, , , 0)
 VECTOR(pwritev, , , 0)
 VECTOR(preadv2, COMMA int flags, COMMA flags, 0)
 VECTOR(pwritev2, COMMA int flags, COMMA flags, 1)
+#undef HOST_POSITIONED
 _Static_assert(sizeof(off_t) == sizeof(off64_t), "Linux host offset ABI");
 extern __typeof(lseek64) lseek64 __attribute__((alias("lseek")));
 extern __typeof(pread64) pread64 __attribute__((alias("pread")));
@@ -97,20 +108,6 @@ int fchown(int fd, uid_t owner, gid_t group)
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_fchown, fd, owner, group);
     long value = lkl_sys_fchown(entry->native, owner, group);
-    ker_fd_put(entry);
-    return ker_native_result(value);
-}
-int futimens(int fd, const struct timespec times[2])
-{
-    struct ker_fd *entry = ker_fd_get(fd);
-    if (!entry) return syscall(SYS_utimensat, fd, NULL, times, 0);
-    struct __lkl__kernel_timespec native[2];
-    if (times) for (int i = 0; i < 2; ++i) {
-        native[i].tv_sec = times[i].tv_sec;
-        native[i].tv_nsec = times[i].tv_nsec;
-    }
-    long value = lkl_sys_utimensat(entry->native, NULL,
-                                   times ? (void *)native : NULL, 0);
     ker_fd_put(entry);
     return ker_native_result(value);
 }
