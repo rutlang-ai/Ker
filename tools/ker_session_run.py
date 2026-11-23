@@ -1364,6 +1364,8 @@ def _run_session_impl(args, api):
         finally:
             connection.close()
         expected_key = 1 + (successor['slot'] * 2 + successor['generation']) * 4 + successor['process']
+        returncodes = dict(app=app.poll(), parked_worker=worker.poll(),
+                           successor_worker=peer_worker.poll())
         handoff_checks = dict(
             successor_generation=successor['generation'] == 1,
             successor_slot=successor['slot'] == metrics['attached']['slot'],
@@ -1379,16 +1381,22 @@ def _run_session_impl(args, api):
             resident_generation=observed['generation'] == 1,
             resident_slot=observed['slot'] == metrics['attached']['slot'],
             resident_epoch=observed['epoch'] == metrics['attached']['epoch'],
-            app_live=app.poll() is None,
-            parked_worker_live=worker.poll() is None,
-            successor_worker_live=peer_worker.poll() is None)
+            app_live=returncodes['app'] is None,
+            parked_worker_live=returncodes['parked_worker'] is None,
+            successor_worker_live=returncodes['successor_worker'] is None)
         if not all(handoff_checks.values()):
+            parked_stdout = None
+            if returncodes['parked_worker'] is not None:
+                try:
+                    parked_stdout = capture_exited_process_stdout(worker)[-4096:].decode(errors='replace')
+                except (OSError, ValueError) as error:
+                    parked_stdout = f'<stdout capture failed: {error}>'
             raise RuntimeError('resident did not grant the same-session successor while old app/worker remained live: ' +
                 json.dumps(dict(checks=handoff_checks, expected_key=expected_key,
                     endpoint_name=metrics['exception_endpoint_name'],
                     successor=successor, geometry=geometry, successor_tun_interfaces=successor_tun_interfaces,
-                    resident=observed, process_returncodes=dict(app=app.poll(),
-                        parked_worker=worker.poll(), successor_worker=peer_worker.poll())), sort_keys=True))
+                    resident=observed, process_returncodes=returncodes, parked_worker_stdout=parked_stdout),
+                    sort_keys=True))
         metrics['handoff'] = dict(stage='committed', app_pid=app.pid, old_worker_pid=worker.pid,
             peer_worker_pid=peer_worker.pid, old_owner_key=metrics['grant']['queue_owner_key'],
             new_owner_key=expected_key, old_exception_fd=old_exception_fd,
