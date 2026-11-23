@@ -83,6 +83,26 @@ void example_rss_reset(void)
     memset(ff_rss_tbl6, 0, sizeof(ff_rss_tbl6));
     configured = 0;
 }
+static int candidate_windows_valid(uint16_t first, uint16_t last)
+{
+    for (int i = 0; i < owned_rules.nb_rss_tbl; ++i) {
+        const struct ff_rss_tbl_cfg *rule = &owned_rules.rss_tbl_cfgs[i];
+        uint16_t begin, end, *ports;
+        int result;
+        if (rule->family == AF_INET6)
+            result = ff_rss_tbl6_get_portrange(rule->saddr6, rule->daddr6, rule->sport,
+                &begin, &end, &ports);
+        else
+            result = ff_rss_tbl_get_portrange(rule->saddr, rule->daddr, rule->sport,
+                &begin, &end, &ports);
+        /* Both initializers append eligible ports in ascending order starting
+         * at index 1. The setters may round a singleton up to the next port. */
+        if (result || !begin || begin > end || ports[begin] < first || ports[end] > last)
+            return 0;
+    }
+    return 1;
+}
+
 int example_rss_configure(const struct ff_rss_check_cfg *rules, uint16_t queues,
     uint16_t own_queue, uint16_t reta_size, uint16_t first, uint16_t last)
 {
@@ -102,7 +122,8 @@ int example_rss_configure(const struct ff_rss_check_cfg *rules, uint16_t queues,
     example_rss_lcores[0].tx_queue_id[0] = own_queue;
     rss_reta_size[0] = reta_size;
     if (ff_rss_tbl_init() || ff_rss_tbl6_init() ||
-        ff_rss_tbl_set_portrange(first, last) || ff_rss_tbl6_set_portrange(first, last)) {
+        ff_rss_tbl_set_portrange(first, last) || ff_rss_tbl6_set_portrange(first, last) ||
+        !candidate_windows_valid(first, last)) {
         example_rss_reset(); return -EINVAL;
     }
     configured = 1;
