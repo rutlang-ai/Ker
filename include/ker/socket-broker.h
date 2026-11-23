@@ -375,6 +375,9 @@ int ker_socket_client_owner_group_cutover_commit_before(
     struct ker_socket_client *client, int cutover_cap, uint64_t deadline_ns);
 int ker_socket_client_owner_group_cutover_abort(
     struct ker_socket_client *client, int cutover_cap);
+/* Use the same immutable deadline and quarantine rules for abort. */
+int ker_socket_client_owner_group_cutover_abort_before(
+    struct ker_socket_client *client, int cutover_cap, uint64_t deadline_ns);
 int ker_socket_client_owner_group_cutover_poll(
     struct ker_socket_client *client, int cutover_cap,
     struct ker_socket_group_cutover_status *status);

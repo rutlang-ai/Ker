@@ -11,6 +11,7 @@
 #define KER_RX_OWNER_RELAY_REPLY UINT16_C(2)
 #define KER_RX_OWNER_RELAY_APP_AUTH UINT16_C(3)
 #define KER_RX_OWNER_RELAY_AUTH_ACK UINT16_C(5)
+#define KER_RX_OWNER_RELAY_DRAIN_REQUEST UINT16_C(6)
 
 struct ker_rx_owner_relay_header {
     uint32_t magic;

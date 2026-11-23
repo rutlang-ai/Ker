@@ -9,6 +9,7 @@
 #include <limits.h>
 #include <poll.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -135,7 +136,7 @@ void ker_nginx_source_bootstrap_close(struct ker_nginx_source_bootstrap *binding
     if (source_shell_worker_binding == binding) source_shell_worker_binding = NULL;
     int *fds[] = {&binding->channel, &binding->supervisor_pidfd,
         &binding->runtime_pidfd, &binding->io_pidfd, &binding->slot_fd, &binding->relay_fd,
-        &binding->ready_fd};
+        &binding->ready_fd, &binding->directory_fd};
     for (size_t i = 0; i < sizeof(fds) / sizeof(fds[0]); ++i) {
         if (*fds[i] >= 0) (void)syscall(SYS_close, *fds[i]);
         *fds[i] = -1;
@@ -343,6 +344,30 @@ int ker_nginx_source_bootstrap_connect(const char *path,
         expected_supervisor, expected_supervisor_start, binding);
 }
 
+
+static uint64_t source_bootstrap_max_lifetime(void)
+{
+    const char *shell = getenv("KER_NGINX_SOURCE_SHELL_ENABLE");
+    const char *successor = getenv("KER_NGINX_SOURCE_SUCCESSOR_ENABLE");
+    if (shell && !strcmp(shell, "1") && successor && !strcmp(successor, "1"))
+        return UINT64_C(1800000000000);
+    return KER_NGINX_SOURCE_BOOTSTRAP_MAX_NS;
+}
+
+bool ker_nginx_source_upgrade_enabled(void)
+{
+    const char *shell = getenv("KER_NGINX_SOURCE_SHELL_ENABLE");
+    const char *upgrade = getenv(KER_NGINX_SOURCE_UPGRADE_ENV);
+    return shell && !strcmp(shell, "1") && upgrade && !strcmp(upgrade, "1");
+}
+
+bool ker_nginx_source_upgrade_worker(void)
+{
+    if (!ker_nginx_source_upgrade_enabled()) return false;
+    const uintptr_t *inherited = dlsym(RTLD_DEFAULT, "ngx_inherited");
+    return inherited && *inherited == 1;
+}
+
 static int bootstrap_connect_internal(const char *path,
     const struct ker_nginx_source_bootstrap_record *request,
     const struct ker_source_native_ini_cycle_snapshot *snapshot,
@@ -352,7 +377,7 @@ static int bootstrap_connect_internal(const char *path,
     if (!binding) return -EINVAL;
     *binding = (struct ker_nginx_source_bootstrap){.channel = -1,
         .supervisor_pidfd = -1, .runtime_pidfd = -1, .io_pidfd = -1,
-        .slot_fd = -1, .relay_fd = -1, .ready_fd = -1};
+        .slot_fd = -1, .relay_fd = -1, .ready_fd = -1, .directory_fd = -1};
     if (!path || !request || !expected_supervisor || !expected_supervisor_start ||
         strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) return -EINVAL;
     struct ker_nginx_source_bootstrap_record_v4 shell_request;
@@ -392,7 +417,7 @@ static int bootstrap_connect_internal(const char *path,
                 request->control_deadline_ns - now >
                     (uint64_t)FF_RELOAD_HANDOVER_TIMEOUT_MS_DEFAULT * UINT64_C(1000000)) :
             request->control_deadline_ns != 0) ||
-        request->deadline_ns - now > KER_NGINX_SOURCE_BOOTSTRAP_MAX_NS ||
+        request->deadline_ns - now > source_bootstrap_max_lifetime() ||
         start_ticks_until(request->actor_pid, &actual, observation_deadline) || actual != request->actor_start_ticks ||
         start_ticks_until(request->master_pid, &actual, observation_deadline) || actual != request->master_start_ticks)
         return -EINVAL;
@@ -463,7 +488,10 @@ static int bootstrap_connect_internal(const char *path,
             if (memcmp(&cred, &peer, sizeof(cred))) malformed = 1;
         } else malformed = 1;
     }
+    bool directory_grant = snapshot && request->role != KER_NGINX_SOURCE_ROLE_MASTER &&
+        ker_nginx_source_upgrade_enabled();
     int expected_fds = request->role == KER_NGINX_SOURCE_ROLE_WORKER ? 5 : 2;
+    if (directory_grant) ++expected_fds;
     if (!malformed && count == (long)wire_bytes && credentials == 1 && fd_count == expected_fds &&
         !(message.msg_flags & (MSG_TRUNC | MSG_CTRUNC))) {
         struct ker_nginx_source_bootstrap_record expected = *wire_request;
@@ -548,9 +576,10 @@ static int bootstrap_connect_internal(const char *path,
             binding->source_shell_proof_enabled = 1;
         }
         binding->runtime_pidfd = fds[0]; binding->io_pidfd = fds[1];
-        if (fd_count == 5) {
+        if (request->role == KER_NGINX_SOURCE_ROLE_WORKER) {
             binding->slot_fd = fds[2]; binding->relay_fd = fds[3]; binding->ready_fd = fds[4];
         }
+        if (directory_grant) binding->directory_fd = fds[fd_count - 1];
         fd_count = 0;
         status = request->role == KER_NGINX_SOURCE_ROLE_MASTER ?
             live_actors(binding) : ker_nginx_source_bootstrap_live(binding);
@@ -594,11 +623,13 @@ int ker_nginx_source_bootstrap_worker_preexit(
     ker_nginx_source_preexit_pump_fn pump)
 {
     struct ker_nginx_source_bootstrap *binding = source_shell_worker_binding;
+    bool initial = worker_role == KER_NGINX_SOURCE_WORKER_INITIAL;
     if (!identity || !proof || !pump || !binding || binding->channel < 0 ||
-        !binding->source_shell_proof_enabled || worker_role != KER_NGINX_SOURCE_WORKER_CANDIDATE ||
-        !operation_id || !native_commit_cookie || !grant_deadline_ns ||
+        !binding->source_shell_proof_enabled ||
+        (!initial && worker_role != KER_NGINX_SOURCE_WORKER_CANDIDATE) ||
+        !operation_id || !grant_deadline_ns ||
         grant_deadline_ns > binding->record.deadline_ns ||
-        identity->flags != KER_NGINX_SOURCE_WORKER_CANDIDATE ||
+        identity->flags != worker_role ||
         identity->actor_pid != (uint32_t)getpid() ||
         identity->actor_tid != (uint32_t)syscall(SYS_gettid) ||
         memcmp(identity, &binding->record, sizeof(*identity)) ||
@@ -611,7 +642,11 @@ int ker_nginx_source_bootstrap_worker_preexit(
         memcmp(identity->run_nonce, binding->record.run_nonce, sizeof(identity->run_nonce)) ||
         !ker_nginx_source_bootstrap_proof_equal(proof, &binding->source_shell_proof) ||
         !proof->adapter_cycle_serial || !proof->opaque_cycle_token ||
-        !binding->record.ready_cookie || !binding->source_commit_evidence_received ||
+        !binding->record.ready_cookie) return -EPERM;
+    if (initial) {
+        if (identity->source_epoch || identity->generation || native_commit_cookie ||
+            binding->source_commit_evidence_received) return -EPERM;
+    } else if (!binding->source_commit_evidence_received || !native_commit_cookie ||
         native_commit_cookie != binding->native_commit_cookie) return -EPERM;
     if (source_shell_preexit_operation) return -EALREADY;
     int live = ker_nginx_source_bootstrap_live(binding);
@@ -745,7 +780,8 @@ int ker_nginx_source_bootstrap_worker_preexit(
  * it is not an inherited FD and survives the slim primary's close loop. */
 static uint32_t source_master_pid;
 static uint64_t source_master_start;
-static uint64_t source_master_handover_deadline[3];
+static uint64_t source_master_handover_deadline[
+    KER_NGINX_SOURCE_COMMITTED_ROUND_LIMIT + 1];
 static int environment_consumed;
 static int source_intermediate;
 static int source_detached;
@@ -1029,7 +1065,7 @@ int ker_nginx_source_daemon_fork_prepare(void)
         environment_uint("KER_NGINX_SOURCE_BOOTSTRAP_SUPERVISOR_START", &supervisor_start) ||
         environment_uint("KER_NGINX_SOURCE_BOOTSTRAP_EPOCH", &epoch) ||
         environment_uint("KER_NGINX_SOURCE_BOOTSTRAP_DEADLINE_NS", &grant_deadline) ||
-        grant_deadline <= now || grant_deadline - now > KER_NGINX_SOURCE_BOOTSTRAP_MAX_NS ||
+        grant_deadline <= now || grant_deadline - now > source_bootstrap_max_lifetime() ||
         !endpoint || endpoint_len == 0 ||
         endpoint_len >= sizeof(source_daemon_origin.endpoint) ||
         source_origin_nonce(nonce) ||
@@ -1477,7 +1513,8 @@ static int source_from_environment(uint32_t role, uint32_t generation,
         .launch_epoch = launch_epoch, .deadline_ns = lifetime,
     };
     if (role == KER_NGINX_SOURCE_ROLE_MASTER) {
-        if (source_epoch < 1 || source_epoch > 2) return -EPROTO;
+        if (source_epoch < 1 ||
+            source_epoch > KER_NGINX_SOURCE_COMMITTED_ROUND_LIMIT) return -EPROTO;
         uint64_t *handover_deadline = &source_master_handover_deadline[source_epoch];
         if (operation == KER_NGINX_SOURCE_MASTER_PARK) {
             if (*handover_deadline) return -EALREADY;
@@ -1533,42 +1570,59 @@ int ker_nginx_source_is_master(void)
 
 int ker_nginx_source_master_barrier(uint16_t operation)
 {
-    /* Retain every attempt and receipt. Round two consumes either the exact
-     * acknowledged abort or the explicit committed-successor lineage; it
-     * never resets a role, operation ledger, deadline, or grant. */
-    static unsigned consumed[3], completed[3];
+    /* A new round consumes the preceding receipt without renewing any
+     * existing deadline. An abort may authorize only the explicit retry. */
+    static unsigned consumed[KER_NGINX_SOURCE_COMMITTED_ROUND_LIMIT + 1];
+    static unsigned completed[KER_NGINX_SOURCE_COMMITTED_ROUND_LIMIT + 1];
     unsigned bit = operation == KER_NGINX_SOURCE_MASTER_PARK ? 1u :
         operation == KER_NGINX_SOURCE_MASTER_COMMIT ? 2u :
         operation == KER_NGINX_SOURCE_MASTER_ABORT ? 4u : 0u;
     struct ff_reload_state **source = dlsym(RTLD_DEFAULT, "ngx_ff_reload_shm");
     int *enabled = dlsym(RTLD_DEFAULT, "ngx_ff_graceful_reload");
     if (!bit || !ker_nginx_source_is_master() || !source || !*source ||
-        !enabled || *enabled != 1 || !ff_reload_state_valid(*source, sizeof(**source)) ||
-        (*source)->reload_active != 1 || (*source)->fsm_state != 2) return -EPROTO;
+        !enabled || *enabled != 1 || !ff_reload_state_valid(*source, sizeof(**source)))
+        return -EPROTO;
+    uint32_t peer = 0, peer_generation = 0;
+    bool upgrade = false;
+    if (ker_nginx_source_upgrade_enabled() && (*source)->epoch == 1 &&
+        !(*source)->reload_active && !(*source)->fsm_state) {
+        ff_reload_peer_block(&peer, &peer_generation);
+        upgrade = peer != 0 && peer != FF_RELOAD_EPOCH_NONE && peer_generation == 0;
+    }
+    if (!upgrade && ((*source)->reload_active != 1 || (*source)->fsm_state != 2))
+        return -EPROTO;
     uint32_t round = (*source)->epoch;
-    if (round != 1 && round != 2) return -EPROTO;
+    if (upgrade) round = KER_NGINX_SOURCE_UPGRADE_ROUND;
+    if (!round || round > KER_NGINX_SOURCE_COMMITTED_ROUND_LIMIT)
+        return -EPROTO;
     unsigned old_generation = 0, target_generation = 1;
-    if (round == 2) {
+    if (round > 1) {
         const char *successor = getenv("KER_NGINX_SOURCE_SUCCESSOR_ENABLE");
         const char *first = getenv("KER_NGINX_SOURCE_FIRST_HUP_ENABLE");
         int committed_successor = successor && !strcmp(successor, "1") &&
             first && !strcmp(first, "1") && !getenv("FF_FAULT") &&
             !getenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE") &&
-            completed[1] == (1u | 2u) && consumed[1] == (1u | 2u);
-        int aborted_retry = ker_fstack_nginx_source_fault_profile() &&
+            completed[round - 1] == (1u | 2u) &&
+            consumed[round - 1] == (1u | 2u);
+        int aborted_retry = round == 2 && getenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE") &&
+            ker_fstack_nginx_source_fault_profile() &&
             completed[1] == (1u | 4u) && consumed[1] == (1u | 4u);
-        if (!committed_successor && !aborted_retry) return -EPROTO;
-        if (committed_successor) {
-            old_generation = 1;
-            target_generation = 0;
+        if (!committed_successor && !aborted_retry &&
+            (!upgrade || completed[round - 1] != (1u | 2u))) return -EPROTO;
+        if (committed_successor || upgrade) {
+            target_generation = round % 2;
+            old_generation = 1 - target_generation;
         }
     }
-    if ((*source)->active_gen != old_generation || (*source)->target_gen != target_generation ||
+    if ((*source)->active_gen != old_generation ||
+        (*source)->target_gen != (upgrade ? old_generation : target_generation) ||
         (consumed[round] & bit) ||
         (bit != 1 && (!(consumed[round] & 1) || (consumed[round] & 6))) ||
         (bit == 4 && (round != 1 || !ker_fstack_nginx_source_fault_profile()))) return -EPROTO;
     if ((bit == 1 && ((*source)->rx_owner_gen != old_generation || (*source)->rx_stopped)) ||
-        (bit == 2 && ((*source)->rx_owner_gen != target_generation || (*source)->rx_stopped)) ||
+        (bit == 2 && ((*source)->rx_owner_gen != target_generation ||
+            (*source)->rx_stopped != (uint32_t)upgrade ||
+            (upgrade && (*source)->reserved[4] != peer))) ||
         (bit == 4 && ((*source)->rx_owner_gen != old_generation || (*source)->rx_stopped != 1))) return -ESTALE;
     consumed[round] |= bit;
     struct ker_nginx_source_bootstrap binding;

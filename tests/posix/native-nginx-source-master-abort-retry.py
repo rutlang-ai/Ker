@@ -3,6 +3,7 @@
 import argparse
 import array
 import ctypes
+import errno
 import hashlib
 import importlib.util
 import ipaddress
@@ -13,6 +14,7 @@ import re
 import secrets
 import select
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -173,6 +175,7 @@ peer = load('source_peer_setup', tree / 'tests/posix/native-nginx-peer-source.py
 pair = peer.pair
 kr = load('source_worker_kr', tree / 'tools/ker-run.py')
 boot = load('source_worker_boot', tree / 'tools/nginx_source_bootstrap_supervisor.py')
+c28 = load('source_retry_c28', tree / 'tools/nginx_source_c22_provider.py')
 lc_checks = load('source_retry_lc_checks',
     tree / 'tests/upstream/fstack/tests/integration/common/reload_checks.py')
 namespace_root = Path(tempfile.mkdtemp(prefix='ker-source-abort-retry-', dir='/dev/shm'))
@@ -229,6 +232,7 @@ def execute():
     worker = kr.AdditionalWorker(item)
     app = service = ready = None
     owners = []
+    helper_pins = []
     global manager,authority,controller,lc_probe,lc_output
     try:
         worker.start(build / 'ker-io-worker', SimpleNamespace(idle_sleep_us=1000,
@@ -291,17 +295,83 @@ def execute():
             require(time.monotonic() < deadline and app.poll() is None, 'broker READY failed')
             time.sleep(.01)
         caprecv,capsend=pair()
-        controller=subprocess.Popen([str(adapter_build/'ker-nginx-owner-group-controller'),str(root/'broker.sock'),str(capsend.fileno())],pass_fds=(capsend.fileno(),),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=(root/'controller.stderr').open('wb'),bufsize=0)
+        controller = subprocess.Popen(
+            [str(adapter_build/'ker-nginx-owner-group-controller'),
+             str(root/'broker.sock'), str(capsend.fileno()), '--source-retry-wire',
+             str(sup.start_ticks), str(supfd)],
+            pass_fds=(capsend.fileno(), supfd), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=(root/'controller.stderr').open('wb'),
+            bufsize=0)
         capsend.close()
-        require(select.select([caprecv],[],[],10)[0],'controller slot transfer timed out')
-        body,anc,flags,_=caprecv.recvmsg(8,socket.CMSG_SPACE(12)+socket.CMSG_SPACE(8))
-        creds=[]
-        for level,kind,value in anc:
-            if kind==socket.SCM_RIGHTS:
-                fds=array.array('i');fds.frombytes(value);caps.extend(fds)
-            elif kind==socket.SCM_CREDENTIALS:creds.append(struct.unpack('=3i',value))
-            else:raise RuntimeError('unexpected slot ancillary')
-        require(body==b'N' and not flags and len(caps)==2 and creds==[(controller.pid,os.getuid(),os.getgid())],'invalid original SDK slot transfer')
+        def receive_controller_caps(count):
+            require(select.select([caprecv], [], [], 10)[0],
+                'controller capability transfer timed out')
+            data, ancillary, flags, _ = caprecv.recvmsg(c28._RECORD.size + 1,
+                socket.CMSG_SPACE(12) + socket.CMSG_SPACE(3 * 4),
+                socket.MSG_CMSG_CLOEXEC)
+            rights, credentials = [], []
+            try:
+                for level, kind, value in ancillary:
+                    require(level == socket.SOL_SOCKET, 'unexpected controller cmsg level')
+                    if kind == socket.SCM_RIGHTS:
+                        fds = array.array('i')
+                        fds.frombytes(value)
+                        rights.extend(fds)
+                    elif kind == socket.SCM_CREDENTIALS:
+                        credentials.append(struct.unpack('=3i', value))
+                    else:
+                        raise RuntimeError('unexpected controller ancillary')
+                require(len(data) == c28._RECORD.size and not flags & ~socket.MSG_CMSG_CLOEXEC and
+                    len(rights) == count and credentials == [(controller.pid, os.getuid(), os.getgid())] and
+                    all(stat.S_ISFIFO(os.fstat(fd).st_mode) for fd in rights),
+                    'invalid controller capability transfer')
+                return data, rights
+            except BaseException:
+                for fd in rights:
+                    os.close(fd)
+                raise
+        bundle, transfers = receive_controller_caps(3)
+        caps.extend(transfers)
+        fields = c28._RECORD.unpack(bundle)
+        slot_ids = tuple(number for fd in caps[:2] for number in
+            (os.fstat(fd).st_dev, os.fstat(fd).st_ino))
+        require(fields[:3] == (c28._MAGIC, c28._VERSION, c28._RECORD.size) and
+            fields[8:10] == (4108, 16) and fields[10:] == slot_ids,
+            'retry wire bundle was not bound to the original slots')
+        provider = object.__new__(c28.SourceShellC22Provider)
+        provider._source_command_abi = c28._C28_SOURCE_COMMAND_ABI
+        provider._source_command_sequence = 0
+        provider._source_command_unresolved = False
+        provider._source_command_outstanding = None
+        provider._closed = False
+        provider._channel = caprecv
+        provider.context = SimpleNamespace(deadline_ns=time.monotonic_ns() + 140_000_000_000)
+        provider.process = controller
+        provider._last_received_bundle = {'record': bundle}
+        provider._source_retry_allowed = True
+        provider._source_retry_cookie = None
+        provider._source_retry_slot_attempted = False
+        provider.slot_identities = (slot_ids[:2], slot_ids[2:])
+        provider.watch_fd = caps[2]
+        provider.pidfd = os.pidfd_open(controller.pid, 0)
+        helper_pins.append(provider.pidfd)
+        provider.start_ticks = kr.process_start_ticks(controller.pid)
+        provider._helper_fd = os.open(f'/proc/{controller.pid}/exe',
+            os.O_RDONLY | os.O_CLOEXEC)
+        helper_pins.append(provider._helper_fd)
+        helper_stat = os.fstat(provider._helper_fd)
+        provider._helper_metadata = (helper_stat.st_dev, helper_stat.st_ino)
+        provider._helper_sha256 = hashlib.sha256(
+            (adapter_build/'ker-nginx-owner-group-controller').read_bytes()).digest()
+        provider._check_actor(provider.context.deadline_ns)
+
+        def retry_wire_call(callback, deadline_ns):
+            controller.stdin.write(b'SOURCE_RETRY_WIRE\n')
+            controller.stdin.flush()
+            result = callback(deadline_ns)
+            wait = max(0, (deadline_ns-time.monotonic_ns())/1e9)
+            base.wait_line(controller, 'OWNER_GROUP_OK SOURCE_RETRY_WIRE', wait)
+            return result
         # Retain the exact native controller transfer channel for RETRY_SLOT.
         def command(value):
             sent_ns=time.monotonic_ns()
@@ -365,7 +435,7 @@ def execute():
         lc_script = tree / 'tests/upstream/fstack/tests/integration/common/reload_probes/m4_lc.py'
         lc_output = (evidence_dir / 'm4-lc.log').open('wb')
         lc_started_ns = time.monotonic_ns()
-        lc_probe = subprocess.Popen([sys.executable, str(lc_script),
+        lc_probe = subprocess.Popen([sys.executable, '-B', str(lc_script),
             '--server', '198.18.0.2', '--port', '4108', '--conns', '12',
             '--interval', '0.1', '--duration', str(LC_DURATION_SECONDS),
             '--fresh', '0.5', '--timeout', '2'],
@@ -445,32 +515,15 @@ def execute():
                 print('FIRST_ABORT_PHASE_EVENT', 'held_command_complete', time.monotonic_ns(), flush=True)
                 print('FIRST_ABORT_PHASE_EVENT', 'abort_command_begin', time.monotonic_ns(), flush=True)
                 timing('abort_command_send', operation, control_deadline)
-                command('ABORT');live()
+                command('ABORT_BEFORE '+str(control_deadline));live()
                 timing('abort_command_ack', operation, control_deadline)
                 print('FIRST_ABORT_PHASE_EVENT', 'abort_command_complete', time.monotonic_ns(), flush=True)
-                # Native adoption requires the original candidate's live
-                # admission task; the original source has not killed it yet.
-                print('FIRST_ABORT_PHASE_EVENT', 'native_retry_write', time.monotonic_ns(), flush=True)
-                controller.stdin.write(f'SOURCE_RETRY_BEFORE {control_deadline}\n'.encode());controller.stdin.flush()
-                timing('native_retry_command_sent', operation, control_deadline)
-                retry_lines=[]
-                while True:
-                    live()
-                    require(select.select([controller.stdout],[],[],
-                        max(0,(control_deadline-time.monotonic_ns())/1e9))[0], 'native bounded RETRY exceeded PARK budget')
-                    print('FIRST_ABORT_PHASE_EVENT', 'native_retry_readable', time.monotonic_ns(), flush=True)
-                    line=controller.stdout.readline().decode().strip();retry_lines.append(line)
-                    timing('native_retry_line', operation, control_deadline, line=line)
-                    print('FIRST_ABORT_PHASE_EVENT', 'native_retry_line', time.monotonic_ns(), repr(line), flush=True)
-                    require(line and controller.poll() is None,'native bounded RETRY failed '+repr(retry_lines))
-                    if line==f'OWNER_GROUP_OK SOURCE_RETRY_BEFORE {control_deadline}':break
-                cookies=[int(m[1]) for line in retry_lines if (m:=re.fullmatch(r'SUCCESSOR_COOKIE preserved=([1-9][0-9]*)',line))]
-                require(len(cookies)==1,'native RETRY lacks exact preserved listener cookie')
-                completed=[m for line in retry_lines if (m:=re.fullmatch(r'SOURCE_RETRY_BEFORE_COMPLETE ns=([0-9]+) deadline=([0-9]+)',line))]
-                require(len(completed)==1 and int(completed[0][1])<control_deadline and
-                    int(completed[0][2])==control_deadline,
-                    'native bounded RETRY did not complete before the original PARK deadline')
-                print('NATIVE_RETRY_ADOPTED_BEFORE_SOURCE_ABORT',retry_lines,control_deadline,time.monotonic_ns(),flush=True)
+                # The first barrier stays live until native adoption has preserved
+                # the initial cookie on the new plan.
+                provider._source_park_deadline_ns = control_deadline
+                provider._source_abort_result = {'lease': held['lease']}
+                retry_cookie = retry_wire_call(provider.adopt_source_retry_before, control_deadline)
+                timing('native_retry_wire_ack', operation, control_deadline, cookie=retry_cookie)
                 live()
                 status=kr.send_source_route_command(auth_sup,prepared,kr._RX_OWNER_SOURCE_ROUTE_ABORT,prepared.command_sequence+1,operation_deadline_ns=control_deadline)
                 require(status==0,'C31 pending ABORT rejected '+str(status));live()
@@ -478,7 +531,7 @@ def execute():
             barriers.append(dict(operation=operation,deadline=control_deadline,
                 entered=entered_ns,completed=time.monotonic_ns()))
             timing('callback_complete', operation, control_deadline)
-            if operation==9:return dict(native_retry_cookie=cookies[0])
+            if operation==9:return dict(native_retry_cookie=retry_cookie)
         for operation in [5,9]:
             master_channel,_=endpoint.accept();channels.append(master_channel)
             packet,anc,flags,_=master_channel.recvmsg(boot.RECORD.size+1,socket.CMSG_SPACE(12))
@@ -530,20 +583,32 @@ def execute():
         print('ACTUAL_SOURCE_ORIGINAL_FLIP_ABORT_T0',values,barriers,flush=True)
         manager.retire_aborted_source_candidate()
         def acquire_retry_slot():
-            command('RETRY_SLOT')
-            require(select.select([caprecv],[],[],10)[0], 'retry FIFO transfer timeout')
-            data,anc,flags,_=caprecv.recvmsg(8,socket.CMSG_SPACE(12)+socket.CMSG_SPACE(4))
-            rights=[];credentials=[]
-            for level,kind,value in anc:
-                require(level==socket.SOL_SOCKET,'wrong retry transfer cmsg level')
-                if kind==socket.SCM_RIGHTS:
-                    fds=array.array('i');fds.frombytes(value);rights.extend(fds)
-                elif kind==socket.SCM_CREDENTIALS:credentials.append(struct.unpack('=3i',value))
-                else:raise RuntimeError('unexpected retry FIFO ancillary')
-            require(data==b'N' and not flags and len(rights)==1 and
-                credentials==[(controller.pid,os.getuid(),os.getgid())], 'retry FIFO sender mismatch')
-            print('NATIVE_RETRY_SLOT_AFTER_SOURCE_ABORT',authority._native_retry_cookie,os.fstat(rights[0]),flush=True)
-            return rights[0]
+            deadline_ns = time.monotonic_ns() + 5_000_000_000
+            slot, watch = retry_wire_call(provider.take_source_retry_slot, deadline_ns)
+            caps.append(watch)
+            try:
+                provider.take_source_retry_slot(deadline_ns)
+            except PermissionError:
+                pass
+            else:
+                os.close(slot)
+                raise AssertionError('SDK issued the retry capability twice')
+
+            def send_duplicate(deadline):
+                request = c28._encode_source_c28_request(c28._C28_RETRY_SLOT,
+                    provider._source_command_sequence + 1, deadline, bundle)
+                return c28._exchange_source_c28(caprecv, request,
+                    (controller.pid, os.getuid(), os.getgid()), deadline, provider._check_actor)
+            try:
+                duplicate = retry_wire_call(send_duplicate, deadline_ns)
+                require(duplicate['errno'] == errno.EALREADY and 'fds' not in duplicate,
+                    'helper replay issued another retry capability')
+                print('NATIVE_RETRY_SLOT_WIRE_ONCE',
+                    authority._native_retry_cookie, os.fstat(slot), flush=True)
+                return slot
+            except BaseException:
+                os.close(slot)
+                raise
         caps[1]=authority.prepare_aborted_retry(acquire_retry_slot)
         if caps[0]>=0:os.close(caps[0]);caps[0]=-1
         # A second real old-owner stream spans the retry HUP.
@@ -696,6 +761,23 @@ def execute():
             f'exits={sorted(exited_workers)}, active={active_workers}')
         command('OLD_CAPS');command('DROP_PARENT')
         command('RETIRE0')
+        def verify_watch(fd, sequence):
+            ready.begin_verify(os.dup(fd), sequence, timeout=6.0)
+            while ready.poll_verify() is None:
+                time.sleep(.001)
+            result = dict(ready.last_verify_result)
+            result['profile'] = result['profile'].hex()
+            result['nonce'] = result['nonce'].hex()
+            return result
+        aborted_watch_result = verify_watch(caps[2], 1)
+        require(aborted_watch_result['status'] and not aborted_watch_result['state'],
+            'aborted-plan watch incorrectly certified the new retirement')
+        retry_watch_result = verify_watch(caps[3], 2)
+        require(retry_watch_result['status'] == 0 and retry_watch_result['state'] == 1 and
+            retry_watch_result['owner_pid'] == old.owner_pid and
+            retry_watch_result['owner_start_ticks'] == old.owner_start and
+            retry_watch_result['listener_cookie'] == authority._native_retry_cookie,
+            f'retry watch did not verify the exact retired initial listener: {retry_watch_result}')
         until=time.monotonic()+5
         while time.monotonic()<until and 'ff_source_plane_retired' not in (prefix/'runtime.trace').read_text():time.sleep(.01)
         require('ff_source_plane_retired' in (prefix/'runtime.trace').read_text(),'retry admission not retired')
@@ -782,6 +864,7 @@ def execute():
             retry_hup_started_ns=retry_hup_started_ns,
             old_progress_after_abort=post_abort_lc,
             native_retry_cookie=retry_cookie,lc_summary=lc_fields,
+            aborted_watch_result=aborted_watch_result,retry_watch_result=retry_watch_result,
             lc_progress=final_lc_samples,lc_exit_code=lc_probe.returncode,
             worker_starts=sorted(started_workers),worker_exits=sorted(exited_workers),
             active_worker_count=len(active_workers),active_worker_pid=active_workers[0],
@@ -807,6 +890,8 @@ def execute():
         for channel in channels:channel.close()
         for fd in caps:
             if fd>=0:os.close(fd)
+        for fd in helper_pins:
+            os.close(fd)
         if controller is not None and controller.poll() is None:controller.terminate()
         if app is not None and app.poll() is None:app.terminate()
         if lc_probe is not None and lc_probe.poll() is None:lc_probe.terminate();lc_probe.wait(timeout=3)

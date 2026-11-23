@@ -64,6 +64,7 @@ int main(void)
         .supervisor_pidfd = -1, .source_master_pidfd = -1,
         .source_route_candidate_pidfd = -1, .source_route_candidate_channel = -1,
         .source_route_master_pidfd = -1, .source_route_aborted_candidate_pidfd = -1,
+        .source_route_upgrade_pidfd = -1,
         .source_route_aborted_master_pidfd = -1, .expected_owner_role = 0,
         .owner_pid = (pid_t)owner, .owner_tid = (uint32_t)owner,
         .owner_start = (uint64_t)owner_start, .expected_owner_cookie = (uint64_t)owner_cookie,
@@ -132,7 +133,8 @@ int main(void)
             return finish_success(&fixture);
         }
         if (getenv("KER_TEST_SOURCE_ROUTE_SECOND_SUCCESSOR") && waiting_successor &&
-                fixture.source_route_successor_used &&
+                fixture.source_route_committed_record.source_epoch ==
+                    KER_RX_OWNER_SOURCE_ROUTE_SUCCESSOR_EPOCH &&
                 fixture.source_route_last_type ==
                     KER_RX_OWNER_SOURCE_ROUTE_SUCCESSOR_PREPARE &&
                 fixture.source_route_rejected_operation_id &&
@@ -329,6 +331,9 @@ int main(void)
                 !fixture.owner_authenticated ||
                 fixture.peer_record.authority_deadline_ns !=
                     fixture.source_route_record.pair.authority_deadline_ns) return 7;
+            if (getenv("KER_TEST_SOURCE_RETURN_ON_RETRY_COMMIT") &&
+                    fixture.source_route_record.source_epoch == KER_RX_OWNER_SOURCE_ROUTE_RETRY_EPOCH)
+                return finish_success(&fixture);
             uint8_t frame[64];
             memset(frame, 0x5a, sizeof(frame));
             struct ker_rx_owner_relay_header source = {

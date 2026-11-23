@@ -161,7 +161,8 @@ class ControlOnlyAuthorityTests(unittest.TestCase):
             observer, None, prepared, tuple(fields), 31, 1, 1, None, (),
             (0, 0), initial, None, candidate, (1, 1), candidate_proof,
             candidate_proof, right, boot._source_socket_identity(right), actors,
-            b'ack', b'ack', (123, os.getuid(), os.getgid()))
+            b'ack', b'ack', (123, os.getuid(), os.getgid()), left,
+            boot._source_socket_identity(left)[:4])
         prepared._source_route_preparation = preparation
         observer._source_route_preparations = {id(prepared): preparation}
         watch = {'source_epoch': 1, 'generation': 1, 'role': 1,
@@ -547,6 +548,13 @@ class ShellCycleEnvelopeTests(unittest.TestCase):
         import socket
         pid, channel = self.connected_child()
         observer = self.observer_for_worker(pid)
+        observer.binary_hash = hashlib.sha256(Path(f'/proc/{pid}/exe').read_bytes()).digest()
+        observer._executable_files = {}
+        def close_worker_grant():
+            # The fixture already owns cleanup of the separate slim descriptor.
+            observer.slim_pidfd = -1
+            observer.close()
+        self.addCleanup(close_worker_grant)
         proof = boot.SourceCycleProof(1, 0, 8, 0x200000, self.CONFIG, self.INI)
         request = self.worker_request(pid, proof)
         directory = Path(tempfile.mkdtemp(prefix='ker-shell-slot-'))
@@ -564,9 +572,8 @@ class ShellCycleEnvelopeTests(unittest.TestCase):
         memory = mock.patch.object(boot, 'memory', side_effect=lambda p, a, n:
             struct.pack('=8I', *self.source_prefix) if n == 32 else bytes(n))
         shared = mock.patch.object(boot, 'shared_mapping', return_value=(0x9000, 0xa000, '00:00', '1'))
-        hashed = mock.patch.object(boot.identity, '_sha256', return_value=observer.binary_hash)
-        memory.start(); shared.start(); hashed.start()
-        self.addCleanup(memory.stop); self.addCleanup(shared.stop); self.addCleanup(hashed.stop)
+        memory.start(); shared.start()
+        self.addCleanup(memory.stop); self.addCleanup(shared.stop)
         if change_before_grant:
             cycle_reads = {pid: 0}
             original_scalar = observer._scalar
@@ -679,7 +686,7 @@ class ShellCycleEnvelopeTests(unittest.TestCase):
 
     def test_initial_record_must_echo_origin_proof_and_candidate_must_be_fresh(self):
         initial_record = self.fields(self.initial)
-        self.assertEqual(self.observer._initial_cycle_proof_matches(initial_record),
+        self.assertIs(self.observer._initial_cycle_proof_matches(initial_record),
             self.initial)
         wrong_initial = list(initial_record)
         wrong_initial[32] = 0x200000
@@ -735,6 +742,7 @@ class ShellCycleEnvelopeTests(unittest.TestCase):
                 (pid, os.getuid(), os.getgid()), slot_fd, relay)
         self.assertEqual(spy.sent, [])
         self.assertNotIn((1, 1), observer.workers)
+        self.assertFalse(observer._executable_live(pid))
         self.assertNotIn((1, 1), observer.worker_proofs)
         self.assertEqual(observer._cycle_serial_highwater, self.initial.adapter_cycle_serial)
 
@@ -753,6 +761,7 @@ class ShellCycleEnvelopeTests(unittest.TestCase):
         with self.assertRaisesRegex(PermissionError, 'short source worker grant'):
             observer.reply_worker(channel, request,
                 (pid, os.getuid(), os.getgid()), slot_fd, relay)
+        self.assertTrue(observer._executable_live(pid))
         self.assertEqual(observer.worker_proofs[(1, 1)], proof)
         self.assertEqual(observer._cycle_serial_highwater, proof.adapter_cycle_serial)
         with self.assertRaisesRegex(PermissionError, 'candidate cycle serial is stale'):
@@ -1247,24 +1256,34 @@ class SourcePreexitProtocolTests(unittest.TestCase):
         self.assertFalse(getattr(self.observer, '_private_candidate_preexit_consumed', False))
         self.assertEqual(self.observer._pending_preexits, {})
 
-    def test_private_candidate_reader_consumes_one_credentialed_packet_and_retains_pending(self):
+    def exercise_private_candidate_reader(self, retry):
         self.observer.control_only = True
+        if retry:
+            self.record[9] = 2
+            self.observer.allow_abort_retry = True
+            self.observer._completed_master_barriers = {(1, 5), (1, 9), (2, 5), (2, 6)}
+            self.key = (2, 1)
+            self.observer.workers[self.key] = (self.pidfd, tuple(self.record))
+            self.observer.worker_proofs[self.key] = self.proof
+            self.observer.worker_process_slots[self.key] = 3
         self.observer.worker_channels[self.key] = self.channel
         record = self.record
         self.observer._source_shell_committed_plans[self.key] = {
             'worker_pid': record[5], 'worker_start_ticks': record[11],
             'slot': 3, 'ready_cookie': 444, 'native_current_cookie': 444,
             'cycle_proof': self.proof,
-            'idle_observation': {'source_snapshot': (1, 1, 0, 0)},
+            'idle_observation': {'source_snapshot': (self.key[0], 1, 0, 0)},
         }
         # Exercise the real credentialed seqpacket reader and _accept validator;
         # the private Origin/controller authority join is covered separately.
         self.observer._private_candidate_preexit_authority = lambda _controller: True
         self.observer.observe_committed_current_owner = lambda *_args, **_kwargs: None
-        controller = SimpleNamespace(_private_candidate_preexit_pending=None)
+        controller = SimpleNamespace(_private_candidate_preexit_pending=None,
+            _private_committed_worker_key=lambda _context: self.key)
         self.peer.send(self.packet(operation_id=913))
         pending = self.observer.poll_private_candidate_preexit(controller)
         self.assertIs(type(pending), boot.PendingSourceRetirement)
+        self.assertEqual(pending.key, self.key)
         self.assertIs(controller._private_candidate_preexit_pending, pending)
         self.assertIs(self.observer._pending_preexits[913][0], pending)
         self.assertTrue(self.observer._private_candidate_preexit_consumed)
@@ -1273,6 +1292,12 @@ class SourcePreexitProtocolTests(unittest.TestCase):
         self.peer.setblocking(False)
         with self.assertRaises(BlockingIOError):
             self.peer.recv(boot.SETTLED_RECORD_BYTES)
+
+    def test_private_candidate_reader_consumes_one_credentialed_packet_and_retains_pending(self):
+        self.exercise_private_candidate_reader(retry=False)
+
+    def test_private_retry_preexit_consumes_the_committed_second_epoch(self):
+        self.exercise_private_candidate_reader(retry=True)
 
     def test_missing_original_supervisor_provider_cannot_authorize(self):
         pending = boot.PendingSourceRetirement(self.key, 901, os.getpid(),

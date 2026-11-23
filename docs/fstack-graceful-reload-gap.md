@@ -302,12 +302,80 @@ Do not treat that alias as the full matrix, and do not count `LIMITED` or `SKIP`
 original result artifacts and distinguish failed or skipped profiles from
 passes.
 
-Until the FF generation-reload service, its per-process descriptor/census
-interfaces, original runtime counters, drain behavior, fault cases and cleanup
-are exercised end to end, the source entry
-remains `blocked`. Neither an F-Stack-only run, pure Nginx FSM tests, the no-FF
-Nginx lifecycle, the bounded graceful-off Nginx profile, nor the single-process
-caller controller or bounded two-member broker census completes it.
+Separate private C34 IPv4 TAP runs passed the unchanged shell's
+`precheck` and each of `rt01`, `rt02`, `rt23`, `rt30`, and `rt31` through
+Ker. Original Nginx completed all six HUP transitions in each run and returned
+to one worker. In `rt02`, the old generation began draining with 12 connections.
+The original probe completed 24 downloads of the default 8 MiB payload with
+matching MD5, clean EOF, and no stalls over 3 seconds. In `rt23`, Nginx refused
+the second HUP in `T3_DRAIN`, completed exactly one round, and the probe completed
+36 downloads with the same integrity and stall checks. `rt30` and `rt31` ran
+the original 180-second probes. `rt30` completed 4,976 short-connection requests
+with no failures. `rt31` completed 360 fresh-connection requests with no failures
+and recorded 12 keepalive reconnects, within the original bound for 12 long
+connections. The launcher verified native STOP and DPDK I/O settlement, zero
+outstanding buffers, and the original supervisor's zero exit status and ECHILD
+receipt. These runs used a rebuilt, pinned private diagnostic bundle.
+
+The packet route changes after any in-flight frame completes, within the
+original 100 ms handover deadline. The broker can receive new SYNs after
+PARK, so the COMMIT receipt must account for the full queue under the
+same lease. The `rt30` rerun captured an in-flight frame completion before
+the route change and accepted one SYN that arrived after PARK.
+
+The unchanged `baseline` completed its full 330-second probe with 15,840
+keepalive requests and 660 fresh connections. It reported zero failures and
+reconnects. It stopped the initial worker without HUP through its own
+authenticated PREEXIT and native STOP path.
+
+Six fault cases passed on independently pinned fault builds. In `rt20` and
+`rt22`, the original READY and park timeouts returned to T0 with the initial
+owner still serving, zero reconnects and zero fresh-connection failures.
+In `rt20b`, READY took 15,218 ms under the original 15,000 ms fault setting.
+Nginx completed all six transitions, returned to one worker and served all 90
+fresh connections. In `rt21`, the ownership-flip fault returned to T0 while
+the old worker served 4,264 requests and 90 fresh connections with zero
+failures or reconnects. In `rt24`, the first reload aborted and the second
+completed with a 1,048 ms drain, one remaining worker and all 60 fresh
+connections successful. In `rt26`, the test-only native adapter withheld a
+real queued Linux SYN-ACK and recorded a failed send only after the actual
+request had been revoked and the F-Stack map cancellation acknowledged.
+The original oracle reported `synack_fail=1 revoked=1` and a completed
+reload. All these runs recorded native shutdown ACK, zero outstanding
+buffers, and a zero-exit ECHILD receipt from the original supervisor.
+
+The unchanged `rt12` exercised a real DPDK virtio-user TAP. The management
+interface stayed up through reload, and the independent client reached its
+address by ICMP afterwards. The HTTP control returned 200 and all 90 new
+connections succeeded. Both native STOP and the original supervisor's ECHILD
+receipt were present. The virtio-user process exited and removed its interface.
+
+The unchanged `gr0` reported one 2.072-second outage and 886 successful
+HTTP requests in its 25-second probe, with zero graceful-reload log lines.
+Both serial native runtimes completed STOP with zero outstanding buffers.
+The original master and worker exited normally, and the source supervisor
+reported zero exit and ECHILD.
+
+The unchanged `rt25` completed the priming HUP, original USR2 exec, and
+WINCH handover from directory epoch 2 to epoch 3. The new Nginx master
+reused the resident slim primary. The original F-Stack directory used a
+sealed shared mapping, and the native route retained both masters' pidfds
+through the switch. All 90 fresh connections succeeded
+during the original 45-second probe. The 12 keepalive clients recorded 24
+reconnects across both drain rounds, within the original limit. The old
+worker exited, the native RX and STOP paths settled with zero outstanding
+buffers, and the original supervisor returned zero with ECHILD.
+
+The unchanged `rv9` completed all 100 reloads at the original 15-second
+interval. Its 1,590-second probe completed 7,948 fresh connections with zero
+failures. Both resource trends were flat across 100 samples.
+`rtemap` stayed at zero and `hp_free` ended at its starting value. Native
+RX and STOP settled with zero outstanding buffers, and the original
+supervisor returned zero with ECHILD.
+
+All 17 applicable original cases passed in isolated private diagnostic
+runs. The catalog entry remains `blocked` for registering a reproducible
+CTest job that can build and launch the complete original shell matrix.
 
 ## Packet-channel retirement and worker control lifetime
 
@@ -437,10 +505,8 @@ zero through the coordinator, and leave zero outstanding worker buffers.
 The test writes hashes, ordered events, native statistics and logs to
 `nginx-candidate-evidence.json` in the build directory.
 
-This leaf is one-shot. Candidate HUP/respawn, USR2 qualification, repeated
-candidate slots, same-master old/new Nginx orchestration and production FSM
-integration remain unsupported. The complete source shell entrypoint and
-its `rt01`/`rt02`/`rv9`/fault matrix remain blocked.
+This leaf exercises one handover. The complete original-shell HUP, USR2,
+repeated reload, and fault qualifications are recorded above.
 
 
 ### Real old/new Nginx overlap qualification
@@ -503,10 +569,80 @@ three-second progress anchor and at least five seconds of zero-failure source
 progress after abort before replacement startup. The original perf summary
 oracle accepts the bounded old-connection closures after successful retry.
 
-This is source traffic qualification over three explicit Nginx callers, not a
-completed `case_rt24`: its original `flip_fail_once` fault, same-master two-HUP
-sequence and original FSM completion/drain assertions are not claimed. See
-[evidence and exact limits](fstack-nginx-runtime.md#original-rt24-traffic-probe-across-abort-and-retry).
+The separate `native-nginx-source-master-abort-retry` fixture passed with a
+rebuilt fault-enabled runtime and its matched Nginx activation shim. It
+observed `flip_fail_once`, continued service on the original worker, and one
+completed reload after a second HUP to the same master. The drain took
+2,045 ms with the bounded ABORT. The unchanged probe completed all 60 fresh
+requests and recorded 12 reconnects across 12 persistent connections,
+within the source case's bound.
+
+The broker now enforces the original PARK deadline for ABORT as well as
+COMMIT. ABORT must account for the final queue under the same lease. An
+expired native abort is quarantined. Retry requires a correlated abort
+receipt. The original build verifier accepted a separately relinked Nginx
+with a `flip_fail_once` manifest and rejected the fault build under the
+production check.
+
+The adopted plan preserves the initial listener cookie and the original
+shell's address binding. Before issuing the replacement slot, the broker
+can create a fresh generation watch from the exact aborted plan's armed
+watch. The fixture transfers the replacement FIFO and watch together. The
+old watch is rejected by C34 VERIFY. After the second commit and actual
+listener retirement, C34 VERIFY succeeds on the new watch with the
+original owner's PID, start time, and listener cookie.
+
+The fault-only C28 helper accepts a retry adoption under the original abort
+deadline and returns the preserved cookie. A later command transfers the
+new FIFO and watch with the correlated reply. The Python receiver validates
+the helper identity, the echoed request, and both descriptor identities.
+The fixture uses this transport for the real abort and retry. It rejects a
+second claim in the SDK and confirms that a direct replay receives no
+descriptors from the helper.
+
+The launch selector matches the original `precheck,rt24 --fault flip_fail_once`
+case to a separately pinned fault manifest. The bound Origin selects the
+retry-only helper mode after the Nginx configuration and bootstrap context
+agree with the capture. A real Nginx configuration check accepted this fault
+form. The production runtime rejected the same values, and the fault runtime
+rejected a missing opt-in, a different fault name and a delay override.
+
+The private shell controller handles the epoch-1 master ABORT within the
+original PARK deadline. It confirms C28 rollback and one-shot retry adoption,
+then waits for the C31 route ABORT before acknowledging the source master.
+After acknowledgment it allows the exact aborted candidate to exit while
+retaining its worker proof and watch. The controller test uses the real C31
+receiver with modeled C28 receipts. Production, mismatched fault captures
+and unknown adoption or route outcomes produce no master ACK.
+
+After the first candidate exits and the original master returns to T0, the
+private controller claims the adopted plan's FIFO and generation watch
+once. Both capabilities stay pinned while the SDK authenticates the next
+worker's epoch-2, generation-1 request. A host regression uses a separate
+worker process and verifies the five descriptors in the real Unix socket
+grant and the credentialed READY from that worker. The attached observer
+checks the exact aborted candidate pidfd and continues to verify the live
+original owner.
+
+The second-round C31 PREPARE uses the exact credentialed epoch-1 ABORT
+receipt, its still-live original owner, and the epoch-2 READY for the
+adopted FIFO. The controller sends ACTIVATE only after the real C31 receiver
+acknowledges that PREPARE. The host regression checks the received ACTIVATE
+record and rejects a copied predecessor, an expired setup deadline and a
+replayed PREPARE.
+
+The private controller binds the retry PARK to its own 100 ms deadline and
+C28 lease. The original master receives COMMIT acknowledgment after C31
+has switched the prepared route and C28 has settled the packet queue. The
+retry worker receives the committed native listener cookie. The regression
+rejects a renewed deadline and withholds master acknowledgment if the C28
+COMMIT outcome is unknown. After the original owner exits, C34 VERIFY uses
+the adopted retry generation watch and checks the retired listener cookie.
+
+In the pinned private source-shell run, the controller authorized the retry
+worker's PREEXIT after the exact old-owner retirement. The correlated native
+STOP receipt and original supervisor ECHILD receipt qualify the unchanged
+`case_rt24`. The wider source-shell execution gate remains held.
 
 ### READY candidate death is not an acknowledged abort
 

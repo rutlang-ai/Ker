@@ -276,6 +276,7 @@ def _attach_module():
 class _SourceInitialWorkerTransport:
     __slots__ = ('context', 'broker', 'relay', 'relay_auth', 'auth', 'app', 'app_pidfd',
         'supervisor_pidfd', 'nonce', 'epoch', 'authenticate', 'revoke',
+        'broker_app_binding',
         'attachment', 'watch', 'receiver', 'worker_pidfd', 'worker_view',
         'ready_identity', 'initial_bootstrap_channel_identity',
         'grant_attempted', 'auth_started', 'authenticated', 'settled',
@@ -292,6 +293,7 @@ class _SourceInitialWorkerTransport:
             socket.SOL_SOCKET, cookie_option, 8))[0]
             for endpoint in (relay, relay_auth, auth))
         self.app, self.app_pidfd = app, app_pidfd
+        self.broker_app_binding = None
         self.supervisor_pidfd = supervisor_pidfd
         self.nonce, self.epoch = bytes(nonce), epoch
         self.authenticate, self.revoke = authenticate, revoke
@@ -485,6 +487,11 @@ class SourceShellController:
         self._first_candidate_prepare_attempted = False
         self._first_candidate_activation_delivered = False
         self._first_candidate_revoke_attempted = False
+        self._accepted_retry_worker_request = None
+        self._retry_candidate_relay_anchor = None
+        self._retry_candidate_watch = None
+        self._retry_candidate_ready = None
+        self._retry_candidate_prepared = None
         self._private_initial_exit_observation = None
         self._private_initial_exit_eof_hint_ns = None
         self._private_initial_retirement_proof = None
@@ -549,6 +556,11 @@ class SourceShellController:
                 set(env) <= {'LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
                     'KER_FSTACK_NGINX_INI', 'KER_FSTACK_RUNTIME_TRACE'} if type(env) is dict else False)
             private_control_ok = all(private_control_checks)
+        kni = (type(self.profile) is _c34_profile_module().PrivateNewC34InteropProfile and
+            self.profile.environment.get('KER_NGINX_SOURCE_KNI_ENABLE') == '1')
+        exception_ok = ((args.exception_iface, args.exception_mode, args.exception_policy,
+            args.exception_tcp_ports, args.exception_udp_ports) ==
+            ('kerkni', 'ports', 'reject', '80,443', '53') if kni else args.exception_iface is None)
         if (type(expected) is not dict or
                 startup._captured_expectation_key(network) != startup._expected_key(expected) or
                 threading.current_thread() is not threading.main_thread() or
@@ -564,7 +576,7 @@ class SourceShellController:
                     args.address6 is not None or args.gateway6 is not None or
                     args.vip_addresses or args.vip_addresses6 or
                     args.promiscuous is not None or args.all_multicast or
-                    args.exception_iface is not None or args.sysctls or
+                    not exception_ok or args.sysctls or
                     args.tcp_ecn is not None) or
                 expected['deadline_ns'] != self.deadline_ns):
             raise PermissionError(errno.ENOTSUP,
@@ -611,7 +623,7 @@ class SourceShellController:
                     stdout=profile.stdout, stderr=profile.stderr, cwd=profile.cwd)
             else:
                 raise TypeError('source controller launch requires an exact captured profile type')
-            self.launch.live_supervisor(self.deadline_ns)
+            self.launch.wait_supervisor()
             self.started = True
             return self.launch
         except BaseException as error:
@@ -678,15 +690,25 @@ class SourceShellController:
         receipt = self.launch.backend_handoff.take(self.deadline_ns)
         self.launch.attach_retained_backend_receipt(receipt)
         self.launch.backend_runtime_actor = runtime_actor
-        remaining_ns = min(self.deadline_ns - time.monotonic_ns(), 5_000_000_000)
+        # The original shell runs precheck and transfers its probes before
+        # Nginx forks Origin. The wire exchange starts its own deadline when
+        # a connection arrives. Before that, watch the original run and actors.
+        remaining_ns = self.deadline_ns - time.monotonic_ns()
         if remaining_ns <= 0:
             raise TimeoutError('source origin observation deadline expired')
-        self.listener.settimeout(remaining_ns / 1_000_000_000)
-        try:
-            channel, _ = self.listener.accept()
-        finally:
-            # The SDK main-loop selector needs a nonblocking listener.
-            self.listener.setblocking(False)
+        listener_fd = self.listener.fileno()
+        poller = select.poll()
+        poller.register(listener_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        for pidfd in (self.launch.pidfd, self.io_actor.pidfd, runtime_actor.pidfd):
+            poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        events = dict(poller.poll((remaining_ns + 999_999) // 1_000_000))
+        if not events or time.monotonic_ns() >= self.deadline_ns:
+            raise TimeoutError('source origin observation deadline expired')
+        if any(fd != listener_fd for fd in events):
+            raise ProcessLookupError('a captured source actor exited before Origin connected')
+        if events[listener_fd] != select.POLLIN:
+            raise ConnectionError('source origin listener failed before accepting a peer')
+        channel, _ = self.listener.accept()
         if channel.getsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED) != 1:
             channel.close()
             raise PermissionError('accepted origin socket lost credential collection')
@@ -785,6 +807,9 @@ class SourceShellController:
         if (runtime is None or runtime.pid != app.pid or runtime.pidfd != app_pidfd or
                 identity._pidfd_pid(app_pidfd) != app.pid or
                 not identity.process_alive(app_pidfd) or
+                broker_readiness.app != (app.pid, os.getuid(), os.getgid(), runtime.start_ticks) or
+                identity._pidfd_pid(broker_readiness.app_pidfd) != app.pid or
+                not identity.process_alive(broker_readiness.app_pidfd) or
                 identity._pidfd_pid(supervisor_pidfd) != os.getpid() or
                 not identity.process_alive(supervisor_pidfd)):
             raise ProcessLookupError('initial worker C31 actor pidfds are stale')
@@ -808,6 +833,8 @@ class SourceShellController:
             _INITIAL_TRANSPORT_TOKEN, context, broker_readiness,
             relay_endpoint, relay_auth_endpoint, auth_endpoint, app, app_pidfd, supervisor_pidfd,
             nonce, epoch, authenticate, revoke)
+        self._initial_transport.broker_app_binding = (
+            broker_readiness.app, broker_readiness.app_pidfd)
         self.initial_worker_binding = self._initial_transport
         return self._initial_transport
 
@@ -893,6 +920,10 @@ class SourceShellController:
         if (type(context) is not self.profile.origin_module.bootstrap.SourceBootstrapSupervisor or
                 getattr(self.launch, 'context', None) is not context):
             raise RuntimeError('source bootstrap context ownership changed')
+        if getattr(context, 'allow_successor', False) and getattr(
+                self, '_successive_candidate_prepared', None) is not None:
+            return tuple(channel for key, channel in context.worker_channels.items()
+                if self.profile.origin_module.identity.process_alive(context.workers[key][0]))
         return tuple(context.worker_channels.values())
 
     @staticmethod
@@ -914,6 +945,16 @@ class SourceShellController:
         if (type(context) is not self.profile.origin_module.bootstrap.SourceBootstrapSupervisor or
                 getattr(self.launch, 'context', None) is not context):
             raise RuntimeError('source bootstrap context ownership changed')
+        if getattr(context, 'allow_successor', False) and getattr(
+                self, '_successive_candidate_prepared', None) is not None:
+            key = self._private_committed_worker_key(context)
+            if key is None or key[0] == 1:
+                return None
+            proof = self.c22_provider.retire_successive_predecessor(key[0])
+            if proof is not None and key[0] == context.successor_final_epoch:
+                self._poll_private_candidate_stop(self._initial_transport,
+                    context.worker_channels[key])
+            return None
         if getattr(context, 'control_only', False):
             transport = getattr(self, '_initial_transport', None)
             if not context.workers and not context.worker_channels:
@@ -921,6 +962,49 @@ class SourceShellController:
                         getattr(context, '_completed_master_barriers', set()) or
                         getattr(context, '_source_shell_committed_plans', {})):
                     raise PermissionError('control-only source context unexpectedly contains master authority')
+                return None
+            if self._private_first_abort_acknowledged(context):
+                try:
+                    retry_committed = self._private_committed_worker_key(context) == (2, 1)
+                    if retry_committed:
+                        observation = self._check_private_initial_worker_exit_binding(
+                            transport, self.c22_provider, context, allow_live=True)
+                        if observation is not None:
+                            self._advance_private_initial_listener_retirement(transport)
+                    else:
+                        self._check_authenticated_initial_worker_core(transport, self.c22_provider)
+                    for key, channel in context.worker_channels.items():
+                        if key == (0, 0) and not context.allow_abort_retry:
+                            if self._private_initial_shutdown_binding(context) is transport:
+                                self._poll_private_candidate_stop(transport, channel)
+                            elif self._peek_source_worker_channel(channel)[0] != 'empty':
+                                raise PermissionError('initial STOP arrived before the aborted candidate exited')
+                            continue
+                        if (retry_committed and key == (2, 1) and
+                                self._private_initial_retirement_proof is not None):
+                            self._poll_private_candidate_stop(transport, channel)
+                            continue
+                        state, _ = self._peek_source_worker_channel(channel)
+                        if retry_committed and key == (0, 0) and state == 'eof':
+                            if self._valid_private_initial_exit_observation(transport, context):
+                                continue
+                            now = time.monotonic_ns()
+                            if self._private_initial_exit_eof_hint_ns is None:
+                                self._private_initial_exit_eof_hint_ns = now
+                            elif now - self._private_initial_exit_eof_hint_ns > 100_000_000:
+                                raise TimeoutError('retry initial worker EOF was not followed by pidfd exit')
+                            continue
+                        if state != 'empty' and (key != (1, 1) or state != 'eof'):
+                            raise PermissionError('unexpected worker record after private source ABORT')
+                    if (context.allow_abort_retry and
+                            getattr(context, '_private_retry_fds', None) is None):
+                        deadline_ns = min(context.deadline_ns, time.monotonic_ns() + 5_000_000_000)
+                        context.poll_private_retry_slot(self, self.c22_provider, deadline_ns)
+                except BaseException:
+                    self.unresolved = True
+                    self._revoke_first_candidate_once(transport)
+                    raise
+                # Preserve the exact candidate proof and watch for the retry.
                 return None
             if (getattr(self, '_first_candidate_worker_pending', False) or
                     getattr(self, '_first_candidate_observed_ready', None) is not None):
@@ -973,30 +1057,17 @@ class SourceShellController:
                     getattr(context, '_completed_master_barriers', set()) == {(1, 5), (1, 6)} and
                     (1, 1) in getattr(context, '_source_shell_committed_plans', {}) and
                     self._private_initial_retirement_proof is not None)
-                pending_preexit = getattr(self, '_private_candidate_preexit_pending', None)
-                candidate_readable = bool(select.select([candidate_channel], [], [], 0)[0])
-                if private_preexit and (pending_preexit is not None or candidate_readable):
+                if private_preexit and getattr(context, 'allow_successor', False):
+                    if self._peek_source_worker_channel(candidate_channel)[0] != 'empty':
+                        raise PermissionError('rv9 current owner requested shutdown before its final round')
+                elif private_preexit:
                     try:
-                        if pending_preexit is None:
-                            pending_preexit = context.poll_private_candidate_preexit(self)
-                        if (pending_preexit is not None and
-                                self._private_candidate_preexit_evidence is None):
-                            context.authorize_private_candidate_preexit(self, pending_preexit)
-                        if self._private_candidate_preexit_evidence is not None:
-                            self._advance_private_candidate_stop(transport)
-                    except BlockingIOError as exc:
-                        if (exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK) or
-                                pending_preexit is None or
-                                time.monotonic_ns() >= pending_preexit.deadline_ns):
-                            self.unresolved = True
-                            self._revoke_first_candidate_once(transport)
-                            raise
-                        return None
+                        self._poll_private_candidate_stop(transport, candidate_channel)
                     except BaseException:
                         self.unresolved = True
                         self._revoke_first_candidate_once(transport)
                         raise
-                elif candidate_readable:
+                elif select.select([candidate_channel], [], [], 0)[0]:
                     self.unresolved = True
                     self._revoke_first_candidate_once(transport)
                     raise OSError(errno.ENOTSUP,
@@ -1013,6 +1084,11 @@ class SourceShellController:
                     getattr(context, '_source_shell_committed_plans', {})):
                 raise PermissionError('control-only source context unexpectedly contains worker/master authority')
             channel = context.worker_channels[(0, 0)]
+            if self._private_initial_shutdown_binding(context) is transport:
+                if select.select([channel], [], [], 0)[0] and self._private_candidate_preexit_pending is None:
+                    self._check_authenticated_initial_worker_core(transport, self.c22_provider)
+                self._poll_private_candidate_stop(transport, channel)
+                return None
             readable, _, _ = select.select([channel], [], [], 0)
             if readable:
                 self.unresolved = True
@@ -1030,6 +1106,68 @@ class SourceShellController:
         raise OSError(errno.ENOTSUP,
             'source PREEXIT is authenticated; native STOP/C28/C31 settlement provider is not connected')
 
+    def _private_initial_shutdown_binding(self, context):
+        """Return the already-authenticated initial transport for the baseline."""
+        transport = self.initial_worker_binding
+        provider = self.c22_provider
+        case = getattr(self.launch, 'source_case', None)
+        if (case not in ('baseline', 'rt20', 'rt21', 'rt22') or
+                self.bootstrap_context is not context or self.launch.context is not context or
+                type(self.profile) is not _c34_profile_module().PrivateNewC34InteropProfile or
+                type(provider) is not _c22_provider_module().SourceShellC34InteropProvider or
+                provider.context is not context or provider._source_committed or
+                provider._initial_retirement_proof is not None or
+                type(transport) is not _SourceInitialWorkerTransport or
+                transport.context is not context or transport.broker is not self.broker_readiness or
+                not transport.authenticated or transport.settled or
+                context._source_shell_committed_plans):
+            return None
+        if case != 'baseline':
+            if (not self._private_first_abort_acknowledged(context) or
+                    self.profile.origin_module.identity.process_alive(context.workers[(1, 1)][0])):
+                return None
+        elif (provider._used_slots != {0} or
+                set(context.workers) != {(0, 0)} or set(context.worker_channels) != {(0, 0)} or
+                getattr(context, '_activated_workers', set()) or
+                getattr(context, '_completed_master_barriers', set())):
+            return None
+        return transport
+
+    def _private_shutdown_binding_matches(self, context, key, binding):
+        if key == (0, 0):
+            return binding is not None and self._private_initial_shutdown_binding(context) is binding
+        provider = self.c22_provider
+        if getattr(context, 'allow_successor', False) and (
+                key != (context.successor_final_epoch, 0) or
+                not context._private_candidate_preexit_authority(self)):
+            return False
+        return (binding is not None and self._private_committed_worker_key(context) == key and
+            self._private_initial_retirement_proof is binding and
+            provider._initial_retirement_proof is binding and
+            getattr(context, '_source_initial_listener_retirements', {}).get(id(provider)) is binding)
+
+    def _private_shutdown_binding(self, context, key):
+        if key == (0, 0):
+            return self._private_initial_shutdown_binding(context)
+        return self._private_initial_retirement_proof
+
+    def _poll_private_candidate_stop(self, transport, channel):
+        context = self.bootstrap_context
+        pending = getattr(self, '_private_candidate_preexit_pending', None)
+        if pending is None and not select.select([channel], [], [], 0)[0]:
+            return
+        try:
+            if pending is None:
+                pending = context.poll_private_candidate_preexit(self)
+            if pending is not None and self._private_candidate_preexit_evidence is None:
+                context.authorize_private_candidate_preexit(self, pending)
+            if self._private_candidate_preexit_evidence is not None:
+                self._advance_private_candidate_stop(transport)
+        except BlockingIOError as exc:
+            if (exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK) or
+                    pending is None or time.monotonic_ns() >= pending.deadline_ns):
+                raise
+
     def _advance_private_candidate_stop(self, transport):
         """Admit and poll one private broker STOP, retaining its raw ACK receipt."""
         if threading.current_thread() is not threading.main_thread():
@@ -1039,7 +1177,7 @@ class SourceShellController:
         broker = self.broker_readiness
         pending = self._private_candidate_preexit_pending
         evidence = self._private_candidate_preexit_evidence
-        proof = self._private_initial_retirement_proof
+        proof = self._private_shutdown_binding(context, getattr(pending, 'key', None))
         if (type(self.profile) is not _c34_profile_module().PrivateNewC34InteropProfile or
                 type(transport) is not _SourceInitialWorkerTransport or
                 transport is not self.initial_worker_binding or transport.context is not context or
@@ -1047,8 +1185,7 @@ class SourceShellController:
                 pending is None or evidence is None or proof is None or
                 context._pending_preexits.get(pending.operation_id, (None,))[0] is not pending or
                 context._authorized_preexits.get(pending.operation_id) is not evidence or
-                getattr(context, '_source_initial_listener_retirements', {}).get(id(provider)) is not proof or
-                getattr(provider, '_initial_retirement_proof', None) is not proof or
+                not self._private_shutdown_binding_matches(context, pending.key, proof) or
                 getattr(self, '_private_stop_ack_receipt', None) is not None):
             if getattr(self, '_private_stop_ack_receipt', None) is not None:
                 return self._validated_cached_private_stop_receipt(transport, broker)
@@ -1065,7 +1202,9 @@ class SourceShellController:
         if getattr(broker, '_stop', None) is None:
             if retained_authorization is not None:
                 raise PermissionError('private STOP was already consumed without a retained ACK receipt')
-            authorization = broker.authorize_private_stop(provider, pending, evidence, proof)
+            authorization = (broker.authorize_private_stop(provider, pending, evidence, proof,
+                initial_controller=self) if pending.key == (0, 0) else
+                broker.authorize_private_stop(provider, pending, evidence, proof))
             broker.begin_stop(private_authorization=authorization)
         try:
             completed = broker.poll_stop()
@@ -1090,7 +1229,7 @@ class SourceShellController:
         provider = self.c22_provider
         pending = self._private_candidate_preexit_pending
         evidence = self._private_candidate_preexit_evidence
-        proof = self._private_initial_retirement_proof
+        proof = self._private_shutdown_binding(context, getattr(pending, 'key', None))
         authorization = getattr(broker, '_private_stop_authorization', None)
         receipt_cache = getattr(self, '_private_stop_ack_receipt', None)
         profile_module = _c34_profile_module()
@@ -1114,17 +1253,16 @@ class SourceShellController:
                 transport is not self.initial_worker_binding or transport.context is not context or
                 transport.broker is not broker or broker is not self.broker_readiness or
                 transport.authenticated is not True or transport.settled is not False or
-                transport.app != getattr(broker, 'app', None) or
-                transport.app_pidfd != getattr(broker, 'app_pidfd', None) or
-                transport.nonce != getattr(broker, 'nonce', None) or
-                transport.epoch != getattr(broker, 'epoch', None) or
                 context is None or provider is None or context.control_only is not True or
+                transport.app.pid != context.runtime.pid or
+                transport.app_pidfd != context.runtime.pidfd or
+                transport.broker_app_binding != (broker.app, broker.app_pidfd) or
+                transport.nonce != self.nonce or transport.epoch != self.epoch or
                 type(provider) is not getattr(provider_module, 'SourceShellC34InteropProvider', None) or
                 not auth_ok or pending is None or evidence is None or proof is None or
                 getattr(context, '_pending_preexits', {}).get(pending.operation_id, (None,))[0] is not pending or
                 getattr(context, '_authorized_preexits', {}).get(pending.operation_id) is not evidence or
-                getattr(context, '_source_initial_listener_retirements', {}).get(id(provider)) is not proof or
-                getattr(provider, '_initial_retirement_proof', None) is not proof or
+                not self._private_shutdown_binding_matches(context, pending.key, proof) or
                 getattr(provider, 'context', None) is not context or
                 getattr(provider, 'broker_readiness', None) is not broker or
                 getattr(self, 'launch', None) is not origin or
@@ -1159,7 +1297,8 @@ class SourceShellController:
                 request.get('sent') is not True or request.get('authorization') is not authorization or
                 authorization is None or authorization.pending is not self._private_candidate_preexit_pending or
                 authorization.term_evidence is not self._private_candidate_preexit_evidence or
-                authorization.retirement_proof is not self._private_initial_retirement_proof or
+                not self._private_shutdown_binding_matches(self.bootstrap_context,
+                    authorization.pending.key, authorization.retirement_proof) or
                 getattr(self, '_private_stop_ack_receipt', None) is not None):
             raise PermissionError('post-exit STOP drain lacks the exact pending private authorization')
         app_pidfd = getattr(broker, 'app_pidfd', -1)
@@ -1186,8 +1325,7 @@ class SourceShellController:
                 transport is not self.initial_worker_binding or provider is None or
                 broker is not transport.broker or provider is not self.c22_provider or
                 context is not transport.context or context.control_only is not True or
-                getattr(context, '_completed_master_barriers', set()) != {(1, 5), (1, 6)} or
-                (1, 1) not in getattr(context, '_source_shell_committed_plans', {})):
+                self._private_committed_worker_key(context) is None):
             raise PermissionError('private initial listener retirement is outside the exact committed phase')
         if self._private_initial_retirement_proof is not None:
             return self._private_initial_retirement_proof
@@ -1233,9 +1371,41 @@ class SourceShellController:
 
     def pump_source_requests(self, broker_readiness=None):
         """One main-thread turn across the single listener and retained owner channels."""
-        if self.bootstrap_context is None:
+        context = self.bootstrap_context
+        if context is None:
             return False
-        if getattr(getattr(self, 'launch', None), 'process', None) is not None:
+        successive = getattr(self, '_successive_candidate_prepared', None)
+        if successive is not None and not successive.committed:
+            if not self.pump_bootstrap_listener():
+                return False
+            self._await_private_master_terminal(context, successive.source_epoch)
+            self.check_live()
+            self.poll_source_preexit()
+            return True
+        activated = getattr(self, '_first_candidate_activation_delivered', False)
+        activated_workers = frozenset(getattr(context, '_activated_workers', ()))
+        source_epoch = 2 if (2, 1) in activated_workers else 1
+        prior = {(1, 5), (1, 9)} if source_epoch == 2 else set()
+        if (activated and getattr(context, '_completed_master_barriers', set()) == prior and
+                getattr(context, '_unparked_abort', None) is None and
+                self.c22_provider is not None and
+                broker_readiness in (None, self.broker_readiness)):
+            if not self.pump_bootstrap_listener():
+                pidfd, _ = context.workers[(source_epoch, 1)]
+                if not self.profile.origin_module.identity.process_alive(pidfd):
+                    self.check_live()
+                # ACTIVATE has already authorized the candidate. The runtime
+                # wait polls the listener and all retained process endpoints.
+                # Keep expensive observation out of the original PARK window.
+                return False
+            # The authenticated master request performs its own actor and
+            # artifact checks. Keep the terminal operation on its PARK deadline.
+            self._await_private_master_terminal(context, source_epoch)
+            self.check_live()
+            self.poll_source_preexit()
+            return True
+        observe_live = getattr(getattr(self, 'launch', None), 'process', None) is not None
+        if observe_live:
             self.check_live()
         if broker_readiness is not None:
             private_profile = _c34_profile_module().PrivateNewC34InteropProfile
@@ -1245,6 +1415,7 @@ class SourceShellController:
             if retained_broker not in (None, broker_readiness):
                 raise RuntimeError('source controller broker readiness owner changed')
             self.broker_readiness = broker_readiness
+            provider = self.c22_provider
             if not getattr(broker_readiness, 'ready', False):
                 if broker_readiness.poll_ready():
                     start_provider(broker_readiness)
@@ -1256,13 +1427,49 @@ class SourceShellController:
                     return False
             elif self.c22_provider is None:
                 start_provider(broker_readiness)
-            if getattr(getattr(self, 'launch', None), 'process', None) is not None:
+            if observe_live and self.c22_provider is not provider:
                 self.check_live()
         accepted = self.pump_bootstrap_listener()
-        if getattr(getattr(self, 'launch', None), 'process', None) is not None:
+        if accepted and getattr(self, '_successive_candidate_prepared', None) is not successive:
+            return True
+        if accepted and ((not activated and
+                getattr(self, '_first_candidate_activation_delivered', False)) or
+                ((2, 1) not in activated_workers and
+                 (2, 1) in getattr(context, '_activated_workers', ()))):
+            # ACTIVATE lets the candidate publish READY immediately. Return
+            # to the listener before revalidating the general worker phase.
+            return True
+        if (accepted and getattr(self, '_first_candidate_activation_delivered', False) and
+                getattr(context, '_completed_master_barriers', set()) == prior | {(source_epoch, 5)}):
+            self._await_private_master_terminal(context, source_epoch)
+        if observe_live and accepted:
             self.check_live()
         self.poll_source_preexit()
         return accepted
+
+    def _await_private_master_terminal(self, context, source_epoch=1):
+        # PARK and its terminal operation share the original deadline.
+        # The worker and broker advance independently while we wait.
+        try:
+            if getattr(context, 'allow_successor', False):
+                prior = {(epoch, operation) for epoch in range(1, source_epoch)
+                    for operation in (5, 6)}
+            else:
+                prior = {(1, 5), (1, 9)} if source_epoch == 2 else set()
+            if context._completed_master_barriers != prior | {(source_epoch, 5)}:
+                raise PermissionError('source cutover is missing its acknowledged PARK')
+            deadline = context._master_control_deadlines[source_epoch]
+            remaining = (deadline - time.monotonic_ns()) / 1_000_000_000
+            terminal = {'terminal_deadline_ns': deadline}
+            if source_epoch > 1:
+                terminal['terminal_source_epoch'] = source_epoch
+            if (remaining <= 0 or not select.select([self.listener], [], [], remaining)[0] or
+                    not self.pump_bootstrap_listener(**terminal)):
+                raise TimeoutError('source master COMMIT/ABORT did not arrive before the PARK deadline')
+        except BaseException:
+            self.unresolved = True
+            self._revoke_first_candidate_once(self._initial_transport)
+            raise
 
     def wait_startup_marker(self, startup_fd, startup_bytes, marker, timeout,
             description, app, app_pidfd, broker_readiness=None):
@@ -1408,8 +1615,8 @@ class SourceShellController:
                 f'{description} source-aware startup failed: {error}', data,
                 cause=error) from error
 
-    def pump_bootstrap_listener(self):
-        """Accept one bounded request; only the existing control-only slim grant is enabled."""
+    def pump_bootstrap_listener(self, *, terminal_deadline_ns=None, terminal_source_epoch=1):
+        """Accept one bounded request from the captured source actors."""
         context = self.bootstrap_context
         if context is None:
             return False
@@ -1425,6 +1632,8 @@ class SourceShellController:
         try:
             channel.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
             deadline = min(context.deadline_ns, time.monotonic_ns() + 5_000_000_000)
+            if terminal_deadline_ns is not None:
+                deadline = min(deadline, terminal_deadline_ns)
             remaining = deadline - time.monotonic_ns()
             if remaining <= 0:
                 raise TimeoutError('source bootstrap request deadline expired')
@@ -1459,7 +1668,16 @@ class SourceShellController:
             if (len(credentials) != 1 or fields[0:2] !=
                     [bootstrap.MAGIC, bootstrap.SHELL_VERSION] or fields[3] != record.size):
                 raise OSError(errno.EPROTO, 'source bootstrap request has an unsupported envelope')
-            if fields[4] == 2 and fields[2] in (5, 6):
+            if terminal_deadline_ns is not None and (
+                    (fields[2] != 6 and
+                     (fields[2] != 9 or terminal_source_epoch != 1 or
+                      (getattr(context, 'allow_abort_retry', False) is not True and
+                       not context._abort_only()))) or
+                    fields[4] != 2 or fields[9] != terminal_source_epoch or
+                    fields[28] != terminal_deadline_ns):
+                raise PermissionError('source request does not match the parked master terminal operation')
+            if fields[4] == 2 and fields[2] in (5, 6, 9):
+                source_epoch = fields[9]
                 timing_start_ns = time.monotonic_ns()
                 # Keep the accepted endpoint and all existing capability/worker
                 # anchors if anything fails after this credentialed request was
@@ -1471,14 +1689,17 @@ class SourceShellController:
                 try:
                     request_attempts = getattr(context,
                         '_private_source_master_request_attempts', set())
-                    request_key = (1, fields[2])
+                    request_key = (source_epoch, fields[2])
                     if request_key in request_attempts:
                         raise PermissionError('private source master request was already consumed')
                     request_attempts.add(request_key)
                     context._private_source_master_request_attempts = request_attempts
                     channel.setblocking(False)
                     profile_type = _c34_profile_module().PrivateNewC34InteropProfile
-                    prepared = getattr(self, '_first_candidate_source_prepared', None)
+                    successive = context.allow_successor and source_epoch > 1
+                    prepared = getattr(self, '_successive_candidate_prepared' if successive else
+                        '_retry_candidate_prepared' if source_epoch == 2 else
+                        '_first_candidate_source_prepared', None)
                     cap = getattr(self, '_first_candidate_worker_grant', None)
                     provider = self.c22_provider
                     if (type(self.profile) is not profile_type or
@@ -1486,47 +1707,62 @@ class SourceShellController:
                             prepared is None or cap is None or provider is None or
                             getattr(self, '_first_candidate_worker_pending', False) is not True):
                         raise OSError(errno.ENOTSUP,
-                            'private source master PARK/COMMIT is not connected to the exact activated candidate')
+                            'private source master operation is not connected to the exact activated candidate')
                     def apply_source(operation, operation_deadline_ns):
                         if threading.current_thread() is not threading.main_thread():
                             raise PermissionError('private source cutover must run on the SDK main thread')
                         if operation == 5:
-                            provider.park_source_group(operation_deadline_ns)
+                            if source_epoch > 1:
+                                provider.park_source_group(operation_deadline_ns, source_epoch=source_epoch)
+                            else:
+                                provider.park_source_group(operation_deadline_ns)
                             provider.bind_source_route_preparation(prepared)
                             return None
-                        if operation == 6:
-                            preparer = getattr(self, '_source_route_preparer', None)
-                            route_module = sys.modules.get(getattr(preparer, '__module__', ''))
-                            if route_module is None and getattr(
-                                    sys.modules.get('__main__'),
-                                    'rx_owner_source_route_prepare', None) is preparer:
-                                route_module = sys.modules.get('__main__')
-                            route_namespace = (vars(route_module) if route_module is not None
-                                else getattr(preparer, '__globals__', {}))
-                            send_command = route_namespace.get('send_source_route_command')
-                            commit_kind = route_namespace.get(
-                                '_RX_OWNER_SOURCE_ROUTE_COMMIT')
-                            if not callable(send_command) or type(commit_kind) is not int:
-                                raise OSError(errno.ENOTSUP,
-                                    'private source route COMMIT dispatcher is unavailable')
-                            status = send_command(cap.initial_transport.auth, prepared, commit_kind,
-                                prepared.command_sequence + 1,
-                                operation_deadline_ns=operation_deadline_ns)
-                            if status != 0:
-                                raise OSError(errno.EIO,
-                                    'C31 source route COMMIT returned a nonzero status')
-                            receipt = getattr(prepared, '_source_route_commit_receipt', None)
-                            response = provider.commit_source_group_before(
-                                operation_deadline_ns, receipt)
-                            return {'native_current_cookie': response['listener_cookie']}
-                        raise OSError(errno.ENOTSUP,
-                            'private source master accepts only PARK and COMMIT')
+                        preparer = getattr(self, '_source_route_preparer', None)
+                        route_module = sys.modules.get(getattr(preparer, '__module__', ''))
+                        if route_module is None and getattr(
+                                sys.modules.get('__main__'),
+                                'rx_owner_source_route_prepare', None) is preparer:
+                            route_module = sys.modules.get('__main__')
+                        route_namespace = (vars(route_module) if route_module is not None
+                            else getattr(preparer, '__globals__', {}))
+                        send_command = route_namespace.get('send_source_route_command')
+                        abort = operation == 9
+                        command = 'ABORT' if abort else 'COMMIT'
+                        # On COMMIT, finish any deferred frame before swapping the route.
+                        kind = route_namespace.get('_RX_OWNER_SOURCE_ROUTE_ABORT' if abort else
+                            '_RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME')
+                        if not callable(send_command) or type(kind) is not int:
+                            raise OSError(errno.ENOTSUP,
+                                f'private source route {command} dispatcher is unavailable')
+                        retry_cookie = None
+                        if abort:
+                            provider.abort_source_group_before(operation_deadline_ns)
+                            if context.allow_abort_retry:
+                                retry_cookie = provider.adopt_source_retry_before(operation_deadline_ns)
+                        status = send_command(cap.initial_transport.auth, prepared, kind,
+                            prepared.command_sequence + 1,
+                            operation_deadline_ns=operation_deadline_ns)
+                        if status != 0:
+                            raise OSError(errno.EIO,
+                                f'C31 source route {command} returned status {status}')
+                        if abort:
+                            return ({'native_retry_cookie': retry_cookie}
+                                if retry_cookie is not None else None)
+                        receipt = getattr(prepared, '_source_route_commit_receipt', None)
+                        response = provider.commit_source_group_before(
+                            operation_deadline_ns, receipt)
+                        return {'native_current_cookie': response['listener_cookie']}
 
-                    context.private_source_master_barrier(channel, packet,
-                        credentials[0], apply_source, self, prepared, cap, provider)
+                    if successive:
+                        context.private_successive_master_barrier(channel, packet,
+                            credentials[0], apply_source, self, prepared)
+                    else:
+                        context.private_source_master_barrier(channel, packet,
+                            credentials[0], apply_source, self, prepared, cap, provider)
                     timings = getattr(self, '_private_source_master_timings', [])
                     self._private_source_master_timings = timings + [
-                        (1, fields[2], timing_start_ns, time.monotonic_ns(), 'acknowledged')]
+                        (source_epoch, fields[2], timing_start_ns, time.monotonic_ns(), 'acknowledged')]
                     master_channels = getattr(self, '_private_source_master_channels', [])
                     self._private_source_master_channels = [item for item in master_channels
                         if item is not channel]
@@ -1535,7 +1771,7 @@ class SourceShellController:
                 except BaseException:
                     timings = getattr(self, '_private_source_master_timings', [])
                     self._private_source_master_timings = timings + [
-                        (1, fields[2], timing_start_ns, time.monotonic_ns(), 'unresolved')]
+                        (source_epoch, fields[2], timing_start_ns, time.monotonic_ns(), 'unresolved')]
                     self.unresolved = True
                     self._revoke_first_candidate_once(
                         getattr(self, '_initial_transport', None))
@@ -1550,6 +1786,13 @@ class SourceShellController:
                     raise OSError(errno.ENOTSUP,
                         'initial worker grant lacks the trusted C22 build receipt and exact C31 source binding')
                 request_key = (fields[9], fields[8])
+                if getattr(context, 'allow_successor', False) and request_key[0] > 1:
+                    keep = True
+                    request = self._capture_candidate_request(channel, packet,
+                        credentials[0], deadline, request_key)
+                    self._prepare_successive_worker(request)
+                    keep = False
+                    return True
                 if request_key == (1, 1):
                     # Freeze provenance only after the owned listener performed
                     # the credentialed receive.  The same absolute request
@@ -1559,19 +1802,8 @@ class SourceShellController:
                             getattr(self, '_first_candidate_worker_grant', None) is not None or
                             getattr(self, '_first_candidate_worker_pending', False)):
                         raise PermissionError('first candidate listener request was already consumed')
-                    channel.setblocking(False)
-                    listener_identity = self._first_candidate_endpoint_identity(self.listener)
-                    listener_cookie = self._first_candidate_socket_cookie(self.listener)
-                    channel_identity = self._first_candidate_endpoint_identity(channel)
-                    channel_cookie = self._first_candidate_socket_cookie(channel)
-                    if (not listener_cookie or not channel_cookie or
-                            time.monotonic_ns() >= deadline):
-                        raise TimeoutError('first candidate listener request expired before provenance capture')
-                    self._accepted_candidate_worker_request = _AcceptedCandidateWorkerRequest(
-                        _ACCEPTED_CANDIDATE_REQUEST_TOKEN, self, self.listener,
-                        listener_identity, listener_cookie, channel, channel_identity,
-                        channel_cookie, bytes(packet), tuple(credentials[0]),
-                        deadline, (1, 1))
+                    self._accepted_candidate_worker_request = self._capture_candidate_request(
+                        channel, packet, credentials[0], deadline, request_key)
                     # A failure from here on is one-shot. Keep this exact
                     # accepted socket reachable until settlement unless the
                     # grant and READY observation both complete.
@@ -1624,9 +1856,34 @@ class SourceShellController:
                             self._revoke_first_candidate_once(transport)
                         raise
                     return True
+                if request_key == (2, 1) and self._private_first_abort_acknowledged(context):
+                    try:
+                        self._check_authenticated_initial_worker_core(transport, provider)
+                        if getattr(self, '_accepted_retry_worker_request', None) is not None:
+                            raise PermissionError('retry candidate listener request was already consumed')
+                        accepted = self._capture_candidate_request(
+                            channel, packet, credentials[0], deadline, request_key)
+                        self._accepted_retry_worker_request = accepted
+                        keep = True
+                        relay, relay_anchor = socket.socketpair(socket.AF_UNIX,
+                            socket.SOCK_SEQPACKET | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC)
+                        self._retry_candidate_relay_anchor = relay_anchor
+                        relay.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+                        relay_anchor.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+                        self._retry_candidate_watch = context.reply_private_retry_worker(
+                            self, provider, accepted, relay)
+                        keep = False
+                        self._retry_candidate_ready = context.observe_private_retry_ready(
+                            self, provider, self._retry_candidate_watch, deadline)
+                        self._prepare_and_activate_retry_candidate(transport, deadline)
+                    except BaseException:
+                        self.unresolved = True
+                        self._revoke_first_candidate_once(transport)
+                        raise
+                    return True
                 if request_key != (0, 0):
                     raise OSError(errno.ENOTSUP,
-                        'source worker request is outside the initial and first-candidate phases')
+                        'source worker request is outside the authorized worker phases')
                 # This accepted request socket has a per-request timeout for
                 # recvmsg. Clear it before the one-shot grant: Python may poll
                 # for writability under a positive timeout before sendmsg's
@@ -1651,6 +1908,63 @@ class SourceShellController:
                 channel.close()
             if 'relay' in locals():
                 relay.close()
+
+    def _capture_candidate_request(self, channel, packet, credentials, deadline, key):
+        channel.setblocking(False)
+        listener_identity = self._first_candidate_endpoint_identity(self.listener)
+        listener_cookie = self._first_candidate_socket_cookie(self.listener)
+        channel_identity = self._first_candidate_endpoint_identity(channel)
+        channel_cookie = self._first_candidate_socket_cookie(channel)
+        if not listener_cookie or not channel_cookie or time.monotonic_ns() >= deadline:
+            raise TimeoutError('candidate listener request expired before provenance capture')
+        return _AcceptedCandidateWorkerRequest(
+            _ACCEPTED_CANDIDATE_REQUEST_TOKEN, self, self.listener,
+            listener_identity, listener_cookie, channel, channel_identity,
+            channel_cookie, bytes(packet), tuple(credentials), deadline, key)
+
+    def _prepare_successive_worker(self, request):
+        context = self.bootstrap_context
+        transport = self._initial_transport
+        previous = getattr(self, '_successive_candidate_prepared', None)
+        if previous is None:
+            previous = self._first_candidate_source_prepared
+        provider = context._private_successor_provider(self)
+        source_epoch, generation = request.worker_key
+        if (previous is None or not previous.committed or source_epoch != previous.source_epoch + 1 or
+                (source_epoch > 2 and provider._successor_retire_receipt is None) or
+                generation != source_epoch % 2 or self.unresolved or
+                time.monotonic_ns() >= request.deadline_ns):
+            raise PermissionError('successive worker is outside its retired predecessor phase')
+        self._accepted_successive_worker_request = request
+        relay, app_end = socket.socketpair(socket.AF_UNIX,
+            socket.SOCK_SEQPACKET | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC)
+        self._successive_pending_relay = app_end
+        try:
+            relay.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            app_end.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            watch = context.grant_private_successive_worker(self, request, relay)
+            current_key = (source_epoch - 1, 1 - generation)
+            current = context._source_route_park_joins[id(previous)].candidate_ref
+            pidfd, record = context.workers[request.worker_key]
+            candidate = _InitialOwnerAuthView(pidfd, record[5], record[6],
+                watch['role'], record[11], record[24], record[25], record[27])
+            if context.workers[current_key][1][5] != current.owner_pid:
+                raise PermissionError('successive current owner differs from the verified previous route')
+            prepared = self._source_route_preparer(transport.auth, app_end,
+                transport.app, transport.app_pidfd, transport.supervisor_pidfd,
+                current, candidate, context.master, context.nonce, context.epoch,
+                context.deadline_ns, previous.operation_id + 1, source_epoch=source_epoch,
+                previous_committed=previous, source_context=context,
+                source_cycle_proof=context.worker_proofs[request.worker_key],
+                prepare_deadline_ns=request.deadline_ns)
+            self._successive_candidate_prepared = prepared
+            context.activate_private_successive_worker(self, prepared, watch, request.deadline_ns)
+            print('KER_SOURCE_SUCCESSIVE_ACTIVATED', source_epoch, candidate.owner_pid, flush=True)
+        except BaseException:
+            self.unresolved = True
+            raise
+        finally:
+            relay.close()
 
     def _join_first_candidate_ready(self, cap, watch, ready, borrowed_pidfd):
         """Retain only the exact role-1 READY produced by the ordered observer."""
@@ -1757,6 +2071,30 @@ class SourceShellController:
             context.worker_channels[(1, 1)], watch, self, cap)
         self._first_candidate_activation_delivered = True
 
+    def _prepare_and_activate_retry_candidate(self, transport, deadline_ns):
+        context = self.bootstrap_context
+        preparer = getattr(self, '_source_route_preparer', None)
+        prior = self._first_candidate_source_prepared
+        if (not self._private_first_abort_acknowledged(context) or
+                self._retry_candidate_ready is not context._private_retry_ready_identity or
+                getattr(self, '_retry_candidate_prepared', None) is not None or
+                getattr(self, 'unresolved', False) or not callable(preparer) or
+                time.monotonic_ns() >= deadline_ns):
+            raise PermissionError('private C31 retry PREPARE requires the exact live epoch-2 READY')
+        pidfd, record = context.workers[(2, 1)]
+        candidate = _InitialOwnerAuthView(pidfd, record[5], record[6], 1, record[11],
+            record[24], record[25], record[27])
+        prepared = preparer(transport.auth, self._retry_candidate_relay_anchor,
+            transport.app, transport.app_pidfd, transport.supervisor_pidfd,
+            transport.worker_view, candidate, context.master, transport.nonce, transport.epoch,
+            context.deadline_ns, prior.operation_id + 1,
+            command_sequence=prior.command_sequence + 1, source_epoch=2, previous_aborted=prior,
+            source_context=context, source_cycle_proof=context.worker_proofs[(2, 1)],
+            prepare_deadline_ns=deadline_ns)
+        self._retry_candidate_prepared = prepared
+        context.activate_prepared_retry_candidate(self, prepared, self._retry_candidate_watch,
+            deadline_ns)
+
     def _revoke_first_candidate_once(self, transport):
         if self._first_candidate_revoke_attempted:
             return
@@ -1791,7 +2129,14 @@ class SourceShellController:
         transport = getattr(self, '_initial_transport', None)
         pending_exit = self._valid_private_initial_exit_observation(transport, context)
         eof_hint = self._private_initial_exit_eof_hint_ns is not None
+        first_aborted = self._private_first_abort_acknowledged(context)
         for key, channel in context.worker_channels.items():
+            if key == (1, 1) and first_aborted:
+                aborted_pidfd = context.workers[key][0]
+                if self.profile.origin_module.identity.process_alive(aborted_pidfd):
+                    poller.register(aborted_pidfd, select.POLLIN | select.POLLHUP |
+                        select.POLLERR | select.POLLNVAL)
+                continue
             if key == (0, 0) and (pending_exit or eof_hint):
                 if eof_hint and not pending_exit:
                     old_pidfd = context.workers[(0, 0)][0]
@@ -1813,13 +2158,13 @@ class SourceShellController:
         events = poller.poll(max(0, int(wait_for * 1000)))
         return any(fd != app_pidfd for fd, _ in events)
 
-    def stop_original(self):
-        """Ask only the captured supervisor to stop its own process tree."""
+    def stop_original(self, *, request_stop=True):
+        """Wait for the original supervisor and verify its own settlement receipt."""
         launch = self.launch
         if launch is None or launch.process is None or launch.pidfd < 0:
             raise RuntimeError('original supervisor has no captured stop identity')
         process = launch.process
-        if process.poll() is None:
+        if request_stop and process.poll() is None:
             if time.monotonic_ns() >= self.deadline_ns:
                 raise TimeoutError('original supervisor stop exceeded its immutable deadline')
             identity = self.profile.origin_module.identity
@@ -1879,8 +2224,8 @@ class SourceShellController:
             raise TimeoutError('source pin validation exceeded its immutable deadline')
 
         def require_live(fd, pid, start, label):
-            if (fd < 0 or identity._pidfd_pid(fd) != pid or
-                    not identity.process_alive(fd) or
+            if (fd < 0 or not identity.process_alive(fd) or
+                    identity._pidfd_pid(fd) != pid or
                     identity._start_ticks(pid) != start):
                 raise ProcessLookupError(f'captured {label} actor is no longer live')
 
@@ -1896,11 +2241,12 @@ class SourceShellController:
             master = getattr(context, 'master', None)
             if master is None:
                 raise RuntimeError('captured original master identity is unavailable')
-            require_live(launch.master_pidfd, master.pid, master.start_ticks,
+            if getattr(context, 'upgrade_scope', False):
+                master = context.current_master()
+            require_live(master.pidfd, master.pid, master.start_ticks,
                 'original master')
-        if launch.origin_pidfd >= 0 and (identity._pidfd_pid(launch.origin_pidfd) <= 0 or
-                not identity.process_alive(launch.origin_pidfd)):
-            raise ProcessLookupError('captured origin actor is no longer live')
+        if launch.origin_pidfd >= 0 and not getattr(context, '_upgrade_original_term', None):
+            launch.check_origin_parent(context)
         if self.io_actor is not None:
             require_live(launch.native_io_pidfd, self.io_actor.pid,
                 self.io_actor.start_ticks, 'native I/O')
@@ -1912,8 +2258,28 @@ class SourceShellController:
                 raise RuntimeError('retained backend receipt lost its exact actor binding')
             receipt.validate_live(launch._backend_expected(),
                 launch.backend_runtime_actor, self.deadline_ns)
+        successive = getattr(self, '_successive_candidate_prepared', None)
+        if successive is not None:
+            context._private_successor_provider(self)
+            if self._successive_pending_relay is not None and successive.committed:
+                # C31 owns the transferred descriptor. Retain this endpoint
+                # for the registered COMMIT proof until the next adoption.
+                old_relays = getattr(self, '_successive_relays', {})
+                old_relays[successive.source_epoch] = self._successive_pending_relay
+                self._successive_relays = old_relays
+                self._successive_pending_relay = None
+            key = (successive.source_epoch, successive.source_epoch % 2)
+            fd, record = context.workers[key]
+            require_live(fd, record[5], record[11], 'committed/successive owner')
+            self.c22_provider._check_actor(self.deadline_ns)
+            return True
         transport = getattr(self, '_initial_transport', None)
-        if (context is not None and transport is not None and
+        first_aborted = self._private_first_abort_acknowledged(context)
+        retry_committed = self._private_committed_worker_key(context) == (2, 1)
+        if retry_committed:
+            self._check_private_initial_worker_exit_binding(
+                transport, self.c22_provider, context, allow_live=True)
+        elif (context is not None and transport is not None and
                 getattr(self, '_first_candidate_worker_pending', False) and
                 set(getattr(context, '_completed_master_barriers', set())) ==
                     {(1, 5), (1, 6)} and
@@ -1925,8 +2291,7 @@ class SourceShellController:
             self._check_first_candidate_phase(transport)
         if context is not None:
             if context.slim_pidfd >= 0:
-                require_live(context.slim_pidfd, context.slim_pid,
-                    context.slim_start_ticks, 'delegated supervisor')
+                context.check_slim_live(self.deadline_ns)
             for key, entry in context.workers.items():
                 if (type(key) is not tuple or len(key) != 2 or
                         any(type(value) is not int or value < 0 for value in key) or
@@ -1941,19 +2306,43 @@ class SourceShellController:
                     raise RuntimeError('source worker record does not match its epoch/generation key')
                 pending_exit = (key == (0, 0) and
                     self._valid_private_initial_exit_observation(transport, context))
-                if pending_exit:
+                if retry_committed and key == (0, 0):
+                    # The exact original owner is already checked above, including
+                    # its expected exit after the second COMMIT.
+                    pass
+                elif pending_exit:
                     if identity.process_alive(fd):
                         raise ProcessLookupError('observed initial worker exit reverted while its pidfd remained live')
                 else:
-                    require_live(fd, pid, start, 'delegated worker')
-                    if not context._executable_live(pid):
-                        raise ProcessLookupError('captured delegated worker executable changed')
+                    try:
+                        require_live(fd, pid, start, 'delegated worker')
+                        if not context._executable_live(pid):
+                            raise ProcessLookupError('captured delegated worker executable changed')
+                    except OSError as error:
+                        # After the ABORT ACK this exact actor may exit between
+                        # checking the pidfd and opening its executable.
+                        if not (first_aborted and key == (1, 1) and
+                                (isinstance(error, (FileNotFoundError, ProcessLookupError)) or
+                                 error.errno == errno.EBADF)):
+                            raise
+                        os.fstat(fd)
+                        # Linux drops /proc/PID/exe before publishing pidfd exit.
+                        if identity.process_alive(fd):
+                            poller = select.poll()
+                            poller.register(fd, select.POLLIN)
+                            wait_ms = min(100, max(0,
+                                (self.deadline_ns - time.monotonic_ns()) // 1_000_000))
+                            poller.poll(wait_ms)
+                            if identity.process_alive(fd):
+                                raise
                 if time.monotonic_ns() >= self.deadline_ns:
                     raise TimeoutError('source worker liveness check exceeded its immutable deadline')
         transport = getattr(self, '_initial_transport', None)
-        if transport is not None and not transport.settled:
+        if transport is not None and not transport.settled and not retry_committed:
             try:
-                if (getattr(self, '_first_candidate_worker_pending', False) or
+                if first_aborted:
+                    self._check_authenticated_initial_worker_core(transport, self.c22_provider)
+                elif (getattr(self, '_first_candidate_worker_pending', False) or
                         getattr(self, '_first_candidate_observed_ready', None) is not None):
                     self._check_first_candidate_phase(transport)
                 else:
@@ -1971,6 +2360,49 @@ class SourceShellController:
                 raise primary_error
         if time.monotonic_ns() >= self.deadline_ns:
             raise TimeoutError('source actor liveness check exceeded its immutable deadline')
+        return True
+
+    def _private_first_abort_acknowledged(self, context):
+        if (getattr(getattr(self, 'launch', None), 'source_case', None) in ('rt20', 'rt22') and
+                context is not None and (1, 1) in context.workers):
+            return context._observe_unparked_abort(self._first_candidate_source_prepared)
+        prior = {(1, 5), (1, 9)}
+        if getattr(context, '_completed_master_barriers', set()) not in (
+                prior, prior | {(2, 5)}, prior | {(2, 5), (2, 6)}):
+            return False
+        provider = self.c22_provider
+        prepared = self._first_candidate_source_prepared
+        cookie = getattr(context, '_native_retry_cookie', None)
+        worker_keys = {(0, 0), (1, 1)}
+        retry_watch = getattr(self, '_retry_candidate_watch', None)
+        if retry_watch is not None:
+            worker_keys.add((2, 1))
+            if (getattr(context, '_private_retry_grant_attempted', False) is not True or
+                    (retry_watch['source_epoch'], retry_watch['generation']) != (2, 1) or
+                    context.workers.get((2, 1), (None,))[0] != retry_watch['pidfd'] or
+                    (retry_watch['slot_device'], retry_watch['slot_inode']) != context._retry_slot):
+                raise PermissionError('private source retry lost its exact native worker grant')
+            ready = getattr(self, '_retry_candidate_ready', None)
+            if ready is not None and (
+                    (2, 1) in context.worker_ready_receivers or
+                    ready != (retry_watch['pid'], os.getuid(), os.getgid(), 1,
+                        retry_watch['tid'], 0, retry_watch['start'], retry_watch['slot_device'],
+                        retry_watch['slot_inode'], retry_watch['cookie'])):
+                raise PermissionError('private source retry READY differs from its worker grant')
+        abort_only = context._abort_only()
+        lineage = (getattr(context, '_source_route_abort_receipt', None) is not None and
+            getattr(provider, '_source_abort_result', None) is not None and
+            provider._used_slots == {0, 1} and retry_watch is None and
+            getattr(context, '_completed_master_barriers', set()) == prior
+            if abort_only else context.allow_abort_retry is True and
+            type(cookie) is int and cookie > 0 and getattr(provider, '_source_retry_cookie', None) == cookie)
+        if (context.control_only is not True or not lineage or
+                self._first_candidate_worker_pending is not True or
+                provider is not self._first_candidate_worker_grant.provider or
+                getattr(provider, '_source_command_unresolved', True) or
+                getattr(prepared, 'aborted', False) is not True or
+                set(context.workers) != worker_keys or set(context.worker_channels) != worker_keys):
+            raise PermissionError('private source ABORT lost its acknowledged native binding')
         return True
 
     def _check_initial_worker_binding(self, transport):
@@ -2040,7 +2472,11 @@ class SourceShellController:
         attachment = transport.attachment
         if attachment is None:
             raise PermissionError('initial worker has no retained owner attachment')
-        attachment.check()
+        identity = self.profile.origin_module.identity
+        if self._private_first_abort_acknowledged(context):
+            attachment.check(aborted_candidate_pidfd=context.workers[(1, 1)][0])
+        else:
+            attachment.check()
         ready = transport.ready_identity
         entry = context.workers[(0, 0)]
         record = entry[1]
@@ -2062,7 +2498,6 @@ class SourceShellController:
             ready[6], ready[7], ready[8], ready[9])
         if tuple(transport.worker_view) != expected:
             raise PermissionError('immutable OWNER_AUTH view no longer matches credentialed READY')
-        identity = self.profile.origin_module.identity
         if (identity._pidfd_pid(transport.worker_pidfd) != ready[0] or
                 not identity.process_alive(transport.worker_pidfd) or
                 identity._start_ticks(ready[0]) != ready[6] or
@@ -2089,6 +2524,22 @@ class SourceShellController:
         provider._check_actor(context.deadline_ns)
         return True
 
+    @staticmethod
+    def _private_committed_worker_key(context):
+        barriers = getattr(context, '_completed_master_barriers', set())
+        plans = getattr(context, '_source_shell_committed_plans', {})
+        if getattr(context, 'allow_successor', False) and plans:
+            epoch = max(key[0] for key in plans)
+            latest = (epoch, epoch % 2)
+            expected = {(round_epoch, operation) for round_epoch in range(1, epoch + 1)
+                for operation in (5, 6)}
+            return latest if latest in plans and barriers == expected else None
+        if barriers == {(1, 5), (1, 6)} and (1, 1) in plans:
+            return (1, 1)
+        if barriers == {(1, 5), (1, 9), (2, 5), (2, 6)} and (2, 1) in plans:
+            return (2, 1)
+        return None
+
     def _valid_private_initial_exit_observation(self, transport, context):
         evidence = getattr(self, '_private_initial_exit_observation', None)
         if not (type(evidence) is _PrivateInitialWorkerExitObservation and
@@ -2097,8 +2548,7 @@ class SourceShellController:
             evidence.transport is transport and evidence.provider is self.c22_provider and
             type(self.profile) is _c34_profile_module().PrivateNewC34InteropProfile and
             getattr(self.c22_provider, '_source_committed', False) is True and
-            getattr(context, '_completed_master_barriers', set()) == {(1, 5), (1, 6)} and
-            (1, 1) in getattr(context, '_source_shell_committed_plans', {}) and
+            self._private_committed_worker_key(context) is not None and
             (0, 0) in getattr(context, 'workers', {}) and
             evidence.pidfd == context.workers[(0, 0)][0] and
             evidence.record == context.workers[(0, 0)][1] and
@@ -2126,14 +2576,18 @@ class SourceShellController:
         except (OSError, PermissionError, AttributeError, IndexError, KeyError, TypeError):
             return False
 
-    def _check_private_initial_worker_exit_binding(self, transport, provider, context):
+    def _check_private_initial_worker_exit_binding(self, transport, provider, context, *,
+            allow_live=False):
         """Retain an exact old-worker exit observation after private COMMIT.
 
-        This records only that the authenticated (0,0) process exited. C28
-        listener retirement and C34 VERIFY remain separate, unimplemented gates.
+        This records that the authenticated (0,0) process exited. The native
+        retirement command and C34 VERIFY consume that observation separately.
         """
         private_profile = _c34_profile_module().PrivateNewC34InteropProfile
         attach_module = sys.modules.get(_ATTACH_NAME)
+        committed = self._private_committed_worker_key(context)
+        retry = committed == (2, 1)
+        worker_keys = {(0, 0), (1, 1), (2, 1)} if retry else {(0, 0), (1, 1)}
         if (type(self.profile) is not private_profile or attach_module is None or
                 type(transport) is not _SourceInitialWorkerTransport or
                 transport is not self.initial_worker_binding or
@@ -2155,21 +2609,22 @@ class SourceShellController:
                     getattr(self, '_accepted_candidate_worker_request', None) or
                 not self._first_candidate_worker_grant_consumed or
                 not self._first_candidate_activation_delivered or
-                getattr(context, '_completed_master_barriers', set()) != {(1, 5), (1, 6)} or
-                (1, 1) not in getattr(context, '_source_shell_committed_plans', {}) or
-                set(context.workers) != {(0, 0), (1, 1)} or
-                set(context.worker_channels) != {(0, 0), (1, 1)} or
+                committed is None or (retry and not self._private_first_abort_acknowledged(context)) or
+                set(context.workers) != worker_keys or
+                set(context.worker_channels) != worker_keys or
                 context.worker_proofs.get((0, 0)) is not context.initial_cycle_proof or
                 provider._used_slots != {0, 1}):
             raise PermissionError('initial worker exit is outside the exact private post-COMMIT phase')
         identity = self.profile.origin_module.identity
         attachment = transport.attachment
         old_fd, old_record = context.workers[(0, 0)]
-        candidate_fd, candidate_record = context.workers[(1, 1)]
+        candidate_fd, candidate_record = context.workers[committed]
         ready = transport.ready_identity
         watch = transport.watch
         old_attachment = attachment.ready
-        candidate_attachment = attachment.candidate_ready
+        candidate_attachment = ((context._private_retry_ready_identity, candidate_fd)
+            if retry else attachment.candidate_ready)
+        observed = self._retry_candidate_ready if retry else self._first_candidate_observed_ready
         channel = context.worker_channels[(0, 0)]
         try:
             channel_identity = _source_bootstrap_channel_identity(channel)
@@ -2180,6 +2635,7 @@ class SourceShellController:
                 type(watch) is not dict or type(old_attachment) is not tuple or
                 len(old_attachment) != 2 or tuple(old_attachment[0]) != ready or
                 type(candidate_attachment) is not tuple or len(candidate_attachment) != 2 or
+                type(candidate_attachment[0]) is not tuple or len(candidate_attachment[0]) != 10 or
                 type(old_record) is not tuple or len(old_record) < 28 or
                 type(candidate_record) is not tuple or len(candidate_record) < 28 or
                 transport.worker_view != _InitialOwnerAuthView(
@@ -2197,17 +2653,18 @@ class SourceShellController:
                 (old_record[5], old_record[6], old_record[8], old_record[9],
                     old_record[11], old_record[24], old_record[25], old_record[27]) !=
                     (ready[0], ready[4], 0, 0, ready[6], ready[7], ready[8], ready[9]) or
-                candidate_attachment[0] != self._first_candidate_observed_ready or
+                candidate_attachment[0] != observed or
                 (candidate_record[5], candidate_record[6], candidate_record[8],
                     candidate_record[9], candidate_record[11]) !=
-                    (candidate_attachment[0][0], candidate_attachment[0][4], 1, 1,
+                    (candidate_attachment[0][0], candidate_attachment[0][4], committed[1], committed[0],
                         candidate_attachment[0][6])):
             raise PermissionError('retained initial/candidate READY associations changed after COMMIT')
         old_pidfds = (old_fd, transport.worker_pidfd, old_attachment[1])
-        if (any(type(fd) is not int or fd < 0 for fd in old_pidfds) or
-                any(identity.process_alive(fd) for fd in old_pidfds)):
-            raise ProcessLookupError('initial worker pidfd exit is not yet observed on every retained view')
-        candidate_pidfds = (candidate_fd, self._first_candidate_observed_pidfd,
+        if any(type(fd) is not int or fd < 0 for fd in old_pidfds):
+            raise ProcessLookupError('initial worker pidfd view was lost before observed exit')
+        if retry and len({(info.st_dev, info.st_ino) for info in map(os.fstat, old_pidfds)}) != 1:
+            raise PermissionError('retry initial-owner pidfd views changed identity')
+        candidate_pidfds = (candidate_fd,) if retry else (candidate_fd, self._first_candidate_observed_pidfd,
             candidate_attachment[1])
         if (any(type(fd) is not int or fd < 0 for fd in candidate_pidfds) or
                 any(not identity.process_alive(fd) for fd in candidate_pidfds) or
@@ -2231,6 +2688,10 @@ class SourceShellController:
             select.POLLERR | select.POLLNVAL)
         if poller.poll(0):
             raise ConnectionError('source attachment channel changed during initial worker exit')
+        if any(identity.process_alive(fd) for fd in old_pidfds):
+            if allow_live:
+                return None
+            raise ProcessLookupError('initial worker pidfd exit is not yet observed on every retained view')
         previous = getattr(self, '_private_initial_exit_observation', None)
         if previous is None:
             previous = _PrivateInitialWorkerExitObservation(_PRIVATE_INITIAL_EXIT_TOKEN,
@@ -2603,7 +3064,9 @@ class SourceShellController:
             if type(self.profile) is _c34_profile_module().PrivateNewC34InteropProfile:
                 proof = getattr(self, '_private_source_settlement', None)
                 context = self.bootstrap_context
-                if proof is None or context._completed_retirements.get((1, 1)) is not proof:
+                key = ((0, 0) if self._private_initial_shutdown_binding(context) is not None
+                    else self._private_committed_worker_key(context))
+                if proof is None or context._completed_retirements.get(key) is not proof:
                     raise PermissionError('private C22 CLOSE requires the recorded worker SETTLED')
                 c22_provider.close_source_capabilities_after_settlement(proof, self.deadline_ns)
             else:
@@ -2611,6 +3074,11 @@ class SourceShellController:
             self.c22_provider = None
         transport = getattr(self, '_initial_transport', None)
         if transport is not None:
+            for channel in getattr(self, '_successive_relays', {}).values():
+                channel.close()
+            relay = getattr(self, '_successive_pending_relay', None)
+            if relay is not None:
+                relay.close()
             transport.settled = True
             if transport.attachment is not None:
                 transport.attachment.close()
@@ -2663,6 +3131,17 @@ class SourceShellController:
                     accepted_channel.close()
             except OSError:
                 pass
+        retry_request = getattr(self, '_accepted_retry_worker_request', None)
+        if retry_request is not None:
+            retry_request.channel.close()
+            self._accepted_retry_worker_request = None
+        retry_relay = getattr(self, '_retry_candidate_relay_anchor', None)
+        if retry_relay is not None:
+            retry_relay.close()
+            self._retry_candidate_relay_anchor = None
+        self._retry_candidate_watch = None
+        self._retry_candidate_ready = None
+        self._retry_candidate_prepared = None
         ready = getattr(self, '_first_candidate_pending_ready', None)
         if ready is not None:
             try:

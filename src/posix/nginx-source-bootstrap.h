@@ -20,14 +20,18 @@
 #define KER_NGINX_SOURCE_WORKER_SETTLED 11
 #define KER_NGINX_SOURCE_WORKER_COMMIT_EVIDENCE 12
 #define KER_NGINX_SOURCE_PREEXIT_VERSION 1
-#define KER_NGINX_SOURCE_PREEXIT_BUDGET_NS UINT64_C(100000000)
+/* Final shutdown includes native kernel teardown and DPDK/EAL worker exit. */
+#define KER_NGINX_SOURCE_PREEXIT_BUDGET_NS UINT64_C(1000000000)
 #define KER_NGINX_SOURCE_SLIM_CONTROL_ONLY 1
 #define KER_NGINX_SOURCE_WORKER_INITIAL 2
 #define KER_NGINX_SOURCE_WORKER_CANDIDATE 4
 #define KER_NGINX_SOURCE_ROLE_SLIM 0
 #define KER_NGINX_SOURCE_ROLE_WORKER 1
 #define KER_NGINX_SOURCE_ROLE_MASTER 2
-#define KER_NGINX_SOURCE_BOOTSTRAP_MAX_NS UINT64_C(300000000000)
+#define KER_NGINX_SOURCE_COMMITTED_ROUND_LIMIT UINT32_C(100)
+#define KER_NGINX_SOURCE_BOOTSTRAP_MAX_NS UINT64_C(420000000000)
+#define KER_NGINX_SOURCE_UPGRADE_ENV "KER_NGINX_SOURCE_UPGRADE_ENABLE"
+#define KER_NGINX_SOURCE_UPGRADE_ROUND UINT32_C(2)
 
 #include "source-native-ini.h"
 #include <errno.h>
@@ -240,6 +244,7 @@ struct ker_nginx_source_bootstrap {
     int slot_fd;
     int relay_fd;
     int ready_fd;
+    int directory_fd;
     uint32_t source_shell_proof_enabled;
     struct ker_nginx_source_bootstrap_proof source_shell_proof;
     uint32_t source_candidate_activated;
@@ -265,6 +270,8 @@ int ker_nginx_source_bootstrap_live(const struct ker_nginx_source_bootstrap *bin
 int ker_nginx_source_bootstrap_poll_stop(const struct ker_nginx_source_bootstrap *binding);
 int ker_nginx_source_bootstrap_poll_activate(const struct ker_nginx_source_bootstrap *binding);
 void ker_nginx_source_bootstrap_close(struct ker_nginx_source_bootstrap *binding);
+bool ker_nginx_source_upgrade_enabled(void);
+bool ker_nginx_source_upgrade_worker(void);
 int ker_nginx_source_is_master(void);
 int ker_nginx_source_master_barrier(uint16_t operation);
 int ker_fstack_nginx_source_fault_profile(void);

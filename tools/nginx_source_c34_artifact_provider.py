@@ -20,6 +20,9 @@ _INTEGRATION = _BASE / 'integration'
 _HELPER_INPUT_BASE = Path('/home/hurricane/.local/state/ker-fstack-source-shell/source-c34-production-20261114T0510')
 _BUILD_MANIFEST = _BASE / 'artifacts/original-source-build-manifest.json'
 _BUILD_MANIFEST_SHA256 = '9d90e32fd4343e1da0a34aa7777e9a3d68a62e14029a20ba790ab6d10784c7d8'
+# Set only in a separately captured fault bundle. The default installation
+# binds production artifacts and can never select the retry helper mode.
+_SOURCE_FAULT = None
 _GRAPH_PACKET = _STAGE / 'static-graphs/per-root-candidate-graphs.json'
 _GRAPH_SHA256 = 'a5c101d4208cff6bd116be8f83c4bdddb7dc34f32e8437e6017a36a278e23618'
 _ALIAS_PACKET = _STAGE / 'static-graphs/alias-identities.json'
@@ -237,7 +240,8 @@ class _HeldArtifact:
 
 class PrivateC34HelperCapture:
     """Fixed ac3b helper capture with reviewed source-command ABI 1."""
-    __slots__ = ('_sealed', '_artifacts', 'sha256', 'build_id', 'source_command_abi', '_deadline_ns', '_consumed')
+    __slots__ = ('_sealed', '_artifacts', 'sha256', 'build_id', 'source_command_abi',
+        'source_fault', '_deadline_ns', '_consumed')
 
     def __setattr__(self, name, value):
         if getattr(self, '_sealed', False):
@@ -252,6 +256,7 @@ class PrivateC34HelperCapture:
         self.sha256 = bytes.fromhex(_HELPER_SHA256)
         self.build_id = _HELPER_BUILD_ID
         self.source_command_abi = 1
+        self.source_fault = _SOURCE_FAULT
         self._deadline_ns = deadline_ns
         self._consumed = False
         self._sealed = True
@@ -311,7 +316,8 @@ class PrivateC34HelperCapture:
 
 class PrivateC34ArtifactCapture:
     """Immutable capture of fixed production roots, test actor, and helper."""
-    __slots__ = ('_sealed', '_artifacts', 'helper_capture', 'profile_id', 'test_backend_role', 'source_root', 'source_head', 'source_symbols')
+    __slots__ = ('_sealed', '_artifacts', 'helper_capture', 'profile_id', 'test_backend_role',
+        'source_root', 'source_head', 'source_symbols', 'source_fault')
 
     def __setattr__(self, name, value):
         if getattr(self, '_sealed', False):
@@ -327,6 +333,7 @@ class PrivateC34ArtifactCapture:
         self.profile_id = 'NEWC34_INTEROP'
         self.source_root = _SOURCE_ROOT
         self.source_head = '646a641cfff77f4815e1e29829a09e1ed15a2999'
+        self.source_fault = _SOURCE_FAULT
         self.source_symbols = MappingProxyType(dict(source_symbols))
         self.test_backend_role = 'TEST_ONLY_RX_OWNER_RELAY_CONTROL_ADAPTER'
         self._sealed = True
@@ -385,6 +392,10 @@ class PrivateC34ArtifactCapture:
                 raise PermissionError('private C34 first and relinked fresh Nginx evidence differs')
             manifest = json.loads(os.pread(held['build_manifest'].fd, held['build_manifest'].identity[2] + 1, 0))
             if (manifest.get('source_head') != '646a641cfff77f4815e1e29829a09e1ed15a2999' or
+                    _SOURCE_FAULT not in (None, 'flip_fail_once', 'ready_delay', 'flip_fail', 'ready_never', 'park_never', 'synack_fail') or
+                    manifest.get('fault_injection') is not (_SOURCE_FAULT is not None) or
+                    (_SOURCE_FAULT is not None and
+                        'ff_reload_fault_is_once' not in manifest.get('fault_symbols', ())) or
                     manifest.get('nginx') != {'path': str(held['nginx'].path), 'sha256': held['nginx'].sha256} or
                     manifest.get('libfstack', {}).get('path') != str(held['runtime'].path) or
                     manifest.get('libfstack', {}).get('sha256') != held['runtime'].sha256):

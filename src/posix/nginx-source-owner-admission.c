@@ -21,6 +21,7 @@ extern struct ff_config ff_global_cfg;
 
 static struct ker_nginx_source_bootstrap_record admission_binding;
 static struct ff_reload_state *admission_source;
+static uint32_t admission_source_epoch;
 static pid_t admission_pid, admission_tid;
 static int admission_prepared, admission_retired;
 static int admission_retire_requested;
@@ -58,7 +59,7 @@ static int source_live(void *context)
         ker_sb_preload_owner_loop_active() && ff_reload_state_attached() &&
         ff_global_cfg.dpdk.graceful_reload == 1 &&
         ff_reload_gen() == (int)admission_binding.generation &&
-        admission_source->epoch == admission_binding.source_epoch &&
+        admission_source->epoch == admission_source_epoch &&
         admission_source->target_gen == admission_binding.generation &&
         ff_flow_map_active();
 }
@@ -111,18 +112,23 @@ int ker_nginx_source_owner_admission_prepare(
     binding_live_fn live = (binding_live_fn)dlsym(RTLD_DEFAULT,
         "ker_fstack_nginx_source_worker_binding_live");
     struct ff_reload_state **source = dlsym(RTLD_DEFAULT, "ngx_ff_reload_shm");
+    bool upgrade = binding && ker_nginx_source_upgrade_worker() &&
+        binding->source_epoch == KER_NGINX_SOURCE_UPGRADE_ROUND &&
+        binding->generation == 0 && ff_reload_peer_draining();
+    uint32_t expected_epoch = upgrade || !binding ? 0 : binding->source_epoch;
     if (!binding || !live || live(binding) || admission_prepared || slot < 3 ||
         binding->flags != KER_NGINX_SOURCE_WORKER_CANDIDATE ||
         !source || !*source || (uintptr_t)*source != binding->source_block_address ||
         !ff_reload_state_valid(*source, sizeof(**source)) ||
         !ff_reload_state_attached() || ff_global_cfg.dpdk.graceful_reload != 1 ||
         ff_reload_gen() != (int)binding->generation ||
-        (*source)->epoch != binding->source_epoch ||
+        (*source)->epoch != expected_epoch ||
         (*source)->target_gen != binding->generation ||
-        !ff_reload_hw_locked() || ff_flow_map_active()) return -EPROTO;
+        (!ff_reload_hw_locked() && !upgrade) || ff_flow_map_active()) return -EPROTO;
 
     admission_binding = *binding;
     admission_source = *source;
+    admission_source_epoch = expected_epoch;
     admission_pid = getpid();
     admission_tid = (pid_t)syscall(SYS_gettid);
     /* Prepare the same original table ff_mod_init opens immediately after

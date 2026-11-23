@@ -15,7 +15,7 @@
 #define KER_SOURCE_NETWORK_READBACK_MAX_DATAGRAM 65536U
 #define KER_SOURCE_NETWORK_READBACK_MAX_DATAGRAMS 32U
 #define KER_SOURCE_NETWORK_READBACK_MAX_TOTAL_BYTES (256U * 1024U)
-#define KER_SOURCE_NETWORK_READBACK_MAX_DEADLINE_AHEAD_NS (300ULL * 1000000000ULL)
+#define KER_SOURCE_NETWORK_READBACK_MAX_DEADLINE_AHEAD_NS (420ULL * 1000000000ULL)
 
 /* Private controller-supplied expectation; not a readback result. */
 struct ker_source_network_expectation {
@@ -84,6 +84,9 @@ int ker_source_network_route_finish(const struct ker_source_network_route_scan *
 int ker_source_network_readback(int ifindex,
     const struct ker_source_network_expectation *expected,
     struct ker_source_network_observation *observed);
+
+/* Available after the single-interface source profile completes readback. */
+int ker_posix_source_network_address(struct in_addr *address);
 int ker_source_network_format_proof(const struct ker_source_network_observation *observed,
     char *buffer, size_t capacity);
 int ker_source_network_write_startup(int fd,

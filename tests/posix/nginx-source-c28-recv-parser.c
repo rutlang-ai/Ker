@@ -19,6 +19,9 @@ static int source_fixture_forbid_cutover_commit_before(
 static int source_fixture_forbid_census_snapshot(struct ker_socket_client *, int,
     struct ker_socket_member_census_snapshot *);
 static int source_fixture_forbid_cutover_abort(struct ker_socket_client *, int);
+static int source_fixture_forbid_cutover_abort_before(
+    struct ker_socket_client *, int, uint64_t);
+static int source_fixture_forbid_retry_plan(struct ker_socket_client *, int);
 static int source_fixture_forbid_retire_initial_listener(
     struct ker_socket_client *, int);
 
@@ -29,6 +32,8 @@ static int source_fixture_forbid_retire_initial_listener(
 #define ker_socket_client_owner_group_cutover_commit_before source_fixture_forbid_cutover_commit_before
 #define ker_socket_client_member_census_snapshot source_fixture_forbid_census_snapshot
 #define ker_socket_client_owner_group_cutover_abort source_fixture_forbid_cutover_abort
+#define ker_socket_client_owner_group_cutover_abort_before source_fixture_forbid_cutover_abort_before
+#define ker_socket_client_owner_group_retry_plan source_fixture_forbid_retry_plan
 #define ker_socket_client_owner_group_retire_initial_listener source_fixture_forbid_retire_initial_listener
 #define main source_c22_helper_entrypoint
 #include "nginx-owner-group-controller.c"
@@ -40,6 +45,8 @@ static int source_fixture_forbid_retire_initial_listener(
 #undef ker_socket_client_owner_group_cutover_commit_before
 #undef ker_socket_client_member_census_snapshot
 #undef ker_socket_client_owner_group_cutover_abort
+#undef ker_socket_client_owner_group_cutover_abort_before
+#undef ker_socket_client_owner_group_retry_plan
 #undef ker_socket_client_owner_group_retire_initial_listener
 
 #include <dirent.h>
@@ -96,6 +103,19 @@ static int source_fixture_forbid_cutover_abort(struct ker_socket_client *client,
     int cutover)
 {
     (void)client; (void)cutover;
+    return source_fixture_forbid_native_broker_call();
+}
+
+static int source_fixture_forbid_cutover_abort_before(
+    struct ker_socket_client *client, int cutover, uint64_t deadline_ns)
+{
+    (void)client; (void)cutover; (void)deadline_ns;
+    return source_fixture_forbid_native_broker_call();
+}
+
+static int source_fixture_forbid_retry_plan(struct ker_socket_client *client, int plan)
+{
+    (void)client; (void)plan;
     return source_fixture_forbid_native_broker_call();
 }
 
@@ -279,31 +299,36 @@ static int test_envelope_controls(void)
     struct source_c28_received_credentials credentials;
     int status = source_c28_parse_received(count, &message, received, &credentials);
     int valid = status == 0 && !source_c28_validate_request(received, &bundle,
-        &credentials, pidfd, getpid(), start, 1, deadline, now_ns());
+        &credentials, pidfd, getpid(), start, 1, deadline, now_ns(), false, false);
     struct source_c28_received_credentials wrong = credentials;
     wrong.value.pid++;
     int wrong_pid = source_c28_validate_request(received, &bundle, &wrong,
-        pidfd, getpid(), start, 1, deadline, now_ns()) == EACCES;
+        pidfd, getpid(), start, 1, deadline, now_ns(), false, false) == EACCES;
     int wrong_sequence = source_c28_validate_request(received, &bundle, &credentials,
-        pidfd, getpid(), start, 2, deadline, now_ns()) == EALREADY;
+        pidfd, getpid(), start, 2, deadline, now_ns(), false, false) == EALREADY;
     struct source_provider_record different = {0};
     different.backlog = 1;
     int wrong_bundle = source_c28_validate_request(received, &different, &credentials,
-        pidfd, getpid(), start, 1, deadline, now_ns()) == EPROTO;
+        pidfd, getpid(), start, 1, deadline, now_ns(), false, false) == EPROTO;
     int late = source_c28_validate_request(received, &bundle, &credentials,
-        pidfd, getpid(), start, 1, deadline, deadline) == ETIMEDOUT;
+        pidfd, getpid(), start, 1, deadline, deadline, false, false) == ETIMEDOUT;
     uint8_t invalid[SOURCE_C28_REQUEST_BYTES];
     memcpy(invalid, received, sizeof(invalid));
     invalid[8]++;
     int wrong_version = source_c28_validate_request(invalid, &bundle, &credentials,
-        pidfd, getpid(), start, 1, deadline, now_ns()) == EPROTO;
+        pidfd, getpid(), start, 1, deadline, now_ns(), false, false) == EPROTO;
     memcpy(invalid, received, sizeof(invalid));
     invalid[10] = 99;
     int wrong_operation = source_c28_validate_request(invalid, &bundle, &credentials,
-        pidfd, getpid(), start, 1, deadline, now_ns()) == EOPNOTSUPP;
+        pidfd, getpid(), start, 1, deadline, now_ns(), false, false) == EOPNOTSUPP;
+    invalid[10] = SOURCE_C28_RETRY_SLOT;
+    int retry_opt_in = source_c28_validate_request(invalid, &bundle, &credentials,
+        pidfd, getpid(), start, 1, deadline, now_ns(), false, false) == EOPNOTSUPP &&
+        !source_c28_validate_request(invalid, &bundle, &credentials,
+            pidfd, getpid(), start, 1, deadline, now_ns(), true, false);
     close(pidfd); close(pair[0]); close(pair[1]);
     return valid && wrong_pid && wrong_sequence && wrong_bundle && late &&
-        wrong_version && wrong_operation ? 0 : -1;
+        wrong_version && wrong_operation && retry_opt_in ? 0 : -1;
 }
 
 static int test_idle_grant_expiry(void)
@@ -334,7 +359,7 @@ static int test_authenticated_close_echo_only(void)
     if (!start || send_packet(pair[0], request, sizeof(request), NULL, 0)) return -1;
     struct ker_socket_client client = {0};
     int loop_result = source_c28_command_loop(pair[1], &client, -1, -1, -1,
-        &bundle, pidfd, getpid(), start, deadline);
+        &bundle, pidfd, getpid(), start, deadline, false);
     uint8_t reply[SOURCE_C28_REPLY_BYTES] = {0};
     char control[CMSG_SPACE(sizeof(struct ucred))] = {0};
     struct iovec iov = {.iov_base = reply, .iov_len = sizeof(reply)};

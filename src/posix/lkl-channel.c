@@ -106,6 +106,15 @@ uint64_t ker_posix_capabilities(void)
     return ker_native_ready() ? KER_CAP_DPDK_IO | KER_CAP_LINUX_STACK | KER_CAP_IPV4 | KER_CAP_TCP : 0;
 }
 const char *ker_posix_kernel_release(void) { return ker_native_ready() ? release : NULL; }
+
+int ker_posix_source_network_address(struct in_addr *address)
+{
+    if (!ker_native_ready() || !source_network_profile ||
+        source_network_observed.version != KER_SOURCE_NETWORK_READBACK_VERSION)
+        return -EOPNOTSUPP;
+    *address = source_network_observed.address;
+    return 0;
+}
 bool ker_native_ready(void) { return atomic_load_explicit(&ready, memory_order_acquire); }
 static void fail(const char *operation, int error)
 {
