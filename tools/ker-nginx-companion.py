@@ -848,10 +848,14 @@ def serve_attached_session(channel, helper_hash, timeout=5.0):
             raise ValueError('invalid ATTACH nonce/epoch/sequence')
         fields = wire.unpack_record(data, wire.ATTACH, nonce, epoch,
             request_sequence, wire.ATTACH_BODY)
-        (owner_pid, owner_uid, owner_gid, reserved, owner_start, deadline_ns,
+        (owner_pid, owner_uid, owner_gid, scope, owner_start, deadline_ns,
             master_pid, master_uid, master_gid, master_reserved, master_start,
             binary_hash, profile) = fields
-        if (reserved or master_reserved or owner_pid != peer_pid or (owner_uid, owner_gid) !=
+        now = time.monotonic_ns()
+        authority = (wire.ATTACH_ORIGINAL_RV9_MAX_NS if scope == wire.ATTACH_ORIGINAL_RV9
+            else 420_000_000_000)
+        if (scope not in (0, wire.ATTACH_ORIGINAL_RV9) or master_reserved or
+                owner_pid != peer_pid or (owner_uid, owner_gid) !=
                 (peer_uid, peer_gid) or owner_uid != os.getuid() or
                 owner_gid != os.getgid() or owner_start != start_ticks(owner_pid) or
                 os.getppid() != owner_pid or start_ticks(os.getppid()) != owner_start or
@@ -861,8 +865,7 @@ def serve_attached_session(channel, helper_hash, timeout=5.0):
                 (master_uid, master_gid) != (owner_uid, owner_gid) or
                 sha256_file_bounded(f'/proc/{master_pid}/exe',
                     deadline_ns=deadline_ns) != binary_hash or
-                not any(profile) or time.monotonic_ns() >= deadline_ns or
-                deadline_ns > time.monotonic_ns() + 300_000_000_000):
+                not any(profile) or not now < deadline_ns <= now + authority):
             raise PermissionError('ATTACH identity, actor FDs, or finite profile mismatch')
         owner_pidfd, master_pidfd = received
         received = []
@@ -1493,7 +1496,7 @@ def run(args):
     source_retry_attempted = False
     source_retired_owners = []
     source_promotions = 0
-    source_successor_attempted = False
+    source_successor_attempted = 0
     while True:
         if master.poll() is not None:
             # Reap only children adopted by this dedicated subreaper. Report
@@ -1593,9 +1596,10 @@ def run(args):
                         (retry_watch and (source_aborted_candidate is None or
                             source_retry_attempted or process_alive(source_aborted_candidate[1]))) or
                         (successor_watch and (not source_successor_enabled or
-                            source_successor_attempted or source_promotions != 1 or
-                            len(source_retired_owners) != 1 or
-                            process_alive(source_retired_owners[0][1])))):
+                            not 1 <= source_promotions < 100 or
+                            source_successor_attempted >= source_promotions or
+                            len(source_retired_owners) != source_promotions or
+                            process_alive(source_retired_owners[-1][1])))):
                     raise ValueError('source candidate watch is not available')
                 fields = wire.unpack_record(data, record_type,
                     args.nonce, args.epoch, sequence, wire.SOURCE_WATCH_BODY)
@@ -1613,11 +1617,11 @@ def run(args):
                         raise PermissionError('source retry reuses the aborted candidate identity')
                     source_retry_attempted = True
                 if successor_watch:
-                    previous = source_retired_owners[0][0]
+                    previous = source_retired_owners[-1][0]
                     if (pid == previous[0] or cookie == previous[9] or
                             (dev, inode) == previous[7:9]):
                         raise PermissionError('source successor reuses its retired predecessor identity')
-                    source_successor_attempted = True
+                    source_successor_attempted = source_promotions
                 source_candidate_attempted = True
                 receiver = socket.socket(fileno=fds.pop(0))
                 try:
@@ -1675,7 +1679,7 @@ def run(args):
                 # transaction. This changes only the containment watch, after
                 # it has verified the native/source handover; it signals no FSM.
                 if source_successor_enabled:
-                    if source_promotions >= 2:
+                    if source_promotions >= 100:
                         raise PermissionError('bounded source successor promotion exhausted')
                     source_retired_owners.append((identity, owner_ready_pidfd))
                 else:

@@ -52,13 +52,30 @@ def _pidfd_dead(pidfd):
 
 class NginxCycleControl:
     """One master channel; records are authenticated against helper STARTED."""
-    def __init__(self, runtime):
-        self.outer, self.master = socket.socketpair(socket.AF_UNIX,
-            socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
-        self.outer.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
-        self.master.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
-        self.outer.setblocking(False)
-        self.master.setblocking(False)
+    def __init__(self, runtime, *, source_socket=None):
+        self.source_socket = source_socket
+        self.listener = None
+        self.outer = self.master = None
+        if source_socket is None:
+            self.outer, self.master = socket.socketpair(socket.AF_UNIX,
+                socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+            self.outer.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            self.master.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            self.outer.setblocking(False)
+            self.master.setblocking(False)
+        else:
+            source_socket = Path(source_socket)
+            parent = source_socket.parent.stat()
+            if (not source_socket.is_absolute() or
+                    source_socket.parent.resolve(strict=True) != source_socket.parent or
+                    parent.st_uid != os.getuid() or parent.st_mode & 0o077):
+                raise ValueError('named KNGC endpoint requires a private canonical directory')
+            self.listener = socket.socket(socket.AF_UNIX,
+                socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+            # The connect-time credentials must accompany even the first queued watch.
+            self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            self.listener.bind(os.fspath(source_socket))
+            self.listener.listen(1)
         self.nonce = os.urandom(16)
         while not any(self.nonce):
             self.nonce = os.urandom(16)
@@ -83,8 +100,14 @@ class NginxCycleControl:
             raise ValueError('invalid initial inner runtime tuple')
 
     def nginx_environment(self):
+        endpoint = ({'KER_NGINX_CYCLE_FD': str(self.master.fileno())}
+            if self.source_socket is None else {
+                'KER_NGINX_SOURCE_SERIAL_PATH': os.fspath(self.source_socket),
+                'KER_NGINX_CYCLE_OUTER_PID': str(self.outer_pid),
+                'KER_NGINX_CYCLE_OUTER_START': str(self.outer_start),
+            })
         return {
-            'KER_NGINX_CYCLE_FD': str(self.master.fileno()),
+            **endpoint,
             'KER_NGINX_CYCLE_NONCE': self.nonce.hex(),
             'KER_NGINX_CYCLE_RUNTIME_NONCE': self.runtime[0].hex(),
             'KER_NGINX_CYCLE_RUNTIME_EPOCH': str(self.runtime[1]),
@@ -93,7 +116,7 @@ class NginxCycleControl:
         }
 
     def close_master_copy(self):
-        if not self.closed_master:
+        if not self.closed_master and self.master is not None:
             self.master.close()
             self.closed_master = True
 
@@ -206,11 +229,41 @@ class NginxCycleControl:
                 self.unresolved = True
                 raise
 
+    def bind_source_master(self, launch, timeout=45):
+        if (self.listener is None or self.outer is not None or self.master_identity is not None or
+                launch.cycle is not self):
+            raise CycleControlError('source KNGC master binding is not available')
+        deadline = time.monotonic() + timeout
+        self.listener.settimeout(timeout)
+        channel, _ = self.listener.accept()
+        try:
+            credentials = channel.getsockopt(socket.SOL_SOCKET,
+                socket.SO_PEERCRED, _UCRED.size)
+            pid, uid, gid = _UCRED.unpack(credentials)
+            if (uid, gid) != (os.getuid(), os.getgid()):
+                raise CycleControlError('named KNGC endpoint peer credentials differ')
+            launch.bind_master(pid, int(deadline * 1_000_000_000))
+            self.pin_master(launch)
+            if (pid, uid, gid) != self.master_identity[:3]:
+                raise CycleControlError('named KNGC endpoint peer differs from pinned master')
+            channel.setblocking(False)
+            self.outer = channel
+        except BaseException:
+            channel.close()
+            self.unresolved = True
+            raise
+        finally:
+            self.listener.close()
+            self.listener = None
+
     def accept_initial_watch(self, companion, timeout=10):
         if 1 in self.accepted_watch_cycles:
             raise CycleControlError('initial WATCH_BOUND was already accepted')
+        if self.outer is None:
+            raise CycleControlError('initial WATCH_BOUND requires a connected master')
         self.pin_master(companion)
-        runtime, fds = self.receive(wire.WATCH_BOUND, 1, 1, timeout)
+        deadline = time.monotonic() + timeout
+        runtime, fds = self.receive(wire.WATCH_BOUND, 1, 1, deadline=deadline)
         if runtime != self.runtime:
             os.close(fds[0])
             self.unresolved = True
@@ -282,8 +335,9 @@ class NginxCycleControl:
             raise
 
     def close(self):
-        self.outer.close()
-        self.master.close()
+        for channel in (self.outer, self.master, self.listener):
+            if channel is not None:
+                channel.close()
         if self.master_pidfd >= 0:
             os.close(self.master_pidfd)
             self.master_pidfd = -1

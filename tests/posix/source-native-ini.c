@@ -159,6 +159,35 @@ int main(void)
         "addr=192.168.1.2\nnetmask=255.255.255.0\n"
         "broadcast=192.168.1.255\ngateway=192.168.1.1\n";
     CHECK(parse_text(source_ini) == 0);
+    static const char serial_ini[] =
+        "[ker_socket_broker]\nversion=1\npath=/run/ker/broker.sock\n"
+        "[dpdk]\ngraceful_reload=0\nlcore_mask=1\nprimary_slim=0\n"
+        "file_prefix=run_7f3a\nfstack_log_file_prefix=/tmp/native/fstack-\n"
+        "fstack_log_level=0\n[port0]\nlcore_list=0\n"
+        "addr=192.168.1.2\nnetmask=255.255.255.0\n"
+        "broadcast=192.168.1.255\ngateway=192.168.1.1\n";
+    CHECK(parse_text(serial_ini) != 0);
+    CHECK(setenv("KER_NGINX_SOURCE_SERIAL_PATH", "/tmp/serial.sock", 1) == 0);
+    CHECK(parse_text(serial_ini) == 0);
+    CHECK(parse_text(source_ini) != 0);
+    CHECK(setenv("KER_NGINX_SOURCE_KNI_ENABLE", "1", 1) == 0);
+    CHECK(parse_text(serial_ini) != 0);
+    CHECK(unsetenv("KER_NGINX_SOURCE_KNI_ENABLE") == 0);
+    CHECK(unsetenv("KER_NGINX_SOURCE_SERIAL_PATH") == 0);
+    char kni_ini[1024];
+    int kni_length = snprintf(kni_ini, sizeof(kni_ini),
+        "%s\n[kni]\nenable=1\nmethod=reject\nowner_proc_id=1\ntcp_port=80,443\nudp_port=53\n",
+        source_ini);
+    CHECK(kni_length > 0 && (size_t)kni_length < sizeof(kni_ini));
+    CHECK(parse_text(kni_ini) != 0);
+    CHECK(setenv("KER_NGINX_SOURCE_KNI_ENABLE", "1", 1) == 0);
+    CHECK(parse_text(source_ini) != 0);
+    CHECK(parse_text(kni_ini) == 0);
+    char *kni_owner = strstr(kni_ini, "owner_proc_id=1");
+    CHECK(kni_owner != NULL);
+    kni_owner[sizeof("owner_proc_id=") - 1] = '0';
+    CHECK(parse_text(kni_ini) != 0);
+    CHECK(unsetenv("KER_NGINX_SOURCE_KNI_ENABLE") == 0);
     CHECK(capture_controls(source_ini));
     CHECK(file_open_controls(source_ini));
     CHECK(valid(&config, "3"));

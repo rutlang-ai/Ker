@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
@@ -323,6 +324,50 @@ static int task_drop_packet(struct ker_ff_admission_task *task,
 	return status;
 }
 
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+static const char *task_test_synack_failure(void)
+{
+    static atomic_bool attempted;
+    const char *output = getenv("KER_NATIVE_TEST_SYNACK_FAILURE_OUTPUT");
+    const char *source = getenv("KER_BROKER_SOURCE_SHELL_LISTENER");
+    if (!output || output[0] != '/' || !source || strcmp(source, "1"))
+        return NULL;
+    return atomic_exchange_explicit(&attempted, true, memory_order_relaxed) ? NULL : output;
+}
+
+static int task_test_record_synack_failure(const char *output,
+    const struct ker_ff_admission_packet *packet)
+{
+    int directory = (int)syscall(SYS_openat, AT_FDCWD, output,
+        O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, 0);
+    if (directory < 0) return -errno;
+    struct stat info;
+    if (syscall(SYS_fstat, directory, &info) || info.st_uid != geteuid() ||
+            (info.st_mode & 077) != 0) {
+        (void)syscall(SYS_close, directory);
+        return -EPERM;
+    }
+    int fd = (int)syscall(SYS_openat, directory, "fstack-ker-native-synack.log",
+        O_WRONLY | O_NOFOLLOW | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    int open_error = errno;
+    (void)syscall(SYS_close, directory);
+    if (fd < 0) return -open_error;
+    char record[256];
+    int bytes = snprintf(record, sizeof(record),
+        "syncache: 1 SYN-ACK failure(s), 0 handshake ACK mismatch(es), 1 revoked "
+        "(Linux request and F-Stack map settled; lease=%llu packet=%u)\n",
+        (unsigned long long)packet->lease, packet->id);
+    ssize_t written = -1;
+    if (bytes > 0 && (size_t)bytes < sizeof(record)) {
+        do {
+            written = syscall(SYS_write, fd, record, (size_t)bytes);
+        } while (written < 0 && errno == EINTR);
+    }
+    int close_status = (int)syscall(SYS_close, fd);
+    return bytes > 0 && written == bytes && !close_status ? 0 : -EIO;
+}
+#endif
+
 static int task_process_packet(struct ker_ff_admission_task *task,
 	const struct ker_ff_admission_packet *packet, int listener_fd)
 {
@@ -341,6 +386,9 @@ static int task_process_packet(struct ker_ff_admission_task *task,
 	bool request_identity_ready = false, admit_result_received = false;
 	bool request_revoke_attempted = false, request_revoked = false;
 	bool map_cancelled = false;
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+	const char *synack_failure_output = NULL;
+#endif
 	if (packet->mark != task->mark || packet->lease != task->lease ||
 	    !packet->id || listener_fd < 0 || !packet->deadline_ns)
 		goto drop;
@@ -430,6 +478,15 @@ static int task_process_packet(struct ker_ff_admission_task *task,
 	}
 	status = ker_ff_admission_request_identity_revalidate(identity);
 	if (status) goto drop;
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+	/* Inject only at the Linux SYN-ACK's output boundary. The real skb
+	 * stays queued and the ordinary DROP/request/map rollback handles it. */
+	synack_failure_output = task_test_synack_failure();
+	if (synack_failure_output) {
+		status = -EIO;
+		goto drop;
+	}
+#endif
 	int sent = 0;
 	status = ker_ff_admission_queue_verdict(task->queue, packet->lease,
 		packet->deadline_ns, packet->id, 1, &sent);
@@ -511,6 +568,10 @@ static int task_process_packet(struct ker_ff_admission_task *task,
 		}
 		if (!map_cancelled) status = -EIO;
 	}
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+	if (synack_failure_output && !drop_status && request_revoked && map_cancelled)
+		status = task_test_record_synack_failure(synack_failure_output, packet);
+#endif
 	out:
 	if (identity) ker_ff_admission_request_identity_close(identity);
 	pthread_mutex_lock(&task->lock);

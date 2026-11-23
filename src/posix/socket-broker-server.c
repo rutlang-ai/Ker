@@ -35,6 +35,8 @@
 #include "socket-broker-readiness-wire.h"
 #include "tcp-event-snapshot.h"
 
+int ker_posix_source_network_address(struct in_addr *address);
+
 #ifndef SO_PEERPIDFD
 #define SO_PEERPIDFD 77
 #endif
@@ -75,6 +77,7 @@ struct sb_group {
     bool live;
     bool owner_aware;
     bool staged_owner_group;
+    bool source_shell_listener;
     bool materialized;
     bool failed;
     bool member_present[2];
@@ -209,6 +212,8 @@ enum generation_watch_state {
 struct sb_generation_watch {
     bool live;
     bool preclaim;
+    bool retry_adoption;
+    bool committed_adoption;
     bool retirement_required;
     uint32_t state;
     int group_slot;
@@ -1256,6 +1261,73 @@ static void generation_watch_close(struct ker_socket_broker_server *server,
     *watch = (struct sb_generation_watch){.owner_pidfd = -1, .group_slot = -1};
 }
 
+static bool generation_watch_retry_adoption(struct ker_socket_broker_server *server,
+    const struct sb_group *group)
+{
+    /* The retry plan already adopted the initial listener. A new watch can
+     * inherit that lineage only while the replacement slot is still blocked
+     * on the aborted candidate and the original armed watch is retained. */
+    if (!group->predecessor_pinned || !group->retry_candidate_token ||
+        group->slot_issued[1]) return false;
+    struct sb_object *plan = lookup_cap(server, group->predecessor_cap_fd);
+    if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+        plan->group_slot < 0) return false;
+    const struct sb_group *parent = &server->groups[plan->group_slot];
+    if (!parent->live || parent->incarnation != plan->group_incarnation ||
+        !parent->successor_issued || parent->watch_refs != 1 ||
+        parent->cutover.phase != KER_SOCKET_GROUP_CUTOVER_ABORTED ||
+        parent->activation_state[0] != SB_MEMBER_ACTIVATION_TRANSFERRED)
+        return false;
+    for (size_t i = 0; i < KER_SB_GENERATION_WATCHES; ++i) {
+        const struct sb_generation_watch *watch = &server->generation_watches[i];
+        if (watch->live && watch->group_slot == plan->group_slot &&
+            watch->group_incarnation == parent->incarnation &&
+            watch->preclaim && watch->retirement_required &&
+            watch->state == GENERATION_WATCH_PUBLISHED &&
+            watch->runtime_epoch == server->readiness_epoch &&
+            watch->owner_pidfd >= 0 &&
+            watch->owner_pid == group->member_owner_pid[0] &&
+            watch->owner_start_time == group->member_owner_start_time[0] &&
+            watch->owner_token == group->member_owner_token[0] &&
+            watch->claim_generation == group->claim_generation[0] &&
+            watch->mark == group->member_mark[0] &&
+            watch->local_port == group->port &&
+            watch->listener_cookie == group->member_cookie[0] &&
+            watch->successor_owner_token == group->retry_candidate_token &&
+            watch->successor_owner_pid == group->retry_candidate_pid &&
+            watch->successor_owner_start_time == group->retry_candidate_start_time &&
+            watch->successor_mark == group->retry_candidate_mark &&
+            watch->successor_listener_cookie == group->retry_candidate_cookie)
+            return true;
+    }
+    return false;
+}
+
+static bool generation_watch_committed_adoption(struct ker_socket_broker_server *server,
+    const struct sb_group *group)
+{
+    if (!group->predecessor_pinned || group->retry_candidate_token ||
+        group->slot_issued[1]) return false;
+    struct sb_object *plan = lookup_cap(server, group->predecessor_cap_fd);
+    if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+        plan->group_slot < 0) return false;
+    const struct sb_group *parent = &server->groups[plan->group_slot];
+    return parent->live && parent->incarnation == plan->group_incarnation &&
+        parent->successor_issued && parent->selected_member == 1 &&
+        parent->cutover.phase == KER_SOCKET_GROUP_CUTOVER_COMMITTED &&
+        parent->activation_state[0] == SB_MEMBER_ACTIVATION_RETIRED &&
+        parent->retired_member_cookie[0] && !parent->member_present[0] &&
+        parent->activation_state[1] == SB_MEMBER_ACTIVATION_PUBLISHED &&
+        parent->member_present[1] && group->member_present[0] &&
+        parent->member_owner_pid[1] == group->member_owner_pid[0] &&
+        parent->member_owner_start_time[1] == group->member_owner_start_time[0] &&
+        parent->member_owner_token[1] == group->member_owner_token[0] &&
+        parent->claim_generation[1] == group->claim_generation[0] &&
+        parent->member_mark[1] == group->member_mark[0] &&
+        parent->member_cookie[1] == group->member_cookie[0] &&
+        parent->port == group->port;
+}
+
 static int generation_watch_create(struct ker_socket_broker_server *server,
     int plan_fd, int *watch_fd)
 {
@@ -1281,6 +1353,8 @@ static int generation_watch_create(struct ker_socket_broker_server *server,
     struct sb_generation_watch *watch = &server->generation_watches[index];
     *watch = (struct sb_generation_watch){.live = true,
         .preclaim = !group->member_owner_token[0],
+        .retry_adoption = generation_watch_retry_adoption(server, group),
+        .committed_adoption = generation_watch_committed_adoption(server, group),
         .state = GENERATION_WATCH_PLAN_BOUND, .group_slot = plan->group_slot,
         .group_incarnation = group->incarnation, .owner_pidfd = -1,
         .runtime_epoch = server->readiness_epoch};
@@ -2287,6 +2361,18 @@ static int owner_group_plan_create(struct ker_socket_broker_server *server,
     int authority = native_net_admin_present();
     if (authority < 0) return authority;
     uint16_t port = ntohs(address.sin_port);
+    const char *source_shell = getenv("KER_BROKER_SOURCE_SHELL_LISTENER");
+    bool source_listener = staged && server->readiness_attached &&
+        source_shell && !strcmp(source_shell, "1") &&
+        address.sin_addr.s_addr == htonl(INADDR_ANY) && port == 80 &&
+        args->backlog == 511 &&
+        args->group_rights == (KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_READ);
+    if (source_listener) {
+        /* The private shell has one observed IPv4 service address. The
+         * ingress barrier needs an address-specific native listener. */
+        int status = ker_posix_source_network_address(&address.sin_addr);
+        if (status) return status;
+    }
     if (group_port_reserved(server, port)) return -EADDRINUSE;
     bool existing_binding = false;
     if (broker_has_binding(server, port, &existing_binding)) return -errno;
@@ -2298,7 +2384,8 @@ static int owner_group_plan_create(struct ker_socket_broker_server *server,
     if (server->next_group_incarnation == UINT64_MAX) return -EOVERFLOW;
     uint64_t incarnation = ++server->next_group_incarnation;
     server->groups[slot] = (struct sb_group){.live = true, .owner_aware = true,
-        .staged_owner_group = staged, .cutover_object_slot = -1,
+        .staged_owner_group = staged, .source_shell_listener = source_listener,
+        .cutover_object_slot = -1,
         .staged_state = staged ? SB_STAGED_INITIAL_RESERVED : SB_STAGED_NONE,
         .port = port, .base_fd = {-1, -1}, .activation_task_fd = {-1, -1},
         .incarnation = incarnation,
@@ -3203,9 +3290,8 @@ static int group_cutover_create(struct ker_socket_broker_server *server,
         plan->group_incarnation != group->incarnation) return -ESTALE;
     struct sb_generation_watch *retirement_watch = NULL;
     if (group->watch_refs) {
-        /* A single read-only watch captured before claim/publication may span
-         * this staged cutover. Its retained identity is needed to verify the
-         * predecessor after RETIRE_INITIAL_LISTENER clears the live cookie. */
+        /* An early watch retains the predecessor identity after the listener
+         * is retired. An abort retry needs a fresh watch of the adopted plan. */
         if (group->watch_refs != 1 || !group->member_present[0] ||
             !group->member_cookie[0]) return -EOPNOTSUPP;
         for (size_t i = 0; i < KER_SB_GENERATION_WATCHES; ++i) {
@@ -3215,7 +3301,9 @@ static int group_cutover_create(struct ker_socket_broker_server *server,
             if (retirement_watch) return -EOPNOTSUPP;
             retirement_watch = watch;
         }
-        if (!retirement_watch || !retirement_watch->preclaim ||
+        if (!retirement_watch ||
+            (!retirement_watch->preclaim && !retirement_watch->retry_adoption &&
+                !retirement_watch->committed_adoption) ||
             retirement_watch->retirement_required ||
             retirement_watch->state != GENERATION_WATCH_PUBLISHED ||
             retirement_watch->runtime_epoch != server->readiness_epoch ||
@@ -3317,7 +3405,6 @@ static int group_cutover_request(struct ker_socket_broker_server *server,
     struct sb_group_cutover *cutover = &group->cutover;
     if (control_deadline_ns) {
         uint64_t now = host_monotonic_ns();
-        if (!commit) return -EINVAL;
         if ((cutover->control_deadline_ns &&
                 cutover->control_deadline_ns != control_deadline_ns) ||
                 (!cutover->control_deadline_ns &&
@@ -3330,7 +3417,7 @@ static int group_cutover_request(struct ker_socket_broker_server *server,
             }
             return -ETIMEDOUT;
         }
-    } else if (commit && cutover->control_deadline_ns) return -EALREADY;
+    } else if (cutover->control_deadline_ns) return -EALREADY;
     uint32_t requested = commit ? KER_SOCKET_GROUP_CUTOVER_COMMITTING :
         KER_SOCKET_GROUP_CUTOVER_ABORTING;
     if (group_cutover_terminal(cutover->phase))
@@ -3573,6 +3660,20 @@ static void advance_group_cutovers(struct ker_socket_broker_server *server)
             group_cutover_advance(server, &server->groups[i]);
 }
 
+static int owner_group_bind_address(const struct sb_group *group,
+    const struct ker_sb_address *args, struct sockaddr_in *address)
+{
+    if (!args || args->length != sizeof(*address)) return -EINVAL;
+    memcpy(address, args->bytes, sizeof(*address));
+    if (address->sin_family != AF_INET || address->sin_port != group->address.sin_port)
+        return -EADDRNOTAVAIL;
+    if (group->source_shell_listener && address->sin_addr.s_addr == htonl(INADDR_ANY))
+        address->sin_addr = group->address.sin_addr;
+    if (address->sin_addr.s_addr != group->address.sin_addr.s_addr)
+        return -EADDRNOTAVAIL;
+    return 0;
+}
+
 static int owner_group_candidate_bind(struct ker_socket_broker_server *server,
     struct sb_client *client, struct sb_object *object,
     const struct ker_sb_address *args)
@@ -3585,12 +3686,9 @@ static int owner_group_candidate_bind(struct ker_socket_broker_server *server,
     if (group->activation_state[1] != SB_MEMBER_ACTIVATION_UNBOUND ||
         group->staged_state != SB_STAGED_INITIAL_PUBLISHED ||
         !group->member_present[0] || group->base_fd[0] < 0) return -EALREADY;
-    if (!args || args->length != sizeof(struct sockaddr_in)) return -EINVAL;
     struct sockaddr_in address;
-    memcpy(&address, args->bytes, sizeof(address));
-    if (address.sin_family != AF_INET || address.sin_port != group->address.sin_port ||
-        address.sin_addr.s_addr != group->address.sin_addr.s_addr)
-        return -EADDRNOTAVAIL;
+    status = owner_group_bind_address(group, args, &address);
+    if (status) return status;
     status = owner_group_activation_validate_native(group, object, owner, false);
     if (status) {
         owner_group_activation_poison(server, group, object);
@@ -3905,6 +4003,7 @@ static int owner_group_adopt_plan(struct ker_socket_broker_server *server,
     if (pin < 0) { status = -errno; (void)close(native_fd); return status; }
     server->groups[slot] = (struct sb_group){.live = true, .owner_aware = true,
         .staged_owner_group = true, .materialized = true,
+        .source_shell_listener = parent->source_shell_listener,
         .staged_state = SB_STAGED_INITIAL_PUBLISHED,
         .activation_state = {SB_MEMBER_ACTIVATION_PUBLISHED, SB_MEMBER_ACTIVATION_NONE},
         .member_present = {true, false}, .slot_issued = {true, false},
@@ -4149,13 +4248,9 @@ static int owner_group_activation_bind(struct ker_socket_broker_server *server,
         group->member_owner_token[0] != object->owner_token) return -ESTALE;
     if (group->activation_state[0] != SB_MEMBER_ACTIVATION_UNBOUND)
         return -EALREADY;
-    if (args->length != sizeof(struct sockaddr_in)) return -EINVAL;
     struct sockaddr_in address;
-    memcpy(&address, args->bytes, sizeof(address));
-    if (address.sin_family != AF_INET ||
-        address.sin_port != group->address.sin_port ||
-        address.sin_addr.s_addr != group->address.sin_addr.s_addr)
-        return -EADDRNOTAVAIL;
+    status = owner_group_bind_address(group, args, &address);
+    if (status) return status;
     status = owner_identity_alive(owner);
     if (status) return status;
     status = owner_group_activation_validate_native(group, object, owner, false);
@@ -4826,9 +4921,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
     }
     case KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT:
     case KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT: {
-        if (fd_count != 1 ||
-            (input_length && (request->operation != KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT ||
-                input_length != sizeof(uint64_t)))) return -EPROTO;
+        if (fd_count != 1 || (input_length && input_length != sizeof(uint64_t)))
+            return -EPROTO;
         uint64_t control_deadline_ns = 0;
         if (input_length) {
             memcpy(&control_deadline_ns, input, sizeof(control_deadline_ns));

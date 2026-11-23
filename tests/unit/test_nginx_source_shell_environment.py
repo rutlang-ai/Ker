@@ -27,17 +27,26 @@ class SourceShellEnvironmentControls(unittest.TestCase):
             'KER_FSTACK_NGINX_INI',
             'KER_NGINX_SOURCE_FIRST_HUP_ENABLE',
             'KER_FSTACK_RUNTIME_TRACE',
+            'KER_NGINX_SOURCE_ABORT_RETRY_ENABLE',
+            'KER_NGINX_SOURCE_READY_DELAY_ENABLE',
+            'KER_NGINX_SOURCE_ABORT_ENABLE',
+            'KER_NGINX_SOURCE_SYNACK_FAULT_ENABLE',
+            'KER_NGINX_SOURCE_KNI_ENABLE',
+            'KER_NGINX_SOURCE_SUCCESSOR_ENABLE',
+            'KER_NGINX_SOURCE_UPGRADE_ENABLE',
         ])
         self.assertFalse(any('FD' in name or 'SLOT' in name for name in names))
         self.assertIn('getenv("KER_NGINX_SOURCE_SUCCESSOR_ENABLE")', MODULE)
-        self.assertIn('getenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE")', MODULE)
+        self.assertIn('getenv(source_shell_environment_names[SOURCE_SHELL_RETRY_INDEX])',
+                      MODULE)
+        self.assertIn('"ker_fstack_nginx_source_fault_profile"', MODULE)
 
     def test_registration_is_builtin_optin_and_rejects_environment_conflicts(self):
         self.assertIn('#ifdef KER_NGINX_OWNER_BUILTIN\nstatic bool source_shell_environment_captured', MODULE)
         self.assertIn('source_shell_register_environment(cycle)', MODULE)
         self.assertIn('ccf->environment != NULL', MODULE)
         self.assertIn('configured[i].data[name_len] == \'=\'', MODULE)
-        self.assertIn('entries[i].data = (u_char *) source_shell_environment_names[i];', MODULE)
+        self.assertIn('entries[j++].data = (u_char *) source_shell_environment_names[i];', MODULE)
         self.assertIn('strcmp(enabled, "1") != 0', MODULE)
 
     def test_launch_environment_values_are_snapshotted_and_revalidated(self):
@@ -75,7 +84,8 @@ class SourceShellEnvironmentControls(unittest.TestCase):
         self.assertIn('strcmp(value, "1") != 0', MODULE)
 
     def test_optional_trace_may_be_absent_or_empty_but_is_still_bounded(self):
-        self.assertIn('i != 10 && (!value || value_len == 0)', MODULE)
+        self.assertIn('i < SOURCE_SHELL_TRACE_INDEX && (!value || value_len == 0)', MODULE)
+        self.assertIn('i >= SOURCE_SHELL_RETRY_INDEX && values[i] == NULL', MODULE)
         bounds = MODULE.split('source_shell_environment_max_lengths[] = {', 1)[1].split('};', 1)[0]
         self.assertEqual(bounds.count('PATH_MAX - 1'), 2)
         self.assertIn('value_len > max_length', MODULE)

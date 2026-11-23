@@ -3,6 +3,7 @@
  * in that implementation; adapters require native authority around them. */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include "nginx-source-bootstrap.h"
 __attribute__((visibility("hidden")))
@@ -13,15 +14,26 @@ __attribute__((visibility("hidden")))
 int ker_nginx_source_original_queue_mutex(uint16_t, uint16_t, int, int, unsigned);
 __attribute__((visibility("hidden")))
 int ker_nginx_source_original_rx_release(int);
+__attribute__((visibility("hidden")))
+int ker_nginx_source_original_rx_release_epoch(uint32_t, int);
 #define ff_reload_publish_ready ker_nginx_source_original_publish_ready
 #define ff_reload_rx_stopped_set ker_nginx_source_original_rx_stopped_set
 #define ff_queue_handover_mutex ker_nginx_source_original_queue_mutex
 #define ff_reload_rx_release ker_nginx_source_original_rx_release
+#define ff_reload_rx_release_epoch ker_nginx_source_original_rx_release_epoch
 #include "../../third_party/fstack-reload/ff_reload.c"
 #undef ff_reload_publish_ready
 #undef ff_reload_rx_stopped_set
 #undef ff_queue_handover_mutex
 #undef ff_reload_rx_release
+#undef ff_reload_rx_release_epoch
+
+static bool source_abort_fault(const char *name)
+{
+    const char *fault = getenv("FF_FAULT");
+    return fault && !strcmp(fault, name) && getenv("KER_NGINX_SOURCE_ABORT_ENABLE") &&
+        ker_fstack_nginx_source_fault_profile();
+}
 
 int ff_reload_rx_release(int target)
 {
@@ -30,6 +42,8 @@ int ff_reload_rx_release(int target)
     uint32_t epoch = ff_reload_shared_epoch();
     int status = ker_nginx_source_original_rx_release(target);
     if (status != FF_RELOAD_HANDOVER_OK && ker_nginx_source_is_master() &&
+            (getenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE") ||
+             source_abort_fault("flip_fail")) &&
             ker_fstack_nginx_source_fault_profile()) {
         /* The source abort kills the successor before master_abort restores
          * markers. A frozen native queue cannot certify healthy rollback once
@@ -50,9 +64,26 @@ int ff_reload_rx_release(int target)
     return status;
 }
 
+int ff_reload_rx_release_epoch(uint32_t epoch, int generation)
+{
+    int status = ker_nginx_source_original_rx_release_epoch(epoch, generation);
+    if (epoch && ker_nginx_source_is_master() &&
+        ker_nginx_source_upgrade_enabled()) {
+        if (status != FF_RELOAD_HANDOVER_OK ||
+            ker_nginx_source_master_barrier(KER_NGINX_SOURCE_MASTER_COMMIT)) {
+            fprintf(stderr, "ker source master: cross-master native handover is unconfirmed\n");
+            abort();
+        }
+    }
+    return status;
+}
+
 void ff_reload_rx_stopped_set(int stopped)
 {
-    if (stopped && ker_nginx_source_is_master()) {
+    /* The original park-never hook withholds every park acknowledgement.
+     * Keep the broker on the still-current listener when no park can be
+     * confirmed. The original shared markers and timeout still run. */
+    if (stopped && ker_nginx_source_is_master() && !source_abort_fault("park_never")) {
         int status = ker_nginx_source_master_barrier(KER_NGINX_SOURCE_MASTER_PARK);
         if (status) {
             fprintf(stderr, "ker source master: native SYN barrier failed status=%d\n", status);

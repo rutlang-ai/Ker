@@ -83,6 +83,66 @@ except ConnectionResetError: pass
 for f in fds: os.close(f)
 '''
 
+RETRY_GRANT_ACTOR = r'''
+import array, os, socket, struct, sys
+record = struct.Struct(sys.argv[2])
+request = list(record.unpack(bytes.fromhex(sys.argv[3])))
+pid = os.getpid()
+request[5:7] = [pid, pid]
+request[11] = int(open(f'/proc/{pid}/stat').read().rpartition(')')[2].split()[19])
+channel = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+channel.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+channel.settimeout(5)
+channel.connect(sys.argv[1])
+channel.send(record.pack(*request))
+packet, ancillary, flags, _ = channel.recvmsg(record.size + 1,
+    socket.CMSG_SPACE(5 * 4) + socket.CMSG_SPACE(12), socket.MSG_CMSG_CLOEXEC)
+assert not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
+fds = array.array('i')
+for level, kind, data in ancillary:
+    if (level, kind) == (socket.SOL_SOCKET, socket.SCM_RIGHTS):
+        fds.frombytes(data)
+reply = record.unpack(packet)
+assert reply[2] == 2 and reply[8:10] == (1, 2) and len(fds) == 5
+slot = os.fstat(fds[2])
+assert (slot.st_dev, slot.st_ino) == reply[24:26]
+ready = struct.Struct('=IHHIIQQQIIQQ')
+ready_channel = socket.socket(fileno=fds[4])
+cookie = reply[27] ^ (1 if sys.argv[4] == 'bad-ready' else 0)
+ready_channel.send(ready.pack(0x4B4E5244, 2, ready.size, 1, 0,
+    slot.st_dev, slot.st_ino, request[11], pid, pid, cookie, 0))
+activation = 0
+if sys.argv[4] != 'bad-ready':
+    relay = socket.socket(fileno=fds[3])
+    relay.settimeout(5)
+    relay.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+    auth = struct.Struct('=IHHQQ16sQQQQIIIIIHHHHIiHBB')
+    payload, ancillary, flags, _ = relay.recvmsg(auth.size + 1,
+        socket.CMSG_SPACE(12) + socket.CMSG_SPACE(8), socket.MSG_CMSG_CLOEXEC)
+    assert not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
+    assert (socket.SOL_SOCKET, socket.SCM_CREDENTIALS,
+        struct.pack('=3i', os.getppid(), os.getuid(), os.getgid())) in ancillary
+    fields = list(auth.unpack(payload))
+    assert fields[2] == 3 and fields[11:14] == [pid, pid, os.getppid()]
+    fields[2] = 5
+    pidfd = os.pidfd_open(pid)
+    relay.sendmsg([auth.pack(*fields)], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+        array.array('i', [pidfd]))])
+    os.close(pidfd)
+    activated = record.unpack(channel.recv(record.size + 1))
+    assert activated == (*reply[:2], 4, *reply[3:])
+    activation = activated[2]
+print(slot.st_dev, slot.st_ino, activation, flush=True)
+if sys.argv[4] == 'success':
+    header = struct.Struct('=IHHII')
+    size = header.size + record.size + 8
+    evidence = channel.recv(size + 1)
+    assert header.unpack_from(evidence) == (0x4B534247, 1, 12, size, 0)
+    assert record.unpack_from(evidence, header.size) == (*reply[:2], 12, *reply[3:])
+    assert struct.unpack_from('=Q', evidence, size - 8) == (0x9922,)
+sys.stdin.buffer.read(1)
+'''
+
 SOURCE_C31_MODEL_APP = r'''
 import array, os, socket, struct, sys
 import time
@@ -126,6 +186,8 @@ elif fault=='extra-fd':
  os.close(fd)
 elif fault=='wrong-sequence':
  fields[24]+=1; s.send(w.pack(*fields))
+elif fault=='wrong-kind':
+ fields[2]=8 if op==11 else 12; s.send(w.pack(*fields))
 else: s.send(ack)
 os.write(marker_fd,b'CL')
 assert os.read(release_fd,1)==b'R'
@@ -229,9 +291,11 @@ class SourceRoute(unittest.TestCase):
                  drop_typed_binding=False, typed_command_type=7,
                  typed_ack_status=0, typed_bad_context_actor=False,
                  typed_context_tamper=None, typed_ack_fault=None,
+                 typed_c28_counts=(3, 3),
                  copy_typed_binding=False, typed_post_ack_clear_cloexec=False,
                  private_master_park=False, private_master_fault=None,
                  private_master_commit=False, private_master_commit_fault=None,
+                 private_master_abort=None,
                  native_activation=False):
         successor = (successor or successor_dead_current or successor_second or
             successor_replay or successor_inflight)
@@ -325,7 +389,11 @@ class SourceRoute(unittest.TestCase):
                     **({'KER_TEST_SOURCE_EXPIRED_COMMIT': '1'} if expired_commit else {}),
                     **({'KER_TEST_SOURCE_ROUTE_DELAY_SWAP': '1'} if late_swap else {}),
                     **({'KER_TEST_SOURCE_INFLIGHT': '1'} if inflight else {}),
-                    **({'KER_TEST_SOURCE_ROUTE_RETRY': '1'} if abort_retry else {}),
+                    **({'KER_TEST_SOURCE_ROUTE_RETRY': '1'}
+                        if abort_retry or private_master_abort in ('success', 'retry-renewed',
+                            'retry-c28-unknown') else {}),
+                    **({'KER_TEST_SOURCE_RETURN_ON_RETRY_COMMIT': '1'}
+                        if private_master_abort in ('success', 'retry-c28-unknown') else {}),
                     **({'KER_TEST_SOURCE_ROUTE_SUCCESSOR': '1'} if successor else {}),
                     **({'KER_TEST_SOURCE_ROUTE_DEAD_CURRENT': '1'}
                         if successor_dead_current else {}),
@@ -352,7 +420,7 @@ class SourceRoute(unittest.TestCase):
             if typed_ack_fault:
                 app_env['KER_TEST_TYPED_ACK_FAULT'] = typed_ack_fault
             actual_private_c31 = production_private_controller and (
-                private_master_commit or native_activation)
+                private_master_commit or private_master_abort is not None or native_activation)
             if typed_handoff and not actual_private_c31:
                 app = subprocess.Popen([sys.executable, '-c', SOURCE_C31_MODEL_APP,
                     str(app_control.fileno()), str(marker_write), str(release_read)],
@@ -563,12 +631,12 @@ class SourceRoute(unittest.TestCase):
                 if typed_post_ack_clear_cloexec:
                     factory = source_bootstrap._make_source_route_preparation
                     before_fd_flags = fcntl.fcntl(candidate_channel.fileno(), fcntl.F_GETFD)
-                    def clear_sender_cloexec(*args):
+                    def clear_sender_cloexec(*args, **kwargs):
                         current_fd_flags = fcntl.fcntl(candidate_channel.fileno(),
                             fcntl.F_GETFD)
                         fcntl.fcntl(candidate_channel.fileno(), fcntl.F_SETFD,
                             current_fd_flags & ~fcntl.FD_CLOEXEC)
-                        return factory(*args)
+                        return factory(*args, **kwargs)
                     try:
                         with mock.patch.object(source_bootstrap,
                                 '_make_source_route_preparation', clear_sender_cloexec):
@@ -599,6 +667,9 @@ class SourceRoute(unittest.TestCase):
                     helper_capture = object.__new__(artifacts_module.PrivateC34HelperCapture)
                     helper_capture.source_command_abi = 1
                     capture.helper_capture = helper_capture
+                    capture.source_fault = (None if private_master_abort in (None, 'production') else
+                        origin_module.SOURCE_RETRY_FAULT)
+                    helper_capture.source_fault = capture.source_fault
                     origin = object.__new__(origin_module.PrivateC34OriginalShellLaunch)
                     origin.context = source_context
                     origin.c34_artifact_capture = capture
@@ -659,8 +730,10 @@ class SourceRoute(unittest.TestCase):
                     controller._check_first_candidate_phase = lambda _transport: True
                     controller._source_route_preparer = ker_run.rx_owner_source_route_prepare
                     source_context.control_only = True
+                    retained_grant_channel = grant_channel.dup()
+                    sockets.append(retained_grant_channel)
                     source_context.worker_channels = {(0, 0): old_channel,
-                        (1, 1): grant_channel}
+                        (1, 1): retained_grant_channel}
                     source_context._activated_workers = set()
                     source_context._activation_attempts = set()
                     source_context._completed_master_barriers = set()
@@ -698,6 +771,12 @@ class SourceRoute(unittest.TestCase):
                                 watch, source_controller, grant)
                         self.assertEqual(activation_dispatches, [])
                         provider._closed = False
+                        source_controller._first_candidate_relay_anchor = candidate_worker_channel
+                        with self.assertRaises(PermissionError):
+                            real_activation_gate(source_context, prepared, channel,
+                                watch, source_controller, grant)
+                        self.assertEqual(activation_dispatches, [])
+                        source_controller._first_candidate_relay_anchor = candidate_channel
                         return real_activation_gate(source_context, prepared, channel,
                             watch, source_controller, grant)
                     source_context.activate_prepared_first_candidate = \
@@ -712,6 +791,8 @@ class SourceRoute(unittest.TestCase):
                     listener_cookie = controller_module.SourceShellController._first_candidate_socket_cookie(listener_fixture)
                     accepted_identity = controller_module.SourceShellController._first_candidate_endpoint_identity(grant_channel)
                     accepted_cookie = controller_module.SourceShellController._first_candidate_socket_cookie(grant_channel)
+                    relay_identity = controller._first_candidate_endpoint_identity(candidate_worker_channel)
+                    relay_cookie = controller._first_candidate_socket_cookie(candidate_worker_channel)
                     accepted = controller_module._AcceptedCandidateWorkerRequest(
                         controller_module._ACCEPTED_CANDIDATE_REQUEST_TOKEN,
                         controller, listener_fixture, listener_identity,
@@ -725,7 +806,8 @@ class SourceRoute(unittest.TestCase):
                             controller, source_context, provider, transport,
                             grant_channel, accepted_identity, accepted_cookie, b'candidate-request',
                             (candidate.owner_pid, os.getuid(), os.getgid()),
-                            candidate_channel, (), 1, deadline, (1, 1),
+                            candidate_worker_channel, relay_identity, relay_cookie,
+                            deadline, (1, 1),
                             candidate_cycle_proof,
                             (source_master.pid, source_master.start_ticks,
                                 source_master.pidfd),
@@ -744,9 +826,9 @@ class SourceRoute(unittest.TestCase):
                     self.assertEqual(source_context._source_prepared_activation_attempts,
                         {id(prepared)})
                     self.assertEqual(len(activation_dispatches), 1)
-                    self.assertIs(activation_dispatches[0][0], grant_channel)
+                    self.assertIs(activation_dispatches[0][0], retained_grant_channel)
                     self.assertTrue(source_context.control_only)
-                    self.assertEqual(provider_checks, [source_context.deadline_ns])
+                    self.assertEqual(provider_checks, [source_context.deadline_ns] * 2)
                     if native_activation:
                         self.assertEqual(source_context._activation_attempts, {(1, 1)})
                         self.assertEqual(source_context._activated_workers, {(1, 1)})
@@ -793,6 +875,7 @@ class SourceRoute(unittest.TestCase):
                             start_ticks=start_ticks, pidfd=io_pidfd)
                         source_context.supervisor_start = start_ticks
                         source_context.allow_successor = False
+                        source_context.allow_abort_retry = capture.source_fault is not None
                         source_context.slim_pid = source_context.io.pid
                         source_context.slim_start_ticks = source_context.io.start_ticks
                         source_context.slim_pidfd = io_pidfd
@@ -829,6 +912,10 @@ class SourceRoute(unittest.TestCase):
                         provider._source_command_unresolved = False
                         provider._source_route_receipt_consumed = False
                         provider._source_committed = False
+                        provider._source_abort_result = None
+                        provider._source_retry_cookie = None
+                        provider._source_retry_allowed = capture.source_fault is not None
+                        provider._source_retry_slot_attempted = False
                         provider._source_command_sequence = 0
                         provider._source_command_outstanding = None
                         provider.process = SimpleNamespace(pid=os.getpid())
@@ -844,21 +931,41 @@ class SourceRoute(unittest.TestCase):
                             'credentials': (os.getpid(), os.getuid(), os.getgid()),
                             'fds': ((1, 2, 3), (4, 5, 6), (7, 8, 9))}
                         events = []
-                        def modeled_park(operation, operation_deadline):
-                            events.append(('c28-park', operation, operation_deadline))
+                        def modeled_c28(operation, operation_deadline):
+                            events.append(('c28-command', operation, operation_deadline))
+                            retry_plan = getattr(provider, '_source_retry_slot_delivered', False)
                             if private_master_fault == 'park-unknown':
                                 provider._source_command_unresolved = True
                                 raise TimeoutError('injected unknown C28 PARK result')
                             if operation == provider_module._C28_PARK:
                                 return {'phase': provider_module._C28_PHASE_PREPARED,
-                                    'lease': 0x7788, 'listener_cookie': 0,
+                                    'lease': 0x8899 if retry_plan else 0x7788, 'listener_cookie': 0,
                                     'received': 0, 'accepted': 0}
                             if operation == provider_module._C28_COMMIT:
+                                if private_master_abort == 'retry-c28-unknown':
+                                    provider._source_command_unresolved = True
+                                    raise TimeoutError('unknown retry C28 COMMIT')
                                 return {'phase': provider_module._C28_PHASE_COMMITTED,
+                                    'lease': 0x8899 if retry_plan else 0x7788,
+                                    'listener_cookie': 0x9922 if retry_plan else 0x9911,
+                                    'received': 0, 'accepted': 0}
+                            if operation == provider_module._C28_ABORT:
+                                return {'phase': provider_module._C28_PHASE_ABORTED,
+                                    'lease': 0x7788, 'listener_cookie': 0,
+                                    'received': 2, 'accepted': 2}
+                            if operation == provider_module._C28_RETRY_ADOPT:
+                                if private_master_abort == 'unknown-adoption':
+                                    provider._source_command_unresolved = True
+                                    raise TimeoutError('unknown C28 retry adoption outcome')
+                                return {'phase': provider_module._C28_PHASE_ABORTED,
                                     'lease': 0x7788, 'listener_cookie': 0x9911,
                                     'received': 0, 'accepted': 0}
+                            if operation == provider_module._C28_RETRY_SLOT:
+                                return {'phase': 0, 'lease': 0, 'listener_cookie': 0x9911,
+                                    'received': 0, 'accepted': 0,
+                                    'fds': tuple(os.dup(fd) for fd in retry_fds)}
                             raise AssertionError(f'unexpected modeled C28 operation {operation}')
-                        provider._source_c28_command = modeled_park
+                        provider._source_c28_command = modeled_c28
                         self.assertTrue(source_bootstrap._source_provider_matches_context(
                             source_context, provider, controller),
                             'modeled private provider did not preserve the exact Origin/provider pair')
@@ -897,7 +1004,8 @@ class SourceRoute(unittest.TestCase):
                             values = (0x46524c4d, 1, 128, 1, 0, 1, 1, 0)
                             active_operation = {'value': 5}
                             def modeled_memory(_pid, _address, length):
-                                markers = (0, 0, 2) if active_operation['value'] == 5 else (1, 0, 2)
+                                markers = {5: (0, 0, 2), 6: (1, 0, 2),
+                                    9: (0, 1, 2)}[active_operation['value']]
                                 return (struct.pack('=8I', *values) if length == 32 else
                                     struct.pack('=3I', *markers))
                             real_private_barrier = source_context.private_source_master_barrier
@@ -951,7 +1059,7 @@ class SourceRoute(unittest.TestCase):
                                 with self.assertRaisesRegex(PermissionError,
                                         'already consumed'):
                                     controller.pump_bootstrap_listener()
-                                self.assertEqual(events.count(('c28-park',
+                                self.assertEqual(events.count(('c28-command',
                                     provider_module._C28_PARK,
                                     operation_deadline)), 1,
                                     f'unknown master ACK caused a second C28 PARK: {events!r}')
@@ -978,7 +1086,8 @@ class SourceRoute(unittest.TestCase):
                                     2 if private_master_fault == 'ack-error' else 1)
                                 self.assertTrue(all(channel.fileno() >= 0 for channel in
                                     controller._private_source_master_channels))
-                                self.assertEqual(activation_dispatches, [(grant_channel, watch)])
+                                self.assertEqual(activation_dispatches,
+                                    [(retained_grant_channel, watch)])
                                 if private_master_fault == 'late-ack':
                                     # The kernel may have queued an ACK before the
                                     # sender resumed, so only claim local quarantine.
@@ -1020,7 +1129,7 @@ class SourceRoute(unittest.TestCase):
                             self.assertEqual(reply_fields[2], 7)
                             self.assertEqual(reply_fields[28:], tuple(record[28:]))
                             self.assertEqual(events[0][0], 'private-barrier-enter')
-                            self.assertEqual(events[1][0], 'c28-park')
+                            self.assertEqual(events[1][:2], ('c28-command', provider_module._C28_PARK))
                             self.assertEqual(events[-1][0], 'private-barrier-return')
                             self.assertEqual(events[1][2], operation_deadline)
                             self.assertEqual(source_context._completed_master_barriers,
@@ -1030,6 +1139,317 @@ class SourceRoute(unittest.TestCase):
                             timing = controller._private_source_master_timings[-1]
                             self.assertLess(timing[3] - timing[2], 100_000_000)
                             self.assertTrue(controller._first_candidate_worker_pending)
+                            if private_master_abort is not None:
+                                active_operation['value'] = 9
+                                abort_record = list(record)
+                                abort_record[2] = 9
+                                abort_client = socket.socket(socket.AF_UNIX,
+                                    socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+                                sockets.append(abort_client)
+                                abort_client.connect(str(Path(directory) / 'master.sock'))
+                                abort_client.settimeout(0.5)
+                                abort_client.send(source_bootstrap.SHELL_RECORD.pack(*abort_record))
+                                real_route_command = ker_run.send_source_route_command
+                                def observe_route_command(*args, **kwargs):
+                                    events.append(('c31-abort', args[2],
+                                        kwargs['operation_deadline_ns']))
+                                    if private_master_abort == 'unknown-c31':
+                                        raise TimeoutError('unknown C31 ABORT outcome')
+                                    return real_route_command(*args, **kwargs)
+                                if private_master_abort not in ('success', 'bad-ready',
+                                        'retry-renewed', 'retry-c28-unknown'):
+                                    expected_error, detail = {
+                                        'production': (PermissionError, 'parked master terminal operation'),
+                                        'wrong-helper': (PermissionError, 'captured fault profile'),
+                                        'unknown-adoption': (TimeoutError, 'unknown C28 retry adoption'),
+                                        'unknown-c31': (TimeoutError, 'unknown C31 ABORT'),
+                                    }[private_master_abort]
+                                    if private_master_abort == 'wrong-helper':
+                                        helper_capture.source_fault = None
+                                    with mock.patch.object(ker_run, 'send_source_route_command',
+                                            side_effect=observe_route_command):
+                                        with self.assertRaisesRegex(expected_error, detail):
+                                            controller._await_private_master_terminal(source_context)
+                                    self.assertFalse(hasattr(prepared, 'last_command_observation'))
+                                    self.assertIsNone(getattr(prepared, '_source_route_commit_receipt', None))
+                                    self.assertFalse(hasattr(source_context, '_native_retry_cookie'))
+                                    self.assertEqual(source_context._completed_master_barriers, {(1, 5)})
+                                    self.assertTrue(controller.unresolved)
+                                    self.assertEqual(revoke_calls, ['revoke'])
+                                    self.assertEqual(source_context._private_source_master_attempts,
+                                        {(1, 5), (1, 9)} if private_master_abort.startswith('unknown-') else
+                                        {(1, 5)})
+                                    self.assertEqual([event[1] for event in events
+                                        if event[0] == 'c28-command'],
+                                        [provider_module._C28_PARK, provider_module._C28_ABORT,
+                                            provider_module._C28_RETRY_ADOPT]
+                                        if private_master_abort.startswith('unknown-') else
+                                        [provider_module._C28_PARK])
+                                    # Envelope rejection may close the socket. A consumed
+                                    # unknown outcome keeps the endpoint but emits no ACK.
+                                    abort_client.settimeout(0.01)
+                                    try:
+                                        self.assertEqual(abort_client.recv(
+                                            source_bootstrap.SHELL_RECORD.size), b'')
+                                    except TimeoutError:
+                                        pass
+                                    sockets.extend(getattr(controller,
+                                        '_private_source_master_channels', []))
+                                    app.kill()
+                                    app.communicate(timeout=2)
+                                    return
+                                with mock.patch.object(ker_run, 'send_source_route_command',
+                                        side_effect=observe_route_command):
+                                    controller._await_private_master_terminal(source_context)
+                                reply, ancillary, flags, _ = abort_client.recvmsg(
+                                    source_bootstrap.SHELL_RECORD.size + 1, socket.CMSG_SPACE(8))
+                                abort_fds = array.array('i')
+                                for level, kind, value in ancillary:
+                                    if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                                        abort_fds.frombytes(value)
+                                try:
+                                    self.assertFalse(flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC))
+                                    self.assertEqual([source_bootstrap.identity._pidfd_pid(fd)
+                                        for fd in abort_fds],
+                                        [source_context.runtime.pid, source_context.io.pid])
+                                finally:
+                                    for fd in abort_fds:
+                                        os.close(fd)
+                                reply_fields = source_bootstrap.SHELL_RECORD.unpack(reply)
+                                self.assertEqual(reply_fields[2], 11)
+                                self.assertEqual(reply_fields[28:], tuple(abort_record[28:]))
+                                self.assertEqual(events[-4:-1], [
+                                    ('c28-command', provider_module._C28_ABORT, operation_deadline),
+                                    ('c28-command', provider_module._C28_RETRY_ADOPT, operation_deadline),
+                                    ('c31-abort', ker_run._RX_OWNER_SOURCE_ROUTE_ABORT,
+                                        operation_deadline)])
+                                self.assertTrue(controller._private_first_abort_acknowledged(source_context))
+                                self.assertEqual(source_context._native_retry_cookie, 0x9911)
+                                self.assertFalse(source_context._source_shell_committed_plans)
+                                self.assertFalse(revoke_calls)
+                                current_control, current_control_peer = pair()
+                                sockets.extend((current_control, current_control_peer))
+                                source_context.worker_channels[(0, 0)] = current_control
+                                controller._check_authenticated_initial_worker_core = mock.Mock()
+                                controller.broker_readiness = SimpleNamespace(ready=True, stopped=False)
+                                transport.context = source_context
+                                transport.broker = provider.broker_readiness = controller.broker_readiness
+                                provider._used_slots = {0, 1}
+                                watch_read, provider.watch_fd = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+                                slot_read, retry_fifo = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+                                retry_watch_read, retry_watch_fd = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+                                retry_fds = retry_fifo, retry_watch_fd
+                                handles.extend((watch_read, provider.watch_fd, slot_read,
+                                    retry_fifo, retry_watch_read, retry_watch_fd))
+                                provider.slot_identities = tuple(tuple(source_context.workers[key][1][24:26])
+                                    for key in ((0, 0), (1, 1)))
+                                with mock.patch.object(source_bootstrap, 'memory',
+                                        side_effect=modeled_memory):
+                                    self.assertIsNone(controller.poll_source_preexit())
+                                    self.assertFalse(provider._source_retry_slot_attempted)
+                                    candidate_process.kill()
+                                    candidate_process.wait(timeout=2)
+                                    grant_peer.close()
+                                    self.assertIsNone(controller.poll_source_preexit())
+                                    self.assertFalse(provider._source_retry_slot_attempted)
+                                idle = (0x46524c4d, 1, 2160, 1, 0, 1, 0, 0)
+                                with mock.patch.object(source_bootstrap, 'memory',
+                                        side_effect=lambda _pid, _addr, size: struct.pack('=8I', *idle)
+                                        if size == 32 else struct.pack('=3I', 0, 0, 0)):
+                                    self.assertIsNone(controller.poll_source_preexit())
+                                    self.assertIsNone(controller.poll_source_preexit())
+                                self.assertTrue(provider._source_retry_slot_attempted)
+                                self.assertEqual([event[:2] for event in events].count(
+                                    ('c28-command', provider_module._C28_RETRY_SLOT)), 1)
+                                handles.extend(source_context._private_retry_fds)
+                                self.assertTrue(controller._private_first_abort_acknowledged(source_context))
+                                self.assertEqual(set(source_context.workers), {(0, 0), (1, 1)})
+                                self.assertFalse(revoke_calls)
+
+                                retry_proof = candidate_cycle_proof._replace(
+                                    adapter_cycle_serial=3, opaque_cycle_token=30)
+                                retry_request = [0] * 35
+                                retry_request[:5] = [source_bootstrap.MAGIC, source_bootstrap.SHELL_VERSION,
+                                    1, source_bootstrap.SHELL_RECORD.size, 1]
+                                retry_request[7:11] = [source_context.master.pid, 1, 2, 0]
+                                retry_request[12:17] = [source_context.master.start_ticks,
+                                    shm_address, source_context.epoch, source_context.deadline_ns,
+                                    source_context.nonce]
+                                retry_request[29:] = list(retry_proof)
+                                retry_worker = subprocess.Popen([sys.executable, '-c', RETRY_GRANT_ACTOR,
+                                    str(Path(directory) / 'master.sock'), source_bootstrap.SHELL_RECORD.format,
+                                    source_bootstrap.SHELL_RECORD.pack(*retry_request).hex(),
+                                    private_master_abort],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                processes.append(retry_worker)
+                                self.assertTrue(select.select([listener], [], [], 2)[0])
+                                source_context._scalar = lambda _pid, name, _fmt: {
+                                    'ngx_ff_reload_shm': shm_address, 'ngx_process': 3,
+                                    'ngx_worker': 0, 'ngx_ff_process': 2,
+                                    'ngx_ff_graceful_reload': 1, 'ngx_process_slot': 4}[name]
+                                source_context.expected_config_sha256 = retry_proof.config_sha256
+                                source_context.expected_ini_sha256 = retry_proof.ini_sha256
+                                source_context._record_cycle_proof = source_bootstrap.SourceBootstrapSupervisor._record_cycle_proof.__get__(
+                                    source_context)
+                                source_context._used_cycle_proofs = {(2, 20)}
+                                source_context._cycle_serial_highwater = 2
+                                source_context._activate_worker_body = real_activation_body
+                                source_context.worker_ready_receivers = {}
+                                source_context._executable_files = {}
+                                source_context.binary_hash = source_bootstrap.identity._sha256(
+                                    f'/proc/{retry_worker.pid}/exe')
+                                source_context.slim_reply[20] = 1
+                                prefix = struct.pack('=8I', 0x46524c4d, 1, 2160, 2, 0, 1, 1, 0)
+                                def prepare_retry_with_lineage_checks(*args, **kwargs):
+                                    self.assertIs(kwargs['previous_aborted'], prepared)
+                                    wrong_prior = copy.copy(prepared)
+                                    with self.assertRaisesRegex(PermissionError,
+                                            'exact acknowledged predecessor'):
+                                        ker_run.rx_owner_source_route_prepare(*args,
+                                            **{**kwargs, 'previous_aborted': wrong_prior})
+                                    expired = time.monotonic_ns() - 1
+                                    with self.assertRaisesRegex(PermissionError, 'live setup deadline'):
+                                        ker_run.rx_owner_source_route_prepare(*args,
+                                            **{**kwargs, 'prepare_deadline_ns': expired})
+                                    self.assertFalse(hasattr(source_context, '_source_retry_prepare_attempt'))
+                                    result = ker_run.rx_owner_source_route_prepare(*args, **kwargs)
+                                    with self.assertRaisesRegex(PermissionError, 'already attempted'):
+                                        ker_run.rx_owner_source_route_prepare(*args, **kwargs)
+                                    return result
+                                controller._source_route_preparer = prepare_retry_with_lineage_checks
+                                activate_retry = source_context.activate_prepared_retry_candidate
+                                def activate_retry_with_replay_check(controller, staged, watch, deadline):
+                                    with self.assertRaisesRegex(PermissionError, 'exact credentialed C31 PREPARED'):
+                                        activate_retry(controller, copy.copy(staged), watch, deadline)
+                                    activate_retry(controller, staged, watch, deadline)
+                                    with self.assertRaisesRegex(PermissionError, 'exact credentialed C31 PREPARED'):
+                                        activate_retry(controller, staged, watch, deadline)
+                                source_context.activate_prepared_retry_candidate = activate_retry_with_replay_check
+                                with mock.patch.object(source_bootstrap, 'memory', return_value=prefix), \
+                                        mock.patch.object(source_bootstrap, 'shared_mapping',
+                                            return_value=(shm_address, shm_address + 4096)):
+                                    if private_master_abort == 'bad-ready':
+                                        with self.assertRaisesRegex(PermissionError,
+                                                'worker READY identity/slot/profile mismatch'):
+                                            controller.pump_bootstrap_listener()
+                                    else:
+                                        self.assertTrue(controller.pump_bootstrap_listener())
+                                handles.extend((source_context.workers[(2, 1)][0],
+                                    source_context._executable_files[retry_worker.pid][0]))
+                                sockets.extend((source_context.worker_channels[(2, 1)],
+                                    controller._retry_candidate_relay_anchor))
+                                self.assertTrue(select.select([retry_worker.stdout], [], [], 2)[0])
+                                self.assertEqual(tuple(map(int, retry_worker.stdout.readline().split())),
+                                    (*source_context._retry_slot, 0 if private_master_abort == 'bad-ready' else 4))
+                                self.assertEqual(controller._retry_candidate_watch['pid'], retry_worker.pid)
+                                if private_master_abort == 'bad-ready':
+                                    sockets.append(source_context.worker_ready_receivers[(2, 1)])
+                                    self.assertIsNone(getattr(controller, '_retry_candidate_ready', None))
+                                    self.assertTrue(controller.unresolved)
+                                else:
+                                    self.assertEqual(controller._retry_candidate_ready[0], retry_worker.pid)
+                                    self.assertNotIn((2, 1), source_context.worker_ready_receivers)
+                                    staged = controller._retry_candidate_prepared
+                                    self.assertEqual(staged.source_epoch, 2)
+                                    self.assertEqual(staged.command_sequence,
+                                        prepared.command_sequence + 1)
+                                    self.assertIs(source_context._source_route_preparations[id(staged)],
+                                        staged._source_route_preparation)
+                                    self.assertIn((2, 1), source_context._activated_workers)
+                                    source_context.private_source_master_barrier = real_private_barrier
+                                    controller._source_route_preparer = ker_run.rx_owner_source_route_prepare
+                                    controller.check_live = mock.Mock()
+                                    controller.poll_source_preexit = mock.Mock()
+                                    retry_deadline = time.monotonic_ns() + 99_000_000
+                                    retry_park = list(record)
+                                    retry_park[9] = 2
+                                    retry_park[28] = retry_deadline
+                                    retry_park[29:] = list(retry_proof)
+                                    retry_commit = list(retry_park)
+                                    retry_commit[2] = 6
+                                    if private_master_abort == 'retry-renewed':
+                                        retry_commit[28] += 1
+                                    clients = []
+                                    for message in (retry_park, retry_commit):
+                                        client = socket.socket(socket.AF_UNIX,
+                                            socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+                                        sockets.append(client)
+                                        clients.append(client)
+                                        client.settimeout(0.5)
+                                        client.connect(str(Path(directory) / 'master.sock'))
+                                        client.send(source_bootstrap.SHELL_RECORD.pack(*message))
+                                    def retry_memory(_pid, _address, length):
+                                        if length == 32:
+                                            return prefix
+                                        released = (2, 5) in source_context._completed_master_barriers
+                                        return struct.pack('=3I', int(released), 0, 2)
+                                    with mock.patch.object(source_bootstrap, 'memory', side_effect=retry_memory):
+                                        if private_master_abort == 'retry-renewed':
+                                            with self.assertRaisesRegex(PermissionError, 'parked master terminal'):
+                                                controller.pump_source_requests()
+                                        elif private_master_abort == 'retry-c28-unknown':
+                                            with self.assertRaisesRegex(TimeoutError, 'unknown retry C28 COMMIT'):
+                                                controller.pump_source_requests()
+                                        else:
+                                            self.assertTrue(controller.pump_source_requests())
+                                    def verify_barrier(client, operation):
+                                        reply, ancillary, flags, _ = client.recvmsg(
+                                            source_bootstrap.SHELL_RECORD.size, socket.CMSG_SPACE(8))
+                                        fds = array.array('i')
+                                        for level, kind, value in ancillary:
+                                            if (level, kind) == (socket.SOL_SOCKET, socket.SCM_RIGHTS):
+                                                fds.frombytes(value)
+                                        try:
+                                            self.assertEqual(len(fds), 2)
+                                            self.assertFalse(flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC))
+                                            reply = source_bootstrap.SHELL_RECORD.unpack(reply)
+                                            self.assertEqual((reply[2], reply[9], reply[28]),
+                                                (operation, 2, retry_deadline))
+                                        finally:
+                                            for fd in fds:
+                                                os.close(fd)
+                                    verify_barrier(clients[0], 7)
+                                    self.assertEqual(source_context._master_control_deadlines,
+                                        {1: operation_deadline, 2: retry_deadline})
+                                    self.assertEqual(provider._source_park_evidence.lease, 0x8899)
+                                    self.assertEqual(source_context._source_route_park_joins[id(prepared)].park.lease,
+                                        0x7788)
+                                    self.assertEqual(source_context._source_route_park_joins[id(staged)].park.lease,
+                                        0x8899)
+                                    if private_master_abort == 'success':
+                                        verify_barrier(clients[1], 8)
+                                        self.assertEqual(source_context._completed_master_barriers,
+                                            {(1, 5), (1, 9), (2, 5), (2, 6)})
+                                        self.assertEqual(source_context._source_shell_committed_plans[(2, 1)]
+                                            ['native_current_cookie'], 0x9922)
+                                        self.assertEqual(revoke_calls, [])
+                                    else:
+                                        clients[1].settimeout(0.01)
+                                        try:
+                                            self.assertEqual(clients[1].recv(1), b'')
+                                        except TimeoutError:
+                                            pass
+                                        self.assertTrue(controller.unresolved)
+                                        self.assertFalse(source_context._source_shell_committed_plans)
+                                        self.assertEqual(revoke_calls, ['revoke'])
+                                        sockets.extend(controller._private_source_master_channels)
+                                        self.assertEqual(staged.committed, private_master_abort == 'retry-c28-unknown')
+                                        if private_master_abort == 'retry-renewed':
+                                            app.terminate()
+                                            app.communicate(timeout=2)
+                                            _, stderr = retry_worker.communicate(input=b'x', timeout=2)
+                                            self.assertEqual(retry_worker.returncode, 0, stderr)
+                                            return
+                                if private_master_abort == 'bad-ready':
+                                    self.assertTrue(controller._private_first_abort_acknowledged(source_context))
+                                    self.assertNotIn((2, 1), source_context._activated_workers)
+                                    self.assertEqual(revoke_calls, ['revoke'])
+                                _, stderr = retry_worker.communicate(input=b'x', timeout=2)
+                                self.assertEqual(retry_worker.returncode, 0, stderr)
+                                os.write(release_write, b'R')
+                                stdout, stderr = app.communicate(timeout=2)
+                                self.assertEqual(app.returncode, 0, (stdout, stderr))
+                                return
                             if private_master_commit:
                                 active_operation['value'] = 6
                                 commit_record = list(record)
@@ -1130,7 +1550,7 @@ class SourceRoute(unittest.TestCase):
                                     real_sendmsg = socket.socket.sendmsg
 
                                     def corrupt_worker_proof(sock, buffers, *args, **kwargs):
-                                        if sock is grant_channel:
+                                        if sock is retained_grant_channel:
                                             evidence = bytearray(buffers[0])
                                             self.assertEqual(len(evidence),
                                                 source_bootstrap.COMMIT_EVIDENCE_RECORD_BYTES)
@@ -1265,7 +1685,7 @@ class SourceRoute(unittest.TestCase):
                 park_deadline = min(deadline, time.monotonic_ns() + 80_000_000)
                 park_response = {'phase': provider_module._C28_PHASE_PREPARED,
                     'lease': 0x7788, 'listener_cookie': 0,
-                    'received': 2, 'accepted': 2}
+                    'received': 2, 'accepted': 0}
                 provider._source_c28_command = lambda operation, _deadline: park_response
                 provider.park_source_group(park_deadline)
                 joined = provider.bind_source_route_preparation(prepared)
@@ -1273,7 +1693,8 @@ class SourceRoute(unittest.TestCase):
                     source_context._source_route_park_joins[id(prepared)])
                 commit_response = {'phase': provider_module._C28_PHASE_COMMITTED,
                     'lease': park_response['lease'], 'listener_cookie': 0x99,
-                    'received': 2, 'accepted': 2}
+                    'received': typed_c28_counts[0],
+                    'accepted': typed_c28_counts[1]}
                 if drop_typed_binding:
                     del prepared._source_route_preparation
                     with self.assertRaises(PermissionError):
@@ -1321,7 +1742,7 @@ class SourceRoute(unittest.TestCase):
                     operation_deadline_ns=park_deadline)
                 self.assertEqual(commit_status, typed_ack_status)
                 receipt = prepared._source_route_commit_receipt
-                if (typed_command_type != ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT or
+                if (typed_command_type == ker_run._RX_OWNER_SOURCE_ROUTE_ABORT or
                         typed_ack_status != 0):
                     self.assertIsNone(receipt)
                     self.assertFalse(provider._source_route_receipt_consumed)
@@ -1332,8 +1753,14 @@ class SourceRoute(unittest.TestCase):
                     self.assertEqual(app.returncode, 0, (stdout, stderr))
                     return
                 provider._source_c28_command = lambda operation, _deadline: commit_response
-                provider.commit_source_group_before(park_deadline, receipt)
-                self.assertTrue(provider._source_committed)
+                if typed_c28_counts == (3, 3):
+                    provider.commit_source_group_before(park_deadline, receipt)
+                    self.assertTrue(provider._source_committed)
+                else:
+                    with self.assertRaisesRegex(PermissionError, 'did not settle the PARK lease and queue'):
+                        provider.commit_source_group_before(park_deadline, receipt)
+                    self.assertFalse(provider._source_committed)
+                    self.assertTrue(provider._source_command_unresolved)
                 self.assertTrue(provider._source_route_receipt_consumed)
                 provider_channel_peer.close()
                 os.close(provider.pidfd)
@@ -1787,7 +2214,6 @@ class SourceRoute(unittest.TestCase):
                             2, 0, 0, time.monotonic_ns() + 1_000_000_000)
                         control.send(replay)
                         self.assertEqual(os.read(marker_read, 1), b'R')
-                        import select
                         self.assertFalse(select.select([control], [], [], .05)[0],
                             'replayed COMMIT received a success response')
                         os.write(release_write, b'R')
@@ -2017,6 +2443,16 @@ class SourceRouteCommitReceiptModelTests(unittest.TestCase):
             production_private_controller=True, private_master_park=True,
             private_master_commit=True, private_master_commit_fault='duplicate')
 
+    def test_private_master_abort_requires_native_adoption_and_c31_ack(self):
+        if RECEIVER is None:
+            self.skipTest('compiled C31 fixture required')
+        for outcome in ('success', 'retry-renewed', 'retry-c28-unknown', 'bad-ready',
+                'production', 'wrong-helper', 'unknown-adoption', 'unknown-c31'):
+            with self.subTest(outcome=outcome):
+                SourceRoute.run_case(self, typed_handoff=True,
+                    production_private_controller=True, private_master_park=True,
+                    private_master_abort=outcome)
+
     def test_owned_master_listener_consumes_and_quarantines_postrecv_failures(self):
         for fault in ('setblocking', 'precheck', 'wrong-provider', 'deadline',
                 'park-unknown', 'ack-error', 'late-ack'):
@@ -2052,18 +2488,32 @@ class SourceRouteCommitReceiptModelTests(unittest.TestCase):
             SourceRoute.run_case(self, typed_handoff=True,
                 typed_context_tamper=tamper)
 
-    def test_abort_after_frame_and_negative_ack_never_mint_receipts(self):
-        SourceRoute.run_case(self, typed_handoff=True,
-            typed_command_type=ker_run._RX_OWNER_SOURCE_ROUTE_ABORT)
+    def test_after_frame_commit_authorizes_c28_with_its_correlated_ack(self):
         SourceRoute.run_case(self, typed_handoff=True,
             typed_command_type=ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME)
+
+    def test_c28_commit_requires_monotonic_receive_and_full_acceptance(self):
+        for counts in ((1, 1), (3, 2)):
+            with self.subTest(received=counts[0], accepted=counts[1]):
+                SourceRoute.run_case(self, typed_handoff=True,
+                    typed_c28_counts=counts)
+
+    def test_abort_and_negative_ack_never_mint_receipts(self):
+        SourceRoute.run_case(self, typed_handoff=True,
+            typed_command_type=ker_run._RX_OWNER_SOURCE_ROUTE_ABORT)
         SourceRoute.run_case(self, typed_handoff=True, typed_ack_status=-errno.EBUSY)
+        SourceRoute.run_case(self, typed_handoff=True, typed_ack_status=-errno.ETIMEDOUT,
+            typed_command_type=ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME)
 
     def test_malformed_or_late_commit_ack_never_mints_receipt(self):
         for fault in ('short', 'eof', 'extra-fd', 'wrong-sequence', 'late'):
             with self.subTest(fault=fault):
                 SourceRoute.run_case(self, typed_handoff=True,
                     typed_ack_fault=fault)
+
+    def test_ordinary_ack_cannot_settle_after_frame_commit(self):
+        SourceRoute.run_case(self, typed_handoff=True, typed_ack_fault='wrong-kind',
+            typed_command_type=ker_run._RX_OWNER_SOURCE_ROUTE_COMMIT_AFTER_FRAME)
 
     def test_credentialed_commit_ack_mints_and_consumes_once(self):
         provider_spec = importlib.util.spec_from_file_location(
@@ -2132,7 +2582,7 @@ class SourceRouteCommitReceiptModelTests(unittest.TestCase):
             current_start = self_start
             candidate_start = ker_run.process_start_ticks(candidate_process.pid)
             park_response = {'phase': 1, 'lease': 0x1234, 'listener_cookie': 0,
-                'received': 3, 'accepted': 3}
+                'received': 3, 'accepted': 0}
             park_bundle = {'record': b'r' * 108,
                 'credentials': (os.getpid(), os.getuid(), os.getgid()),
                 'fds': ((1, 2, 3), (4, 5, 6), (7, 8, 9))}

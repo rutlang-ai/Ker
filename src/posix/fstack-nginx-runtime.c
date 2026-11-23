@@ -8,6 +8,7 @@
 #include <ker/socket-broker.h>
 #include "socket-broker-preload-internal.h"
 #include "nginx-source-bootstrap.h"
+#include "nginx-source-upgrade-directory.h"
 #include "source-native-ini.h"
 
 #include <dlfcn.h>
@@ -92,6 +93,12 @@ static char runtime_config_path[PATH_MAX];
 static _Thread_local struct runtime_init_plan pending_init_plan;
 static _Thread_local int pending_init_plan_ready;
 static volatile sig_atomic_t runtime_stop;
+
+static void source_slim_term(int signal_number)
+{
+    (void)signal_number;
+    runtime_stop = 1;
+}
 static intptr_t *nginx_max_sockets;
 static int (*nginx_is_fstack_fd)(int);
 static dispatch_func_context_t rx_owner_dispatcher;
@@ -225,8 +232,11 @@ source_native_project_global(const struct runtime_config *config,
     const char *filename, unsigned proc_id, const char *proc_type)
 {
     struct ff_config projected = {0};
-    if (!config || !config->source_shell_profile || !filename || !proc_type ||
-        proc_id > 1 || config->native_ini.source_process_count != 2) return -EINVAL;
+    if (!config || !config->source_shell_profile || !filename || !proc_type)
+        return -EINVAL;
+    unsigned count = config->graceful_reload ? 2u : 1u;
+    if (proc_id >= count || config->native_ini.source_process_count != count)
+        return -EINVAL;
     projected.filename = strdup(filename);
     projected.dpdk.proc_type = strdup(proc_type);
     projected.dpdk.lcore_mask = strdup(config->native_ini.lcore_mask);
@@ -264,17 +274,17 @@ source_native_project_global(const struct runtime_config *config,
         return -ENOMEM;
     }
     projected.dpdk.proc_id = (int)proc_id;
-    projected.dpdk.nb_procs = 2;
+    projected.dpdk.nb_procs = (int)count;
     projected.dpdk.proc_lcore[0] = 0;
     projected.dpdk.proc_lcore[1] = 1;
-    projected.dpdk.primary_slim = 1;
-    projected.dpdk.graceful_reload = 1;
+    projected.dpdk.primary_slim = config->graceful_reload;
+    projected.dpdk.graceful_reload = config->graceful_reload;
     projected.dpdk.nb_ports = 1;
     projected.dpdk.max_portid = 0;
     projected.dpdk.portid_list[0] = 0;
     projected.dpdk.port_cfgs[0].port_id = 0;
     projected.dpdk.port_cfgs[0].nb_lcores = 1;
-    projected.dpdk.port_cfgs[0].lcore_list[0] = 1;
+    projected.dpdk.port_cfgs[0].lcore_list[0] = config->graceful_reload;
     projected.dpdk.port_cfgs[0].mtu = FF_MTU_DEFAULT;
     projected.dpdk.log_level = 0;
     projected.log.level = 0;
@@ -328,6 +338,12 @@ int ker_fstack_runtime_application_io_allowed(void)
     return 1;
 }
 
+bool ker_fstack_runtime_polls_kevent(void)
+{
+    return source_worker_mode || (runtime_initialized &&
+        pending_init_plan.config.source_shell_profile);
+}
+
 int ker_fstack_nginx_source_worker_take(struct ker_nginx_source_bootstrap *out)
 {
     if (!out || !source_worker_mode || source_worker_taken ||
@@ -335,6 +351,7 @@ int ker_fstack_nginx_source_worker_take(struct ker_nginx_source_bootstrap *out)
     int status = ker_nginx_source_bootstrap_live(&source_worker_binding);
     if (status) return status;
     *out = source_worker_binding;
+    out->directory_fd = -1;
     out->channel = out->supervisor_pidfd = out->runtime_pidfd = out->io_pidfd = -1;
     source_worker_binding.slot_fd = source_worker_binding.relay_fd = source_worker_binding.ready_fd = -1;
     source_worker_taken = 1;
@@ -401,6 +418,18 @@ ker_fstack_runtime_trace_leaf(const char *name, int fd, long result)
     }
 }
 
+static void source_acknowledge_park(void)
+{
+    /* Native I/O owns the hardware. Once the master has parked the native
+     * SYN queue, the source worker can acknowledge at a completed I/O
+     * checkpoint. C31 separately waits for any in-flight relay frame. */
+    if (source_worker_mode && ff_reload_rx_stopped() &&
+            ff_reload_rx_owner_gen() == ff_reload_gen() &&
+            ker_sb_preload_owner_loop_active() &&
+            ker_sb_preload_owner_wait_check() == 0 && ff_no_hw_mode_nosync())
+        ff_reload_handover_ack();
+}
+
 /* Original source APIs can make several synchronous native queries in one
  * application-loop pass. At completed API boundaries, service only the
  * already-authenticated RX relay on this same owner thread. This never runs
@@ -414,6 +443,7 @@ void ker_fstack_runtime_relay_checkpoint(void)
         runtime_trace("ff_source_relay_checkpoint failed pid=%ld status=%d\n", (long)getpid(), status);
         abort();
     }
+    source_acknowledge_park();
     errno = saved;
 }
 
@@ -612,11 +642,24 @@ int ker_fstack_nginx_source_fault_profile(void)
 {
 #if defined(FF_RELOAD_FAULT_INJECTION) && defined(KER_FSTACK_NGINX_TEST_FAULT_RUNTIME)
     const char *fault = getenv("FF_FAULT");
-    const char *enabled = getenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE");
+    const char *retry = getenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE");
+    const char *ready_delay = getenv("KER_NGINX_SOURCE_READY_DELAY_ENABLE");
+    const char *abort_only = getenv("KER_NGINX_SOURCE_ABORT_ENABLE");
+    const char *synack_fail = getenv("KER_NGINX_SOURCE_SYNACK_FAULT_ENABLE");
+    const char *delay_ms = getenv("FF_FAULT_DELAY_MS");
     const char *first = getenv("KER_NGINX_SOURCE_FIRST_HUP_ENABLE");
-    return fault && !strcmp(fault, "flip_fail_once") && enabled &&
-        !strcmp(enabled, "1") && first && !strcmp(first, "1") &&
-        getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH") != NULL;
+    if (!fault || !first || strcmp(first, "1") ||
+            !getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH"))
+        return 0;
+    return (!strcmp(fault, "flip_fail_once") && retry && !strcmp(retry, "1") &&
+            !ready_delay && !delay_ms && !abort_only && !synack_fail) ||
+        (!strcmp(fault, "ready_delay") && ready_delay && !strcmp(ready_delay, "1") &&
+            delay_ms && !strcmp(delay_ms, "15000") && !retry && !abort_only && !synack_fail) ||
+        (abort_only && !strcmp(abort_only, "1") && !ready_delay && !delay_ms && !retry &&
+            !synack_fail && (!strcmp(fault, "flip_fail") || !strcmp(fault, "ready_never") ||
+                !strcmp(fault, "park_never"))) ||
+        (synack_fail && !strcmp(synack_fail, "1") && !strcmp(fault, "synack_fail") &&
+            !abort_only && !retry && !ready_delay && !delay_ms);
 #else
     return 0;
 #endif
@@ -679,7 +722,10 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
         strcmp(source_first_hup, "1")))
         return runtime_fail(EPERM,
             "ker fstack runtime: source-shell profile requires authenticated first-HUP bootstrap\n");
-    plan.config.source_shell_profile = source_shell_enable != NULL;
+    bool source_serial = ker_source_native_ini_serial_enabled();
+    if (source_serial && (source_shell_enable || source_bootstrap_path))
+        return runtime_fail(EINVAL, "ker fstack runtime: conflicting source profiles\n");
+    plan.config.source_shell_profile = source_shell_enable != NULL || source_serial;
     if (argc != 4 || argv == NULL || argv[0] == NULL ||
         strcmp(argv[0], "nginx") != 0 || argv[1] == NULL || argv[2] == NULL ||
         argv[3] == NULL || strncmp(argv[1], "--conf=", 7) != 0 ||
@@ -710,7 +756,7 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
         memcpy(plan.config.broker_path, plan.config.native_ini.broker_path,
             strlen(plan.config.native_ini.broker_path) + 1);
         plan.config.version = 1;
-        plan.config.graceful_reload = 1;
+        plan.config.graceful_reload = !source_serial;
         plan.config.source_process_count = plan.config.native_ini.source_process_count;
         plan.config.saw_version = plan.config.saw_path =
             plan.config.saw_graceful_reload = plan.config.saw_lcore_mask = 1;
@@ -743,74 +789,83 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
 
         if (getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH")) {
             struct ff_reload_state **source = dlsym(RTLD_DEFAULT, "ngx_ff_reload_shm");
-            struct ker_nginx_source_bootstrap binding;
+            struct ker_nginx_source_bootstrap slim_binding;
+            bool upgrade = proc_id == 1 && ker_nginx_source_upgrade_worker() &&
+                plan.source_round_epoch == 0 && plan.worker_generation == 0;
+            uint32_t wire_round = upgrade ? KER_NGINX_SOURCE_UPGRADE_ROUND :
+                plan.source_round_epoch;
+            /* PREEXIT must see the same binding that consumes ACTIVATE and COMMIT. */
+            struct ker_nginx_source_bootstrap *binding =
+                proc_id == 0 ? &slim_binding : &source_worker_binding;
             int status = plan.config.source_shell_profile ?
                 ker_nginx_source_bootstrap_from_environment_source_shell(
                     proc_id == 0 ? KER_NGINX_SOURCE_ROLE_SLIM : KER_NGINX_SOURCE_ROLE_WORKER,
-                    (uint32_t)plan.worker_generation, plan.source_round_epoch, *source,
-                    &plan.config.source_snapshot, &binding) :
+                    (uint32_t)plan.worker_generation, wire_round, *source,
+                    &plan.config.source_snapshot, binding) :
                 ker_nginx_source_bootstrap_from_environment(
                     proc_id == 0 ? KER_NGINX_SOURCE_ROLE_SLIM : KER_NGINX_SOURCE_ROLE_WORKER,
-                    (uint32_t)plan.worker_generation, plan.source_round_epoch, *source, &binding);
+                    (uint32_t)plan.worker_generation, plan.source_round_epoch, *source, binding);
             runtime_trace("ff_init_stage stage=graceful_bootstrap_transport pid=%ld role=%u status=%d\n",
                 (long)getpid(), proc_id, status);
             if (status) return runtime_fail(-status,
                 "ker fstack runtime: source bootstrap transport rejected\n");
             if (plan.config.source_shell_profile) {
-                status = source_shell_validate_io_binding(&binding,
+                status = source_shell_validate_io_binding(binding,
                     &plan.config.native_ini);
                 if (status) {
-                    ker_nginx_source_bootstrap_close(&binding);
+                    ker_nginx_source_bootstrap_close(binding);
                     return runtime_fail(-status,
                         "ker fstack runtime: authenticated native I/O argv binding rejected\n");
                 }
             }
-            if (proc_id == 0 && binding.record.flags == KER_NGINX_SOURCE_SLIM_CONTROL_ONLY) {
+            if (proc_id == 0 && binding->record.flags == KER_NGINX_SOURCE_SLIM_CONTROL_ONLY) {
                 size_t length = strlen(argv[1] + 7);
                 if (length >= sizeof(plan.config_path)) {
-                    ker_nginx_source_bootstrap_close(&binding);
+                    ker_nginx_source_bootstrap_close(binding);
                     return runtime_fail(ENAMETOOLONG, "ker fstack runtime: source config path too long\n");
                 }
                 memcpy(plan.config_path, argv[1] + 7, length + 1);
                 plan.proc_id = proc_id;
                 plan.proc_type = proc_type;
-                source_control_binding = binding;
+                source_control_binding = slim_binding;
                 source_control_only = 1;
                 pending_init_plan = plan;
                 pending_init_plan_ready = 1;
                 return 0;
             }
-            if (proc_id == 1 && binding.record.flags == KER_NGINX_SOURCE_WORKER_CANDIDATE) {
+            if (proc_id == 1 && binding->record.flags == KER_NGINX_SOURCE_WORKER_CANDIDATE) {
                 const char *enabled = getenv("KER_NGINX_SOURCE_FIRST_HUP_ENABLE");
                 const char *successor = getenv("KER_NGINX_SOURCE_SUCCESSOR_ENABLE");
                 /* The opt-in alone conveys no authority: the live bootstrap
                  * grant already binds the exact source master, round, FIFO,
-                 * relay, and fresh READY channel. Only its first successor
-                 * can stage admission; original READY additionally waits for
-                 * authenticated C31 PREPARED and supervisor ACTIVATE. */
+                 * relay, and fresh READY channel. Entry to the original
+                 * READY path still requires C31 PREPARED and ACTIVATE. */
                 if (enabled && !strcmp(enabled, "1") &&
-                        ((plan.worker_generation == 1 && (plan.source_round_epoch == 1 ||
-                            (plan.source_round_epoch == 2 && ker_fstack_nginx_source_fault_profile()))) ||
-                         (plan.worker_generation == 0 && plan.source_round_epoch == 2 &&
-                            successor && !strcmp(successor, "1") && !getenv("FF_FAULT")))) {
+                        (upgrade || (plan.worker_generation == 1 && (plan.source_round_epoch == 1 ||
+                            (plan.source_round_epoch == 2 &&
+                             getenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE") &&
+                             ker_fstack_nginx_source_fault_profile()))) ||
+                         (plan.source_round_epoch > 1 &&
+                          plan.source_round_epoch <= KER_NGINX_SOURCE_COMMITTED_ROUND_LIMIT &&
+                          (uint32_t)plan.worker_generation == plan.source_round_epoch % 2 &&
+                          successor && !strcmp(successor, "1") && !getenv("FF_FAULT") &&
+                          !getenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE")))) {
                     source_worker_mode = 1;
-                    source_worker_binding = binding;
                     goto open_worker_context;
                 }
-                ker_nginx_source_bootstrap_close(&binding);
+                ker_nginx_source_bootstrap_close(binding);
                 return runtime_fail(ENOTSUP,
                     "ker fstack runtime: source candidate needs native selector/park binding before owner claim\n");
             }
-            if (proc_id == 1 && binding.record.flags == KER_NGINX_SOURCE_WORKER_INITIAL &&
+            if (proc_id == 1 && binding->record.flags == KER_NGINX_SOURCE_WORKER_INITIAL &&
                     plan.worker_generation == 0 && plan.source_round_epoch == 0) {
                 source_worker_mode = 1;
-                source_worker_binding = binding;
                 goto open_worker_context;
             }
             /* A transport proof alone is never generation I/O authority.
              * Keep the existing unsupported gate until the actual slot,
              * original dispatcher and native selector are bound below. */
-            ker_nginx_source_bootstrap_close(&binding);
+            ker_nginx_source_bootstrap_close(binding);
         }
 
         /* The broker runtime currently has no native generation packet
@@ -824,9 +879,9 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
         return runtime_fail(ENOTSUP,
             "ker fstack runtime: graceful reload requires an authenticated generation packet-owner and dispatcher binding\n");
     }
-    if (plan.config.saw_lcore_mask)
+    if (plan.config.saw_lcore_mask && !source_serial)
         return runtime_fail(EINVAL,
-            "ker fstack runtime: dpdk.lcore_mask is accepted only for source graceful-startup validation\n");
+            "ker fstack runtime: dpdk.lcore_mask requires an authenticated source profile\n");
 
 open_worker_context:
     broker_environment = getenv("KER_SOCKET_BROKER_PATH");
@@ -902,6 +957,14 @@ ker_fstack_nginx_runtime_commit(void)
                 0, "primary"))
             return runtime_fail(ENOMEM,
                 "ker fstack runtime: source-shell config projection allocation failed\n");
+        if (source_control_binding.directory_fd >= 0) {
+            int directory_status = ker_nginx_source_upgrade_directory_attach(
+                source_control_binding.directory_fd, true);
+            if (directory_status) return runtime_fail(-directory_status,
+                "ker fstack runtime: source slim directory attach failed\n");
+            (void)syscall(SYS_close, source_control_binding.directory_fd);
+            source_control_binding.directory_fd = -1;
+        }
         /* Preserve the source-inherited state. The native I/O actor owns EAL;
          * this process has no packet queues or application socket authority. */
         runtime_initialized = 1;
@@ -926,11 +989,19 @@ ker_fstack_nginx_runtime_commit(void)
             return runtime_fail(ESTALE, "ker fstack runtime: incomplete source worker delegation\n");
         ff_global_cfg.dpdk.primary_slim = 1;
         ff_global_cfg.dpdk.nb_procs = (int)pending_init_plan.config.source_process_count;
-        if (pending_init_plan.config.source_shell_profile &&
-            source_native_project_global(&pending_init_plan.config, runtime_config_path,
-                pending_init_plan.proc_id, pending_init_plan.proc_type))
-            return runtime_fail(ENOMEM,
-                "ker fstack runtime: source-shell config projection allocation failed\n");
+    }
+    if (pending_init_plan.config.source_shell_profile &&
+        source_native_project_global(&pending_init_plan.config, runtime_config_path,
+            pending_init_plan.proc_id, pending_init_plan.proc_type))
+        return runtime_fail(ENOMEM,
+            "ker fstack runtime: source-shell config projection allocation failed\n");
+    if (source_worker_mode && source_worker_binding.directory_fd >= 0) {
+        int directory_status = ker_nginx_source_upgrade_directory_attach(
+            source_worker_binding.directory_fd, false);
+        if (directory_status) return runtime_fail(-directory_status,
+            "ker fstack runtime: source worker directory attach failed\n");
+        (void)syscall(SYS_close, source_worker_binding.directory_fd);
+        source_worker_binding.directory_fd = -1;
     }
 
     /* Legacy workers use the bounded graceful-off projection. Authenticated
@@ -970,15 +1041,31 @@ ff_run(loop_func_t loop, void *arg)
     }
     if (source_control_only) {
         runtime_stop = 0;
+        bool source_shell = pending_init_plan.config.source_shell_profile;
+        if (source_shell) {
+            struct sigaction term = {.sa_handler = source_slim_term};
+            if (sigemptyset(&term.sa_mask) || sigaction(SIGTERM, &term, NULL))
+                _exit(2);
+        }
         for (;;) {
             if ((uint32_t)getpid() != source_control_binding.record.actor_pid ||
                 (uint32_t)syscall(SYS_gettid) != source_control_binding.record.actor_tid)
                 _exit(2);
             int status = ker_nginx_source_bootstrap_poll_stop(&source_control_binding);
-            if (status || runtime_stop) {
+            /* The original supervisor signals all actors at once. Keep the
+             * slim identity live while the committed worker settles native STOP. */
+            uint32_t shared_epoch = ff_reload_shared_epoch();
+            bool settling = source_shell && runtime_stop &&
+                ((shared_epoch == 1 && ff_reload_active_gen() == 1) ||
+                 (ker_nginx_source_upgrade_enabled() && shared_epoch == 1) ||
+                 (shared_epoch == KER_NGINX_SOURCE_COMMITTED_ROUND_LIMIT &&
+                  getenv("KER_NGINX_SOURCE_SUCCESSOR_ENABLE") &&
+                  ff_reload_active_gen() == 0));
+            if (status || (runtime_stop && !settling)) {
                 runtime_trace("ff_source_slim_control_stop pid=%ld status=%d\n", (long)getpid(), status);
+                ker_nginx_source_upgrade_directory_detach();
                 ker_nginx_source_bootstrap_close(&source_control_binding);
-                if (status < 0) _exit(2);
+                if (status < 0 && !(settling && status == -ESRCH)) _exit(2);
                 return;
             }
             /* The original slim loop is control-only. In particular, it must
@@ -1044,12 +1131,10 @@ ff_run(loop_func_t loop, void *arg)
                 pump_status < 0 ? -pump_status : EPROTO);
             abort();
         }
-        if (source_worker_mode && ff_no_hw_mode() && ff_reload_rx_stopped() &&
-                ff_reload_rx_owner_gen() == ff_reload_gen())
-            /* The master publishes stopped only after the authenticated
-             * native SYN barrier. This completed owner-loop pass is parked;
-             * C31's route transition separately waits for no deferred frame. */
-            ff_reload_handover_ack();
+        if (source_worker_mode) {
+            ff_reload_dir_sync();
+            source_acknowledge_park();
+        }
         if (!ready_sent) {
             int status = notify_ready();
             if (!status) ready_sent = 1;
@@ -1066,7 +1151,9 @@ ff_run(loop_func_t loop, void *arg)
             if (authenticated() &&
                     (source_worker_binding.record.flags != KER_NGINX_SOURCE_WORKER_CANDIDATE ||
                         source_candidate_activated)) {
-                if (ff_reload_shared_epoch() != source_worker_binding.record.source_epoch)
+                uint32_t source_epoch = ker_nginx_source_upgrade_worker() ? 0 :
+                    source_worker_binding.record.source_epoch;
+                if (ff_reload_shared_epoch() != source_epoch)
                     abort();
                 ker_nginx_source_original_publish_ready(source_ready_slot, source_ready_pid);
                 source_ready_published = 1;
@@ -1231,6 +1318,17 @@ int ker_fstack_rx_owner_relay_dispatch(void *data, uint16_t *length,
     }
     if (rx_owner_dispatch_pid != getpid() ||
         rx_owner_dispatch_tid != (pid_t)syscall(SYS_gettid)) return -ENOTCONN;
+    /* Between USR2 registration and WINCH release this worker still owns
+     * ingress. The preceding HUP's classifier has no remaining predecessor
+     * after that round settles. Do not let the newly visible directory peer
+     * reactivate the obsolete filter while the native route stays here. */
+    if (source_worker_mode && source_worker_binding.record.source_epoch == 1 &&
+        ker_nginx_source_upgrade_enabled() && !ker_nginx_source_upgrade_worker() &&
+        !ff_reload_hw_locked() && ff_reload_active_gen() == ff_reload_gen() &&
+        !ff_no_hw_mode_nosync()) {
+        *result = queue_id;
+        return 0;
+    }
     struct ff_dispatcher_context context = {0};
     context.vlan.stripped = vlan_stripped;
     context.vlan.vlan_tci = vlan_tci;

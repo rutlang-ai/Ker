@@ -45,6 +45,8 @@ SOURCE_WATCH_BODY = struct.Struct('<IIIIQQQQ')
 # carries identities only; the actual owner/master PIDFDs travel as SCM_RIGHTS.
 ATTACH_BODY = struct.Struct('<IIIIQQIIIIQ32s32s')
 ATTACHED_BODY = ATTACH_BODY
+ATTACH_ORIGINAL_RV9 = 1
+ATTACH_ORIGINAL_RV9_MAX_NS = 1_800_000_000_000
 MAX_SEQUENCE = 0xffffffffffffffff
 
 HELLO_BYTES = HEADER.size

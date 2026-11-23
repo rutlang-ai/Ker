@@ -97,7 +97,9 @@ int ker_source_network_parse_expectation(const char *record,
         }
         if (!*fields[i]) return -EINVAL;
     }
-    if (strcmp(fields[0], "v1") != 0 || strlen(fields[1]) != 64) return -EPROTO;
+    int repeated = strcmp(fields[0], "v1-rv9") == 0;
+    if ((!repeated && strcmp(fields[0], "v1") != 0) || strlen(fields[1]) != 64)
+        return -EPROTO;
     for (size_t i = 0; i < 64; ++i)
         if (!((fields[1][i] >= '0' && fields[1][i] <= '9') ||
               (fields[1][i] >= 'a' && fields[1][i] <= 'f')))
@@ -144,8 +146,9 @@ int ker_source_network_parse_expectation(const char *record,
     if (result) return result;
     if (!record_deadline || record_deadline != launch_deadline) return -EPROTO;
     if (record_deadline <= now_ns) return -ETIMEDOUT;
-    if (record_deadline - now_ns > KER_SOURCE_NETWORK_READBACK_MAX_DEADLINE_AHEAD_NS)
-        return -ERANGE;
+    uint64_t limit = repeated ? UINT64_C(1800000000000) :
+        KER_SOURCE_NETWORK_READBACK_MAX_DEADLINE_AHEAD_NS;
+    if (record_deadline - now_ns > limit) return -ERANGE;
     parsed.deadline_ns = record_deadline;
     *out = parsed;
     return 0;

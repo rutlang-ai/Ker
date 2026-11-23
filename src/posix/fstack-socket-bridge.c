@@ -31,13 +31,16 @@ static int unsupported(void)
 #ifdef KER_FSTACK_NGINX_RUNTIME
 extern void ker_fstack_runtime_trace_leaf(const char *name, int fd, long result);
 extern int ker_fstack_runtime_application_io_allowed(void);
+extern bool ker_fstack_runtime_polls_kevent(void);
 extern void ker_fstack_runtime_relay_checkpoint(void);
 #define FF_PROGRESS() ker_fstack_runtime_relay_checkpoint()
 #define FF_TRACE(fd, result) ker_fstack_runtime_trace_leaf(__func__, (fd), (long)(result))
 #define FF_IO_ALLOWED() ker_fstack_runtime_application_io_allowed()
+#define FF_POLL_KEVENT() ker_fstack_runtime_polls_kevent()
 #else
 #define FF_TRACE(fd, result) ((void)0)
 #define FF_IO_ALLOWED() 1
+#define FF_POLL_KEVENT() false
 #define FF_PROGRESS() ((void)0)
 #endif
 
@@ -947,8 +950,15 @@ int ff_kevent(int queue, const struct kevent *changes, int change_count,
     if (change_count && ker_sb_preload_usercopy_in(copied_changes, changes,
             (size_t)change_count * sizeof(*copied_changes)) < 0) return -1;
     struct timespec copied_timeout;
-    if (timeout && ker_sb_preload_usercopy_in(&copied_timeout, timeout,
-            sizeof(copied_timeout)) < 0) return -1;
+    if (FF_POLL_KEVENT()) {
+        /* Original ff_kevent_do_each polls with a zero timeout. Its owning
+         * Nginx loop must return to service reload control and heartbeats. */
+        copied_timeout = (struct timespec){0};
+        timeout = &copied_timeout;
+    } else if (timeout && ker_sb_preload_usercopy_in(&copied_timeout, timeout,
+            sizeof(copied_timeout)) < 0) {
+        return -1;
+    }
     struct kevent *copied_events = event_count ? calloc((size_t)event_count,
         sizeof(*copied_events)) : NULL;
     if (event_count && !copied_events) return -1;
@@ -1096,3 +1106,4 @@ int ff_dup2(int old_fd, int new_fd)
 { (void)old_fd; (void)new_fd; return unsupported(); }
 
 #undef FF_DISPATCH_RETURN
+#undef FF_POLL_KEVENT

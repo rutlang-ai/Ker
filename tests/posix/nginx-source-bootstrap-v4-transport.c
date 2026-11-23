@@ -552,7 +552,7 @@ static int receive_activation(int channel, int expect_mismatch,
     struct ker_nginx_source_bootstrap_record_v4 grant;
     struct ker_nginx_source_bootstrap binding = {
         .channel = channel, .supervisor_pidfd = -1, .runtime_pidfd = -1,
-        .io_pidfd = -1, .slot_fd = -1, .relay_fd = -1, .ready_fd = -1,
+        .io_pidfd = -1, .slot_fd = -1, .relay_fd = -1, .ready_fd = -1, .directory_fd = -1,
     };
     int result = 1;
     int enabled = 1;

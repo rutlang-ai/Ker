@@ -181,6 +181,7 @@ class VerifiedCompanionShutdown:
     master_identity: tuple
     settled_record: bytes
     _seal: object
+    original_source: bool = False
 
 
 @dataclass(frozen=True)
@@ -612,6 +613,20 @@ class SerialGenerationController:
                 if fd >= 0:
                     os.close(fd)
             raise
+
+    def verify_source_initial_runtime(self, context, cycle_channel):
+        if (context is not self._old_context or context.ready is None or
+                context.settled or context.closed or context.unresolved_reason is not None or
+                context.advanced or cycle_channel.source_socket is None or
+                tuple(cycle_channel.runtime) != context.ready[2:5] or
+                context.process.poll() is not None):
+            raise AuthenticationError('source scope does not match its initial serial runtime')
+        for actor, fd, expected in (
+                (context.app_identity, context.app_pidfd, self._expected_app_hash),
+                (context.worker_identity, context.worker_pidfd, self._expected_worker_hash)):
+            if (fd < 0 or _pidfd_is_dead(fd) or _proc_identity(actor.pid) != actor or
+                    _sha256_proc_exe(actor.pid) != expected or _pidfd_is_dead(fd)):
+                raise AuthenticationError('source serial runtime actor identity changed')
 
     def launch_owner_actor(self, context, actor_path, handoff_path, generation_tag,
             timeout=10):
@@ -1095,6 +1110,34 @@ class SerialGenerationController:
             'record': proof.settled_record.hex()})
         return proof
 
+    def record_original_shutdown(self, context, live_watch, original, cycle_channel):
+        """Use the original supervisor's ECHILD result to prove final retirement."""
+        from nginx_source_origin import OriginalSerialShellLaunch
+
+        registered = self._external_live_watches.get(id(live_watch))
+        if (type(original) is not OriginalSerialShellLaunch or
+                context is not self._new_context or context.ready is None or
+                context.unresolved_reason is not None or registered is None or
+                registered.get('watch') is not live_watch or
+                registered.get('inner') is not context or live_watch.inner is not context or
+                registered.get('companion') is not original or
+                registered.get('cycle_channel') is not cycle_channel or
+                cycle_channel.unresolved or cycle_channel.last_request is not None or
+                cycle_channel.transition_deadline is not None or
+                cycle_channel.master_identity != registered.get('master_identity') or
+                not _pidfd_is_dead(registered['master_pidfd']) or
+                not _pidfd_is_dead(registered['owner_pidfd']) or
+                cycle_channel.master_pidfd < 0 or not _pidfd_is_dead(cycle_channel.master_pidfd)):
+            raise SettlementError('original final owner watch is not fully settled')
+        record = original.final_owner_receipt(registered['owner_identity'], cycle_channel)
+        proof = VerifiedCompanionShutdown(context, live_watch, original,
+            registered['master_identity'], record, self._proof_seal, original_source=True)
+        self._companion_shutdown_proofs[id(proof)] = proof
+        context.events.append({'event': 'ORIGINAL_SUPERVISOR_SETTLED',
+            'monotonic_ns': time.monotonic_ns(), 'master_pid': original.master_pid,
+            'master_start': original.master_start, 'record_sha256': record.hex()})
+        return proof
+
     def verify_external_shutdown_watch(self, context, watch_fd, shutdown, timeout=12):
         """Verify final owner retirement after exact companion SETTLED/master death."""
         if (not isinstance(shutdown, VerifiedCompanionShutdown) or
@@ -1116,8 +1159,15 @@ class SerialGenerationController:
             raise ProtocolError('final retirement descriptor is not the registered watch capability')
         companion = shutdown.companion
         cycle_channel = registered['cycle_channel']
-        if (not companion.settled or companion.unresolved or companion.helper.returncode != 0 or
-                bytes(companion.settled_record) != shutdown.settled_record or
+        def valid_shutdown_receipt():
+            if shutdown.original_source:
+                return companion.final_owner_receipt(registered['owner_identity'],
+                    cycle_channel) == shutdown.settled_record
+            return (companion.settled and not companion.unresolved and
+                companion.helper.returncode == 0 and
+                bytes(companion.settled_record) == shutdown.settled_record)
+
+        if (not valid_shutdown_receipt() or
                 not _pidfd_is_dead(registered['master_pidfd']) or
                 cycle_channel.master_pidfd < 0 or not _pidfd_is_dead(cycle_channel.master_pidfd)):
             raise SettlementError('companion SETTLED/master-death proof changed before VERIFY')
@@ -1149,8 +1199,7 @@ class SerialGenerationController:
                     result[4:6] != (registered['owner_identity'].pid,
                         registered['owner_identity'].start_ticks) or
                     not _pidfd_is_dead(registered['owner_pidfd']) or
-                    not companion.settled or companion.unresolved or
-                    bytes(companion.settled_record) != shutdown.settled_record or
+                    not valid_shutdown_receipt() or
                     not _pidfd_is_dead(registered['master_pidfd']) or
                     not _pidfd_is_dead(cycle_channel.master_pidfd) or
                     time.monotonic() >= deadline):
