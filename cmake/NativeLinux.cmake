@@ -74,6 +74,16 @@ if(ker_ff_admission_window_serialized_lkl)
         KER_FF_ADMISSION_WINDOW_SERIALIZED_LKL=1)
 endif()
 if(BUILD_TESTING)
+    add_executable(ker-nginx-cycle-wire-test tests/posix/nginx-cycle-wire-test.c)
+    target_include_directories(ker-nginx-cycle-wire-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_features(ker-nginx-cycle-wire-test PRIVATE c_std_11)
+    target_compile_options(ker-nginx-cycle-wire-test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    add_test(NAME nginx-cycle-wire-contract COMMAND ker-nginx-cycle-wire-test)
+    add_test(NAME nginx-cycle-control-contract
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/nginx-cycle-control-test.py")
+
     target_compile_definitions(ker-posix PRIVATE KER_C16_ADMISSION_TEST_TRACE=1
         KER_C28_CUTOVER_TESTING=1)
 endif()
@@ -233,6 +243,8 @@ set(KER_FSTACK_NGINX_BUILD_DIR "" CACHE PATH
     "Generated objs directory for the pinned FF-enabled nginx build")
 option(KER_ENABLE_C23_SOURCE_RELOAD_PROBES
     "Opt in to the 330-second unchanged upstream baseline plus measured graceful_reload=0 probe" OFF)
+option(KER_ENABLE_NGINX_SERIAL_GR0
+    "Run the unchanged 25-second gr0 probe across the private serial Nginx runtime cycle" OFF)
 set(KER_C23_INSTALL_PREFIX "" CACHE PATH
     "Normal installed Ker prefix used by the long C23 original-source reload probes")
 set(KER_C23_NGINX_BINARY "" CACHE FILEPATH
@@ -335,7 +347,10 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
         RENAME nginx-worker-shim-build.json COMPONENT fstack-nginx-runtime)
     set_target_properties(ker-socket-client ker-ini PROPERTIES POSITION_INDEPENDENT_CODE ON)
     add_library(ker-fstack-nginx-owner-activation MODULE
-        src/posix/fstack-nginx-owner-activation-module.c)
+        src/posix/fstack-nginx-owner-activation-module.c
+        src/posix/nginx-candidate-admission.c
+        src/posix/nginx-owner-ready.c
+        src/posix/nginx-candidate-map.c)
     set_target_properties(ker-fstack-nginx-owner-activation PROPERTIES
         PREFIX "" OUTPUT_NAME "ker-fstack-nginx-owner-activation")
     target_include_directories(ker-fstack-nginx-owner-activation PRIVATE
@@ -346,13 +361,51 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
         "${KER_FSTACK_NGINX_BUILD_DIR}"
         "${PROJECT_SOURCE_DIR}/include"
         "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
-        "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-reload")
     target_compile_features(ker-fstack-nginx-owner-activation PRIVATE c_std_11)
     target_compile_options(ker-fstack-nginx-owner-activation PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-fstack-nginx-owner-activation PRIVATE
-        ker-socket-client ker-ini ${CMAKE_DL_LIBS})
+        ker-socket-client ker-ini OpenSSL::Crypto ${CMAKE_DL_LIBS})
+    if(BUILD_TESTING)
+        add_library(ker-fstack-nginx-owner-activation-alias-test MODULE
+            src/posix/fstack-nginx-owner-activation-module.c
+            src/posix/nginx-candidate-admission.c
+            src/posix/nginx-owner-ready.c
+            src/posix/nginx-candidate-map.c)
+        set_target_properties(ker-fstack-nginx-owner-activation-alias-test PROPERTIES
+            PREFIX "" OUTPUT_NAME "ker-fstack-nginx-owner-activation-alias-test")
+        target_include_directories(ker-fstack-nginx-owner-activation-alias-test PRIVATE
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core"
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event"
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules"
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/os/unix"
+            "${KER_FSTACK_NGINX_BUILD_DIR}"
+            "${PROJECT_SOURCE_DIR}/include"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-reload")
+        target_compile_features(ker-fstack-nginx-owner-activation-alias-test PRIVATE c_std_11)
+        target_compile_options(ker-fstack-nginx-owner-activation-alias-test PRIVATE -Wall -Wextra -Werror)
+        target_compile_definitions(ker-fstack-nginx-owner-activation-alias-test PRIVATE
+            KER_NGINX_OWNER_TEST_ALIAS=1)
+        target_link_libraries(ker-fstack-nginx-owner-activation-alias-test PRIVATE
+            ker-socket-client ker-ini OpenSSL::Crypto ${CMAKE_DL_LIBS})
+    endif()
     file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/fstack-nginx-owner-activation-module.c"
         ker_fstack_nginx_owner_activation_source_sha256)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-candidate-admission.c"
+        ker_nginx_candidate_admission_sha256)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-owner-ready.c" ker_nginx_ready_source_sha256)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-owner-ready.h" ker_nginx_ready_header_sha256)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-candidate-map-namespace.h"
+        ker_nginx_candidate_namespace_sha256)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-candidate-map.c"
+        ker_nginx_candidate_wrapper_sha256)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map/ff_flow_map.c"
+        ker_nginx_candidate_flow_map_sha256)
     configure_file(cmake/fstack-nginx-owner-activation-manifest.json.in
         "${PROJECT_BINARY_DIR}/fstack-nginx-owner-activation-manifest.json" @ONLY)
     install(TARGETS ker-fstack-nginx-owner-activation
@@ -389,7 +442,24 @@ target_compile_features(ker-socket-broker-server PUBLIC c_std_11)
 target_compile_options(ker-socket-broker-server PRIVATE -Wall -Wextra -Werror)
 if(BUILD_TESTING)
     target_compile_definitions(ker-socket-broker-server PRIVATE
-        KER_C16_ADMISSION_TEST_TRACE=1 KER_C28_CUTOVER_TESTING=1)
+        KER_C16_ADMISSION_TEST_TRACE=1 KER_C28_CUTOVER_TESTING=1
+        KER_SOCKET_BROKER_READINESS_TESTING=1)
+    # The deterministic async VERIFY barrier is built only into this
+    # uninstalled fixture library, never into the SDK server target.
+    add_library(ker-socket-broker-readiness-test-server STATIC
+        src/posix/socket-broker-server.c src/posix/tcp-observer-diag-parse.c)
+    target_include_directories(ker-socket-broker-readiness-test-server PUBLIC
+        "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-socket-broker-readiness-test-server PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_features(ker-socket-broker-readiness-test-server PRIVATE c_std_11)
+    target_compile_options(ker-socket-broker-readiness-test-server PRIVATE
+        -Wall -Wextra -Werror)
+    target_compile_definitions(ker-socket-broker-readiness-test-server PRIVATE
+        KER_C16_ADMISSION_TEST_TRACE=1 KER_C28_CUTOVER_TESTING=1
+        KER_SOCKET_BROKER_READINESS_TESTING=1
+        KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING=1)
+    target_link_libraries(ker-socket-broker-readiness-test-server PRIVATE ker-posix)
 endif()
 target_link_libraries(ker-socket-broker-server PRIVATE ker-posix)
 add_library(ker::socket-broker-server ALIAS ker-socket-broker-server)
@@ -633,6 +703,62 @@ if(BUILD_TESTING)
     target_link_libraries(ker-socket-broker-fixture PRIVATE ker-socket-broker-server)
     add_dependencies(ker-socket-broker-fixture ker-app ker-io-worker)
     target_compile_options(ker-socket-broker-fixture PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-readiness-fixture
+        tests/posix/socket-broker-readiness-broker.c)
+    target_link_libraries(ker-socket-broker-readiness-fixture PRIVATE
+        ker-socket-broker-readiness-test-server)
+    add_dependencies(ker-socket-broker-readiness-fixture ker-app ker-io-worker)
+    target_compile_options(ker-socket-broker-readiness-fixture PRIVATE
+        -Wall -Wextra -Werror)
+    target_compile_definitions(ker-socket-broker-readiness-fixture PRIVATE
+        KER_SOCKET_BROKER_READINESS_TESTING=1
+        KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING=1)
+    add_executable(ker-socket-broker-generation-watch-actor
+        tests/posix/socket-broker-generation-watch-actor.c)
+    target_link_libraries(ker-socket-broker-generation-watch-actor PRIVATE
+        ker-socket-client)
+    target_compile_options(ker-socket-broker-generation-watch-actor PRIVATE
+        -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-serial-generation-actor
+        tests/posix/socket-broker-serial-generation-actor.c)
+    target_link_libraries(ker-socket-broker-serial-generation-actor PRIVATE
+        ker-socket-client)
+    target_compile_options(ker-socket-broker-serial-generation-actor PRIVATE
+        -Wall -Wextra -Werror)
+    add_test(NAME native-socket-broker-readiness-wire
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/test_broker_readiness_wire.py")
+    set_tests_properties(native-socket-broker-readiness-wire PROPERTIES
+        TIMEOUT 10 LABELS "native-tcp;socket-broker;readiness;unit")
+    add_test(NAME native-socket-broker-readiness-supervisor-unit
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/test_broker_readiness_supervisor.py")
+    set_tests_properties(native-socket-broker-readiness-supervisor-unit PROPERTIES
+        TIMEOUT 10 LABELS "native-tcp;socket-broker;readiness;unit"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;TMPDIR=/dev/shm")
+    add_test(NAME native-socket-broker-readiness
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker-readiness.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-readiness-fixture>"
+            --generation-watch-actor "$<TARGET_FILE:ker-socket-broker-generation-watch-actor>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-socket-broker-readiness PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;socket-broker;readiness;tap"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;TMPDIR=/dev/shm")
+    add_test(NAME native-socket-broker-serial-generation
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker-serial-generation.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-readiness-fixture>"
+            --actor "$<TARGET_FILE:ker-socket-broker-serial-generation-actor>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}"
+            --result "${PROJECT_BINARY_DIR}/serial-generation-result.json")
+    set_tests_properties(native-socket-broker-serial-generation PROPERTIES
+        TIMEOUT 300 LABELS "native-tcp;socket-broker;serial-generation;tap"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;TMPDIR=/dev/shm")
     add_executable(ker-socket-broker-client-test tests/posix/socket-broker-client.c)
     target_include_directories(ker-socket-broker-client-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_link_libraries(ker-socket-broker-client-test PRIVATE ker-socket-client)
@@ -974,6 +1100,33 @@ if(BUILD_TESTING)
                         --dpdk-plugin-dir "${ker_session_pmd_dir}")
                 set_tests_properties(native-nginx-fstack-owner-activation PROPERTIES
                     TIMEOUT 300 LABELS "native-tcp;fstack;socket-broker;nginx;staged-owner-activation")
+                if(TARGET ker-socket-broker-readiness-fixture)
+                    set(ker_serial_cycle_command
+                        "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-nginx-serial-cycle.py"
+                            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                            --library "$<TARGET_FILE:ker-posix>"
+                            --worker "$<TARGET_FILE:ker-io-worker>"
+                            --broker "$<TARGET_FILE:ker-socket-broker-readiness-fixture>"
+                            --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                            --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                            --worker-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                            --owner-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                            --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                            --nginx "${KER_FSTACK_NGINX_BINARY}")
+                    add_test(NAME native-nginx-fstack-serial-cycle COMMAND ${ker_serial_cycle_command})
+                    add_test(NAME native-nginx-fstack-repeated-serial-cycle
+                        COMMAND ${ker_serial_cycle_command} --reloads 3)
+                    set_tests_properties(native-nginx-fstack-serial-cycle PROPERTIES
+                        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;nginx;serial-cycle")
+                    set_tests_properties(native-nginx-fstack-repeated-serial-cycle PROPERTIES
+                        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;nginx;serial-cycle;repeated-generation")
+                    if(KER_ENABLE_NGINX_SERIAL_GR0)
+                        add_test(NAME native-nginx-fstack-serial-gr0
+                            COMMAND ${ker_serial_cycle_command} --source-gr0)
+                        set_tests_properties(native-nginx-fstack-serial-gr0 PROPERTIES
+                            TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;nginx;serial-cycle;source-reload")
+                    endif()
+                endif()
                 if(KER_ENABLE_C23_SOURCE_RELOAD_PROBES)
                     if(NOT KER_C23_INSTALL_PREFIX OR NOT KER_C23_NGINX_BINARY OR
                        NOT EXISTS "${KER_C23_INSTALL_PREFIX}/share/ker/native-linux/build.json" OR
@@ -1484,6 +1637,18 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-host-runtime COMMAND ker-host-runtime-test)
     set_tests_properties(native-fstack-host-runtime PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     set(ker_exception_ring_pmd "${ker_session_pmd_dir}/librte_net_ring.so")
+    foreach(ker_packet_retirement_mode command eof)
+        set(ker_packet_retirement_args)
+        if(ker_packet_retirement_mode STREQUAL "eof")
+            list(APPEND ker_packet_retirement_args --control-eof)
+        endif()
+        add_test(NAME native-worker-packet-retirement-${ker_packet_retirement_mode}
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/worker-packet-retirement.py"
+                --worker "$<TARGET_FILE:ker-io-worker>" --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                ${ker_packet_retirement_args})
+        set_tests_properties(native-worker-packet-retirement-${ker_packet_retirement_mode}
+            PROPERTIES TIMEOUT 30 LABELS "native-tcp;worker-lifetime;tap")
+    endforeach()
     add_executable(ker-exception-tap-test tests/posix/exception-tap.c
         src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/worker-mbuf.c src/posix/pcap.c)
     target_include_directories(ker-exception-tap-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
@@ -2640,3 +2805,4 @@ endif()
 include("${PROJECT_SOURCE_DIR}/cmake/RxDecisionForwardTests.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/RuntimeServiceSupervisorTests.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/RuntimeServiceClientTests.cmake")
+include("${PROJECT_SOURCE_DIR}/cmake/NginxCompanion.cmake")

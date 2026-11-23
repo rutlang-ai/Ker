@@ -160,17 +160,38 @@ static int payload_wire_sack_probe(uint32_t mark, const char *prefix, uint16_t p
     if (result) { fprintf(stderr, "SACK command timeout\\n"); close(fd); return result; }
     struct tcp_info info;
     socklen_t info_length = sizeof(info);
-    memset(&info, 0, sizeof(info));
-    if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &info_length)) {
-        int error = errno; close(fd); return -error;
+    uint64_t sack_start = monotonic_ns();
+    unsigned sack_polls = 0;
+    if (!sack_start) { close(fd); return -EIO; }
+    for (;;) {
+        memset(&info, 0, sizeof(info));
+        info_length = sizeof(info);
+        if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &info_length)) {
+            int error = errno; close(fd); return -error;
+        }
+        ++sack_polls;
+        if (info.tcpi_sacked != 0) break;
+        uint64_t now = monotonic_ns();
+        if (!now || now < sack_start || now - sack_start >= QUERY_DEADLINE_NS) {
+            fprintf(stderr, "SACK ACK not observed: sacked=%u unacked=%u polls=%u\n",
+                info.tcpi_sacked, info.tcpi_unacked, sack_polls);
+            close(fd);
+            return -ETIMEDOUT;
+        }
+        pause_briefly();
     }
     result = ker_native_tcp_payload_snapshot_test_limit(mark, 4096, &snapshot);
     if (result) { close(fd); return result; }
-    if (info.tcpi_sacked == 0 || snapshot.payload_bytes != sizeof(payload) ||
-        snapshot.sampled_sockets != 1) {
+    if (snapshot.payload_bytes != sizeof(payload) || snapshot.sampled_sockets != 1) {
+        fprintf(stderr, "SACK sample mismatch: sacked=%u unacked=%u bytes=%llu sockets=%llu\n",
+            info.tcpi_sacked, info.tcpi_unacked,
+            (unsigned long long)snapshot.payload_bytes,
+            (unsigned long long)snapshot.sampled_sockets);
         close(fd);
         return -EPROTO;
     }
+    if (sack_polls > 1)
+        fprintf(stderr, "SACK ACK observed after %u TCP_INFO polls\n", sack_polls);
     char state_path[512];
     if (snprintf(state_path, sizeof(state_path), "%s.state", prefix) >=
             (int)sizeof(state_path)) { close(fd); return -EINVAL; }

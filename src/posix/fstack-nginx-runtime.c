@@ -355,12 +355,25 @@ ff_run(loop_func_t loop, void *arg)
     }
     runtime_stop = 0;
     if (ker_sb_preload_owner_loop_enter() != 0) abort();
+    typedef int (*worker_ready_fn)(void);
+    worker_ready_fn notify_ready = (worker_ready_fn)dlsym(RTLD_DEFAULT,
+        "ker_fstack_nginx_owner_activation_worker_ready");
+    if (!notify_ready && getenv("KER_NGINX_OWNER_READY_FD")) abort();
+    int ready_sent = notify_ready == NULL;
     while (!runtime_stop) {
         int pump_status = ker_sb_preload_owner_pump();
         if (pump_status) {
             runtime_trace("ff_owner_pump failure stage=before-loop errno=%d\n",
                 pump_status < 0 ? -pump_status : EPROTO);
             abort();
+        }
+        if (!ready_sent) {
+            int status = notify_ready();
+            if (!status) ready_sent = 1;
+            else if (status != -EAGAIN) {
+                runtime_trace("ff_owner_ready failure errno=%d\n", -status);
+                abort();
+            }
         }
         (void)loop(arg);
         pump_status = ker_sb_preload_owner_pump();

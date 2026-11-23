@@ -51,6 +51,8 @@ static int pump_failure_mode;
 static int owner_probe_mode;
 static int product_smoke_mode;
 static int window_cycles_mode;
+static int window_handoff_mode;
+static uint16_t listener_port = 8080;
 static int window_cancel_mode;
 static int staged_candidate_mode;
 static int staged_candidate_hold_mode;
@@ -364,7 +366,7 @@ fail:
 static int finish_if_requested(void)
 {
 	static int reported;
-	if (completed_count < requested_count || !stop_requested) return 0;
+	if ((!window_handoff_mode && completed_count < requested_count) || !stop_requested) return 0;
 	if (!reported) {
 		reported = 1;
 		uint64_t inserted = 0, duplicates = 0, full = 0;
@@ -502,7 +504,7 @@ static void setup_owner(void)
 		if (admission_listener_rejects_fastopen(listener_fd)) goto fail;
 		setup_stage = "FF listener bind";
 		struct sockaddr_in address = {.sin_family = AF_INET,
-			.sin_port = htons(8080)};
+			.sin_port = htons(listener_port)};
 		if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) goto fail;
 		if (ff_bind(listener_fd, (struct linux_sockaddr *)&address, sizeof(address))) goto fail;
 		setup_stage = "FF listener listen";
@@ -597,8 +599,17 @@ static int owner_loop(void *unused)
 	}
 	if (rearm_window_requested) {
 		rearm_window_requested = 0;
-		if (ker_sb_preload_ff_owner_admission_rearm()) _exit(10);
-		window_rearming = 1;
+		struct ker_ff_owner_admission_window before = {0}, after = {0};
+		if (ker_sb_preload_ff_owner_admission_status(&before)) _exit(10);
+		if (ker_sb_preload_ff_owner_admission_rearm()) {
+			if (!window_handoff_mode || errno != EBUSY ||
+			    ker_sb_preload_ff_owner_admission_status(&after) ||
+			    before.state != KER_FF_ADMISSION_TASK_RETIRED ||
+			    after.state != before.state || after.epoch != before.epoch ||
+			    after.queue_lease != before.queue_lease || ff_flow_map_active()) _exit(10);
+			static const char marker[] = "C17_REARM_BUSY retired_unchanged=1 map_closed=1\n";
+			(void)syscall(SYS_write, STDOUT_FILENO, marker, sizeof(marker) - 1);
+		} else window_rearming = 1;
 	}
 	if (window_retiring || window_rearming) {
 		struct ker_ff_owner_admission_window window = {0};
@@ -682,7 +693,7 @@ static int owner_loop(void *unused)
 	struct epoll_event event;
 	int wait_status = ker_sb_preload_owner_wait_check();
 	if (wait_status) {
-		if (stop_requested && completed_count >= requested_count) {
+		if (stop_requested && (window_handoff_mode || completed_count >= requested_count)) {
 			(void)finish_if_requested();
 			return 0;
 		}
@@ -710,7 +721,7 @@ static int owner_loop(void *unused)
 	int ready = ker_sb_posix_epoll_wait(epoll_fd, &event, 1, 250);
 	if (ready < 0) {
 		if (errno == EINTR) return 0;
-		if (stop_requested && completed_count >= requested_count) {
+		if (stop_requested && (window_handoff_mode || completed_count >= requested_count)) {
 			(void)finish_if_requested();
 			return 0;
 		}
@@ -764,7 +775,17 @@ static int owner_loop(void *unused)
 int main(int argc, char **argv)
 {
 	if (argc != 2) return 2;
-	if (!strcmp(argv[1], "pump-failure")) {
+	const char *port_text = getenv("KER_C17_TEST_LISTENER_PORT");
+	if (port_text) {
+		char *end = NULL;
+		unsigned long port = strtoul(port_text, &end, 10);
+		if (!*port_text || *end || !port || port > UINT16_MAX) return 2;
+		listener_port = (uint16_t)port;
+	}
+	if (!strcmp(argv[1], "window-handoff")) {
+		window_cycles_mode = window_handoff_mode = 1;
+		requested_count = 64;
+	} else if (!strcmp(argv[1], "pump-failure")) {
 		pump_failure_mode = 1;
 		requested_count = 1;
 	} else if (!strcmp(argv[1], "owner-probe")) {

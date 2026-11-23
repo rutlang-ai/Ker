@@ -274,6 +274,65 @@ malformed replies remain errors; none is treated as an empty census. This
 initial observer surface is limited to connected IPv4 TCP sockets and is not a
 per-generation or full-table F-Stack graceful-reload census.
 
+## Supervisor readiness control
+
+The optional `ker_socket_broker_server_readiness_attach()` profile gives a
+trusted direct supervisor a bounded readiness record and one-shot stop request
+over a pre-created Unix `SOCK_SEQPACKET` pair. It is deliberately restricted
+to an empty initial capability set: the caller attaches the channel, explicitly
+completes the empty bootstrap, and runs the broker with
+`ker_socket_broker_server_run(server, 0)`. The broker emits its fixed 120-byte
+little-endian READY record only from its first actual request-pump turn, after
+the listener is live and the empty bootstrap was confirmed. Stdout markers and
+the DPDK worker's `KER_IO_READY` do not substitute for this record.
+
+The supervisor authenticates READY using per-message kernel credentials and
+the exact broker process identity it launched. The broker pins its direct
+supervisor from the pre-fork channel's peer credentials, parent PID, start time,
+and pidfd; it continues checking that parent while its pump runs. STOP and
+STOP_ACK are fixed 104-byte records with a single stop ID. STOP is authenticated
+by per-message credentials and the pinned parent identity. The broker stops
+accepting RPC work after accepting STOP. STOP_ACK means the request was
+accepted; it does not mean descriptors or original Linux have been cleaned up.
+The supervisor must still observe normal `server_run()` return, checked
+destruction, the application/native completion signal, and worker resource
+cleanup. A lost STOP_ACK is ambiguous, so STOP is not resent.
+
+This profile does not transfer a sentinel capability or expose packet/run
+descriptors, F-Stack dispatcher callbacks, or runtime-service credentials. It
+does not enable `graceful_reload=1`, Nginx worker roles, or an F-Stack graceful
+reload claim. Calls that do not opt in keep their existing broker behavior.
+
+## Owner generation retirement watch
+
+`ker_socket_client_owner_generation_watch_create(client, plan_cap)` creates a
+read-only metadata capability for member 0 of an owner-group plan. The broker
+binds it to the actual member-0 claim (owner PID and start time, owner token,
+claim generation, mark, and listener cookie when published). The watch keeps
+metadata and an owner pidfd; it does not keep a listener descriptor or socket
+alias alive. Close the watch capability when it is no longer needed. Closing
+the final listener capability remains an ordinary original-Linux close even
+while the watch exists.
+
+The watch capability cannot verify retirement by itself. A verification
+request is accepted only over the attached readiness channel from its pinned,
+authenticated supervisor. Each request has a fresh increasing sequence number.
+The broker rechecks the bound owner and performs bounded asynchronous
+original-Linux census and queued-payload queries for the captured mark and
+cookie. An active owner, a remaining listener, or queued payload prevents a
+successful result. A completed result can be queried again with a new
+sequence; replaying an old sequence is rejected. Dropping the watch cancels
+its in-flight query, and an authenticated STOP cancels any pending verification
+before acknowledging shutdown.
+
+`OLD_RETIRED` is deliberately a narrow observation: the bound owner is proven
+dead, the captured listener cookie has no LISTEN row, and the payload snapshot
+reports zero queued bytes. This does not prove that every kernel socket state
+has disappeared or that a full generation handoff is safe. It is not a
+replacement for the original graceful-reload oracle. The deterministic
+verification barrier used to test cancellation is compiled only into an
+uninstalled test fixture; it is absent from the installed SDK.
+
 ## Scope
 
 The broker caller must quiesce socket users while adopting descriptors and

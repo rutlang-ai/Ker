@@ -115,6 +115,34 @@ files live outside the repository and only make the no-FF host control image
 buildable; the header rejects an enabled F-Stack build and aborts if disabled
 profile fallback hooks are reached.
 
+## Runtime-service actor delegation SDK slice
+
+The private runtime-service client supports a supervisor-authorized, two-step
+actor delegation flow. A lease holder creates one role-bound intent, then binds
+it to a live child using that child's pidfd. The child receives the opaque
+ticket over a private pipe and claims it from a fresh executable image. The
+server verifies the exact child identity and role; the ticket is single-use and
+expires after five seconds if it is not claimed. A reparented child may use the
+delegated claim only while authenticating the same pinned supervisor. Direct
+claims retain their direct-parent check.
+
+The C33 fixture exercises a caller process, a stage process, and a reparented
+primary using the client API without the native-Linux preload in those actors.
+The raw post-fork path only transfers the grant and execs the same test image.
+With the DPDK TAP worker, the test checks that the actual worker pool remains
+live after the first two actors exit and is released only after the final role
+releases its lease. If an INTENT or BIND reply arrives after the client deadline,
+the client marks that delegation context terminal, returns no usable ID or
+ticket, and will not retry the mutation. The server's bounded intent/grant
+expiry removes the pending delegated capability. The supervisor can then
+explicitly stop the worker once no live role remains.
+
+This is an SDK and test-fixture capability only. It does not activate an
+upstream Nginx interposer, F-Stack dispatcher registration, graceful reload,
+generic F-Stack primary ownership, or PEER/RESPONSE packet routing. The
+qualified no-FF Nginx lifecycle above remains a separate control profile; no
+graceful-reload scenario count changes from this delegation slice.
+
 This demonstrates that the current caller adapter can support this tested
 no-FF Nginx profile. It does not run Nginx's F-Stack module, qualify the full
 upstream F-Stack fault/performance matrix, or migrate the graceful-reload

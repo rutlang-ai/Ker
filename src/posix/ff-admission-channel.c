@@ -56,6 +56,8 @@ struct ker_ff_admission_channel {
 	pthread_t owner_thread;
 	int owner_thread_bound;
 	int response_pending;
+	int identity_pending;
+	struct ker_ff_admission_wire identity_wire;
 	uint64_t test_prepared_delay_until_ns;
 	int test_prepared_delay_announced;
 	struct ker_ff_admission_wire response;
@@ -165,7 +167,7 @@ static int credentials_match(struct ker_ff_admission_channel *channel,
 	if (!credentials || credentials->pid != channel->peer_pid ||
 	    credentials->uid != channel->peer_uid || credentials->gid != channel->peer_gid)
 		return -EPERM;
-	return peer_identity(channel);
+	return 0;
 }
 
 static int send_wire(struct ker_ff_admission_channel *channel,
@@ -175,29 +177,33 @@ static int send_wire(struct ker_ff_admission_channel *channel,
 	struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1};
 	ssize_t sent = syscall(SYS_sendmsg, channel->fd, &message,
 		MSG_DONTWAIT | MSG_NOSIGNAL);
-	if (sent < 0) return -errno;
+	/* No record was transferred on EINTR. Defer to the next bounded step,
+	 * preserving the command ID and any pending owner response. */
+	if (sent < 0) return errno == EINTR ? -EAGAIN : -errno;
 	return (size_t)sent == sizeof(*wire) ? 0 : -EIO;
 }
 
 static int receive_wire(struct ker_ff_admission_channel *channel,
-			struct ker_ff_admission_wire *wire)
+                        struct ker_ff_admission_wire *wire)
 {
-	char control_bytes[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int) * 8)];
-	struct iovec vector = {.iov_base = wire, .iov_len = sizeof(*wire)};
-	struct msghdr message = {
-		.msg_control = control_bytes,
-		.msg_controllen = sizeof(control_bytes),
-		.msg_iov = &vector,
-		.msg_iovlen = 1,
-	};
-	ssize_t received = syscall(SYS_recvmsg, channel->fd, &message,
-		MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
-	if (received < 0) return -errno;
-	int result = credentials_match(channel, &message);
-	if (received == 0) return -ECONNRESET;
-	if (result) return result;
-	if (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC) ||
-	    (size_t)received != sizeof(*wire)) return -EMSGSIZE;
+    if (channel->identity_pending) {
+        *wire = channel->identity_wire;
+        channel->identity_pending = 0;
+    } else {
+        char control_bytes[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int) * 8)];
+        struct iovec vector = {.iov_base = wire, .iov_len = sizeof(*wire)};
+        struct msghdr message = {
+            .msg_control = control_bytes, .msg_controllen = sizeof(control_bytes),
+            .msg_iov = &vector, .msg_iovlen = 1};
+        ssize_t received = syscall(SYS_recvmsg, channel->fd, &message,
+            MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
+        if (received < 0) return errno == EINTR ? -EAGAIN : -errno;
+        int result = credentials_match(channel, &message);
+        if (received == 0) return -ECONNRESET;
+        if (result) return result;
+        if (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC) ||
+            (size_t)received != sizeof(*wire)) return -EMSGSIZE;
+    }
 	if (wire->magic != KER_FF_ADMISSION_CHANNEL_MAGIC ||
 	    wire->version != KER_FF_ADMISSION_CHANNEL_VERSION ||
 	    wire->length != sizeof(*wire) || wire->flags || wire->reserved ||
@@ -210,7 +216,16 @@ static int receive_wire(struct ker_ff_admission_channel *channel,
 	      wire->command == KER_FF_ADMISSION_REARM) &&
 	     (wire->status || wire->allowed || wire->created)))
 		return -EPROTO;
-	return 1;
+    int identity = peer_identity(channel);
+    if (identity == -EINTR || identity == -EAGAIN || identity == -EWOULDBLOCK) {
+        /* SCM credentials and framing already passed, but the actor image/
+         * pidfd check did not finish. Keep this record, without executing it
+         * or reading its successor, until a later bounded step revalidates. */
+        channel->identity_wire = *wire;
+        channel->identity_pending = 1;
+        return -EAGAIN;
+    }
+    return identity ? identity : 1;
 }
 
 static void response_from_current(struct ker_ff_admission_channel *channel,

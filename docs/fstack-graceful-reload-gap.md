@@ -196,7 +196,7 @@ only. The separate manual `gr0` mode runs unchanged 25-second `m4_outage.py`,
 sends the real Nginx HUP at the source harness's five-second anchor, and applies
 the unchanged oracle and zero-FSM-log check. In the recorded run it observed
 one 0.028-second refusal window, below the source oracle's 0.3-second minimum;
-`gr0` therefore remains unqualified. The evidence records exact probe
+`gr0` was therefore unqualified at that checkpoint. The evidence records exact probe
 arguments and hashes, the installed Ker manifest, Nginx/module/runtime hashes,
 probe logs, and original-Linux broker statistics. The config preserves the
 source probe's `/` index response and 300-second keepalive settings. The
@@ -285,3 +285,242 @@ are exercised end to end, the source entry
 remains `blocked`. Neither an F-Stack-only run, pure Nginx FSM tests, the no-FF
 Nginx lifecycle, the bounded graceful-off Nginx profile, nor the single-process
 caller controller or bounded two-member broker census completes it.
+
+## Packet-channel retirement and worker control lifetime
+
+The standalone I/O worker now treats a retired native packet endpoint as a
+data-path retirement, independently of its control owner's lifetime. A failed
+RX send with `ECONNREFUSED`, `EPIPE`, or `ENOTCONN` stops RX pollers, releases
+retained RX mbufs, and drains already accepted TX using the existing bounds.
+Once quiescent, the worker waits for its control command or control EOF before
+exiting. Signals and genuine drain failures retain their existing failure and
+cleanup behavior. No Linux or DPDK protocol implementation changes.
+
+`native-worker-packet-retirement-command` and
+`native-worker-packet-retirement-eof` use a real DPDK TAP PMD in an isolated
+network namespace. They first verify a received Ethernet frame, close the
+packet endpoint while more frames arrive, require the worker to remain alive
+beyond the existing drain bound, and then stop it through the independent
+control channel. Final statistics must show explicit control retirement,
+discarded retired-path RX, and zero outstanding mbufs. The old worker fails
+this regression by exiting before control retirement.
+
+These worker-only tests qualify the lifetime prerequisite only. They do not qualify the
+original 25-second `gr0` outage oracle, `gr1`, or the complete reload matrix;
+the source migration entry remains `blocked` until those run end to end.
+
+## Original gr0 probe across a serial runtime cycle
+
+The private serial-cycle fixture now has an explicit `--source-gr0` mode. It
+runs the unchanged pinned `m4_outage.py` against `198.18.0.2:80` for 25 seconds
+with a 0.5-second timeout, sends the real Nginx reload at the five-second
+anchor, and invokes the unchanged `reload_checks.py summary outage` oracle.
+The oracle still requires a nonempty success sample and outage window with a
+longest outage between 0.3 and 2.5 seconds. Source hashes are checked before
+and after the probe, and the Nginx error log must contain no graceful-reload
+FSM completion or transition lines.
+
+The original master remains alive while the old worker retires, the old
+runtime settles, and the successor runtime becomes READY. Distinct worker,
+nonce and epoch identities, descriptor isolation, event order, final companion
+shutdown and zero outstanding mbufs retain the existing fixture checks. A
+rejected source oracle produces a nonzero result after normal runtime cleanup;
+a runtime error is never recorded as a qualified probe.
+
+Enable the optional test with `-DKER_ENABLE_NGINX_SERIAL_GR0=ON` in a build
+already configured with the pinned FF-enabled Nginx executable, source tree,
+generated headers and runtime module. Run:
+
+```sh
+ctest --test-dir build -R '^native-nginx-fstack-serial-gr0$' --output-on-failure
+```
+
+The fixture prints `C39_EVIDENCE <path>/result.json`. Preserve that directory:
+it contains the probe log, Nginx logs, both runtime logs/statistics and ordered
+lifecycle evidence. The result records source and executable hashes, and the
+installed native-Linux manifest when run using installed artifacts.
+
+On the worker-lifetime repair, the build-tree run passed with 1,822 successful
+requests and one 1.678-second outage. An independent installed-artifact run
+passed with 1,859 successes and one 1.754-second outage, with both runtime
+settlements reporting zero outstanding mbufs. These qualify this bounded
+original `gr0` probe over the serial caller path, not the complete original
+shell entrypoint or `graceful_reload=1`. The migration catalog remains
+362 scenario-adapted, zero partial and one blocked entry.
+
+## Bounded repeated serial cycles
+
+The private `SerialGenerationController` accepts an explicit
+`max_generations` between two and nine; its default remains two. Each advance
+must refer to the current generation and consumes that generation's original
+broker retirement and runtime settlement proofs exactly once. Old broker,
+worker and launcher pidfds must all report death before the next launch.
+Successor artifact directories are distinct (`new`, `new-2`, and so on), and
+reaching the configured limit rejects further launches. Terminal companion
+shutdown still cannot authorize a successor.
+
+The real Nginx fixture accepts `--reloads 1..8`; the original `--source-gr0`
+mode continues to require exactly one reload. The registered
+`native-nginx-fstack-repeated-serial-cycle` test performs three HUPs through
+four runtimes under the same Nginx master. Each cycle verifies HTTP service,
+distinct worker PID and runtime nonce/epoch, inherited-descriptor isolation,
+old runtime settlement before successor READY, rejection of consumed proofs,
+and final zero-outstanding-buffer settlement. The configured generation cap
+is also checked without launching another runtime.
+
+```sh
+ctest --test-dir build -R '^native-nginx-fstack-repeated-serial-cycle$' --output-on-failure
+```
+
+This extends the serial lifetime adapter only. It does not qualify upstream
+`rv9`: that case requires the production `graceful_reload=1` FSM, its original
+counters, continuous fresh traffic and resource-trend gates over the original
+round count. Serial runtime replacement still has an outage and does not
+preserve active TCP streams across kernel-instance retirement. The complete
+shell entrypoint therefore remains blocked.
+
+## Real Nginx candidate admission leaf
+
+The pinned owner-activation module accepts an explicit private
+`KER_NGINX_CANDIDATE_SLOT_FD` for one delegated staged slot-1 capability. The
+validated one-worker IPv4/TCP Nginx child claims that slot after authenticated
+FF-owner preflight. After normal runtime initialization, it attaches the
+broker admission channel on its event-loop thread and prepares the candidate
+socket before Nginx's unchanged socket/bind/listen sequence. The broker still
+requires a READY admission task, registers the exact listener before listen,
+and leaves selector zero unchanged. Nginx receives no coordinator plan or
+selector authority. Its listener tuple and backlog must match the delegated
+plan, and a wrong capability fails before socket activity.
+
+The original Nginx shared-state allocator initializes the inherited reload
+block. The private admission window compiles the pinned original
+`ff_flow_map.c` in a separate namespace and owns a separate configuration
+object. It does not change Nginx's `graceful_reload=0` configuration or bypass
+the original master's configuration-consistency check. Original flow-map
+admit/revoke callbacks are pumped by the existing authenticated owner loop;
+original Linux remains the TCP and SYN-ACK authority. This does not register
+Nginx's generation packet dispatcher or start its graceful-reload FSM.
+
+`native-nginx-candidate-admission-tap` verifies a real SDK initial owner and
+a real pinned Nginx candidate in the same original-Linux broker. A live
+ordinary descriptor is rejected as a slot capability; an early candidate
+publication remains rejected and the valid slot can still be used. After
+candidate publication, fresh traffic still reaches the initial owner until
+the separate coordinator selects member one. Nginx then serves an exact HTTP
+response through a recorded original-map admission, while a TCP connection
+established with the initial SDK owner before selection continues exchanging
+bytes. Nginx shutdown must remove the candidate listener, restore selector
+zero through the coordinator, and leave zero outstanding worker buffers.
+The test writes hashes, ordered events, native statistics and logs to
+`nginx-candidate-evidence.json` in the build directory.
+
+This leaf is one-shot. Candidate HUP/respawn, USR2 qualification, repeated
+candidate slots, same-master old/new Nginx orchestration and production FSM
+integration remain unsupported. The complete source shell entrypoint and
+its `rt01`/`rt02`/`rv9`/fault matrix remain blocked.
+
+
+### Real old/new Nginx overlap qualification
+
+The candidate leaf now has a separate two-real-Nginx qualification:
+`native-nginx-overlapping-owner-cutover-tap`. It exercises the existing C28
+queued-SYN transaction, preserves an old established HTTP connection, retires
+the dead old owner's listener pin through a pidfd-gated typed API, and proves
+new HTTP after old LISTEN=0. See the [runtime profile and exact limits](fstack-nginx-runtime.md#two-real-nginx-owners-and-a-committed-cutover).
+This advances the overlap prerequisite; the original shell entrypoint remains
+blocked and the source matrix is not counted as migrated.
+
+
+### Original source stream probe over explicit overlap
+
+`native-nginx-overlap-source-streams-tap` runs the unchanged original twelve
+stream probe and summary oracle over the two real Nginx callers. It retains
+the source 8 MiB/120-second shape and requires each worker's response to span
+the real cutover, followed by later waves after old-owner exit. A mark-scoped
+old-owner ESTABLISHED census anchors the handoff, and old LISTEN=0 plus new HTTP
+anchor retirement. See [configuration, evidence and limits](fstack-nginx-runtime.md#original-twelve-stream-probe-across-real-nginx-overlap).
+This adds source traffic qualification but does not execute the original
+shell's generation FSM or its signal/transition assertions; the source matrix
+and migration inventory entry remain blocked.
+
+
+### Real Nginx abort continuity
+
+The two real Nginx profile now covers explicit C28 ABORT with a retained SYN:
+`native-nginx-overlap-abort-tap` requires the queued connection to reach old
+Nginx, then proves existing and fresh old-owner HTTP after the candidate's
+confirmed exit and LISTEN=0. Its companion
+`native-nginx-overlap-abort-source-streams-tap` runs the unchanged source
+stream probe and summary oracle across the abort and candidate retirement.
+See [abort scope and reproduction](fstack-nginx-runtime.md#queued-syn-abort-with-real-nginx-owners).
+This qualifies the abort prerequisite before the selector changes. It does not execute
+the original FSM's failure policy or certify post-commit rollback, repeated
+attempts or the complete shell matrix; the migration entry remains blocked.
+
+
+### Original keepalive probe over explicit overlap
+
+The real old/new Nginx profile now consumes the unchanged 180-second original
+LC probe and summary oracle in both commit and abort modes. It preserves the
+source progress anchor, the perf oracle's bounded closure rule for handover,
+and the stricter zero-failure/reconnect rule for abort. This workload also
+exposed the single-packet admission queue limit and interrupted identity checks;
+the host adapters now retain a bounded notification FIFO and an unverified
+received record until identity validation finishes. See [LC scope and runtime
+qualification](fstack-nginx-runtime.md#original-keepalive-probe-through-commit-and-abort).
+The original same-master FSM, performance comparison and complete shell matrix
+remain unqualified; inventory remains 362 scenario-adapted, 0 partial, 1 blocked.
+
+### Original rt24 LC traffic over acknowledged abort recovery
+
+`native-nginx-abort-retry-source-lc-tap` now runs the original rt24 30-second LC
+probe through the native abort/retry adapter. It preserves 12 connections,
+0.1-second requests, 0.5-second fresh connects, two-second timeout, the observed
+three-second progress anchor and at least five seconds of zero-failure source
+progress after abort before replacement startup. The original perf summary
+oracle accepts the bounded old-connection closures after successful retry.
+
+This is source traffic qualification over three explicit Nginx callers, not a
+completed `case_rt24`: its original `flip_fail_once` fault, same-master two-HUP
+sequence and original FSM completion/drain assertions are not claimed. See
+[evidence and exact limits](fstack-nginx-runtime.md#original-rt24-traffic-probe-across-abort-and-retry).
+
+### READY candidate death is not an acknowledged abort
+
+Native pinned-Nginx profiles now distinguish worker death before cutover from
+worker death after a SYN is frozen. The first preserves fresh old-owner HTTP;
+the second must reach kernel-confirmed QUARANTINED with zero accepted packets,
+reject retry and retain the fail-closed ingress gate. An asynchronous COMMIT
+request may have returned success before that terminal failure. Existing old
+keepalive remains usable, but this is not fresh-service recovery. See
+[the death profiles and exact limits](fstack-nginx-runtime.md#ready-does-not-survive-candidate-worker-death).
+These are native fault qualifications, not completion of an original source
+case. Quarantined-cutover recovery and the same-master original generation FSM
+remain gaps; the source entrypoint remains blocked.
+
+### Pre-BEGIN missing-READY recovery
+
+The native caller can now explicitly abandon a live published candidate before
+any cutover begins, wait for its actual map-close ACK, and obtain a fresh plan
+preserving the original listener. The unready owner and all its listener aliases
+must disappear before another candidate slot is delegated. Two real-Nginx tests
+suppress the test module's READY message, observe a one-second caller timeout and
+complete a later queued-SYN cutover. See
+[the abandon API and boundaries](fstack-nginx-runtime.md#abandon-an-unready-candidate-before-ingress-freeze).
+This is caller recovery before ingress freeze, not original `ready_never` fault
+or same-master FSM integration. Dead candidates and quarantined cutovers remain
+outside this recovery contract; inventory remains 362 adapted, 0 partial, 1 blocked.
+
+### Pre-BEGIN published-candidate death recovery
+
+A separate typed recovery API now preserves the original live owner/listener
+after a published, never-selected candidate dies before BEGIN. Recovery waits
+for exact pidfd death, joined task release and complete owner socket/alias/pin
+closure, then compare-and-clears only the dead admission mark/lease. A fresh
+plan can delegate a replacement candidate and complete a queued-SYN cutover.
+Published cookie/claim metadata survives death cleanup. Real-Nginx plain/alias
+profiles and a selection-history rejection profile qualify this path; see
+[proofs and limits](fstack-nginx-runtime.md#recover-a-dead-never-selected-candidate-before-begin).
+This does not recover started/quarantined ingress transactions or candidates
+that had been selected, and it does not implement the original master FSM.
+The source shell entrypoint remains blocked; migration counts are unchanged.

@@ -823,7 +823,7 @@ int main(int argc, char **argv)
     uint64_t tx_flushes = 0, tx_timer_flushes = 0, tx_full_flushes = 0, tx_drain_flushes = 0;
     size_t tx_length = 0;
     int status = 1, tx_capture_status, rx_capture_status;
-    bool draining = false;
+    bool draining = false, packet_disconnected = false;
     uint64_t stop_requests = 0, mtu_changes = 0;
     bool control_eof = false;
     char bond_json[256] = "null";
@@ -1201,6 +1201,7 @@ int main(int argc, char **argv)
         for (unsigned int budget = 0; budget < BURST && batch.count < KER_WORKER_TX_CAPACITY && !batch.retrying; ++budget) {
             if (!pending_tx) {
                 if (!tx_length) {
+                    if (packet_disconnected) break;
                     ssize_t count = recv(packet_fd, tx_bytes, sizeof(tx_bytes), MSG_DONTWAIT | MSG_TRUNC);
                     if (count < 0) {
                         if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) status = 1;
@@ -1319,7 +1320,16 @@ int main(int argc, char **argv)
             if (ker_worker_now_ns(&now)) goto clock_error;
             if (progress) drain_progress = now;
             if (!pending_tx && !tx_length && !batch.count && now - drain_progress >= INT64_C(5000000) &&
-                (!rx_decision_enabled || rx_decision_settled)) break;
+                (!rx_decision_enabled || rx_decision_settled)) {
+                if (control_eof || stop_requests) break;
+                /* Packet transport retirement is independent of worker
+                 * retirement. Keep the authenticated control lifetime alive
+                 * after releasing RX ownership until its owner stops us. */
+                struct pollfd control_event = {.fd = control_fd, .events = POLLIN};
+                int waited = poll(&control_event, 1, 10);
+                if (waited < 0 && errno != EINTR) { status = 1; break; }
+                continue;
+            }
             if (now - drain_started >= INT64_C(500000000)) { status = 1; break; }
             if (!progress) usleep(1000);
             continue;
@@ -1439,6 +1449,7 @@ int main(int argc, char **argv)
                     rx_retries++; break; /* Retain the complete FIFO suffix. */
                 }
                 if (count < 0 && (errno == ECONNREFUSED || errno == EPIPE || errno == ENOTCONN)) {
+                    packet_disconnected = true;
                     draining = true;
                     if (ker_worker_now_ns(&drain_started)) goto clock_error;
                     drain_progress = drain_started;

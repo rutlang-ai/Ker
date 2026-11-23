@@ -28,7 +28,8 @@ enum ker_socket_broker_kind {
     KER_SOCKET_BROKER_FF_OWNER = 6,
     KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN = 7,
     KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT = 8,
-    KER_SOCKET_BROKER_FF_OWNER_CUTOVER = 9
+    KER_SOCKET_BROKER_FF_OWNER_CUTOVER = 9,
+    KER_SOCKET_BROKER_FF_OWNER_GENERATION_WATCH = 10
 };
 
 enum ker_socket_broker_rights {
@@ -252,11 +253,64 @@ int ker_socket_client_owner_group_control(struct ker_socket_client *client,
 int ker_socket_client_owner_group_control_after_exit(
     struct ker_socket_client *client, int plan_cap);
 
+/* Release the initial listener pin after a committed cutover, confirmed initial
+ * owner exit and closure of all application listener aliases. This does not
+ * retire accepted sockets or certify that their TCP state has drained. Live
+ * owners, outstanding aliases and incomplete cutovers return EAGAIN. */
+int ker_socket_client_owner_group_retire_initial_listener(
+    struct ker_socket_client *client, int plan_cap);
+
+/* Create one successor staged plan after a committed cutover and successful
+ * initial-listener retirement. The surviving exact Linux listener becomes the
+ * new initial member; only candidate slot 1 can be delegated. This call starts
+ * retirement of the survivor's admission window and returns EAGAIN until its
+ * map-close ACK is received. Successful retirement is permanently sealed against
+ * actor REARM. Close the completed cutover capability before calling. The new
+ * plan retains its predecessor's capability internally; caller copies may close.
+ * Duplicate succession returns EALREADY. Aborted/failed plans cannot succeed. */
+int ker_socket_client_owner_group_successor_plan(struct ker_socket_client *client,
+    int plan_cap);
+
+/* After a confirmed aborted cutover, retire and seal the rejected candidate's
+ * admission window and adopt the still-live initial listener in one fresh plan.
+ * EAGAIN means map retirement is pending; close the completed cutover cap first.
+ * Once a plan is returned, stop the rejected candidate and retry slot(1) until
+ * it succeeds: delegation stays EAGAIN until its exact pidfd confirms exit and
+ * every physical candidate-listener alias/task pin is gone. The old plan's
+ * initial pin is transferred; stale operations cannot reuse it. One child plan
+ * is allowed per predecessor. This does not recover an unacknowledged failure
+ * or a quarantined cutover. */
+int ker_socket_client_owner_group_retry_plan(struct ker_socket_client *client,
+    int plan_cap);
+
+/* Explicitly abandon a published, still-live candidate before any cutover has
+ * started and adopt the live initial listener into a fresh plan. EAGAIN waits
+ * for candidate map retirement; success seals it permanently. Stop that owner
+ * and wait for all its aliases/task pins to disappear before slot(1) succeeds.
+ * Only one child is permitted. Started cutovers and generation watches reject
+ * this operation with EOPNOTSUPP; it cannot recover dead owners or quarantine.
+ * No ingress freeze, selector flip or synthetic abort receipt is produced. */
+int ker_socket_client_owner_group_abandon_plan(struct ker_socket_client *client,
+    int plan_cap);
+
+/* Recover a published, never-selected candidate's confirmed death before BEGIN. The initial
+ * owner/listener must remain live and unchanged. EAGAIN waits for exact pidfd
+ * death, capability/alias closure and confirmed admission task release. Success
+ * adopts the initial listener into one fresh plan; no actor ACK is fabricated.
+ * Requires the serialized LKL profile and exact stale mark/lease gate release.
+ * Live owners are never stopped by this call. Started/watched plans reject
+ * recovery with EOPNOTSUPP; quarantine remains ECANCELED. */
+int ker_socket_client_owner_group_recover_dead_plan(struct ker_socket_client *client,
+    int plan_cap);
+
 /* Bounded first-cutover coordinator for one staged owner group. The broker
  * derives both member identities and the original-Linux listener from the
  * plan. begin starts asynchronous gate setup and can return in STARTING; poll
  * until PREPARED before treating the freeze as armed. Commit or abort only
  * requests work, which the broker advances incrementally. Poll is nonblocking.
+ * Request success is acknowledgement only: owner death before the decision
+ * completes can still lead to QUARANTINED. Observe COMMITTED/ABORTED by poll
+ * before claiming traffic was replayed.
  * Call commit only after the caller's own READY policy barrier; this API does
  * not establish application readiness. A group permits only one 0-to-1
  * attempt. QUARANTINING is unconfirmed; QUARANTINED is kernel-confirmed.
@@ -288,6 +342,11 @@ int ker_socket_client_owner_group_cutover_abort(
 int ker_socket_client_owner_group_cutover_poll(
     struct ker_socket_client *client, int cutover_cap,
     struct ker_socket_group_cutover_status *status);
+
+/* Creates a read-only generation metadata watch for member 0 of a live owner
+ * plan. The watch never owns a listener fd and cannot perform verification. */
+int ker_socket_client_owner_generation_watch_create(
+    struct ker_socket_client *client, int plan_cap);
 
 /* A census capability copies immutable group-member metadata, but retains no
  * group or TCP descriptor. Creation and reads require CONTROL and READ rights
