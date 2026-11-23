@@ -20,6 +20,7 @@ static size_t epoll_count;
 static int managed[4096];
 static int private_fds[4096];
 static int interrupt_blocking_wait;
+static int fail_once_wait_fd = -1;
 static int error_queue_fd=-1;
 static int shutdown_state_fd=-1;
 static uint32_t shutdown_state_flags;
@@ -154,6 +155,11 @@ int ker_socket_client_epoll_ctl(struct ker_socket_client *client, int epfd,
 int ker_sb_posix_epoll_wait(int epfd, struct epoll_event *events,
     int maximum, int timeout)
 {
+    if (epfd == fail_once_wait_fd) {
+        fail_once_wait_fd = -1;
+        errno = EIO;
+        return -1;
+    }
     if (timeout > 0 && interrupt_blocking_wait) { errno = EINTR; return -1; }
     return (int)syscall(SYS_epoll_wait, epfd, events, maximum, timeout);
 }
@@ -625,6 +631,25 @@ int main(void)
     EV_SET(&partial_write_delete,partial_write_pair[0],EVFILT_WRITE,EV_DELETE,0,0,NULL);
     check(ff_kevent(partial_queue,&partial_write_delete,1,NULL,0,NULL)==0,
         "remove level-triggered partial-batch write watch");
+
+    /* The unread byte makes the re-armed one-shot ready again. */
+    check(ff_kevent(partial_queue,partial_changes,1,NULL,0,NULL)==0,
+        "re-arm one-shot read before a write-queue poll failure");
+    partial_context->next_wait_queue=0;
+    fail_once_wait_fd=partial_context->write_epfd;
+    count=ff_kevent(partial_queue,NULL,0,results,4,&zero);
+    check(count==1 && results[0].filter==EVFILT_READ &&
+        results[0].udata==&partial_read_tag,
+        "return the consumed one-shot when the next backing wait fails");
+    check(ff_kevent(partial_queue,NULL,0,results,4,&zero)==-1 && errno==EIO,
+        "report the saved backing wait error on the next call");
+    check(ff_kevent(partial_queue,NULL,0,results,4,&zero)==0,
+        "neither the saved error nor the one-shot repeats");
+    fail_once_wait_fd=partial_context->write_epfd;
+    check(ff_kevent(partial_queue,NULL,0,results,4,&zero)==-1 && errno==EIO,
+        "return a backing wait error immediately when there is no prefix");
+    check(ff_kevent(partial_queue,NULL,0,results,4,&zero)==0,
+        "an immediately returned backing wait error is not deferred");
 
     int fatal_read_pair[2], fatal_write_pair[2];
     make_pair(fatal_read_pair); make_pair(fatal_write_pair);
