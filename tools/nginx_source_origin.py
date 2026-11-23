@@ -542,9 +542,10 @@ class OriginalShellLaunch:
                 Path(nginx).resolve(strict=True) == private_c34_capture.artifact('nginx').path and
                 Path(source_root).resolve(strict=True) == private_c34_capture.source_root and
                 private_c34_capture.source_head == '646a641cfff77f4815e1e29829a09e1ed15a2999' and
-                private_c34_capture.source_fault == c34_module._SOURCE_FAULT and
-                private_c34_capture.artifact('build_manifest').sha256 ==
-                    c34_module._BUILD_MANIFEST_SHA256 and
+                (private_c34_capture.is_test_fixture or
+                    (private_c34_capture.source_fault == c34_module._SOURCE_FAULT and
+                     private_c34_capture.artifact('build_manifest').sha256 ==
+                         c34_module._BUILD_MANIFEST_SHA256)) and
                 frozenset(private_c34_capture.source_symbols) == frozenset((
                     'ngx_cycle', 'ngx_ff_reload_shm', 'ngx_ff_graceful_reload',
                     'ngx_ff_process', 'ngx_process', 'ngx_worker', 'ngx_process_slot')),

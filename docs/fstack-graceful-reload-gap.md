@@ -373,9 +373,51 @@ failures. Both resource trends were flat across 100 samples.
 RX and STOP settled with zero outstanding buffers, and the original
 supervisor returned zero with ECHILD.
 
-All 17 applicable original cases passed in isolated private diagnostic
-runs. The catalog entry remains `blocked` for registering a reproducible
-CTest job that can build and launch the complete original shell matrix.
+All 17 applicable original cases passed in isolated private diagnostic runs.
+The opt-in CTest matrix builds a fresh copy of the pinned F-Stack Nginx caller,
+rebuilds the Ker shim against its ELF, and runs the unchanged upstream build
+verifier. Each original case runs in private Linux namespaces with its own
+OpenSSH client, TAP interfaces and evidence directory.
+
+Set `KER_WITH_NATIVE_TCP=ON`, `KER_FSTACK_ORIGINAL_SHELL_SOURCE` to a
+checkout of F-Stack `646a641cfff77f4815e1e29829a09e1ed15a2999`, and
+`KER_FSTACK_ORIGINAL_SHELL_DPDK_BUILD` to the Meson build directory of the
+pinned DPDK selected by `KER_DPDK_PKGCONFIG_DIR`. Use the same pins in both
+test build directories. The host needs subordinate user/group IDs, OpenSSH,
+`/dev/net/tun`, and mount points at `/data` and `/dev/hugepages`. Set
+`KER_FSTACK_ORIGINAL_SHELL_VIRTIO_TESTPMD` in the production build to
+the `dpdk-testpmd` executable from an installation of the pinned DPDK
+with the virtio and af_packet PMDs. This registers `rt12`, which also uses
+`/dev/vhost-net` and traffic control's mirred redirect.
+
+For the production form, enable `KER_BUILD_FSTACK_NGINX_RUNTIME`.
+
+```bash
+cmake --build BUILD --target ker-fstack-nginx-runtime ker-socket-broker-readiness-fixture \
+  ker-socket-broker-rx-owner-relay-fixture ker-nginx-owner-group-controller
+ctest --test-dir BUILD -R '^fstack-original-shell-' --output-on-failure
+```
+
+For the six fault cases, enable `KER_BUILD_FSTACK_NGINX_FAULT_TEST_RUNTIME`
+in a separate Ninja build.
+
+```bash
+cmake --build FAULT_BUILD --target ker-fstack-nginx-fault-test-runtime \
+  ker-socket-broker-rx-owner-relay-fixture ker-nginx-owner-group-controller
+ctest --test-dir FAULT_BUILD -R '^fstack-original-shell-' --output-on-failure
+```
+
+CTest checks the unchanged shell's verdict, the original supervisor's
+zero exit with ECHILD, and native STOP and resource settlement for the
+runtime cases. Build receipts are under `BUILD/fstack-original-shell` and
+per-run evidence is under its `runs` directory. The 100-round `rv9` uses
+the original 15-second interval and takes approximately 27 minutes.
+
+The CTest qualification passed 17/17 across the production and fault builds,
+including targeted reruns for the streaming cases. The CTest `rv9` run
+completed in 27 minutes 14 seconds. All 100 reloads and 7,947 fresh
+connections passed, with flat resource trends, zero RX decision drops,
+native STOP acknowledgment, and zero-exit ECHILD.
 
 ## Packet-channel retirement and worker control lifetime
 

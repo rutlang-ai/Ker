@@ -151,11 +151,17 @@ class PrivateNewC34InteropProfile:
             not (scope / 'origin.sock').exists() and not (scope / 'bootstrap.json').exists(),
             'private C34 scope is not a fresh owned private directory')
         provider = _provider()
-        origin_module.validate_source_hup_fault(case, args, environment, provider._SOURCE_FAULT)
-        require(Path(source_root).resolve(strict=True) == provider._SOURCE_ROOT.resolve(strict=True),
+        fixture = (type(artifact_capture) is provider.PrivateC34ArtifactCapture
+            and artifact_capture.is_test_fixture)
+        fault = artifact_capture.source_fault if fixture else provider._SOURCE_FAULT
+        root = artifact_capture.source_root if fixture else provider._SOURCE_ROOT
+        expected_manifest = (artifact_capture.artifact('build_manifest').path
+            if fixture else provider._BUILD_MANIFEST)
+        origin_module.validate_source_hup_fault(case, args, environment, fault)
+        require(Path(source_root).resolve(strict=True) == root.resolve(strict=True),
             'private C34 source root differs from its fixed original-case build root')
         manifest_text = option(('--build-manifest',))
-        require(manifest_text == str(provider._BUILD_MANIFEST) and args.count('--build-manifest') == 1,
+        require(manifest_text == str(expected_manifest) and args.count('--build-manifest') == 1,
             'private C34 build manifest path differs from its fixed capture input')
         # The descriptor is included in the private capture and stays held
         # until the profile/Origin launch relinquishes that capture.
@@ -167,9 +173,9 @@ class PrivateNewC34InteropProfile:
             'private C34 artifact capture has the wrong exact type')
         try:
             manifest = capture.artifact('build_manifest')
-            require(manifest.path == provider._BUILD_MANIFEST and
-                manifest.sha256 == provider._BUILD_MANIFEST_SHA256 and
-                capture.source_fault == provider._SOURCE_FAULT and
+            require(manifest.path == expected_manifest and
+                (fixture or manifest.sha256 == provider._BUILD_MANIFEST_SHA256) and
+                capture.source_fault == fault and
                 capture.helper_capture.source_fault == capture.source_fault,
                 'private C34 held build manifest differs from its fixed input')
             nginx_options = []

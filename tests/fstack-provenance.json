@@ -3,6 +3,10 @@
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
   "mode": "scenario-adaptation; full upstream test snapshot retained separately for audit, not executed as Ker coverage; no upstream network implementation copied",
   "files": {
+    "tests/integration/test_graceful_reload.sh": {
+      "sha256": "7efd3e0d10e584daa57377915da0ba2a9d1f67bebbcd2f512298230d71f35203",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/integration/test_graceful_reload.sh"
+    },
     "tests/integration/test_ff_gendir_mp_integration.c": {
       "sha256": "9fa32d1e63fedf5e692f0f360fcbb65916d4b3bc3c411d9ad4b291e1ac946534",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/integration/test_ff_gendir_mp_integration.c"
@@ -61,6 +65,32 @@
     }
   },
   "cases": {
+    "fstack-original-shell-matrix": {
+      "source_file": "tests/integration/test_graceful_reload.sh",
+      "source_case": [
+        "entrypoint"
+      ],
+      "ker_ctests": [
+        "fstack-original-shell-precheck",
+        "fstack-original-shell-baseline",
+        "fstack-original-shell-rt01",
+        "fstack-original-shell-rt02",
+        "fstack-original-shell-rv9",
+        "fstack-original-shell-gr0",
+        "fstack-original-shell-rt12",
+        "fstack-original-shell-rt20",
+        "fstack-original-shell-rt20b",
+        "fstack-original-shell-rt21",
+        "fstack-original-shell-rt22",
+        "fstack-original-shell-rt23",
+        "fstack-original-shell-rt24",
+        "fstack-original-shell-rt25",
+        "fstack-original-shell-rt26",
+        "fstack-original-shell-rt30",
+        "fstack-original-shell-rt31"
+      ],
+      "adaptation": "The unchanged F-Stack shell runs its complete applicable matrix against the original pinned Nginx caller, native Linux TCP and pinned DPDK through Ker. Eleven production cases and six fault cases run in two native build directories using the same source revision. The real remote probes exercise HUP, graceful-off replacement, virtio-user management, all original fault forms, USR2/WINCH handoff and 100 reloads at the original interval. Each case verifies its original PASS and zero-exit ECHILD. Runtime cases require native shutdown acknowledgement and zero outstanding buffers. The original rt13 exclusion is preserved. See docs/fstack-graceful-reload-gap.md."
+    },
     "native-fstack-session-native-packets": {
       "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
       "source_case": [
