@@ -14,16 +14,21 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 285 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 12 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 66 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 334 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 2 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 27 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为285 scenario-adapted、12 partial、66 blocked，共78项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为334 scenario-adapted、2 partial、27 blocked，共29项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
+
+## Earlier runtime-subset evidence (historical)
+
+以下段落保留较早批次的状态；当前源单测迁移见[新增50项系列](fstack-migration-pr-series-393-442.md)。
+调用方解析器与软件表单测不会补全 Ker 的运行配置或硬件能力。
 
 本批补齐 `valid_inet6.ini` 中 VLAN IPv6 网关的相关功能，通过
 `native-fstack-ipv6-vlan-route` 验证单一默认网关、全局/link-local 下一跳、
@@ -48,11 +53,11 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
+下面的 issue 表与当前机器清单同步；后续各批次记录保留其历史计数，当前总数以上表为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共148项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：78项行为未完成
-（12 partial + 66 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共99项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：29项行为未完成
+（2 partial + 27 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -63,22 +68,14 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
-| Design generation-aware reload, IPC and drain ownership | 28 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
-| Define a supported host exception bridge and KNI policy adaptation | 6 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
-| Qualify RSS steering and queue-aware source-port contracts | 31 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
-| Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
-| Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
-| Resolve device/run lifecycle and upstream fault-injection contracts | 2 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
-| Adapt typed vdev, bond and multi-port configuration | 3 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
-| Define a Linux-native zero-copy send and ownership contract | 7 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
-| Resolve remaining typed configuration and intentional schema differences | 12 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
-| Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
-| Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
-| Resolve unmapped host memory, time, environment and kqueue helpers | 3 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
-| Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
-| Record FreeBSD thread context and join-result assertions | 3 | 架构专用 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
-| Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
-| Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | 上游工具链专用 | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
+| Design generation-aware reload, IPC and drain ownership | 4 | adaptation-needed | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
+| Define a supported host exception bridge and KNI policy adaptation | 6 | adaptation-needed | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
+| Qualify RSS steering and queue-aware source-port contracts | 14 | adaptation-needed | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
+| Resolve device/run lifecycle and upstream fault-injection contracts | 2 | contract-review | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
+| Resolve unmapped host memory, time, environment and kqueue helpers | 3 | contract-review | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
+| Resolve FreeBSD thread context and join-result assertions | 3 | architecture-specific | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
+| Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | architecture-specific | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
+| Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | harness-only | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
 
 默认审计还检查：每个非 `scenario-adapted` 案例都恰好出现一次、issue 必须是
 Ker issue 链接、固定版本一致、分组有理由及验收条件。它不联网判定 issue 关闭
@@ -2124,3 +2121,220 @@ Ker libraries, native protocol implementations and upstream code remain unchange
 One additional source case is qualified through the unchanged caller-side parser,
 not through Ker runtime configuration. See [scope and validation](fstack-config-inspector.md).
 The current catalog becomes285/12/66; all remaining runtime contracts stay open.
+
+### Original parser case: `test_ff_load_config_valid_minimal_ini`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_valid_minimal_ini`. The catalog becomes286/11/66. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_unknown_section`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_unknown_section`. The catalog becomes287/10/66. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_all_sections`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_all_sections`. The catalog becomes288/9/66. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_dpdk_full`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_dpdk_full`. The catalog becomes289/8/66. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_portlist_nonint`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_portlist_nonint`. The catalog becomes290/8/65. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_rss_check_cfg_handler_no_port_no_vlan`
+
+The unchanged source assertion and fixture run through `fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan`. A target-only postcheck first verifies that the production inspector rejects the unsafe plan with its configuration still reset, then invokes the retained upstream loader and records the real `rss_check.enable` INI callback returning 0. This makes the NULL assertion evidence of the original handler's missing-port guard rather than reset state. The catalog becomes291/8/64; no legacy settings are applied to Ker.
+
+### Original parser case: `test_rss_tbl_cfg_handler_bad_tuple`
+
+Complete original assertions and fixtures: `fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple`. The catalog becomes292/8/63. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_rss_check_thash_adjust_off_parses`
+
+Complete original assertions and fixtures: `fstack-config-source-test_rss_check_thash_adjust_off_parses`. The catalog becomes293/8/62. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_vlan_cfg_handler_id_not_in_filter_returns_one`
+
+Complete original assertions and fixtures: `fstack-config-source-test_vlan_cfg_handler_id_not_in_filter_returns_one`. The catalog becomes294/8/61. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_vdev_full`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_vdev_full`. The catalog becomes295/7/61. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_port_cfg_handler_id_over_max_returns_one`
+
+Complete original assertions and fixtures: `fstack-config-source-test_port_cfg_handler_id_over_max_returns_one`. The catalog becomes296/7/60. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_freebsd_boot_multi_entries`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries`. The catalog becomes297/6/60. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_inet6_fixture_ignored`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_inet6_fixture_ignored`. The catalog becomes298/6/59. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_argv_t_override`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_argv_t_override`. The catalog becomes299/6/58. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_vlan_cfg_handler_portid_over_max_skips`
+
+Complete original assertions and fixtures: `fstack-config-source-test_vlan_cfg_handler_portid_over_max_skips`. The catalog becomes300/6/57. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_parse_lcore_mask_proc_id_in_range`
+
+Complete original assertions and fixtures: `fstack-config-source-test_parse_lcore_mask_proc_id_in_range`. The catalog becomes301/6/56. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_parse_lcore_mask_proc_id_over_count_fails`
+
+Complete original assertions and fixtures: `fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails`. The catalog becomes302/6/55. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_dpdk_extra_keys`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_dpdk_extra_keys`. The catalog becomes303/5/55. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_bond_vdev_repeat_keys_no_leak`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak`. The catalog becomes304/4/55. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_parse_lcore_mask_calloc_oom_returns_error`
+
+Complete original assertions and fixtures: `fstack-config-source-test_parse_lcore_mask_calloc_oom_returns_error`. The catalog becomes305/4/54. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_thread_mode_enabled`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_thread_mode_enabled`. The catalog becomes306/4/53. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_thread_mode_default_off`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_thread_mode_default_off`. The catalog becomes307/4/52. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_thread_mode_secondary_conflict`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_thread_mode_secondary_conflict`. The catalog becomes308/4/51. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_tcp_ecn_default_off`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_tcp_ecn_default_off`. The catalog becomes309/3/51. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_graceful_reload_default_off`
+
+Complete original assertions and fixtures: `fstack-config-source-test_graceful_reload_default_off`. The catalog becomes310/3/50. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_graceful_reload_parse`
+
+Complete original assertions and fixtures: `fstack-config-source-test_graceful_reload_parse`. The catalog becomes311/3/49. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_graceful_reload_requires_slim`
+
+Complete original assertions and fixtures: `fstack-config-source-test_graceful_reload_requires_slim`. The catalog becomes312/3/48. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_greload_thread_mode_mutex`
+
+Complete original assertions and fixtures: `fstack-config-source-test_greload_thread_mode_mutex`. The catalog becomes313/3/47. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_greload_off_no_new_checks`
+
+Complete original assertions and fixtures: `fstack-config-source-test_greload_off_no_new_checks`. The catalog becomes314/3/46. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_greload_bad_value_atoi`
+
+Complete original assertions and fixtures: `fstack-config-source-test_greload_bad_value_atoi`. The catalog becomes315/3/45. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ut_nr_20_queue_mapping_config`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ut_nr_20_queue_mapping_config`. The catalog becomes316/3/44. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ut_nr_25_drain_ring_size_config`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ut_nr_25_drain_ring_size_config`. The catalog becomes317/3/43. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_stack_coexist_enabled`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_stack_coexist_enabled`. The catalog becomes318/3/42. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_stack_absent_defaults_disabled`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_stack_absent_defaults_disabled`. The catalog becomes319/3/41. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_stack_garbage_defaults_disabled`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_stack_garbage_defaults_disabled`. The catalog becomes320/3/40. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_stack_coexist_disabled_explicit`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit`. The catalog becomes321/3/39. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Complete generation-independent configuration mapping
+
+The NR12 source contract is now complete through actual Ker worker selection,
+public IPC names and the caller-side parser; see [scope](fstack-generation-config.md).
+Catalog322/3/38. No traffic/reload continuity is claimed.
+
+### Original RSS table NULL-config setter guard
+
+One exact source helper contract is now qualified by an actual caller-only software
+classifier using Ker dispatch and original ring-PMD transport. See
+[scope](fstack-rss-table.md). Catalog323/3/37; native port allocation/hardware RSS stay unqualified.
+
+### Original software RSS contract: `test_ff_rss_tbl_set_portrange_disabled`
+
+Complete original assertions: `fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled`. Caller-only table classification,
+not kernel allocation or hardware RSS. Catalog324/3/36.
+
+### Original software RSS contract: `test_ff_rss_tbl_set_portrange_inverted_range`
+
+Complete original assertions: `fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range`. Caller-only table classification,
+not kernel allocation or hardware RSS. Catalog325/2/36.
+
+### Original software RSS contract: `test_ff_rss_tbl_get_portrange_no_cfg`
+
+Complete original assertions: `fstack-rss-table-test_ff_rss_tbl_get_portrange_no_cfg`. Caller-only table classification,
+not kernel allocation or hardware RSS. Catalog326/2/35.
+
+### Original software RSS contract: `test_ff_rss_tbl_get_portrange_disabled`
+
+Complete original assertions: `fstack-rss-table-test_ff_rss_tbl_get_portrange_disabled`. Caller-only table classification,
+not kernel allocation or hardware RSS. Catalog327/2/34.
+
+### Original software RSS contract: `test_ff_rss_tbl_get_portrange_smoke`
+
+Complete original assertions: `fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke`. Caller-only table classification,
+not kernel allocation or hardware RSS. Catalog328/2/33.
+
+### Original software RSS contract: `test_ff_rss_tbl_get_portrange_hit`
+
+Complete original assertions: `fstack-rss-table-test_ff_rss_tbl_get_portrange_hit`. Caller-only table classification,
+not kernel allocation or hardware RSS. Catalog329/2/32.
+
+### Original software RSS contract: `test_ff_rss_tbl_get_portrange_rotation`
+
+Complete original assertions: `fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation`. Caller-only table classification,
+not kernel allocation or hardware RSS. Catalog330/2/31.
+
+### Original software RSS contract: `test_ff_rss_tbl_get_portrange_miss`
+
+Complete original assertions: `fstack-rss-table-test_ff_rss_tbl_get_portrange_miss`. Caller-only table classification,
+not kernel allocation or hardware RSS. Catalog331/2/30.
+
+### Original software RSS contract: `test_ff_rss_check6_landing`
+
+Complete original assertions: `fstack-rss-table-test_ff_rss_check6_landing`. Caller-only table classification,
+not kernel allocation or hardware RSS. Catalog332/2/29.
+
+### Original software RSS contract: `test_ff_rss_check6_single_queue`
+
+Complete original assertions: `fstack-rss-table-test_ff_rss_check6_single_queue`. Caller-only table classification,
+not kernel allocation or hardware RSS. Catalog333/2/28.
+
+### Original software RSS contract: `test_ff_rss_tbl6_set_get`
+
+Complete original assertions: `fstack-rss-table-test_ff_rss_tbl6_set_get`. Caller-only table classification,
+not kernel allocation or hardware RSS. Catalog334/2/27.
+
+## Additional50-case PR series completed
+
+The new [50-case index](fstack-migration-pr-series-393-442.md) excludes earlier
+batches and binds one original case to each PR. Current334/2/27;29 behavioral
+cases remain incomplete. No merge was performed.

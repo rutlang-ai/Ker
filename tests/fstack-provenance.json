@@ -3838,9 +3838,562 @@
       ],
       "ker_ctests": [
         "fstack-config-original-unload",
+        "fstack-config-original-import",
+        "fstack-config-capacity-preflight"
+      ],
+      "adaptation": "Unchanged pinned configuration implementation in a symbol-isolated caller-side inspector. Complete original function retained verbatim; assertions call upstream cleanup directly so adapter clearing cannot conceal missed frees/nulls. 100 real load/unload cycles and sanitizer evidence. Original DPDK rte_strsplit is linked, not stubbed. The CLI consumes the parsed snapshot/EAL plan without executing it and reports unsupported runtime boundaries. No FreeBSD startup, Ker native settings, EAL startup or network behavior is qualified. A caller-side preflight, built from the same unchanged INI parser, rejects documents whose projected EAL plan would exceed dpdk_argv/DPDK_CONFIG_MAXLEN, whose port/lcore/vlan list arrays overflow, or whose port ids fall outside RTE_MAX_ETHPORTS before upstream load runs; a parse error does not let a partially inspected oversized plan reach the retained parser. Negative port section ids and listed ports without a [portN] section are rejected too, preventing the port_cfgs[] out-of-bounds index and null dereference in ff_check_config. VLAN sections are also preflighted: negative parent-port ids and more than DPDK_MAX_VLAN_FILTER attachments per port are rejected, and the config filename is resolved with the same option table as ff_parse_args so getopt termination cannot let a different document reach the retained parser. VLAN attachments that precede the first [portN] section and lcore masks enabling more than DPDK_MAX_LCORE cores are rejected too, preventing the null port_cfgs dereference and the per-port lcore_list overflow. List range endpoints outside int range are also rejected so the preflight count cannot diverge from the retained parser's int loop variable. A KNI owner_proc_id outside [0, RTE_MAX_LCORE) is rejected too, preventing the proc_lcore[] out-of-bounds read in ff_check_config. primary_slim or kni.enable without an lcore_mask is rejected so the unallocated proc_lcore array is never dereferenced. A negative or out-of-range -p process id is rejected too, preventing the proc_lcore[] out-of-bounds read in ff_check_config."
+    },
+    "fstack-config-source-test_ff_load_config_valid_minimal_ini": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_valid_minimal_ini"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_valid_minimal_ini",
         "fstack-config-original-import"
       ],
-      "adaptation": "Unchanged pinned configuration implementation in a symbol-isolated caller-side inspector. Complete original function retained verbatim; assertions call upstream cleanup directly so adapter clearing cannot conceal missed frees/nulls. 100 real load/unload cycles and sanitizer evidence. Original DPDK rte_strsplit is linked, not stubbed. The CLI consumes the parsed snapshot/EAL plan without executing it and reports unsupported runtime boundaries. No FreeBSD startup, Ker native settings, EAL startup or network behavior is qualified."
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_unknown_section": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_unknown_section"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_unknown_section",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_all_sections": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_all_sections"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_all_sections",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_dpdk_full": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_dpdk_full"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_dpdk_full",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_portlist_nonint": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_portlist_nonint"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_portlist_nonint",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_rss_check_cfg_handler_no_port_no_vlan"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_rss_tbl_cfg_handler_bad_tuple"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_rss_check_thash_adjust_off_parses": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_rss_check_thash_adjust_off_parses"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_rss_check_thash_adjust_off_parses",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_vlan_cfg_handler_id_not_in_filter_returns_one": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_vlan_cfg_handler_id_not_in_filter_returns_one"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_vlan_cfg_handler_id_not_in_filter_returns_one",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_vdev_full": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_vdev_full"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_vdev_full",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_port_cfg_handler_id_over_max_returns_one": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_port_cfg_handler_id_over_max_returns_one"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_port_cfg_handler_id_over_max_returns_one",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_freebsd_boot_multi_entries"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_inet6_fixture_ignored": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_inet6_fixture_ignored"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_inet6_fixture_ignored",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_argv_t_override": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_argv_t_override"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_argv_t_override",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_vlan_cfg_handler_portid_over_max_skips": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_vlan_cfg_handler_portid_over_max_skips"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_vlan_cfg_handler_portid_over_max_skips",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_parse_lcore_mask_proc_id_in_range": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_parse_lcore_mask_proc_id_in_range"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_parse_lcore_mask_proc_id_in_range",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_parse_lcore_mask_proc_id_over_count_fails"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_dpdk_extra_keys": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_dpdk_extra_keys"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_dpdk_extra_keys",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_bond_vdev_repeat_keys_no_leak"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_parse_lcore_mask_calloc_oom_returns_error": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_parse_lcore_mask_calloc_oom_returns_error"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_parse_lcore_mask_calloc_oom_returns_error",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_thread_mode_enabled": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_thread_mode_enabled"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_thread_mode_enabled",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_thread_mode_default_off": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_thread_mode_default_off"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_thread_mode_default_off",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_thread_mode_secondary_conflict": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_thread_mode_secondary_conflict"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_thread_mode_secondary_conflict",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_tcp_ecn_default_off": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_tcp_ecn_default_off"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_tcp_ecn_default_off",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_graceful_reload_default_off": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_graceful_reload_default_off"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_graceful_reload_default_off",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_graceful_reload_parse": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_graceful_reload_parse"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_graceful_reload_parse",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_graceful_reload_requires_slim": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_graceful_reload_requires_slim"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_graceful_reload_requires_slim",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_greload_thread_mode_mutex": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_greload_thread_mode_mutex"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_greload_thread_mode_mutex",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_greload_off_no_new_checks": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_greload_off_no_new_checks"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_greload_off_no_new_checks",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_greload_bad_value_atoi": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_greload_bad_value_atoi"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_greload_bad_value_atoi",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ut_nr_20_queue_mapping_config": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_20_queue_mapping_config"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ut_nr_20_queue_mapping_config",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ut_nr_25_drain_ring_size_config": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_25_drain_ring_size_config"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ut_nr_25_drain_ring_size_config",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_stack_coexist_enabled": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_stack_coexist_enabled"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_stack_coexist_enabled",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_stack_absent_defaults_disabled": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_stack_absent_defaults_disabled"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_stack_absent_defaults_disabled",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_stack_garbage_defaults_disabled": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_stack_garbage_defaults_disabled"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_stack_garbage_defaults_disabled",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_stack_coexist_disabled_explicit"
+      ],
+      "ker_ctests": [
+        "fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained byte-for-byte and executed with the unchanged pinned parser/layout/fixtures via the caller-only configuration inspector. Actual DPDK rte_strsplit is linked; no parser success stubs. Five repeat cycles with complete unload, GCC release, Clang static and ASan/UBSan checks. Configuration state is inspected rather than applied: legacy FreeBSD, RSS, KNI, thread/reload runtime behavior and native Linux defaults remain outside this source unit-test qualification. Existing native subset tests remain listed."
+    },
+    "fstack-config-generation-mapping": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_12_generation_mapping"
+      ],
+      "ker_ctests": [
+        "fstack-config-generation-mapping",
+        "fstack-config-generation-consumer",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Complete original function retained verbatim. Actual Ker borrowed-state generation selection and observation, existing public IPC formatter for legacy/generation names and truncation, unchanged parser process/lcore map. Invalid selections leave the actual selected generation untouched. Real caller example prints both roles without applying legacy configuration to Ker; no EAL traffic or TCP continuity is claimed."
+    },
+    "fstack-rss-table-no-config": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_set_portrange_no_cfg"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-no-config",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Complete original source NULL-config setter assertion, unchanged pinned table/hash code and original configuration/memory layouts. Actual caller-side enabled table lifecycle classifies128 IPv4/IPv6 fixtures via public Ker dispatcher after original ring-PMD transport; independent hash,32/96 buckets, exact pointers/bytes/counters and unique pool511/511. External consumer of installed unchanged public dispatcher and always-local negative control. This is software metadata policy, not native Linux socket port selection or observed hardware RSS."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_set_portrange_disabled"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_set_portrange_inverted_range"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_no_cfg": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_no_cfg"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_no_cfg",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_disabled": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_disabled"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_disabled",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_smoke"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_hit": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_hit"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_hit",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_rotation"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_miss": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_miss"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_miss",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
+    },
+    "fstack-rss-table-test_ff_rss_check6_landing": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_check6_landing"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_check6_landing",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
+    },
+    "fstack-rss-table-test_ff_rss_check6_single_queue": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_check6_single_queue"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_check6_single_queue",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
+    },
+    "fstack-rss-table-test_ff_rss_tbl6_set_get": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl6_set_get"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl6_set_get",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
     }
   }
 }

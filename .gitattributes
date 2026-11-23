@@ -7,3 +7,6 @@ third_party/fstack-pools/ff_memory.h -text -filter -ident -whitespace
 third_party/fstack-pools/pool-runtime.inc -text -filter -ident -whitespace
 third_party/fstack-address-policy/ff_api.h -text -filter -ident -whitespace
 third_party/fstack-address-policy/address-runtime.inc -text -filter -ident -whitespace
+
+# Literal RSS table/hash fragments reuse the pinned full memory-source blob.
+third_party/fstack-rss-table/*.inc -text -filter -ident -whitespace

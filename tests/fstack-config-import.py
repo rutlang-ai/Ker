@@ -12,4 +12,15 @@ source = (root / 'tests/upstream/fstack/tests/unit/test_ff_config.c').read_text(
 excerpt = (root / 'tests/fstack-config-unload-source.inc').read_text().rstrip()
 assert excerpt in source
 assert excerpt.startswith('static void\ntest_ff_unload_config_zeroes_state(')
+cases = (root / 'tests/fstack-config-cases.txt').read_text().splitlines()
+for name in cases:
+    start = source.index('static void\n' + name + '(')
+    end = source.index('\n}', start) + 2
+    retained = (root / 'tests/fstack-config-source' / (name + '.inc')).read_text().rstrip()
+    assert retained == source[start:end], name
 print('unchanged parser and complete unload source contract verified')
+name = 'test_ut_nr_12_generation_mapping'
+start = source.index('static void\n' + name + '(')
+end = source.index('\n}', start) + 2
+assert (root / 'tests/fstack-generation-config-source.inc').read_text().rstrip() == source[start:end]
+print('complete generation-mapping source contract verified')

@@ -190,6 +190,7 @@ if(KER_WITH_DPDK AND (KER_BUILD_EXAMPLES OR BUILD_TESTING))
     include(cmake/FlowMapExample.cmake)
     include(cmake/A10Dispatch.cmake)
     include(cmake/FStackConfigExample.cmake)
+    include(cmake/RSSTableExample.cmake)
 endif()
 
 if(KER_BUILD_EXAMPLES)
