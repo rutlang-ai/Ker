@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -461,6 +462,26 @@ static int common_checks(int listener, int inherited_epoll)
     CHECK(getsockname(listener, (struct sockaddr *)short_name, &short_length) == 0);
     CHECK(short_length == sizeof(struct sockaddr_in) && short_name[2] == 0xaa && short_name[3] == 0xaa);
 
+    /* Probe the first free slot in each range while only this thread uses descriptors. */
+    int lowest = (int)syscall(SYS_fcntl, STDOUT_FILENO, F_DUPFD, 0);
+    CHECK(lowest >= 0 && close(lowest) == 0);
+    int duplicate = dup(listener);
+    CHECK(duplicate == lowest && fcntl(duplicate, F_GETFD) == 0);
+    CHECK(close(duplicate) == 0);
+    duplicate = fcntl(listener, F_DUPFD_CLOEXEC, lowest);
+    CHECK(duplicate == lowest && fcntl(duplicate, F_GETFD) == FD_CLOEXEC);
+    CHECK(close(duplicate) == 0);
+    int higher = (int)syscall(SYS_fcntl, STDOUT_FILENO, F_DUPFD, lowest + 8);
+    CHECK(higher >= 0 && close(higher) == 0);
+    duplicate = fcntl(listener, F_DUPFD, higher);
+    CHECK(duplicate == higher && fcntl(duplicate, F_GETFD) == 0);
+    CHECK(close(duplicate) == 0);
+    duplicate = fcntl(listener, F_DUPFD_CLOEXEC, higher);
+    CHECK(duplicate == higher && fcntl(duplicate, F_GETFD) == FD_CLOEXEC);
+    CHECK(close(duplicate) == 0);
+    errno = 0;
+    CHECK(fcntl(listener, F_DUPFD, -1) == -1 && errno == EINVAL);
+
     int host_pair[2]; CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, host_pair) == 0);
     int event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC); CHECK(event_fd >= 0);
     int epoll_fd = epoll_create1(0); CHECK(epoll_fd >= 0);
@@ -643,7 +664,13 @@ static int common_checks(int listener, int inherited_epoll)
     char *arguments[] = {(char *)"/bin/true", NULL};
     char *environment[] = {NULL};
     CHECK(execve(arguments[0], arguments, environment) == -1 && errno == EOPNOTSUPP);
-    CHECK(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, event_fd, NULL) == 0);
+    /* Linux ignores the event storage for DEL on both halves of the epoll. */
+    struct epoll_event *ignored = mmap(NULL, sizeof(*ignored), PROT_NONE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(ignored != MAP_FAILED);
+    CHECK(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, event_fd, ignored) == 0);
+    CHECK(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, listener, ignored) == 0);
+    CHECK(munmap(ignored, sizeof(*ignored)) == 0);
     CHECK(close(event_fd) == 0 && close(host_pair[0]) == 0 && close(host_pair[1]) == 0);
     CHECK(close(epoll_fd) == 0);
     (void)inherited_epoll;
