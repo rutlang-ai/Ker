@@ -1142,6 +1142,11 @@ add_test(NAME fstack-config-oversized-jumbo
         SourceCases.test_config_oversized_jumbo)
 set_tests_properties(fstack-config-oversized-jumbo PROPERTIES
     TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-dynamic-import-external-cwd
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_dynamic_import_finds_launcher_sibling_from_unrelated_directory)
+set_tests_properties(fstack-config-dynamic-import-external-cwd PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
 # Exact callback behavior missing from the strict launcher INI schema.
 add_executable(ker-fstack-ini-callback-test fstack-ini-callback.c)

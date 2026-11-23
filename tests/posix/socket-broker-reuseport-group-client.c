@@ -1474,6 +1474,38 @@ static int staged_admission_initial(struct ker_socket_client *client,
             if (ker_socket_client_reuseport_group_select(client, group, 1) != -1 ||
                 errno != EBUSY) { errno = EPROTO; return -1; }
             puts("C28_CUTOVER_PREPARED_SELECT_BLOCKED"); fflush(stdout);
+        } else if (!strcmp(command, "CUTOVER_WAIT_RECEIVED\n")) {
+            if (cutover < 0) { errno = ENOTCONN; return -1; }
+            struct timespec pause = {.tv_nsec = 10000000};
+            struct timespec now = {0};
+            if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+            uint64_t deadline = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                (uint64_t)now.tv_nsec + UINT64_C(8000000000);
+            for (;;) {
+                struct ker_socket_group_cutover_status status = {0};
+                if (ker_socket_client_owner_group_cutover_poll(client, cutover,
+                        &status)) return -1;
+                if (status.received_packets >= 1) {
+                    if (status.received_packets > 64 ||
+                        status.accepted_packets != 0 ||
+                        status.phase != KER_SOCKET_GROUP_CUTOVER_PREPARED) {
+                        errno = EPROTO; return -1;
+                    }
+                    printf("C28_CUTOVER_PACKET_HELD received=%u accepted=%u\n",
+                        status.received_packets, status.accepted_packets);
+                    fflush(stdout);
+                    break;
+                }
+                if (status.phase != KER_SOCKET_GROUP_CUTOVER_PREPARED) {
+                    errno = status.result ? -status.result : EPROTO; return -1;
+                }
+                if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+                uint64_t current = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                    (uint64_t)now.tv_nsec;
+                if (current >= deadline) { errno = ETIMEDOUT; return -1; }
+                while (nanosleep(&pause, &pause) && errno == EINTR) { }
+                pause.tv_nsec = 10000000;
+            }
         } else if (!strcmp(command, "CUTOVER_COMMIT\n")) {
             if (cutover < 0 || ker_socket_client_owner_group_cutover_commit(
                     client, cutover)) return -1;
@@ -1488,6 +1520,10 @@ static int staged_admission_initial(struct ker_socket_client *client,
                 if (ker_socket_client_owner_group_cutover_poll(client, cutover,
                         &status)) return -1;
                 if (status.phase == KER_SOCKET_GROUP_CUTOVER_COMMITTED) {
+                    if (!status.received_packets || status.received_packets > 64 ||
+                        status.received_packets != status.accepted_packets) {
+                        errno = EPROTO; return -1;
+                    }
                     int stale_capability = cutover;
                     if (ker_socket_client_owner_group_cutover_commit(client,
                             cutover)) return -1;
@@ -1540,7 +1576,8 @@ static int staged_admission_initial(struct ker_socket_client *client,
                 if (ker_socket_client_owner_group_cutover_poll(client, cutover,
                         &status)) return -1;
                 if (status.phase == KER_SOCKET_GROUP_CUTOVER_ABORTED) {
-                    if (status.received_packets != status.accepted_packets) {
+                    if (!status.received_packets || status.received_packets > 64 ||
+                        status.received_packets != status.accepted_packets) {
                         errno = EPROTO; return -1;
                     }
                     if (ker_socket_client_owner_group_cutover_abort(client,
