@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
 #include "posix-usercopy.h"
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -160,10 +161,17 @@ _Static_assert(sizeof(struct statx) == sizeof(struct lkl_statx), "statx UAPI siz
 #define STATX_OFFSET(field) _Static_assert(offsetof(struct statx, field) == offsetof(struct lkl_statx, field), "statx " #field)
 STATX_OFFSET(stx_mask); STATX_OFFSET(stx_ino); STATX_OFFSET(stx_atime);
 STATX_OFFSET(stx_mtime); STATX_OFFSET(stx_dev_major); STATX_OFFSET(stx_mnt_id);
+static int host_statx(int fd, const char *path, int flags, unsigned mask, struct statx *output)
+{
+    __typeof__(&statx) original = dlsym(RTLD_NEXT, "statx");
+    if (!original) { errno = ENOSYS; return -1; }
+    return original(fd, path, flags, mask, output);
+}
+
 static int descriptor_statx(int fd, const char *path, int flags, unsigned mask, struct statx *output)
 {
     struct ker_fd *entry = ker_fd_get(fd);
-    if (!entry) return syscall(SYS_statx, fd, path, flags, mask, output);
+    if (!entry) return host_statx(fd, path, flags, mask, output);
     char local_path[PATH_MAX];
     if (path) {
         if (copy_native_path(path, local_path) < 0) {
@@ -175,7 +183,7 @@ static int descriptor_statx(int fd, const char *path, int flags, unsigned mask, 
         path = local_path;
         if (absolute_host_path(path)) {
             ker_fd_put(entry);
-            return syscall(SYS_statx, fd, path, flags, mask, output);
+            return host_statx(fd, path, flags, mask, output);
         }
     }
     int lookup = flags & ~(AT_NO_AUTOMOUNT | AT_STATX_SYNC_TYPE);
@@ -193,12 +201,16 @@ static int descriptor_statx(int fd, const char *path, int flags, unsigned mask, 
 int statx(int fd, const char *path, int flags, unsigned mask, struct statx *output)
     __attribute__((alias("descriptor_statx")));
 
-/* faccessat's flags belong to the access check; use faccessat2 rather than
- * silently discarding AT_EACCESS/AT_EMPTY_PATH as the old raw syscall would. */
+static int host_accessat(int fd, const char *path, int mode, int flags)
+{
+    __typeof__(&faccessat) original = dlsym(RTLD_NEXT, "faccessat");
+    if (!original) { errno = ENOSYS; return -1; }
+    return original(fd, path, mode, flags);
+}
 static int descriptor_accessat(int fd, const char *path, int mode, int flags)
 {
     struct ker_fd *entry = ker_fd_get(fd);
-    if (!entry) return syscall(SYS_faccessat2, fd, path, mode, flags);
+    if (!entry) return host_accessat(fd, path, mode, flags);
     /* Match do_faccessat's mode-then-flags validation before pathname access. */
     if (mode & ~(R_OK | W_OK | X_OK)) {
         ker_fd_put(entry); errno = EINVAL; return -1;
@@ -215,7 +227,7 @@ static int descriptor_accessat(int fd, const char *path, int mode, int flags)
     }
     if (native_path[0] == '/') {
         ker_fd_put(entry);
-        return syscall(SYS_faccessat2, fd, native_path, mode, flags);
+        return host_accessat(fd, native_path, mode, flags);
     }
     long result = lkl_sys_faccessat2(entry->native, native_path, mode, flags);
     ker_fd_put(entry);
