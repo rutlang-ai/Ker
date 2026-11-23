@@ -7,7 +7,7 @@
 #include "runtime/transport-receive.h"
 #include "runtime/udp-create.h"
 #include "runtime/worker.h"
-#include <linux/if_ether.h>
+#include "compat/ethernet-abi.h"
 #include <net/checksum.h>
 #include <rte_eth_ring.h>
 #include <rte_ethdev.h>

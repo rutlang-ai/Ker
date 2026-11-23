@@ -7,7 +7,7 @@
 #include "runtime/tx-ring.h"
 #include "runtime/worker.h"
 #include <errno.h>
-#include <linux/if_ether.h>
+#include "compat/ethernet-abi.h"
 #include <netinet/ip.h>
 #include <pthread.h>
 #include <rte_eth_ring.h>
@@ -79,17 +79,17 @@ static struct rte_mbuf *make_frame(unsigned int id, bool malformed, bool split)
     CHECK(packet);
     if (split && !malformed) {
         const uint16_t first_length = 10;
-        uint8_t *first = rte_pktmbuf_append(packet, first_length);
+        uint8_t *first = (uint8_t *)rte_pktmbuf_append(packet, first_length);
         struct rte_mbuf *tail = rte_pktmbuf_alloc(pool.mbufs);
         CHECK(first && tail);
-        uint8_t *second = rte_pktmbuf_append(tail, length - first_length);
+        uint8_t *second = (uint8_t *)rte_pktmbuf_append(tail, length - first_length);
         CHECK(second);
         memcpy(first, frame, first_length);
         memcpy(second, frame + first_length, length - first_length);
         CHECK(rte_pktmbuf_chain(packet, tail) == 0);
         return packet;
     }
-    uint8_t *linear = rte_pktmbuf_append(packet, length);
+    uint8_t *linear = (uint8_t *)rte_pktmbuf_append(packet, length);
     CHECK(linear);
     memcpy(linear, frame, length);
     return packet;
@@ -116,7 +116,7 @@ static struct rte_mbuf *make_external_segment(const uint8_t *bytes, uint16_t len
     CHECK(packet);
     rte_pktmbuf_attach_extbuf(packet, buffer, RTE_BAD_IOVA, usable_length, shinfo);
     rte_pktmbuf_reset_headroom(packet);
-    uint8_t *destination = rte_pktmbuf_append(packet, length);
+    uint8_t *destination = (uint8_t *)rte_pktmbuf_append(packet, length);
     CHECK(destination);
     memcpy(destination, bytes, length);
     return packet;
