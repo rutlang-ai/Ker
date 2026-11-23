@@ -81,7 +81,20 @@ main(void)
         fputs("FF nginx runtime did not reject FF_FAULT\n", stderr);
         failed = 1;
     }
+    /* Even the complete test launch environment cannot enable upstream
+     * fault injection in the installed, fault-free product runtime. */
+    if (setenv("FF_FAULT", "flip_fail_once", 1) ||
+        setenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE", "1", 1) ||
+        setenv("KER_NGINX_SOURCE_FIRST_HUP_ENABLE", "1", 1) ||
+        setenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH", "/unused-test-bootstrap", 1) ||
+        expect_reject(ENOTSUP, primary)) {
+        fputs("product FF runtime accepted the fault-test launch environment\n", stderr);
+        failed = 1;
+    }
     unsetenv("FF_FAULT");
+    unsetenv("KER_NGINX_SOURCE_ABORT_RETRY_ENABLE");
+    unsetenv("KER_NGINX_SOURCE_FIRST_HUP_ENABLE");
+    unsetenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH");
 
     static const char valid_suffix[] = "\n[dpdk]\ngraceful_reload=0\n";
     char profile[1024];

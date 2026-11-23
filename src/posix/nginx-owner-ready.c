@@ -103,6 +103,16 @@ int ker_nginx_owner_ready_sender_init(struct ker_nginx_owner_ready_sender *sende
     *sender = value;
     return 0;
 }
+int ker_nginx_owner_ready_sender_init_worker(struct ker_nginx_owner_ready_sender *sender,
+    int fd, pid_t expected_peer, pid_t expected_master)
+{
+    if (expected_master <= 0 || expected_master == getpid() || getppid() != expected_master)
+        return -ECHILD;
+    int status = ker_nginx_owner_ready_sender_init(sender, fd, expected_peer);
+    if (!status) sender->master_pid = expected_master;
+    return status;
+}
+
 int ker_nginx_owner_ready_sender_bind(struct ker_nginx_owner_ready_sender *sender,
     int slot_fd, unsigned role)
 {

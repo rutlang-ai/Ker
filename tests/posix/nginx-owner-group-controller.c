@@ -24,9 +24,16 @@ static int cutover_wait(struct ker_socket_client *client, int cap,
     uint32_t phase, int require_packet)
 {
     uint64_t start = now_ns();
-    struct ker_socket_group_cutover_status state;
+    struct ker_socket_group_cutover_status state = {0};
     while (start && now_ns() - start < UINT64_C(10000000000)) {
-        if (ker_socket_client_owner_group_cutover_poll(client, cap, &state)) return -1;
+        if (ker_socket_client_owner_group_cutover_poll(client, cap, &state)) {
+            int error = errno;
+            fprintf(stderr, "CUTOVER_WAIT poll_error=%d phase=%u result=%d received=%u accepted=%u lease=%llu\n",
+                error, state.phase, state.result, state.received_packets,
+                state.accepted_packets, (unsigned long long)state.lease);
+            errno = error;
+            return -1;
+        }
         if (state.phase == phase && (!require_packet || state.received_packets)) {
             printf("CUTOVER_STATE phase=%u received=%u accepted=%u\n",
                 state.phase, state.received_packets, state.accepted_packets);
@@ -35,18 +42,26 @@ static int cutover_wait(struct ker_socket_client *client, int cap,
         }
         if (state.phase == KER_SOCKET_GROUP_CUTOVER_FAILED ||
             state.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED) {
+            fprintf(stderr, "CUTOVER_WAIT terminal phase=%u result=%d received=%u accepted=%u lease=%llu\n",
+                state.phase, state.result, state.received_packets,
+                state.accepted_packets, (unsigned long long)state.lease);
             errno = EPROTO; return -1;
         }
         struct timespec pause = {.tv_nsec = 1000000};
         (void)nanosleep(&pause, NULL);
     }
+    fprintf(stderr, "CUTOVER_WAIT timeout phase=%u result=%d received=%u accepted=%u lease=%llu\n",
+        state.phase, state.result, state.received_packets,
+        state.accepted_packets, (unsigned long long)state.lease);
     errno = ETIMEDOUT;
     return -1;
 }
 
 int main(int argc, char **argv)
 {
-    CHECK(argc == 3);
+    int generation_watch = argc == 4 &&
+        !strcmp(argv[3], "--generation-watch-preclaim");
+    CHECK(argc == 3 || generation_watch);
     char *end;
     long transfer = strtol(argv[2], &end, 10);
     CHECK(argv[2][0] && !*end && transfer >= 0 && transfer <= INT32_MAX);
@@ -57,23 +72,31 @@ int main(int argc, char **argv)
     int plan = ker_socket_client_owner_group_staged_plan(&client, &address, 16,
         KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_READ);
     CHECK(plan >= 0);
+    int watch = generation_watch ?
+        ker_socket_client_owner_generation_watch_create(&client, plan) : -1;
+    CHECK(!generation_watch || watch >= 0);
     int slots[] = {ker_socket_client_owner_group_slot(&client, plan, 0),
         ker_socket_client_owner_group_slot(&client, plan, 1)};
     CHECK(slots[0] >= 0 && slots[1] >= 0);
     char byte = 'N';
-    union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(slots))]; } control = {0};
+    int transferred[3] = {slots[0], slots[1], watch};
+    size_t transferred_count = generation_watch ? 3 : 2;
+    union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(transferred))]; } control = {0};
     struct iovec vector = {&byte, 1};
     struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1,
         .msg_control = control.bytes, .msg_controllen = sizeof(control.bytes)};
     struct cmsghdr *header = CMSG_FIRSTHDR(&message);
     header->cmsg_level = SOL_SOCKET; header->cmsg_type = SCM_RIGHTS;
-    header->cmsg_len = CMSG_LEN(sizeof(slots));
-    memcpy(CMSG_DATA(header), slots, sizeof(slots));
+    header->cmsg_len = CMSG_LEN(transferred_count * sizeof(transferred[0]));
+    memcpy(CMSG_DATA(header), transferred, transferred_count * sizeof(transferred[0]));
     CHECK(sendmsg((int)transfer, &message, MSG_NOSIGNAL) == 1);
     int previous_plan = -1, previous_group = -1, discarded_census = -1;
     int previous_aborted = 0, previous_abandoned = 0;
     int group = -1, census[2] = {-1, -1}, cutover = -1;
-    char command[32];
+    uint64_t held_lease = 0;
+    uint32_t held_phase = 0, held_received = 0, held_accepted = 0;
+    uint64_t observed_listener_cookie = 0;
+    char command[128];
     while (fgets(command, sizeof(command), stdin)) {
         if (!strcmp(command, "CONTROL\n")) {
             CHECK(group < 0);
@@ -86,6 +109,13 @@ int main(int argc, char **argv)
             struct ker_socket_member_census_snapshot state;
             CHECK(census[index] >= 0 && !ker_socket_client_member_census_snapshot(&client, census[index], &state));
             CHECK(state.listener_cookie && state.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1);
+        } else if (!strcmp(command, "COOKIE0\n") || !strcmp(command, "COOKIE1\n")) {
+            unsigned index = command[6] - '0';
+            struct ker_socket_member_census_snapshot state;
+            CHECK(census[index] >= 0 && !ker_socket_client_member_census_snapshot(
+                &client, census[index], &state));
+            CHECK(state.listener_cookie && state.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1);
+            observed_listener_cookie = state.listener_cookie;
         } else if (!strcmp(command, "EARLY_NEXT\n")) {
             CHECK(ker_socket_client_owner_group_successor_plan(&client, plan) == -1 && errno == EAGAIN);
         } else if (!strcmp(command, "ABORT_NEXT\n")) {
@@ -100,6 +130,59 @@ int main(int argc, char **argv)
             CHECK(ker_socket_client_owner_group_retry_plan(&client, plan) == -1 && errno == EOPNOTSUPP);
         } else if (!strcmp(command, "WRONG_RETRY\n")) {
             CHECK(ker_socket_client_owner_group_retry_plan(&client, slots[1]) == -1 && errno == ENOTSOCK);
+        } else if (!strncmp(command, "SOURCE_RETRY_BEFORE ", 20)) {
+            char *deadline_end = NULL;
+            errno = 0;
+            uint64_t deadline = strtoull(command + 20, &deadline_end, 10);
+            CHECK(!errno && deadline && deadline_end != command + 20 &&
+                !strcmp(deadline_end, "\n") && now_ns() < deadline);
+            CHECK(previous_plan < 0 && previous_group < 0 && cutover >= 0);
+            struct ker_socket_member_census_snapshot before, after, successor;
+            CHECK(census[0] >= 0 && !ker_socket_client_member_census_snapshot(
+                &client, census[0], &before));
+            CHECK(before.listener_cookie && before.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1);
+            printf("SOURCE_RETRY_BEFORE_BEGIN ns=%llu deadline=%llu cookie=%llu\n",
+                (unsigned long long)now_ns(), (unsigned long long)deadline,
+                (unsigned long long)before.listener_cookie);
+            fflush(stdout);
+            close(cutover); cutover = -1;
+            CHECK(now_ns() < deadline);
+            int next;
+            do {
+                next = ker_socket_client_owner_group_retry_plan(&client, plan);
+                if (next >= 0 || errno != EAGAIN) break;
+                CHECK(now_ns() < deadline);
+                struct timespec pause = {.tv_nsec = 100000};
+                (void)nanosleep(&pause, NULL);
+            } while (now_ns() < deadline);
+            CHECK(next >= 0 && now_ns() < deadline);
+            int next_group = ker_socket_client_owner_group_control(&client, next);
+            CHECK(next_group >= 0 && now_ns() < deadline);
+            int next_census = ker_socket_client_member_census_create(&client, next_group, 0);
+            CHECK(next_census >= 0 && now_ns() < deadline);
+            CHECK(!ker_socket_client_member_census_snapshot(&client, census[0], &after));
+            CHECK(!ker_socket_client_member_census_snapshot(&client, next_census, &successor));
+            CHECK(now_ns() < deadline && after.listener_cookie == before.listener_cookie &&
+                successor.listener_cookie == before.listener_cookie &&
+                after.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1 &&
+                successor.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1);
+            printf("SUCCESSOR_COOKIE preserved=%llu\n",
+                (unsigned long long)successor.listener_cookie);
+            previous_aborted = 1; previous_abandoned = 0;
+            previous_plan = plan; plan = next;
+            previous_group = group; group = next_group;
+            for (unsigned index = 0; index < 2; ++index) {
+                if (slots[index] >= 0) { close(slots[index]); slots[index] = -1; }
+                if (index == 1) {
+                    if (discarded_census >= 0) close(discarded_census);
+                    discarded_census = census[index];
+                } else if (census[index] >= 0) close(census[index]);
+                census[index] = -1;
+            }
+            census[0] = next_census;
+            CHECK(now_ns() < deadline);
+            printf("SOURCE_RETRY_BEFORE_COMPLETE ns=%llu deadline=%llu\n",
+                (unsigned long long)now_ns(), (unsigned long long)deadline);
         } else if (!strcmp(command, "NEXT\n") || !strcmp(command, "RETRY\n") || !strcmp(command, "ABANDON\n") || !strcmp(command, "RECOVER\n")) {
             int recover = !strcmp(command, "RECOVER\n");
             int abandon = command[0] == 'A' || recover;
@@ -247,6 +330,25 @@ int main(int argc, char **argv)
             CHECK(state.state_counts[KER_SOCKET_TCP_STATE_ESTABLISHED] >= 13);
             printf("SOURCE_STREAM_CENSUS established=%llu\n",
                 (unsigned long long)state.state_counts[KER_SOCKET_TCP_STATE_ESTABLISHED]);
+        } else if (!strcmp(command, "DRAINED0\n") || !strcmp(command, "DRAINED1\n")) {
+            unsigned index = command[7] - '0';
+            struct ker_socket_member_census_snapshot state;
+            uint64_t deadline = now_ns() + UINT64_C(5000000000);
+            uint64_t live;
+            do {
+                CHECK(census[index] >= 0 && !ker_socket_client_member_census_snapshot(&client, census[index], &state));
+                live = 0;
+                for (unsigned value = KER_SOCKET_TCP_STATE_ESTABLISHED;
+                        value <= KER_SOCKET_TCP_STATE_BOUND_INACTIVE; ++value) {
+                    if (value != KER_SOCKET_TCP_STATE_TIME_WAIT && value != KER_SOCKET_TCP_STATE_CLOSE &&
+                            value != KER_SOCKET_TCP_STATE_LISTEN && value != KER_SOCKET_TCP_STATE_BOUND_INACTIVE)
+                        live += state.state_counts[value];
+                }
+                if (!live) break;
+                struct timespec pause = {.tv_nsec = 1000000};
+                (void)nanosleep(&pause, NULL);
+            } while (now_ns() < deadline);
+            CHECK(!live);
         } else if (!strcmp(command, "BEGIN\n")) {
             CHECK(cutover < 0);
             cutover = ker_socket_client_owner_group_cutover_begin(&client, plan);
@@ -255,6 +357,19 @@ int main(int argc, char **argv)
             CHECK(ker_socket_client_owner_group_recover_dead_plan(&client, plan) == -1 && errno == EOPNOTSUPP);
         } else if (!strcmp(command, "QUEUED\n")) {
             CHECK(cutover >= 0 && !cutover_wait(&client, cutover, KER_SOCKET_GROUP_CUTOVER_PREPARED, 1));
+        } else if (!strcmp(command, "HELD\n")) {
+            struct ker_socket_group_cutover_status state;
+            CHECK(cutover >= 0 &&
+                !ker_socket_client_owner_group_cutover_poll(&client, cutover, &state));
+            CHECK(state.phase == KER_SOCKET_GROUP_CUTOVER_PREPARED &&
+                state.received_packets && !state.accepted_packets);
+            held_lease = state.lease;
+            held_phase = state.phase;
+            held_received = state.received_packets;
+            held_accepted = state.accepted_packets;
+            printf("CUTOVER_HELD phase=%u received=%u accepted=%u\n",
+                state.phase, state.received_packets, state.accepted_packets);
+            fflush(stdout);
         } else if (!strcmp(command, "DEAD_BEGIN\n")) {
             CHECK(cutover < 0);
             CHECK(ker_socket_client_owner_group_cutover_begin(&client, plan) == -1);
@@ -300,6 +415,76 @@ int main(int argc, char **argv)
             CHECK(ker_socket_client_owner_group_retry_plan(&client, plan) == -1 && errno == ECANCELED);
             CHECK(ker_socket_client_owner_group_abandon_plan(&client, plan) == -1 && errno == ECANCELED);
             CHECK(ker_socket_client_owner_group_recover_dead_plan(&client, plan) == -1 && errno == ECANCELED);
+        } else if (!strncmp(command, "COMMIT_BEFORE ", 14)) {
+            char *deadline_end = NULL;
+            errno = 0;
+            unsigned long long deadline = strtoull(command + 14, &deadline_end, 10);
+            CHECK(!errno && deadline && deadline_end != command + 14 &&
+                !strcmp(deadline_end, "\n"));
+            uint64_t request_started = now_ns();
+            fprintf(stderr, "COMMIT_BEFORE_REQUEST begin_ns=%llu deadline_ns=%llu cap=%d\n",
+                (unsigned long long)request_started, deadline, cutover);
+            fflush(stderr);
+            int request_result = ker_socket_client_owner_group_cutover_commit_before(
+                &client, cutover, deadline);
+            int request_error = request_result ? errno : 0;
+            fprintf(stderr, "COMMIT_BEFORE_REQUEST end_ns=%llu result=%d error=%d\n",
+                (unsigned long long)now_ns(), request_result, request_error);
+            fflush(stderr);
+            if (request_result) { errno = request_error; CHECK(!request_result); }
+            CHECK(!cutover_wait(&client, cutover, KER_SOCKET_GROUP_CUTOVER_COMMITTED, 0));
+        } else if (!strncmp(command, "COMMIT_BEFORE_QUARANTINE ", 25)) {
+            char *deadline_end = NULL;
+            errno = 0;
+            unsigned long long deadline = strtoull(command + 25, &deadline_end, 10);
+            CHECK(!errno && deadline && deadline_end != command + 25 &&
+                !strcmp(deadline_end, "\n"));
+            CHECK(!ker_socket_client_owner_group_cutover_commit_before(&client,
+                cutover, deadline));
+            struct ker_socket_group_cutover_status state = {0};
+            uint64_t poll_deadline = now_ns() + UINT64_C(5000000000);
+            do {
+                CHECK(!ker_socket_client_owner_group_cutover_poll(&client,
+                    cutover, &state));
+                CHECK(state.phase != KER_SOCKET_GROUP_CUTOVER_COMMITTED &&
+                    state.phase != KER_SOCKET_GROUP_CUTOVER_ABORTED &&
+                    !state.accepted_packets);
+                if (state.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED) break;
+                struct timespec pause = {.tv_nsec = 1000000};
+                (void)nanosleep(&pause, NULL);
+            } while (now_ns() < poll_deadline);
+            CHECK(state.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED &&
+                state.result == -ETIMEDOUT && state.received_packets == 1 &&
+                !state.accepted_packets);
+            CHECK(ker_socket_client_owner_group_cutover_commit(&client,
+                cutover) == -1 && errno == EALREADY);
+            CHECK(ker_socket_client_owner_group_cutover_abort(&client,
+                cutover) == -1 && errno == EALREADY);
+            CHECK(ker_socket_client_owner_group_retry_plan(&client, plan) == -1 &&
+                errno == ECANCELED);
+            printf("C28_ASYNC_ACCEPT_QUARANTINED phase=%u result=%d received=%u accepted=%u\n",
+                state.phase, state.result, state.received_packets,
+                state.accepted_packets);
+            fflush(stdout);
+            fprintf(stderr, "C28_ASYNC_ACCEPT_QUARANTINED phase=%u result=%d received=%u accepted=%u monotonic_ns=%llu\n",
+                state.phase, state.result, state.received_packets,
+                state.accepted_packets, (unsigned long long)now_ns());
+            fflush(stderr);
+        } else if (!strcmp(command, "QUARANTINED\n")) {
+            struct ker_socket_group_cutover_status state;
+            uint64_t deadline = now_ns() + UINT64_C(5000000000);
+            do {
+                CHECK(cutover >= 0 && !ker_socket_client_owner_group_cutover_poll(
+                    &client, cutover, &state));
+                CHECK(state.phase != KER_SOCKET_GROUP_CUTOVER_COMMITTED);
+                if (state.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED) break;
+                struct timespec pause = {.tv_nsec = 1000000};
+                (void)nanosleep(&pause, NULL);
+            } while (now_ns() < deadline);
+            CHECK(state.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED &&
+                !state.accepted_packets);
+            printf("SOURCE_EXPIRED_QUARANTINED phase=%u result=%d received=%u accepted=%u\n",
+                state.phase, state.result, state.received_packets, state.accepted_packets);
         } else if (!strcmp(command, "COMMIT\n")) {
             CHECK(!ker_socket_client_owner_group_cutover_commit(&client, cutover));
             CHECK(!cutover_wait(&client, cutover, KER_SOCKET_GROUP_CUTOVER_COMMITTED, 0));
@@ -327,7 +512,16 @@ int main(int argc, char **argv)
             CHECK(!state.state_counts[KER_SOCKET_TCP_STATE_LISTEN]);
         } else if (!strcmp(command, "STOP\n")) break;
         else { errno = EINVAL; CHECK(0); }
-        printf("OWNER_GROUP_OK %s", command); fflush(stdout);
+        if (!strcmp(command, "HELD\n")) {
+            printf("OWNER_GROUP_OK HELD lease=%llu phase=%u received=%u accepted=%u\n",
+                (unsigned long long)held_lease, held_phase, held_received, held_accepted);
+        } else if (!strcmp(command, "COOKIE0\n") || !strcmp(command, "COOKIE1\n")) {
+            printf("OWNER_GROUP_OK %.*s cookie=%llu\n", 7, command,
+                (unsigned long long)observed_listener_cookie);
+        } else {
+            printf("OWNER_GROUP_OK %s", command);
+        }
+        fflush(stdout);
     }
     if (cutover >= 0) close(cutover);
     for (unsigned index = 0; index < 2; ++index) {
@@ -336,6 +530,7 @@ int main(int argc, char **argv)
     }
     if (group >= 0) close(group);
     if (plan >= 0) close(plan);
+    if (watch >= 0) close(watch);
     if (discarded_census >= 0) close(discarded_census);
     if (previous_plan >= 0) close(previous_plan);
     if (previous_group >= 0) close(previous_group);

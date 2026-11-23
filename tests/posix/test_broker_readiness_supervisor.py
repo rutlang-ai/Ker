@@ -72,6 +72,22 @@ class BrokerReadinessVerifyDeadlineTests(unittest.TestCase):
                 self.manager.poll_verify()
         self.assertTrue(self.manager._verify['unresolved'])
 
+    def test_invalid_verify_record_is_retained_before_strict_decode(self):
+        # The readiness session must reject a response from an unrelated RX
+        # decision session while preserving the exact bounded record.
+        self.manager.parent.recv(256)
+        raw = supervisor.wire.pack_verify_result(b'r' * 16, 19, 1, 16,
+            0, 0, 0, 0, 0, 0, self.manager.profile, 0)
+        self.sender.send(raw)
+        with mock.patch.object(supervisor, '_sha256',
+                return_value=self.manager.expected_executable_hash):
+            with self.assertRaisesRegex(ValueError, 'invalid VERIFY result fields'):
+                self.manager.poll_verify()
+        self.assertEqual(self.manager.last_verify_packet, raw)
+        self.assertLessEqual(len(self.manager.last_verify_packet),
+            supervisor.wire.VERIFY_RESULT.size)
+        self.assertTrue(self.manager._verify['unresolved'])
+
     def test_ready_identity_hash_uses_absolute_not_poll_slice_deadline(self):
         self.manager.parent.recv(256)
         self.manager.ready = False

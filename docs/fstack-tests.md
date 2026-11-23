@@ -792,6 +792,139 @@ epoch5碰撞仍存活的epoch2槽，拒绝使用另一个可回收槽；原owner
 18→12 partial；额外回归、skip、重复安装运行及原已完成案例均未计入。
 [50项完整差分清单](../tests/fstack-unfinished-completed.json)记录每项原始ID、基线与测试。
 
+## One-master source abort and retry qualification
+
+`native-nginx-source-master-abort-retry` is an opt-in native integration profile
+for one original Nginx master. It runs the pinned `m4_lc.py` probe unchanged
+(12 connections, 0.1-second interval, 30-second duration, 0.5-second fresh
+interval, 2-second timeout), holds a real old TCP response across a first HUP
+whose `flip_fail_once` fault makes the original reload enter `T_ERROR` and
+return to `T0`, then performs one epoch-2 retry. The test checks the original
+FSM transitions, bounded shared PARK/COMMIT deadline, active old stream and
+fresh connections, drain result, worker identity, native packet ownership and
+normal shutdown. It is separate from the 50-case source ledger and does not
+change the 362/0/1 inventory.
+
+**Qualification status: two consecutive full CTest passes.** One retained run
+completed the focused CTest in 30.98 seconds. Its unchanged `m4_lc.py` summary
+reported 12 connections, 3,579 requests, 12 reconnects, 60 fresh connections
+with zero fresh failures, and zero worker errors. The bounded HUP interval
+reported 12 connection failures; the test requires those failures to stay
+within the 12-connection bound while reconnects and fresh requests succeed.
+The original reload completed once, returned from `T5` to `T0`, and drained in
+2,027 ms. One configured source worker remained active after the retry. The
+same 256 KiB response completed with its expected hash, including across the
+route change. Packet 2414 was observed after the C31 source-route swap and
+before native C28 COMMIT; its actual candidate PEER and old LOCAL callback
+records were verified afterward. Native RX settled 7,693 decisions with zero
+drops or outstanding decisions, and native buffers were balanced at shutdown.
+The retained receipt is under
+`build/Testing/Temporary/native-nginx-source-master-abort-retry/run-1794528454496978286-1099320/receipt.json`.
+
+This result covers one original master, one `flip_fail_once` abort and exactly
+one epoch-2 retry. It does not run the complete upstream
+`test_graceful_reload.sh` shell entrypoint or the repeated-success HUP matrix,
+and does not change the 362/0/1 inventory. The confirmation repeat exercises
+the same profile and is not broader reload-matrix qualification.
+
+The route stage keeps the initial authenticated role-0 source route immutable
+while a fresh role-1 candidate is authenticated on its own channel. After an
+original reload abort, the same live master may authorize exactly one epoch-2
+candidate under the original finite grant; this does not relabel the old owner
+or renew authority. The native held-SYN queue retains its original packet
+lease. Separately, each round gives source-master PARK and COMMIT one shared,
+non-renewable 100 ms control deadline. The test stages the native queue before
+candidate activation and records the held packet and unchanged queue lease.
+After the C31 source-route swap, it observes a newly appended authenticated
+candidate PEER handoff before native COMMIT, then checks that exact packet ID
+against the original candidate PEER and old LOCAL callback records. The old
+TCP response is verified on the same socket after COMMIT. If completion or a
+required proof misses its deadline, the route remains fail-closed and the test
+does not report a successful handover.
+
+## Two successful reloads under one original master
+
+`native-nginx-source-master-two-successful-hups` qualifies one committed
+successor: the unchanged original master completes generation `0→1→0` across
+two successful HUPs. It uses the original rv9 fresh-only probe parameters with
+two rounds: zero persistent probe connections, a 0.2-second fresh interval,
+2-second timeout, 15-second HUP spacing, and a 120-second probe duration.
+Separate original-Linux TCP sockets each carry a 1 MiB response across their
+respective generation change. The second socket belongs to generation 1
+before HUP and must deliver the same complete body after generation 0 commits.
+
+The authenticated successor stage requires the exact first committed route,
+the same live master and finite grant, the surviving owner identity/channel,
+and the confirmed-dead initial owner's retained pidfd. Native successor
+adoption preserves the surviving listener cookie; a fresh FIFO slot, READY
+receiver and candidate channel authorize the next worker. The original source
+generation is distinct from the immutable transport role. Neither actor
+relabeling nor an aborted-retry record can authorize this successful lineage.
+Each original PARK/COMMIT pair retains its shared 100 ms deadline, and packet
+handoffs retain their original packet ID, bytes and deadline.
+
+Retiring admission does not itself terminate its control channel: a retired
+window can still be rearmed. Before native adoption succeeds, the backend now
+seals that exact retired task through a version-2 SEAL/SEALED exchange bound to
+its authenticated channel, epoch, lease and increasing command ID. Adoption
+returns `EAGAIN` until the correlated ACK arrives. Only after the worker sends
+that ACK does it detach its admission callback, retaining the endpoint and RX
+relay for old TCP traffic. Unauthenticated, stale, premature or missing seals
+do not turn channel EOF into success. Channel and actual preload controls cover
+wrong lease/epoch, replay, pending admission, interrupted ACK sends and fatal
+pre-seal EOF; the preload control checks continued RX progress after detach.
+
+**Qualification status: full CTest pass in 120.98 seconds.** The original probe
+reported 600 fresh connections, zero failures and zero worker errors. Both
+original reloads completed and returned from `T5` to `T0`, draining in 2,030 ms
+and 2,031 ms. The two same-socket bodies matched their expected hash. Actual
+handoff packets 91 and 820 had correlated original candidate PEER and old LOCAL
+callbacks before their native selector commits. All three worker PIDs exited
+with code 0, including the final worker after master STOP. Native RX settled
+3,719 decisions with zero drops or outstanding decisions, and shutdown balanced
+native buffers. The receipt is retained under
+`build/Testing/Temporary/native-nginx-source-master-successor/run-1794534622746237503-1196317/receipt.json`.
+
+This is a two-round rv9 parity slice. It does not qualify the full 100-round
+resource-trend test or the original `test_graceful_reload.sh` entrypoint/matrix.
+The 362/0/1 inventory remains unchanged.
+
+The relay checkpoint is a Ker scheduling adapter. It invokes only the already
+registered RX relay callback on the exact owner PID/TID inside the owner loop.
+It does not re-enter the original Nginx application loop or admission callbacks.
+Socket census probes release the preload mutex before a checkpoint and reject
+a changed descriptor registry rather than returning a partial count. Original
+Nginx reload decisions and original Linux TCP behavior remain authoritative.
+
+Build the fault-injection runtime separately from the ordinary test build; the
+fault-enabled DSO is test-only and must never replace the production runtime.
+Use the same pinned native Linux, DPDK and Nginx inputs for both builds:
+
+```sh
+cmake -S . -B build-fault-runtime \
+  -DKER_WITH_DPDK=ON -DKER_WITH_NATIVE_TCP=ON -DBUILD_TESTING=ON \
+  -DKER_NATIVE_LINUX_BUILD=/path/to/native-linux-build \
+  -DKER_DPDK_PKGCONFIG_DIR=/path/to/dpdk/lib64/pkgconfig \
+  -DKER_BUILD_FSTACK_NGINX_FAULT_TEST_RUNTIME=ON
+cmake --build build-fault-runtime --target ker-fstack-nginx-fault-test-runtime
+
+cmake -S . -B build-native-tcp \
+  -DKER_WITH_DPDK=ON -DKER_WITH_NATIVE_TCP=ON -DBUILD_TESTING=ON \
+  -DKER_BUILD_FSTACK_NGINX_RUNTIME=ON \
+  -DKER_NATIVE_LINUX_BUILD=/path/to/native-linux-build \
+  -DKER_DPDK_PKGCONFIG_DIR=/path/to/dpdk/lib64/pkgconfig \
+  -DKER_FSTACK_NGINX_BINARY=/path/to/pinned/nginx \
+  -DKER_FSTACK_NGINX_SOURCE_ROOT=/path/to/pinned/fstack-source \
+  -DKER_FSTACK_NGINX_BUILD_DIR=/path/to/pinned/nginx-objs \
+  -DKER_SOURCE_MASTER_ABORT_RETRY_FAULT_RUNTIME="$PWD/build-fault-runtime"
+cmake --build build-native-tcp --target \
+  ker-app ker-io-worker ker-socket-preload \
+  ker-socket-broker-rx-owner-relay-fixture ker-nginx-owner-group-controller \
+  ker-fstack-nginx-worker-shim ker-fstack-nginx-owner-activation
+ctest --test-dir build-native-tcp \
+  -R '^native-nginx-source-master-abort-retry$' --output-on-failure
+```
+
 ## Additional50-case PR series (#393–#442)
 
 This is a new50-case series beyond the earlier historical completion ledger.

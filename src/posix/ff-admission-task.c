@@ -49,6 +49,8 @@ struct ker_ff_admission_task {
 	bool retire_requested;
 	bool rearm_requested;
 	bool retired_sealed;
+	bool seal_requested;
+	bool seal_acknowledged;
 	bool accept_uncertain;
 	bool listener_closed;
 	bool listener_ref_released;
@@ -108,6 +110,55 @@ static void task_test_window_status(const char *event, int status)
 	if (length > 0 && (size_t)length < sizeof(line))
 		(void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
 }
+static void task_test_seal_complete(struct ker_ff_admission_task *task,
+	int status)
+{
+	char line[256];
+	uint64_t registration = 0, lease = 0, epoch = 0, command_id = 0;
+	pid_t pid = 0;
+	if (task) {
+		pthread_mutex_lock(&task->lock);
+		registration = task->registration_id;
+		lease = task->lease;
+		epoch = task->epoch;
+		command_id = task->next_command_id;
+		pid = task->actor_pid;
+		pthread_mutex_unlock(&task->lock);
+	}
+	int length = snprintf(line, sizeof(line),
+		"C17_WINDOW_TASK seal-complete status=%d pid=%ld registration=%llu lease=%llu epoch=%llu command_id=%llu now_ns=%llu\n",
+		status, (long)pid, (unsigned long long)registration,
+		(unsigned long long)lease, (unsigned long long)epoch,
+		(unsigned long long)command_id,
+		(unsigned long long)task_now_ns());
+	if (length > 0 && (size_t)length < sizeof(line))
+		(void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
+}
+static void task_test_seal_api(struct ker_ff_admission_task *task,
+	int status)
+{
+	char line[256];
+	uint64_t registration = 0, lease = 0, epoch = 0, command_id = 0;
+	pid_t pid = 0;
+	if (task) {
+		pthread_mutex_lock(&task->lock);
+		registration = task->registration_id;
+		lease = task->lease;
+		epoch = task->epoch;
+		command_id = task->next_command_id;
+		pid = task->actor_pid;
+		pthread_mutex_unlock(&task->lock);
+	}
+	int length = snprintf(line, sizeof(line),
+		"C17_WINDOW_TASK seal-api status=%d pid=%ld registration=%llu lease=%llu epoch=%llu command_id=%llu now_ns=%llu\n",
+		status, (long)pid, (unsigned long long)registration,
+		(unsigned long long)lease,
+		(unsigned long long)epoch,
+		(unsigned long long)command_id,
+		(unsigned long long)task_now_ns());
+	if (length > 0 && (size_t)length < sizeof(line))
+		(void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
+}
 static void task_test_lifecycle_trace(const char *event)
 {
 	char line[128];
@@ -158,6 +209,8 @@ static void task_test_quarantine_barrier(void)
 #else
 #define task_test_trace(event, packet) ((void)0)
 #define task_test_window_status(event, status) ((void)0)
+#define task_test_seal_complete(task, status) ((void)0)
+#define task_test_seal_api(task, status) ((void)0)
 #define task_test_lifecycle_trace(event) ((void)0)
 static void task_test_quarantine_barrier(void) { }
 #endif
@@ -500,7 +553,7 @@ static int task_next_command(struct ker_ff_admission_task *task,
 }
 
 static int task_wait_window_reply(struct ker_ff_admission_task *task,
-	uint16_t expected, uint64_t command_id, uint64_t lease,
+	uint16_t expected, uint64_t command_id, uint64_t lease, uint64_t epoch,
 	struct ker_ff_admission_result *response)
 {
 	uint64_t now = task_now_ns();
@@ -511,6 +564,7 @@ static int task_wait_window_reply(struct ker_ff_admission_task *task,
 		int received = ker_ff_admission_channel_receive(task->channel, response);
 		if (received == expected) {
 			if (response->lease != lease || response->command_id != command_id ||
+			    response->epoch != epoch ||
 			    response->packet_id || response->allowed || response->created)
 				return -EPROTO;
 			return response->status;
@@ -579,7 +633,7 @@ static int task_retire_window(struct ker_ff_admission_task *task,
 	status = ker_ff_admission_channel_send_retire(task->channel, command_id);
 	if (status) return status;
 	status = task_wait_window_reply(task, KER_FF_ADMISSION_RETIRED,
-		command_id, task->lease, &response);
+		command_id, task->lease, task->epoch, &response);
 	if (status) return status;
 	/* Publish retirement and release the queue reservation together, only after
 	 * kernel drain, queue close and the authenticated owner map-close ACK. */
@@ -591,6 +645,28 @@ static int task_retire_window(struct ker_ff_admission_task *task,
 	pthread_mutex_unlock(&task->lock);
 	pthread_mutex_unlock(&task_global_lock);
 	return 0;
+}
+
+static int task_seal_window(struct ker_ff_admission_task *task)
+{
+	uint64_t command_id;
+	struct ker_ff_admission_result response = {0};
+	int status = task_next_command(task, &command_id);
+	if (status) return status;
+	uint64_t now = task_now_ns();
+	if (!now || now > UINT64_MAX - UINT64_C(2000000000)) return -EIO;
+	uint64_t send_deadline = now + UINT64_C(2000000000);
+	for (;;) {
+		status = ker_ff_admission_channel_send_seal(task->channel, command_id);
+		if (status != -EAGAIN && status != -EWOULDBLOCK) break;
+		now = task_now_ns();
+		if (!now || now >= send_deadline) return -ETIMEDOUT;
+		struct timespec pause = {.tv_nsec = 1000000};
+		(void)nanosleep(&pause, NULL);
+	}
+	if (status) return status;
+	return task_wait_window_reply(task, KER_FF_ADMISSION_SEALED,
+		command_id, task->lease, task->epoch, &response);
 }
 
 static int task_listener_revalidate(struct ker_ff_admission_task *task,
@@ -674,6 +750,7 @@ static int task_syncookies_not_forced(void)
 static int task_rearm_window(struct ker_ff_admission_task *task,
 	struct ker_ff_admission_queue **queue_ptr, int listener_fd)
 {
+	if (task->epoch == UINT64_MAX) return -EOVERFLOW;
 	int status = task_listener_revalidate(task, listener_fd);
 	if (status) return status;
 	status = task_syncookies_not_forced();
@@ -699,7 +776,8 @@ static int task_rearm_window(struct ker_ff_admission_task *task,
 	pthread_mutex_unlock(&task->lock);
 	struct ker_ff_admission_result response = {0};
 	if (!status) status = task_wait_window_reply(task,
-		KER_FF_ADMISSION_REARMED, command_id, new_lease, &response);
+		KER_FF_ADMISSION_REARMED, command_id, new_lease, task->epoch + 1,
+		&response);
 	if (status) {
 		/* The new gate may be active. Closing the consumer leaves it armed and
 		 * fail-closed; never try to restore the old lease. */
@@ -763,10 +841,24 @@ static void *task_worker(void *argument)
 				if (task_should_stop(task)) break;
 				pthread_mutex_lock(&task->lock);
 				bool rearm = task->rearm_requested;
+				bool seal = task->seal_requested && !task->seal_acknowledged;
 				pthread_mutex_unlock(&task->lock);
+				if (seal) {
+					status = task_seal_window(task);
+					task_test_seal_complete(task, status);
+					if (status) break;
+					pthread_mutex_lock(&task->lock);
+					task->seal_acknowledged = true;
+					pthread_mutex_unlock(&task->lock);
+					continue;
+				}
 				if (rearm) break;
 				struct timespec pause = {.tv_nsec = 1000000};
 				(void)nanosleep(&pause, NULL);
+			}
+			if (status) {
+				task_set_window(task, WINDOW_QUARANTINED);
+				break;
 			}
 			if (task_should_stop(task)) break;
 			pthread_mutex_lock(&task->lock);
@@ -1049,14 +1141,27 @@ int ker_posix_ff_admission_task_seal_retired(struct ker_ff_admission_task *task)
 #else
 	if (!task) return -EINVAL;
 	pthread_mutex_lock(&task->lock);
-	if (task->state != TASK_READY || task->window_state != WINDOW_RETIRED ||
-	    task->stop_requested || task->listener_closed || task->accept_uncertain) {
+	if (task->retired_sealed) {
+		int status = task->state != TASK_READY ||
+			task->window_state != WINDOW_RETIRED || task->stop_requested ||
+			task->listener_closed || task->accept_uncertain ? -ESTALE :
+			task->seal_acknowledged ? 0 : -EAGAIN;
 		pthread_mutex_unlock(&task->lock);
+		task_test_seal_api(task, status);
+		return status;
+	}
+	if (task->state != TASK_READY || task->window_state != WINDOW_RETIRED ||
+	    task->stop_requested || task->listener_closed || task->accept_uncertain ||
+	    task->rearm_requested || task->queue) {
+		pthread_mutex_unlock(&task->lock);
+		task_test_seal_api(task, -EAGAIN);
 		return -EAGAIN;
 	}
 	task->retired_sealed = true;
+	task->seal_requested = true;
 	pthread_mutex_unlock(&task->lock);
-	return 0;
+	task_test_seal_api(task, -EAGAIN);
+	return -EAGAIN;
 #endif
 }
 

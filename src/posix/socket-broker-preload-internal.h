@@ -13,6 +13,7 @@
 
 void ker_sb_preload_lock(void);
 void ker_sb_preload_unlock(void);
+bool ker_sb_preload_lock_held_by_current_thread(void);
 int ker_sb_preload_runtime_ready(void);
 int ker_sb_preload_resolve_host_functions(void);
 int ker_sb_preload_host_epoll_pwait(int epfd, struct epoll_event *events,
@@ -27,6 +28,9 @@ int ker_sb_preload_register_network_locked(int app_fd);
 void ker_sb_preload_remove_network_locked(int app_fd);
 int ker_sb_preload_socket_drain_count(void);
 int ker_sb_preload_ff_owner_begin(void);
+/* Source slim-primary child only, before the original close-all-FDs loop.
+ * Forget inherited classifications without closing/skipping any descriptor. */
+int ker_sb_preload_source_detach_forget(void);
 int ker_sb_preload_ff_staged_group_claim(int slot_cap);
 int ker_sb_preload_ff_staged_group_member(int slot_cap);
 int ker_sb_preload_ff_owner_initial_listener_prepare(int slot_cap);
@@ -73,6 +77,11 @@ int ker_sb_preload_owner_pump_register(ker_sb_preload_owner_pump_fn pump,
     void *context);
 int ker_sb_preload_rx_relay_pump_register(ker_sb_preload_owner_pump_fn pump,
     void *context);
+/* Service one already-registered source RX relay callback only when called
+ * by the exact owner thread inside its owner loop. Never enters admission or
+ * the original application loop. */
+int ker_sb_preload_rx_relay_checkpoint(void);
+void ker_sb_preload_owner_loop_fork_cleanup(void);
 void ker_sb_preload_owner_pump_unregister(void);
 int ker_sb_preload_owner_pump(void);
 int ker_sb_preload_owner_wait_check(void);

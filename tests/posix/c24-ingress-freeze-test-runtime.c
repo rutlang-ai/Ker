@@ -200,6 +200,16 @@ static void *echo_worker(void *opaque)
 	return NULL;
 }
 
+/* A rejected RELEASE must retain the lease. Account for an unexpected
+ * success, which consumes the queue even when the assertion fails. */
+static int expect_release_error(struct ker_ff_ingress_freeze_queue **queue,
+	uint64_t deadline, int expected)
+{
+	int result = ker_ff_ingress_freeze_queue_close(*queue, deadline);
+	if (!result) *queue = NULL;
+	return result == expected ? 0 : -EUCLEAN;
+}
+
 /* BUILD_TESTING-only fixture. The caller owns the application listener fd;
  * this routine resolves and retains its actual native LKL entry. */
 int ker_c24_ingress_freeze_test_run(int listener_fd, const char *prefix)
@@ -543,7 +553,7 @@ int ker_c24_ingress_freeze_test_run(int listener_fd, const char *prefix)
 		result = write_state(evidence_path, state);
 		if (result) goto out;
 		(void)snprintf(failure_stage, sizeof(failure_stage), "queue-close");
-		result = ker_ff_ingress_freeze_queue_close(queue);
+		result = ker_ff_ingress_freeze_queue_close(queue, now_ns() + UINT64_C(5000000000));
 		if (result) goto out;
 		queue = NULL;
 		(void)snprintf(failure_stage, sizeof(failure_stage), "release-state");
@@ -581,6 +591,21 @@ int ker_c24_ingress_freeze_test_run(int listener_fd, const char *prefix)
 		(void)snprintf(failure_stage, sizeof(failure_stage), "stop-command");
 		result = wait_command(command_path, "STOP", now_ns() + UINT64_C(5000000000));
 		if (result) goto out;
+		/* With ordinary traffic settled, an expired release of a fresh,
+		 * empty lease must leave the kernel gate quarantined. */
+		(void)snprintf(failure_stage, sizeof(failure_stage), "release-deadline");
+		result = ker_ff_ingress_freeze_queue_start(listener->native, C24_MARK, cookie, &queue);
+		if (result) goto out;
+		result = ker_ff_ingress_freeze_queue_disarm(queue);
+		if (result) goto out;
+		result = ker_ff_ingress_freeze_queue_drain(queue, &held);
+		if (result) goto out;
+		result = expect_release_error(&queue, now_ns(), -ETIMEDOUT);
+		if (result) goto out;
+		result = expect_release_error(&queue, 0, -ECANCELED);
+		if (result) goto out;
+		result = ker_ff_ingress_freeze_queue_quarantine(&queue);
+		if (result) goto out;
 	}
 	result = write_state(state_path, "DONE");
 	if (result) goto out;
@@ -589,7 +614,7 @@ out:
 	if (admission_queue) ker_ff_admission_queue_close(admission_queue);
 	if (queue) {
 		(void)ker_ff_ingress_freeze_queue_quarantine(&queue);
-		if (queue) (void)ker_ff_ingress_freeze_queue_close(queue);
+		if (queue) (void)ker_ff_ingress_freeze_queue_close(queue, 0);
 	}
 	if (echo_started) {
 		atomic_store_explicit(&echo.stop, true, memory_order_release);

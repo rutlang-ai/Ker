@@ -97,10 +97,13 @@ static _Thread_local void *rx_relay_pump_context;
 static _Thread_local unsigned owner_pump_depth;
 static _Thread_local int owner_pump_failure;
 static _Thread_local unsigned owner_loop_depth;
+static _Thread_local pid_t owner_loop_pid;
+static _Thread_local pid_t owner_loop_tid;
 struct ff_owner_admission_client_state {
     struct ker_ff_admission_channel *channel;
     struct ker_ff_admission_map_ops ops;
     int fd;
+    int detached;
 };
 static _Thread_local struct ff_owner_admission_client_state owner_admission_state = {.fd = -1};
 
@@ -126,6 +129,14 @@ static int ff_owner_admission_pump(void *context)
     }
 #endif
     int result = ker_ff_admission_channel_owner_step(state->channel, &state->ops);
+    if (result == KER_FF_ADMISSION_OWNER_SEALED) {
+        /* A successful, correlated SEAL ACK makes only this callback
+         * terminal. Keep its endpoint object alive until process teardown;
+         * the independent RX relay and owner capability remain active. */
+        state->detached = 1;
+        ker_sb_preload_owner_pump_unregister();
+        return 0;
+    }
 #ifdef KER_C16_ADMISSION_TEST_TRACE
     static _Thread_local bool test_failure_consumed;
     const char *fail_after_step = getenv("KER_C16_TEST_PUMP_FAIL_AFTER_STEP");
@@ -597,6 +608,41 @@ int ker_sb_preload_owner_pump(void)
     return 0;
 }
 
+int ker_sb_preload_rx_relay_checkpoint(void)
+{
+    int saved_errno = errno;
+    pid_t pid = getpid();
+    pid_t tid = (pid_t)syscall(SYS_gettid);
+    if (!owner_loop_depth || owner_loop_pid != pid || owner_loop_tid != tid ||
+        ff_owner_pid != pid || !rx_relay_pump_callback || owner_pump_depth) {
+        errno = saved_errno;
+        return 0;
+    }
+    if (ker_sb_preload_lock_held_by_current_thread()) {
+        errno = saved_errno;
+        return -EDEADLK;
+    }
+    if (owner_pump_failure) {
+        errno = saved_errno;
+        return owner_pump_failure;
+    }
+
+    /* The callback is intentionally isolated from C22 admission and the
+     * original Nginx application loop. Mark the shared pump depth so nested
+     * checkpoints and ordinary owner-pump entry cannot recurse into it. */
+    ++owner_pump_depth;
+    int result = rx_relay_pump_callback(rx_relay_pump_context);
+    --owner_pump_depth;
+    if (result == -EAGAIN || result == -EWOULDBLOCK) result = 0;
+    if (result) {
+        owner_pump_failure = result < 0 && result >= -4095 ? result : -EPROTO;
+        errno = saved_errno;
+        return owner_pump_failure;
+    }
+    errno = saved_errno;
+    return 0;
+}
+
 int ker_sb_preload_owner_wait_check(void)
 {
     if (owner_pump_depth) return -EDEADLK;
@@ -609,6 +655,14 @@ bool ker_sb_preload_owner_pump_registered(void)
 int ker_sb_preload_owner_loop_enter(void)
 {
     if (owner_loop_depth == UINT_MAX) return -EOVERFLOW;
+    pid_t pid = getpid();
+    pid_t tid = (pid_t)syscall(SYS_gettid);
+    if (!owner_loop_depth) {
+        owner_loop_pid = pid;
+        owner_loop_tid = tid;
+    } else if (owner_loop_pid != pid || owner_loop_tid != tid) {
+        return -ESTALE;
+    }
     ++owner_loop_depth;
     return 0;
 }
@@ -619,8 +673,60 @@ void ker_sb_preload_owner_loop_leave(void)
     if (!owner_loop_depth) {
         rx_relay_pump_callback = NULL;
         rx_relay_pump_context = NULL;
+        owner_loop_pid = 0;
+        owner_loop_tid = 0;
     }
 }
+
+void ker_sb_preload_owner_loop_fork_cleanup(void)
+{
+    owner_loop_depth = 0;
+    owner_loop_pid = 0;
+    owner_loop_tid = 0;
+    owner_pump_depth = 0;
+    owner_pump_failure = 0;
+    rx_relay_pump_callback = NULL;
+    rx_relay_pump_context = NULL;
+}
+
+#ifdef KER_SOCKET_BROKER_PRELOAD_TESTING
+void ker_sb_preload_test_owner_setup(void)
+{
+    ff_owner_capability = 1;
+    ff_owner_pid = getpid();
+    ff_owner_context_started = true;
+    owner_pump_failure = 0;
+    owner_pump_depth = 0;
+    owner_loop_depth = 0;
+    owner_loop_pid = 0;
+    owner_loop_tid = 0;
+    owner_pump_callback = NULL;
+    owner_pump_context = NULL;
+    rx_relay_pump_callback = NULL;
+    rx_relay_pump_context = NULL;
+    memset(&owner_admission_state, 0, sizeof(owner_admission_state));
+    owner_admission_state.fd = -1;
+}
+
+int ker_sb_preload_test_owner_admission_register(
+    struct ker_ff_admission_channel *channel, int fd,
+    const struct ker_ff_admission_map_ops *ops)
+{
+    if (!channel || fd < 0 || !ops || owner_admission_state.channel ||
+        owner_pump_callback) { errno = EINVAL; return -1; }
+    owner_admission_state.channel = channel;
+    owner_admission_state.fd = fd;
+    owner_admission_state.ops = *ops;
+    owner_admission_state.detached = 0;
+    if (ker_sb_preload_owner_pump_register(ff_owner_admission_pump,
+            &owner_admission_state)) {
+        memset(&owner_admission_state, 0, sizeof(owner_admission_state));
+        owner_admission_state.fd = -1;
+        return -1;
+    }
+    return 0;
+}
+#endif
 
 bool ker_sb_preload_owner_loop_active(void)
 { return owner_loop_depth != 0; }

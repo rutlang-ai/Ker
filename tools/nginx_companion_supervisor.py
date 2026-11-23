@@ -10,6 +10,7 @@ import struct
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 _WIRE_SPEC = importlib.util.spec_from_file_location(
     '_ker_nginx_companion_wire', Path(__file__).resolve().with_name(
@@ -71,17 +72,58 @@ class NginxCompanion:
     """Own one helper and one exact pinned non-daemon Nginx master subtree."""
     def __init__(self, binary, config, prefix, nginx_env, cycle_control_fd=None,
                  owner_ready_required=False, rx_owner_relay_fd=None,
-                 candidate_slot_transfer_fd=None):
+                 candidate_slot_transfer_fd=None, initial_slot_transfer_fd=None,
+                 source_bootstrap_required=False,
+                 test_initial_alias_listener_fd=None,
+                 test_initial_alias_path_identity=None,
+                 test_initial_alias_parent_identity=None):
         self.binary = Path(binary).resolve(strict=True)
         self.config = Path(config).resolve(strict=True)
         self.prefix = Path(prefix).resolve(strict=True)
         self.nginx_env = dict(nginx_env)
         self.cycle_control_fd = cycle_control_fd
         self.owner_ready_required = bool(owner_ready_required)
+        self.source_bootstrap_required = bool(source_bootstrap_required)
+        if self.source_bootstrap_required and not self.owner_ready_required:
+            raise ValueError('source bootstrap requires authenticated worker READY')
+        alias_key = 'KER_NGINX_TEST_INITIAL_ALIAS_SOCKET'
+        alias_path = self.nginx_env.get(alias_key)
+        self.test_initial_alias_listener_fd = test_initial_alias_listener_fd
+        self.test_initial_alias_path_identity = test_initial_alias_path_identity
+        self.test_initial_alias_parent_identity = test_initial_alias_parent_identity
+        if alias_path is not None:
+            expected_alias_path = str(self.prefix.parent / 'initial-alias.sock')
+            identity_fields = (test_initial_alias_path_identity,
+                test_initial_alias_parent_identity)
+            if (not self.owner_ready_required or not self.source_bootstrap_required or
+                    self.nginx_env.get('KER_NGINX_SOURCE_FIRST_HUP_ENABLE') != '1' or
+                    any(key in self.nginx_env for key in ('FF_FAULT',
+                        'KER_NGINX_SOURCE_ABORT_RETRY_ENABLE',
+                        'KER_NGINX_SOURCE_SUCCESSOR_ENABLE')) or
+                    test_initial_alias_listener_fd is None or
+                    type(test_initial_alias_listener_fd) is not int or
+                    test_initial_alias_listener_fd < 3 or alias_path != expected_alias_path or
+                    any(type(identity) is not tuple or len(identity) != 5 or
+                        any(type(value) is not int or value < 0 for value in identity)
+                        for identity in identity_fields)):
+                raise ValueError('test alias listener requires the explicit fault-free source first-HUP profile')
+        elif (test_initial_alias_listener_fd is not None or
+                test_initial_alias_path_identity is not None or
+                test_initial_alias_parent_identity is not None):
+            raise ValueError('test alias listener evidence requires its explicit alias environment entry')
         self.rx_owner_relay_fd = rx_owner_relay_fd
-        self.candidate_slot_transfer_fd = candidate_slot_transfer_fd
+        if candidate_slot_transfer_fd is not None and initial_slot_transfer_fd is not None:
+            raise ValueError('one delegated owner role is required')
+        self.initial_slot_mode = initial_slot_transfer_fd is not None
+        self.candidate_slot_transfer_fd = (initial_slot_transfer_fd if self.initial_slot_mode
+            else candidate_slot_transfer_fd)
         self.candidate_slot_stat = None
         self.expected_owner_role = 1 if candidate_slot_transfer_fd is not None else 0
+        if self.initial_slot_mode and (
+                self.nginx_env.get('KER_NGINX_INITIAL_SLOT_FD') != str(initial_slot_transfer_fd) or
+                self.nginx_env.get('KER_NGINX_SOURCE_PEER_OLD') != '1' or
+                'KER_NGINX_CANDIDATE_SLOT_FD' in self.nginx_env):
+            raise ValueError('initial slot requires the explicit original old-owner profile')
         if ((candidate_slot_transfer_fd is None) !=
                 ('KER_NGINX_CANDIDATE_SLOT_FD' not in self.nginx_env)):
             raise ValueError('candidate slot descriptor and Nginx profile must be supplied together')
@@ -135,6 +177,23 @@ class NginxCompanion:
         self.settled = False
         self.settled_record = None
         self.unresolved = False
+        self.source_watch = None
+        self.source_candidate = None
+        self.source_candidate_attempted = False
+        self.source_retired_owners = []
+        self.source_promotions = 0
+        self.source_successor_attempted = False
+
+    def watch_source_worker(self, watch, receiver, timeout=5.0):
+        if (not self.source_bootstrap_required or self.master_pidfd < 0 or
+                self.started or self.unresolved or self.source_watch is not None):
+            raise RuntimeError('source startup watch is not available')
+        body = wire.SOURCE_WATCH_BODY.pack(watch['pid'], watch['tid'],
+            watch['role'], 0, watch['start'], watch['slot_device'],
+            watch['slot_inode'], watch['cookie'])
+        self._send(wire.pack_record(wire.SOURCE_WATCH, body, self.nonce,
+            self.epoch, 1), (receiver.fileno(), watch['pidfd']), time.monotonic() + timeout)
+        self.source_watch = dict(watch)
 
     def _send(self, packet, rights, deadline):
         sent_rights = False
@@ -162,6 +221,7 @@ class NginxCompanion:
                 poller.poll(max(1, int(remaining * 1000)))
 
     def _receive(self, expected_size, deadline, rights_count):
+        allowed_rights = (rights_count,) if isinstance(rights_count, int) else rights_count
         expected_sizes = ((expected_size,) if isinstance(expected_size, int)
             else tuple(expected_size))
         if not expected_sizes or any(size <= 0 for size in expected_sizes):
@@ -193,7 +253,7 @@ class NginxCompanion:
                         elif ancillary_error is None:
                             credentials = _UCRED.unpack(payload)
                     elif level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
-                        if rights_count == 0:
+                        if allowed_rights == (0,):
                             ancillary_error = ValueError('unexpected helper descriptor ancillary data')
                         usable = len(payload) - len(payload) % 4
                         if usable:
@@ -207,7 +267,7 @@ class NginxCompanion:
                 if credentials != (self.helper.pid, os.getuid(), os.getgid()):
                     raise PermissionError(f'helper credentials {credentials!r} did not match '
                         f'pinned Popen child {(self.helper.pid, os.getuid(), os.getgid())!r}')
-                if len(packet) not in expected_sizes or len(fds) != rights_count:
+                if len(packet) not in expected_sizes or len(fds) not in allowed_rights:
                     kind = wire.unpack_header(packet)[0] if len(packet) >= wire.HEADER.size else None
                     details = None
                     if kind == wire.ERROR and len(packet) == wire.ERROR_BYTES:
@@ -260,7 +320,8 @@ class NginxCompanion:
             unexpected_flags = flags & ~(getattr(socket, 'MSG_TRUNC', 0) |
                 getattr(socket, 'MSG_CTRUNC', 0) |
                 getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
-            if (packet != b'KER_CANDIDATE_SLOT_V1' or truncation or unexpected_flags or ancillary_error or
+            tag = b'KER_INITIAL_SLOT_V1' if self.initial_slot_mode else b'KER_CANDIDATE_SLOT_V1'
+            if (packet != tag or truncation or unexpected_flags or ancillary_error or
                     credentials != [(peer_pid, peer_uid, peer_gid)] or
                     len(received_fds) != 1):
                 raise ValueError('candidate-cap transfer mismatch '
@@ -286,9 +347,11 @@ class NginxCompanion:
             self.candidate_slot_transfer_fd = None
             raise
 
-    def start(self, timeout=15.0):
+    def start(self, timeout=15.0, *, on_master_started=None):
         if self.helper is not None:
             raise RuntimeError('Nginx companion is one-use')
+        if self.source_bootstrap_required and not callable(on_master_started):
+            raise ValueError('source bootstrap requires a pinned master binding callback')
         if self.candidate_slot_transfer_fd is not None:
             self._receive_candidate_slot(timeout)
         parent, child = socket.socketpair(socket.AF_UNIX,
@@ -306,11 +369,22 @@ class NginxCompanion:
             helper_pass_fds.append(self.cycle_control_fd)
         if self.owner_ready_required:
             command.append('--owner-ready-required')
+        if self.source_bootstrap_required:
+            command.append('--source-bootstrap-required')
+        if self.test_initial_alias_listener_fd is not None:
+            command += ['--test-initial-alias-listener-fd',
+                str(self.test_initial_alias_listener_fd),
+                '--test-initial-alias-path-stat',
+                *(str(value) for value in self.test_initial_alias_path_identity),
+                '--test-initial-alias-parent-stat',
+                *(str(value) for value in self.test_initial_alias_parent_identity)]
+            helper_pass_fds.append(self.test_initial_alias_listener_fd)
         if self.rx_owner_relay_fd is not None:
             command += ['--rx-owner-relay-fd', str(self.rx_owner_relay_fd)]
             helper_pass_fds.append(self.rx_owner_relay_fd)
         if self.candidate_slot_transfer_fd is not None:
-            command += ['--candidate-slot-fd', str(self.candidate_slot_transfer_fd)]
+            command += ['--initial-slot-fd' if self.initial_slot_mode else '--candidate-slot-fd',
+                str(self.candidate_slot_transfer_fd)]
             helper_pass_fds.append(self.candidate_slot_transfer_fd)
         for key, value in sorted(self.nginx_env.items()):
             command += ['--nginx-env', f'{key}={value}']
@@ -364,6 +438,11 @@ class NginxCompanion:
             self.master_pid = pid
             self.master_start = start_ticks
             self.master_pidfd = fds.pop()
+            # STARTED already authenticates the exact helper-owned master.
+            # Source slim startup is waiting for re-delegation at this point;
+            # bind it before waiting for the first worker's independent READY.
+            if on_master_started is not None:
+                on_master_started(self)
             if self.owner_ready_required:
                 packet, fds = self._receive((wire.OWNER_READY_BYTES,
                     wire.ERROR_BYTES), deadline, 1)
@@ -388,6 +467,15 @@ class NginxCompanion:
                             slot_device != self.candidate_slot_stat.st_dev or
                             slot_inode != self.candidate_slot_stat.st_ino):
                         raise PermissionError('Nginx candidate READY does not identify the transferred slot capability')
+                    if self.source_bootstrap_required:
+                        if self.source_watch is None or any((
+                            owner_pid != self.source_watch['pid'],
+                            owner_tid != self.source_watch['tid'],
+                            owner_start != self.source_watch['start'],
+                            slot_device != self.source_watch['slot_device'],
+                            slot_inode != self.source_watch['slot_inode'],
+                            owner_cookie != self.source_watch['cookie'])):
+                            raise PermissionError('source worker READY differs from exact delegated watch')
                     worker_pidfd = fds.pop()
                     if (_pidfd_pid(worker_pidfd) != owner_pid or
                             not process_alive(worker_pidfd) or
@@ -457,6 +545,200 @@ class NginxCompanion:
                 raise OSError(fields[0], 'Nginx reload failed')
         self._request(wire.RELOAD, (wire.RELOAD_RESULT,),
             (wire.RELOAD_RESULT_BYTES, wire.ERROR_BYTES), timeout, validate)
+
+    def signal_source_hup(self, timeout=5.0):
+        """Deliver HUP to the pinned source master; does not certify a reload.
+
+        The original FSM and a separately authenticated successor determine
+        the result. The current owner watch remains in force throughout.
+        """
+        if not self.source_bootstrap_required or not self.owner_ready_required:
+            raise RuntimeError('source HUP requires the authenticated source profile')
+
+        def validate(packet, _record_type):
+            fields = wire.unpack_record(packet, wire.SOURCE_HUP_DELIVERED,
+                self.nonce, self.epoch, self.sequence, wire.RELOAD_RESULT_BODY)
+            wire.validate_reload_result(fields, self.master_start, self.profile)
+            if fields[0] != 0:
+                raise OSError(fields[0], 'source HUP delivery failed')
+
+        self._request(wire.SOURCE_HUP, (wire.SOURCE_HUP_DELIVERED,),
+            (wire.RELOAD_RESULT_BYTES, wire.ERROR_BYTES), timeout, validate)
+
+    def retire_aborted_source_candidate(self, timeout=5.0):
+        """Acknowledge an exact dead candidate while retaining the old owner.
+
+        The source/native supervisor must first prove the original T0 and
+        acknowledged native/C31 abort. This helper certifies containment only.
+        """
+        candidate = self.source_candidate
+        if (candidate is None or getattr(self, 'source_aborted_candidate', None) is not None or
+                not self.source_bootstrap_required or self.unresolved or self.settled or
+                self.nginx_env.get('KER_NGINX_SOURCE_ABORT_RETRY_ENABLE') != '1' or
+                self.nginx_env.get('FF_FAULT') != 'flip_fail_once' or
+                process_alive(candidate.owner_pidfd) or not process_alive(self.owner_pidfd)):
+            raise RuntimeError('source aborted candidate retirement is not available')
+        fields = (candidate.owner_pid, os.getuid(), os.getgid(), 1,
+            candidate.owner_tid, 0, candidate.owner_start, candidate.owner_slot_device,
+            candidate.owner_slot_inode, candidate.owner_cookie)
+        deadline = time.monotonic() + timeout
+        fds = []
+        try:
+            self._send(wire.pack_record(wire.SOURCE_ABORT_RETIRE,
+                wire.OWNER_READY_BODY.pack(*fields), self.nonce, self.epoch,
+                self.sequence), (), deadline)
+            packet, fds = self._receive(wire.OWNER_READY_BYTES, deadline, 0)
+            got = wire.unpack_record(packet, wire.SOURCE_ABORT_RETIRED, self.nonce,
+                self.epoch, self.sequence, wire.OWNER_READY_BODY)
+            if got != fields or process_alive(candidate.owner_pidfd):
+                raise PermissionError('source abort retirement changed candidate identity')
+            self.sequence += 1
+            if self.sequence > wire.MAX_SEQUENCE:
+                raise OverflowError('companion request sequence exhausted')
+            self.source_aborted_candidate = candidate
+            self.source_candidate = None
+        except BaseException:
+            self.unresolved = True
+            raise
+        finally:
+            _close_fds(fds)
+
+    def watch_source_candidate(self, watch, receiver, timeout=20.0):
+        """Authenticate successor READY, retaining the current owner's watch."""
+        successor_watch = watch['source_epoch'] == 2 and watch['generation'] == 0
+        retry_watch = watch['source_epoch'] == 2 and watch['generation'] == 1
+        previous = getattr(self, 'source_aborted_candidate', None)
+        if successor_watch:
+            if (self.nginx_env.get('KER_NGINX_SOURCE_SUCCESSOR_ENABLE') != '1' or
+                    self.nginx_env.get('KER_NGINX_SOURCE_FIRST_HUP_ENABLE') != '1' or
+                    'FF_FAULT' in self.nginx_env or
+                    'KER_NGINX_SOURCE_ABORT_RETRY_ENABLE' in self.nginx_env or
+                    self.source_promotions != 1 or self.owner_role != 1 or
+                    self.source_successor_attempted or len(self.source_retired_owners) != 1 or
+                    process_alive(self.source_retired_owners[0].owner_pidfd)):
+                raise RuntimeError('source successor lacks the exact committed/dead-predecessor lineage')
+            retired = self.source_retired_owners[0]
+            if (watch['pid'] == retired.owner_pid or watch['cookie'] == retired.owner_cookie or
+                    (watch['slot_device'], watch['slot_inode']) ==
+                        (retired.owner_slot_device, retired.owner_slot_inode)):
+                raise PermissionError('source successor reuses the retired actor or slot')
+        if (not self.source_bootstrap_required or not self.started or self.unresolved or
+                self.settled or (self.owner_role != 0 and not successor_watch) or
+                self.source_candidate is not None or
+                (not retry_watch and not successor_watch and self.source_candidate_attempted) or
+                (retry_watch and (previous is None or
+                    getattr(self, 'source_retry_attempted', False) or
+                    process_alive(previous.owner_pidfd) or watch['pid'] == previous.owner_pid or
+                    watch['cookie'] == previous.owner_cookie or
+                    (watch['slot_device'], watch['slot_inode']) ==
+                        (previous.owner_slot_device, previous.owner_slot_inode))) or
+                watch['role'] != 1 or
+                (not successor_watch and (watch['source_epoch'] not in (1, 2) or
+                    watch['generation'] != 1))):
+            raise RuntimeError('source candidate watch is not available')
+        self.source_candidate_attempted = True
+        if retry_watch:
+            self.source_retry_attempted = True
+        if successor_watch:
+            self.source_successor_attempted = True
+        deadline = time.monotonic() + timeout
+        body = wire.SOURCE_WATCH_BODY.pack(watch['pid'], watch['tid'], 1, 0,
+            watch['start'], watch['slot_device'], watch['slot_inode'], watch['cookie'])
+        fds = []
+        failed = None
+        try:
+            self._send(wire.pack_record(
+                wire.SOURCE_SUCCESSOR_WATCH if successor_watch else
+                    wire.SOURCE_RETRY_WATCH if retry_watch else wire.SOURCE_CANDIDATE_WATCH, body,
+                self.nonce, self.epoch, self.sequence),
+                (receiver.fileno(), watch['pidfd']), deadline)
+            packet, fds = self._receive((wire.OWNER_READY_BYTES, wire.ERROR_BYTES),
+                deadline, (0, 1))
+            kind, nonce, epoch, sequence = wire.unpack_header(packet)
+            if (nonce, epoch, sequence) != (self.nonce, self.epoch, self.sequence):
+                raise ValueError('source candidate response correlation mismatch')
+            if kind == wire.SOURCE_CANDIDATE_FAILED:
+                fields = wire.unpack_record(packet, kind, self.nonce, self.epoch,
+                    self.sequence, wire.ERROR_BODY)
+                wire.validate_error(fields)
+                if fds or fields[2:] != (self.master_pid, 0, self.master_start, self.profile):
+                    raise PermissionError('source candidate failure changed master identity')
+                failed = fields[0]
+            elif kind == wire.SOURCE_CANDIDATE_READY:
+                fields = wire.unpack_record(packet, kind, self.nonce, self.epoch,
+                    self.sequence, wire.OWNER_READY_BODY)
+                wire.validate_owner_ready(fields, expected_uid=os.getuid(),
+                    expected_gid=os.getgid(), expected_role=1, expected_cookie=watch['cookie'])
+                pid, _, _, role, tid, _, start, dev, inode, cookie = fields
+                if (len(fds) != 1 or (pid, tid, start, dev, inode) !=
+                        (watch['pid'], watch['tid'], watch['start'],
+                            watch['slot_device'], watch['slot_inode']) or
+                        _pidfd_pid(fds[0]) != pid or not process_alive(fds[0]) or
+                        _start_ticks(pid) != start or _sha256(f'/proc/{pid}/exe') != self.binary_hash or
+                        int(Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[1]) != self.master_pid or
+                        pid == self.owner_pid or cookie == self.owner_cookie or
+                        (dev, inode) == (self.owner_slot_device, self.owner_slot_inode)):
+                    raise PermissionError('source successor READY does not match delegated identity')
+                self.source_candidate = SimpleNamespace(owner_pid=pid, owner_tid=tid,
+                    owner_start=start, owner_role=role, owner_slot_device=dev,
+                    owner_slot_inode=inode, owner_cookie=cookie, owner_pidfd=fds.pop())
+            else:
+                raise ValueError('unexpected source candidate response')
+            self.sequence += 1
+            if self.sequence > wire.MAX_SEQUENCE:
+                raise OverflowError('companion request sequence exhausted')
+        except BaseException:
+            self.unresolved = True
+            raise
+        finally:
+            _close_fds(fds)
+        if failed is not None:
+            raise ChildProcessError(failed, 'original source candidate failed before READY')
+        return self.source_candidate
+
+    def promote_source_candidate(self, timeout=5.0):
+        """Replace containment watch after caller verifies native/source commit.
+
+        This ack does not move a selector or source FSM. The caller must keep
+        the original master paused at its handover hook until this returns.
+        """
+        candidate = self.source_candidate
+        if (not self.source_bootstrap_required or candidate is None or
+                not self.started or self.unresolved or self.settled):
+            raise RuntimeError('source promotion is not available')
+        fields = (candidate.owner_pid, os.getuid(), os.getgid(), 1,
+            candidate.owner_tid, 0, candidate.owner_start, candidate.owner_slot_device,
+            candidate.owner_slot_inode, candidate.owner_cookie)
+        deadline = time.monotonic() + timeout
+        fds = []
+        try:
+            self._send(wire.pack_record(wire.SOURCE_PROMOTE,
+                wire.OWNER_READY_BODY.pack(*fields), self.nonce, self.epoch,
+                self.sequence), (), deadline)
+            packet, fds = self._receive(wire.OWNER_READY_BYTES, deadline, 0)
+            got = wire.unpack_record(packet, wire.SOURCE_PROMOTED, self.nonce,
+                self.epoch, self.sequence, wire.OWNER_READY_BODY)
+            if got != fields or not process_alive(candidate.owner_pidfd):
+                raise PermissionError('source promotion changed candidate identity')
+            self.sequence += 1
+            if self.sequence > wire.MAX_SEQUENCE:
+                raise OverflowError('companion request sequence exhausted')
+            if self.nginx_env.get('KER_NGINX_SOURCE_SUCCESSOR_ENABLE') == '1':
+                self.source_retired_owners.append(SimpleNamespace(**{
+                    name: getattr(self, name) for name in (
+                        'owner_pid', 'owner_tid', 'owner_start', 'owner_role',
+                        'owner_slot_device', 'owner_slot_inode', 'owner_cookie', 'owner_pidfd')}))
+            else:
+                os.close(self.owner_pidfd)
+            for name, value in vars(candidate).items():
+                setattr(self, name, value)
+            self.source_candidate = None
+            self.source_promotions += 1
+        except BaseException:
+            self.unresolved = True
+            raise
+        finally:
+            _close_fds(fds)
 
     def check(self):
         """Raise immediately for an unsolicited pinned-master/helper failure."""
@@ -547,6 +829,16 @@ class NginxCompanion:
         if self.owner_pidfd >= 0:
             os.close(self.owner_pidfd)
             self.owner_pidfd = -1
+        aborted = getattr(self, 'source_aborted_candidate', None)
+        if aborted is not None:
+            os.close(aborted.owner_pidfd)
+            self.source_aborted_candidate = None
+        for retired in getattr(self, 'source_retired_owners', ()):
+            os.close(retired.owner_pidfd)
+        self.source_retired_owners = []
+        if self.source_candidate is not None:
+            os.close(self.source_candidate.owner_pidfd)
+            self.source_candidate = None
         if self.supervisor_pidfd >= 0:
             os.close(self.supervisor_pidfd)
             self.supervisor_pidfd = -1

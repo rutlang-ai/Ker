@@ -18,6 +18,11 @@
       "sha256": "88b44c623e2adc4b850dccf151d74cab0d2f19e3576346d929ec3c826a0803a5",
       "git_blob": "d27bf9b118542396b5189429cec20662b6e381ba"
     },
+    "ff_reload_fault.h": {
+      "source_file": "lib/ff_reload_fault.h",
+      "sha256": "4d63292c8acaf51fac0b49bb051a6de0ca95ade2fcca82a3192ed26f6b368763",
+      "git_blob": "966f3fe98dc37b4760e905bd209a465e00d45a45"
+    },
     "ff_log.h": {
       "source_file": "lib/ff_log.h",
       "sha256": "243b0018e7458045831ee7b6ef734112d0790c20856d9470af3ede302013f8a4",
@@ -34,5 +39,5 @@
       "git_blob": "26e30b86f47ac01c28c7f4eddcd02dc2b6876e13"
     }
   },
-  "headers": "ff_reload.h and ff_msg.h are the unchanged shared dependencies in ../fstack-ipc/UPSTREAM.json"
+  "headers": "ff_reload.h and ff_msg.h are the unchanged shared dependencies in ../fstack-ipc/UPSTREAM.json; ff_reload_fault.h is unchanged and used only by FF_RELOAD_FAULT_INJECTION builds"
 }

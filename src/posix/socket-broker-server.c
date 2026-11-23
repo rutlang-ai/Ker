@@ -54,6 +54,7 @@ struct sb_group_cutover {
     uint64_t candidate_task_lease;
     uint64_t lease;
     uint64_t deadline_ns;
+    uint64_t control_deadline_ns;
     struct ker_posix_ff_ingress_controller *controller;
     uint32_t packet_ids[64];
     uint32_t packet_count;
@@ -66,6 +67,7 @@ struct sb_group_cutover {
     bool disarmed;
     bool drained;
     bool accept_pending;
+    bool test_accept_poll_reported;
 };
 
 struct sb_group {
@@ -101,6 +103,9 @@ struct sb_group {
     int activation_task_fd[2];
     uint32_t member_mark[2];
     uint64_t member_cookie[2];
+    /* Retained only for a pre-cutover generation watch. This is evidence of
+     * the exact listener removed by RETIRE_INITIAL_LISTENER, not a live member. */
+    uint64_t retired_member_cookie[2];
     uint64_t activation_cookie[2];
     uint64_t incarnation;
     uint64_t claim_generation[2];
@@ -202,6 +207,8 @@ enum generation_watch_state {
 };
 struct sb_generation_watch {
     bool live;
+    bool preclaim;
+    bool retirement_required;
     uint32_t state;
     int group_slot;
     uint64_t group_incarnation;
@@ -213,6 +220,12 @@ struct sb_generation_watch {
     uint32_t mark;
     uint16_t local_port;
     uint64_t listener_cookie;
+    uint64_t successor_owner_token;
+    pid_t successor_owner_pid;
+    uint64_t successor_owner_start_time;
+    uint64_t successor_claim_generation;
+    uint32_t successor_mark;
+    uint64_t successor_listener_cookie;
     uint64_t verify_ticket;
     uint64_t verify_sequence;
     uint64_t runtime_epoch;
@@ -722,8 +735,41 @@ static int readiness_verify_recheck(struct ker_socket_broker_server *server,
         group->member_owner_pid[0] != watch->owner_pid ||
         group->member_owner_start_time[0] != watch->owner_start_time ||
         group->claim_generation[0] != watch->claim_generation ||
-        group->member_mark[0] != watch->mark || group->port != watch->local_port ||
-        group->member_cookie[0] != watch->listener_cookie) return -ESTALE;
+        group->member_mark[0] != watch->mark || group->port != watch->local_port)
+        return -ESTALE;
+    if (watch->retirement_required) {
+        if (!group->staged_owner_group || group->metadata_only || group->failed ||
+            group->member_owner_token[1] != watch->successor_owner_token ||
+            group->member_owner_pid[1] != watch->successor_owner_pid ||
+            group->member_owner_start_time[1] != watch->successor_owner_start_time ||
+            group->claim_generation[1] != watch->successor_claim_generation ||
+            group->member_mark[1] != watch->successor_mark ||
+            group->member_cookie[1] != watch->successor_listener_cookie ||
+            !group->member_present[1] || group->base_fd[1] < 0 ||
+            !watch->successor_owner_token || watch->successor_owner_pid <= 0 ||
+            !watch->successor_owner_start_time || !watch->successor_claim_generation ||
+            !watch->successor_mark || !watch->successor_listener_cookie)
+            return -ESTALE;
+        if (group->cutover.phase != KER_SOCKET_GROUP_CUTOVER_COMMITTED ||
+            group->selected_member != 1) return -EAGAIN;
+        struct sb_owner *successor = owner_by_token(server, watch->successor_owner_token);
+        if (!successor || successor->pid != watch->successor_owner_pid ||
+            successor->start_time != watch->successor_owner_start_time ||
+            successor->mark != watch->successor_mark) return -ESTALE;
+        int successor_status = owner_identity_alive(successor);
+        if (successor_status) return successor_status;
+        if (group->activation_state[0] == SB_MEMBER_ACTIVATION_PUBLISHED &&
+            group->member_present[0] && group->base_fd[0] >= 0 &&
+            group->member_cookie[0] == watch->listener_cookie &&
+            !group->retired_member_cookie[0]) return -EAGAIN;
+        if (group->member_present[0] || group->base_fd[0] >= 0 ||
+            group->member_cookie[0] ||
+            group->activation_state[0] != SB_MEMBER_ACTIVATION_RETIRED ||
+            group->retired_member_cookie[0] != watch->listener_cookie)
+            return -ESTALE;
+    } else if (group->member_cookie[0] != watch->listener_cookie) {
+        return -ESTALE;
+    }
     struct pollfd owner = {.fd = watch->owner_pidfd, .events = POLLIN};
     int ready = (int)syscall(SYS_poll, &owner, 1, 0);
     if (ready < 0) return -errno;
@@ -1232,6 +1278,7 @@ static int generation_watch_create(struct ker_socket_broker_server *server,
     if (!object) { (void)host_close(capability); return -EIO; }
     struct sb_generation_watch *watch = &server->generation_watches[index];
     *watch = (struct sb_generation_watch){.live = true,
+        .preclaim = !group->member_owner_token[0],
         .state = GENERATION_WATCH_PLAN_BOUND, .group_slot = plan->group_slot,
         .group_incarnation = group->incarnation, .owner_pidfd = -1,
         .runtime_epoch = server->readiness_epoch};
@@ -3152,7 +3199,34 @@ static int group_cutover_create(struct ker_socket_broker_server *server,
     struct sb_group *group = &server->groups[plan->group_slot];
     if (!group->live || !group->staged_owner_group ||
         plan->group_incarnation != group->incarnation) return -ESTALE;
-    if (group->watch_refs) return -EOPNOTSUPP;
+    struct sb_generation_watch *retirement_watch = NULL;
+    if (group->watch_refs) {
+        /* A single read-only watch captured before claim/publication may span
+         * this staged cutover. Its retained identity is needed to verify the
+         * predecessor after RETIRE_INITIAL_LISTENER clears the live cookie. */
+        if (group->watch_refs != 1 || !group->member_present[0] ||
+            !group->member_cookie[0]) return -EOPNOTSUPP;
+        for (size_t i = 0; i < KER_SB_GENERATION_WATCHES; ++i) {
+            struct sb_generation_watch *watch = &server->generation_watches[i];
+            if (!watch->live || watch->group_slot != plan->group_slot ||
+                watch->group_incarnation != group->incarnation) continue;
+            if (retirement_watch) return -EOPNOTSUPP;
+            retirement_watch = watch;
+        }
+        if (!retirement_watch || !retirement_watch->preclaim ||
+            retirement_watch->retirement_required ||
+            retirement_watch->state != GENERATION_WATCH_PUBLISHED ||
+            retirement_watch->runtime_epoch != server->readiness_epoch ||
+            retirement_watch->owner_pidfd < 0 ||
+            retirement_watch->owner_pid != group->member_owner_pid[0] ||
+            retirement_watch->owner_start_time != group->member_owner_start_time[0] ||
+            retirement_watch->owner_token != group->member_owner_token[0] ||
+            retirement_watch->claim_generation != group->claim_generation[0] ||
+            retirement_watch->mark != group->member_mark[0] ||
+            retirement_watch->local_port != group->port ||
+            retirement_watch->listener_cookie != group->member_cookie[0])
+            return -ESTALE;
+    }
     if (group->successor_issued && !group->cutover_started) return -EOPNOTSUPP;
     if (group->cutover_started) return -EALREADY;
     if (group->selected_member != 0 || group->staged_state != SB_STAGED_BOTH_PUBLISHED)
@@ -3217,11 +3291,20 @@ static int group_cutover_create(struct ker_socket_broker_server *server,
     group->cutover_object_slot = (int)object_slot;
     group->handles++;
     *capability = cap;
+    if (retirement_watch) {
+        retirement_watch->retirement_required = true;
+        retirement_watch->successor_owner_token = group->member_owner_token[1];
+        retirement_watch->successor_owner_pid = group->member_owner_pid[1];
+        retirement_watch->successor_owner_start_time = group->member_owner_start_time[1];
+        retirement_watch->successor_claim_generation = group->claim_generation[1];
+        retirement_watch->successor_mark = group->member_mark[1];
+        retirement_watch->successor_listener_cookie = group->member_cookie[1];
+    }
     return 0;
 }
 
 static int group_cutover_request(struct ker_socket_broker_server *server,
-    int cap_fd, bool commit)
+    int cap_fd, bool commit, uint64_t control_deadline_ns)
 {
     struct sb_object *object = lookup_cap(server, cap_fd);
     if (!object || object->kind != KER_SOCKET_BROKER_FF_OWNER_CUTOVER ||
@@ -3230,6 +3313,22 @@ static int group_cutover_request(struct ker_socket_broker_server *server,
     if (!group->live || object->group_incarnation != group->incarnation ||
         group->cutover_object_slot < 0) return -ESTALE;
     struct sb_group_cutover *cutover = &group->cutover;
+    if (control_deadline_ns) {
+        uint64_t now = host_monotonic_ns();
+        if (!commit) return -EINVAL;
+        if ((cutover->control_deadline_ns &&
+                cutover->control_deadline_ns != control_deadline_ns) ||
+                (!cutover->control_deadline_ns &&
+                    cutover->phase != KER_SOCKET_GROUP_CUTOVER_PREPARED &&
+                    cutover->phase != KER_SOCKET_GROUP_CUTOVER_STARTING)) return -EALREADY;
+        if (!now || control_deadline_ns <= now) {
+            if (!group_cutover_terminal(cutover->phase)) {
+                cutover->control_deadline_ns = control_deadline_ns;
+                group_cutover_quarantine(group, -ETIMEDOUT);
+            }
+            return -ETIMEDOUT;
+        }
+    } else if (commit && cutover->control_deadline_ns) return -EALREADY;
     uint32_t requested = commit ? KER_SOCKET_GROUP_CUTOVER_COMMITTING :
         KER_SOCKET_GROUP_CUTOVER_ABORTING;
     if (group_cutover_terminal(cutover->phase))
@@ -3239,8 +3338,18 @@ static int group_cutover_request(struct ker_socket_broker_server *server,
     if (cutover->phase != KER_SOCKET_GROUP_CUTOVER_PREPARED &&
         cutover->phase != KER_SOCKET_GROUP_CUTOVER_STARTING) return -EALREADY;
     if (!commit && group->selected_member != 0) return -EALREADY;
+    if (control_deadline_ns) cutover->control_deadline_ns = control_deadline_ns;
     cutover->phase = requested;
     return 0;
+}
+
+static bool group_cutover_control_expired(struct sb_group *group)
+{
+    if (!group->cutover.control_deadline_ns) return false;
+    uint64_t now = host_monotonic_ns();
+    if (now && now < group->cutover.control_deadline_ns) return false;
+    group_cutover_quarantine(group, -ETIMEDOUT);
+    return true;
 }
 
 static void group_cutover_advance(struct ker_socket_broker_server *server,
@@ -3275,6 +3384,7 @@ static void group_cutover_advance(struct ker_socket_broker_server *server,
             group_cutover_quarantine(group, cutover->result);
         return;
     }
+    if (group_cutover_control_expired(group)) return;
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now)) {
         group_cutover_quarantine(group, -errno); return;
@@ -3331,6 +3441,14 @@ static void group_cutover_advance(struct ker_socket_broker_server *server,
                     group_cutover_quarantine(group, -EPROTO); return;
                 }
                 cutover->packet_ids[cutover->packet_count++] = packet.id;
+#ifdef KER_C28_CUTOVER_TESTING
+                if (getenv("KER_C28_TEST_CONTROLLER_TRACE")) {
+                    fprintf(stderr, "C28_HELD packet_id=%u lease=%llu deadline_ns=%llu\n",
+                        packet.id, (unsigned long long)packet.lease,
+                        (unsigned long long)packet.deadline_ns);
+                    fflush(stderr);
+                }
+#endif
             }
         }
         return;
@@ -3341,10 +3459,19 @@ static void group_cutover_advance(struct ker_socket_broker_server *server,
         }
         status = ker_posix_ff_ingress_controller_check(cutover->controller);
         if (status) { group_cutover_quarantine(group, status); return; }
+        if (group_cutover_control_expired(group)) return;
         if (cutover->phase == KER_SOCKET_GROUP_CUTOVER_COMMITTING) {
             status = group_set_selector(group, 1);
             if (status) { group_cutover_quarantine(group, status); return; }
             cutover->selector_changed = true;
+#ifdef KER_C28_CUTOVER_TESTING
+            if (getenv("KER_C28_TEST_CONTROLLER_TRACE")) {
+                fprintf(stderr, "C28_SELECTOR_CHANGED monotonic_ns=%llu\n",
+                    (unsigned long long)host_monotonic_ns());
+                fflush(stderr);
+            }
+#endif
+            if (group_cutover_control_expired(group)) return;
         }
         cutover->decision_started = true;
         return;
@@ -3389,16 +3516,47 @@ static void group_cutover_advance(struct ker_socket_broker_server *server,
                 group_cutover_quarantine(group, status ? status : -EIO); return;
             }
             cutover->accept_pending = true;
+#ifdef KER_C28_CUTOVER_TESTING
+            if (getenv("KER_C28_TEST_CONTROLLER_TRACE")) {
+                fprintf(stderr, "C28_ACCEPT_BEGIN packet_id=%u sent=%d monotonic_ns=%llu\n",
+                    cutover->packet_ids[cutover->accepted_count], sent,
+                    (unsigned long long)host_monotonic_ns());
+                fflush(stderr);
+            }
+#endif
+            if (group_cutover_control_expired(group)) return;
             return;
         }
+#ifdef KER_C28_CUTOVER_TESTING
+        const char *accept_gate = getenv("KER_C28_TEST_ACCEPT_POLL_GATE");
+        if (accept_gate && syscall(SYS_access, accept_gate, F_OK) != 0) {
+            if (!cutover->test_accept_poll_reported) {
+                const char *marker = getenv("KER_C28_TEST_ACCEPT_POLL_MARKER");
+                if (marker) {
+                    int marker_fd = (int)syscall(SYS_openat, AT_FDCWD, marker,
+                        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+                    if (marker_fd >= 0) {
+                        static const char pending[] = "C28_ASYNC_ACCEPT_PENDING\n";
+                        (void)syscall(SYS_write, marker_fd, pending, sizeof(pending) - 1);
+                        (void)syscall(SYS_close, marker_fd);
+                    }
+                }
+                cutover->test_accept_poll_reported = true;
+            }
+            return;
+        }
+#endif
+        if (group_cutover_control_expired(group)) return;
         status = ker_posix_ff_ingress_controller_accept_poll(cutover->controller);
         if (status < 0) { group_cutover_quarantine(group, status); return; }
         if (!status) return;
         cutover->accept_pending = false;
         cutover->accepted_count++;
+        if (group_cutover_control_expired(group)) return;
         return;
     }
-    status = ker_posix_ff_ingress_controller_close(cutover->controller);
+    status = ker_posix_ff_ingress_controller_close_before(cutover->controller,
+        cutover->control_deadline_ns);
     if (status) { group_cutover_quarantine(group, status); return; }
     cutover->controller = NULL;
     cutover->phase = cutover->selector_changed ?
@@ -3686,11 +3844,33 @@ static int owner_group_retire_initial_listener(
     if (status) return status;
     status = group_cutover_candidate_listener_validate(group);
     if (status) return status;
+    struct sb_generation_watch *retirement_watch = NULL;
+    for (size_t i = 0; i < KER_SB_GENERATION_WATCHES; ++i) {
+        struct sb_generation_watch *watch = &server->generation_watches[i];
+        if (!watch->live || !watch->retirement_required ||
+            watch->group_slot != plan->group_slot ||
+            watch->group_incarnation != group->incarnation) continue;
+        if (retirement_watch) return -ESTALE;
+        retirement_watch = watch;
+    }
+    if (group->watch_refs && (!retirement_watch || group->watch_refs != 1))
+        return -ESTALE;
+    if (retirement_watch &&
+        (retirement_watch->state != GENERATION_WATCH_PUBLISHED ||
+         retirement_watch->listener_cookie != group->member_cookie[0] ||
+         retirement_watch->owner_pid != group->member_owner_pid[0] ||
+         retirement_watch->owner_start_time != group->member_owner_start_time[0] ||
+         retirement_watch->owner_token != group->member_owner_token[0] ||
+         retirement_watch->claim_generation != group->claim_generation[0] ||
+         retirement_watch->mark != group->member_mark[0] ||
+         retirement_watch->local_port != group->port)) return -ESTALE;
     /* Linux moves the surviving reuseport member into physical index zero.
      * Accepted TCP sockets remain owned by the original Linux stack. */
     (void)close(group->base_fd[0]);
     group->base_fd[0] = -1;
     group->member_present[0] = false;
+    if (retirement_watch)
+        group->retired_member_cookie[0] = retirement_watch->listener_cookie;
     group->member_cookie[0] = group->activation_cookie[0] = 0;
     group->activation_state[0] = SB_MEMBER_ACTIVATION_RETIRED;
     if (group->predecessor_pinned) {
@@ -4644,9 +4824,17 @@ static int dispatch_request(struct ker_socket_broker_server *server,
     }
     case KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT:
     case KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT: {
-        if (input_length || fd_count != 1) return -EPROTO;
+        if (fd_count != 1 ||
+            (input_length && (request->operation != KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT ||
+                input_length != sizeof(uint64_t)))) return -EPROTO;
+        uint64_t control_deadline_ns = 0;
+        if (input_length) {
+            memcpy(&control_deadline_ns, input, sizeof(control_deadline_ns));
+            if (!control_deadline_ns) return -EINVAL;
+        }
         status = group_cutover_request(server, fds[0],
-            request->operation == KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT);
+            request->operation == KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT,
+            control_deadline_ns);
         if (status) return status;
         *result = 0; return 0;
     }

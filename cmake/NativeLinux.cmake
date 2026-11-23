@@ -165,12 +165,15 @@ add_library(ker::fstack-socket-bridge ALIAS ker-fstack-socket-bridge)
 
 option(KER_BUILD_FSTACK_NGINX_RUNTIME
     "Build the bounded libfstack compatibility runtime for the pinned nginx caller profile" OFF)
+option(KER_BUILD_FSTACK_NGINX_FAULT_TEST_RUNTIME
+    "Build a noninstalled fault-injection runtime for isolated original-source tests" OFF)
 
 function(ker_add_fstack_nginx_runtime target output_name)
     add_library(${target} SHARED
         src/posix/fstack-nginx-runtime.c
+        src/posix/nginx-source-bootstrap.c
         src/posix/fstack-socket-bridge.c
-        third_party/fstack-reload/ff_reload.c
+        src/posix/nginx-source-reload.c
         third_party/fstack-flow-map/ff_flow_map.c)
     set_target_properties(${target} PROPERTIES
         OUTPUT_NAME "${output_name}"
@@ -224,6 +227,21 @@ if(KER_BUILD_FSTACK_NGINX_RUNTIME)
         add_test(NAME fstack-nginx-runtime-profile-boundaries
             COMMAND ker-fstack-nginx-runtime-profile-test)
     endif()
+endif()
+
+# Build this only in a dedicated test build directory: the output deliberately
+# has SONAME libfstack.so so the pinned nginx executable resolves this DSO for
+# its existing DT_NEEDED entry. The production runtime target remains fault-free.
+if(KER_BUILD_FSTACK_NGINX_FAULT_TEST_RUNTIME)
+    if(NOT BUILD_TESTING)
+        message(FATAL_ERROR "KER_BUILD_FSTACK_NGINX_FAULT_TEST_RUNTIME requires BUILD_TESTING")
+    endif()
+    if(KER_BUILD_FSTACK_NGINX_RUNTIME)
+        message(FATAL_ERROR "Build the fault-test runtime in a separate build directory")
+    endif()
+    ker_add_fstack_nginx_runtime(ker-fstack-nginx-fault-test-runtime fstack)
+    target_compile_definitions(ker-fstack-nginx-fault-test-runtime PRIVATE
+        FF_RELOAD_FAULT_INJECTION=1 KER_FSTACK_NGINX_TEST_FAULT_RUNTIME=1)
 endif()
 
 # Native admission integration fixtures need the same bounded FF API shim,
@@ -348,6 +366,7 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
     set_target_properties(ker-socket-client ker-ini PROPERTIES POSITION_INDEPENDENT_CODE ON)
     add_library(ker-fstack-nginx-owner-activation MODULE
         src/posix/fstack-nginx-owner-activation-module.c
+        src/posix/nginx-source-owner-admission.c
         src/posix/nginx-candidate-admission.c
         src/posix/nginx-owner-ready.c
         src/posix/nginx-candidate-map.c)
@@ -369,8 +388,40 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
     target_link_libraries(ker-fstack-nginx-owner-activation PRIVATE
         ker-socket-client ker-ini OpenSSL::Crypto ${CMAKE_DL_LIBS})
     if(BUILD_TESTING)
+        # Source-master alias qualification uses the production adapter path
+        # plus only the test-only member-alias export hook. Keep the relay,
+        # flow-map, and admission test callbacks in the separate legacy target.
+        add_library(ker-fstack-nginx-owner-activation-source-alias-test MODULE
+            src/posix/fstack-nginx-owner-activation-module.c
+            src/posix/nginx-source-owner-admission.c
+            src/posix/nginx-candidate-admission.c
+            src/posix/nginx-owner-ready.c
+            src/posix/nginx-candidate-map.c)
+        set_target_properties(ker-fstack-nginx-owner-activation-source-alias-test PROPERTIES
+            PREFIX "" OUTPUT_NAME "ker-fstack-nginx-owner-activation-source-alias-test")
+        target_include_directories(ker-fstack-nginx-owner-activation-source-alias-test PRIVATE
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core"
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event"
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules"
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/os/unix"
+            "${KER_FSTACK_NGINX_BUILD_DIR}"
+            "${PROJECT_SOURCE_DIR}/include"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-reload")
+        target_compile_features(ker-fstack-nginx-owner-activation-source-alias-test PRIVATE c_std_11)
+        target_compile_options(ker-fstack-nginx-owner-activation-source-alias-test PRIVATE
+            -Wall -Wextra -Werror)
+        target_compile_definitions(ker-fstack-nginx-owner-activation-source-alias-test PRIVATE
+            KER_NGINX_OWNER_TEST_ALIAS=1)
+        target_link_libraries(ker-fstack-nginx-owner-activation-source-alias-test PRIVATE
+            ker-socket-client ker-ini OpenSSL::Crypto ${CMAKE_DL_LIBS})
+    endif()
+    if(BUILD_TESTING)
         add_library(ker-fstack-nginx-owner-activation-alias-test MODULE
             src/posix/fstack-nginx-owner-activation-module.c
+            src/posix/nginx-source-owner-admission.c
             src/posix/nginx-candidate-admission.c
             src/posix/nginx-source-map-admission.c
             src/posix/nginx-original-flowmap-source.c
@@ -426,6 +477,30 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
         add_test(NAME rx-owner-relay-pump COMMAND ker-rx-owner-relay-pump-test)
         set_tests_properties(rx-owner-relay-pump PROPERTIES
             LABELS "rx-decision;owner-relay;authentication;pidfd"
+            TIMEOUT 10)
+        add_executable(ker-socket-broker-preload-relay-checkpoint-test
+            tests/unit/socket-broker-preload-relay-checkpoint-test.c
+            src/posix/ff-admission-channel.c
+            src/posix/socket-broker-client.c
+            src/posix/socket-broker-preload.c
+            src/posix/socket-broker-preload-fd.c)
+        target_include_directories(ker-socket-broker-preload-relay-checkpoint-test PRIVATE
+            "${PROJECT_SOURCE_DIR}/include"
+            "${PROJECT_SOURCE_DIR}/src/posix"
+            "${PROJECT_SOURCE_DIR}/src/posix/lkl-overlay/arch/lkl/include")
+        target_compile_features(ker-socket-broker-preload-relay-checkpoint-test PRIVATE c_std_11)
+        target_compile_definitions(ker-socket-broker-preload-relay-checkpoint-test PRIVATE
+            KER_SOCKET_BROKER_PRELOAD_TESTING=1)
+        target_compile_options(ker-socket-broker-preload-relay-checkpoint-test PRIVATE
+            -ffunction-sections -fdata-sections -Wall -Wextra -Werror)
+        target_link_options(ker-socket-broker-preload-relay-checkpoint-test PRIVATE
+            -Wl,--gc-sections -Wl,--wrap=ker_socket_client_getsockopt)
+        target_link_libraries(ker-socket-broker-preload-relay-checkpoint-test PRIVATE
+            Threads::Threads OpenSSL::Crypto ${CMAKE_DL_LIBS})
+        add_test(NAME socket-broker-preload-relay-checkpoint
+            COMMAND ker-socket-broker-preload-relay-checkpoint-test)
+        set_tests_properties(socket-broker-preload-relay-checkpoint PROPERTIES
+            LABELS "socket-broker;preload;rx-owner-relay;checkpoint;unit-model"
             TIMEOUT 10)
         add_executable(ker-rx-owner-relay-app-loop-test
             tests/unit/rx-owner-relay-app-loop-test.c)
@@ -530,6 +605,23 @@ if(BUILD_TESTING)
         KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING=1
         KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING=1)
     target_link_libraries(ker-socket-broker-readiness-test-server PRIVATE ker-posix)
+
+    add_executable(ker-socket-broker-generation-watch-tombstone-model
+        tests/posix/socket-broker-generation-watch-tombstone-model.c)
+    target_include_directories(ker-socket-broker-generation-watch-tombstone-model PRIVATE
+        "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_features(ker-socket-broker-generation-watch-tombstone-model PRIVATE c_std_11)
+    target_compile_options(ker-socket-broker-generation-watch-tombstone-model PRIVATE
+        -Wall -Wextra -Werror -Wno-unused-function -ffunction-sections -fdata-sections)
+    target_link_options(ker-socket-broker-generation-watch-tombstone-model PRIVATE
+        -Wl,--gc-sections)
+    find_program(KER_GENERATION_WATCH_UNSHARE_EXECUTABLE unshare REQUIRED)
+    add_test(NAME socket-broker-generation-watch-tombstone-model
+        COMMAND "${KER_GENERATION_WATCH_UNSHARE_EXECUTABLE}"
+            --user --map-root-user --net
+            "$<TARGET_FILE:ker-socket-broker-generation-watch-tombstone-model>")
+    set_tests_properties(socket-broker-generation-watch-tombstone-model PROPERTIES
+        TIMEOUT 10 LABELS "socket-broker;generation-watch;model;identity")
 endif()
 target_link_libraries(ker-socket-broker-server PRIVATE ker-posix)
 add_library(ker::socket-broker-server ALIAS ker-socket-broker-server)
@@ -794,7 +886,8 @@ if(BUILD_TESTING)
         KER_SOCKET_BROKER_READINESS_TESTING=1
         KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING=1)
     add_executable(ker-socket-broker-rx-owner-relay-fixture
-        tests/posix/socket-broker-rx-owner-relay-fixture.c)
+        tests/posix/socket-broker-rx-owner-relay-fixture.c
+        src/posix/rx-owner-relay-peer.c)
     target_include_directories(ker-socket-broker-rx-owner-relay-fixture PRIVATE
         "${PROJECT_SOURCE_DIR}/src/posix")
     target_compile_features(ker-socket-broker-rx-owner-relay-fixture PRIVATE c_std_11)
@@ -817,6 +910,49 @@ if(BUILD_TESTING)
         KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING=1)
     set_tests_properties(rx-owner-relay-auth-python PROPERTIES
         ENVIRONMENT "KER_RX_OWNER_RELAY_FIXTURE=$<TARGET_FILE:ker-rx-owner-auth-receiver-test>")
+    add_executable(ker-rx-owner-peer-auth-receiver-test
+        tests/unit/rx-owner-peer-auth-receiver-test.c src/posix/rx-owner-relay-peer.c)
+    target_include_directories(ker-rx-owner-peer-auth-receiver-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_features(ker-rx-owner-peer-auth-receiver-test PRIVATE c_std_11)
+    target_compile_options(ker-rx-owner-peer-auth-receiver-test PRIVATE
+        -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+    target_link_options(ker-rx-owner-peer-auth-receiver-test PRIVATE -Wl,--gc-sections)
+    target_compile_definitions(ker-rx-owner-peer-auth-receiver-test PRIVATE
+        KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING=1)
+    add_test(NAME rx-owner-peer-authority-python
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/unit/test_rx_owner_peer_authority.py"
+            --receiver "$<TARGET_FILE:ker-rx-owner-peer-auth-receiver-test>")
+    set_tests_properties(rx-owner-peer-authority-python PROPERTIES
+        TIMEOUT 30 LABELS "rx-decision;owner-relay;peer;authentication"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_executable(ker-rx-owner-source-route-receiver-test
+        tests/unit/rx-owner-source-route-receiver-test.c src/posix/rx-owner-relay-peer.c)
+    target_include_directories(ker-rx-owner-source-route-receiver-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_features(ker-rx-owner-source-route-receiver-test PRIVATE c_std_11)
+    target_compile_options(ker-rx-owner-source-route-receiver-test PRIVATE
+        -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+    target_link_options(ker-rx-owner-source-route-receiver-test PRIVATE -Wl,--gc-sections)
+    target_compile_definitions(ker-rx-owner-source-route-receiver-test PRIVATE
+        KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING=1)
+    add_test(NAME rx-owner-source-route-python
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/unit/test_rx_owner_source_route.py"
+            --receiver "$<TARGET_FILE:ker-rx-owner-source-route-receiver-test>")
+    set_tests_properties(rx-owner-source-route-python PROPERTIES
+        TIMEOUT 30 LABELS "rx-decision;owner-relay;source-route;authentication"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    if(TARGET ker-fstack-nginx-owner-activation)
+        add_executable(ker-nginx-source-relay-liveness-test
+            tests/unit/nginx-source-relay-liveness-test.c)
+        target_compile_options(ker-nginx-source-relay-liveness-test PRIVATE
+            -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+        target_link_options(ker-nginx-source-relay-liveness-test PRIVATE -Wl,--gc-sections)
+        add_test(NAME nginx-source-relay-liveness
+            COMMAND ker-nginx-source-relay-liveness-test)
+        set_tests_properties(nginx-source-relay-liveness PROPERTIES
+            TIMEOUT 10 LABELS "fstack;rx-owner-relay;authentication;signal")
+    endif()
     add_executable(ker-socket-broker-generation-watch-actor
         tests/posix/socket-broker-generation-watch-actor.c)
     target_link_libraries(ker-socket-broker-generation-watch-actor PRIVATE

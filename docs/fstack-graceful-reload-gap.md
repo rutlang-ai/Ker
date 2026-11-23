@@ -559,3 +559,58 @@ See [scope and reproduction](fstack-nginx-runtime.md#original-cps-probe-across-e
 This is the rt30 traffic prerequisite, not its same-master FSM, performance
 comparison, source drain/forward counter contract or complete shell case.
 The source entrypoint remains blocked and the migration counts do not change.
+
+### Old-owner relay transport prerequisite
+
+A private bounded [old-owner transport](fstack-peer-relay-transport.md) now
+preserves the original C31 packet id, deadline and immutable snapshot through
+one peer hop, checks real process credentials/pidfd/start identity, and rejects
+repeated forwarding. Its process tests do not execute a protocol implementation.
+The single-owner Nginx profile still lacks delegation of an authenticated old
+slot and channel and remains PEER-to-DROP. This transport alone does not qualify two-owner authority, old-stream
+continuity or the original same-master FSM; it does not change the blocked
+migration entry.
+
+The opt-in [paired owner authority](fstack-peer-owner-authority.md) protocol now
+accepts a supervisor-delegated old pidfd/channel only for the exact authenticated
+candidate slot. The consumer waits for the old process's own run-bound ACK and
+limits forwarding to the finite authorization. Independent-process controls
+exercise the actual receiver and transport. The legacy launcher still does not
+orchestrate two Nginx companions. The authority controls alone do not qualify
+source-classifier PEER-to-old LOCAL, old TCP continuity, binding retirement or
+the original FSM. The source entrypoint stays blocked.
+
+### Real original-classifier PEER handoff and old TCP continuity
+
+The dedicated [two-Nginx qualification](fstack-peer-nginx-continuity.md) now
+retains the AUTH endpoint, authenticates real initial/candidate slots and
+contains both actual pinned Nginx owners. It prepares private source windows
+through upstream APIs, uses the unchanged source classifier on both owners,
+and correlates old-tuple payload frames across candidate PEER and old-owner
+LOCAL. A queued-SYN selector COMMIT preserves an existing old HTTP stream while
+new connections identify the candidate. Native census barriers, companion
+settlement, normal native teardown and zero outstanding DPDK ownership are
+required. The reactor transport yields between send and reply so old-owner
+broker RPCs continue progressing within the original C31 deadline.
+
+These are private per-master qualification windows, not the original
+same-master reload FSM or its complete source shell matrix. The public runtime
+profile remains bounded, the source shell entrypoint stays blocked, and the
+inventory counts remain 362 adapted, zero partial and one blocked.
+
+### Bounded original same-master first HUP
+
+The explicit [source bootstrap profile](fstack-nginx-runtime.md#bounded-original-same-master-hup)
+now executes the unchanged master/slim/worker startup and first HUP FSM, rather
+than preparing private per-master reload windows. Exact FIFO slots and fresh
+credentialed READY channels bind both workers. C31 independently authenticates
+the candidate before original READY publication; the master park/release hooks
+bind the native SYN queue and selector to a shared, nonrenewable 100 ms deadline.
+Actual old TCP body continuity, fresh candidate TCP, original drain reports,
+old worker exit and admission retirement precede successful teardown.
+
+This qualifies the bounded first-successor integration. It does not execute
+the full original shell, repeated-HUP or USR2 cases. Failed/expired handover
+authority requires quarantine and explicit subtree/resource settlement, with
+failed source health retained. The source shell entrypoint remains blocked;
+the inventory remains 362 adapted, zero partial and one blocked.

@@ -38,7 +38,9 @@ enum ker_ff_ingress_freeze_operation {
 /* Private CAP_NET_ADMIN control. ARM names a live raw LKL listener descriptor
  * and its observed cookie/mark. The kernel derives and retains the exact bound
  * IPv4 tuple; callers cannot choose an arbitrary filter. ARM returns a
- * monotonic deadline and tuple. DISARM returns final attempt/fault counters. */
+ * monotonic deadline and tuple. DISARM returns final attempt/fault counters.
+ * RELEASE accepts an optional absolute host CLOCK_MONOTONIC deadline. On
+ * expiry it retains and quarantines the lease and returns -ETIMEDOUT. */
 struct ker_ff_ingress_freeze_control {
 	__u32 version;
 	__u32 operation;
