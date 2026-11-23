@@ -1,0 +1,120 @@
+# Unchanged source reload runtime, isolated behind Ker lifetime/message APIs.
+add_library(ker-reload src/compat/reload.c)
+add_library(ker::reload ALIAS ker-reload)
+target_compile_features(ker-reload PUBLIC c_std_11)
+target_link_libraries(ker-reload PUBLIC ker::ipc)
+target_include_directories(ker-reload PRIVATE
+    "${PROJECT_SOURCE_DIR}/third_party/fstack-reload"
+    "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
+target_compile_definitions(ker-reload PRIVATE
+    ff_global_cfg=ker_reload_upstream_configuration
+    ff_log=ker_reload_upstream_log
+    ff_reload_gendir_attach=ker_reload_upstream_reload_gendir_attach
+    ff_reload_gendir_detach=ker_reload_upstream_reload_gendir_detach
+    ff_reload_gendir_present=ker_reload_upstream_reload_gendir_present
+    ff_reload_gendir_epoch_live=ker_reload_upstream_reload_gendir_epoch_live
+    ff_reload_gendir_mint=ker_reload_upstream_reload_gendir_mint
+    ff_reload_gendir_reset_pending=ker_reload_upstream_reload_gendir_reset_pending
+    ff_reload_gendir_reset_pending_peek=ker_reload_upstream_reload_gendir_reset_pending_peek
+    ff_reload_gendir_retire=ker_reload_upstream_reload_gendir_retire
+    ff_is_drain_generation=ker_reload_upstream_is_drain_generation
+    ff_no_hw_mode=ker_reload_upstream_no_hw_mode
+    ff_no_hw_mode_nosync=ker_reload_upstream_no_hw_mode_nosync
+    ff_queue_handover_mutex=ker_reload_upstream_queue_handover_mutex
+    ff_reload_active_gen=ker_reload_upstream_reload_active_gen
+    ff_reload_attach_state=ker_reload_upstream_reload_attach_state
+    ff_reload_dir_sync=ker_reload_upstream_reload_dir_sync
+    ff_reload_dir_sync_enable=ker_reload_upstream_reload_dir_sync_enable
+    ff_reload_drain_attach=ker_reload_upstream_reload_drain_attach
+    ff_reload_drain_counters=ker_reload_upstream_reload_drain_counters
+    ff_reload_drain_fwd_add=ker_reload_upstream_reload_drain_fwd_add
+    ff_reload_drain_peak_max=ker_reload_upstream_reload_drain_peak_max
+    ff_reload_drain_publish=ker_reload_upstream_reload_drain_publish
+    ff_reload_drain_reclaim=ker_reload_upstream_reload_drain_reclaim
+    ff_reload_drain_reclaim_mark=ker_reload_upstream_reload_drain_reclaim_mark
+    ff_reload_drain_report=ker_reload_upstream_reload_drain_report
+    ff_reload_drain_reset=ker_reload_upstream_reload_drain_reset
+    ff_reload_epoch=ker_reload_upstream_reload_epoch
+    ff_reload_epoch_slot=ker_reload_upstream_reload_epoch_slot
+    ff_reload_fault_delay=ker_reload_upstream_reload_fault_delay
+    ff_reload_fault_is=ker_reload_upstream_reload_fault_is
+    ff_reload_fault_is_once=ker_reload_upstream_reload_fault_is_once
+    ff_reload_gen=ker_reload_upstream_reload_gen
+    ff_reload_gendir_active=ker_reload_upstream_reload_gendir_active
+    ff_reload_gendir_active_set=ker_reload_upstream_reload_gendir_active_set
+    ff_reload_gendir_epoch_users_clear=ker_reload_upstream_reload_gendir_epoch_users_clear
+    ff_reload_gendir_install=ker_reload_upstream_reload_gendir_install
+    ff_reload_gendir_kni_owner=ker_reload_upstream_reload_gendir_kni_owner
+    ff_reload_gendir_kni_owner_set=ker_reload_upstream_reload_gendir_kni_owner_set
+    ff_reload_gendir_reclaim_counters_reset=ker_reload_upstream_reload_gendir_reclaim_counters_reset
+    ff_reload_gendir_reclaim_forced=ker_reload_upstream_reload_gendir_reclaim_forced
+    ff_reload_gendir_reclaim_forced_add=ker_reload_upstream_reload_gendir_reclaim_forced_add
+    ff_reload_gendir_reclaim_refused=ker_reload_upstream_reload_gendir_reclaim_refused
+    ff_reload_gendir_ring_attach=ker_reload_upstream_reload_gendir_ring_attach
+    ff_reload_gendir_ring_census=ker_reload_upstream_reload_gendir_ring_census
+    ff_reload_gendir_ring_detach=ker_reload_upstream_reload_gendir_ring_detach
+    ff_reload_gendir_ring_purge_lock=ker_reload_upstream_reload_gendir_ring_purge_lock
+    ff_reload_gendir_ring_purge_unlock=ker_reload_upstream_reload_gendir_ring_purge_unlock
+    ff_reload_gendir_rx_claim=ker_reload_upstream_reload_gendir_rx_claim
+    ff_reload_gendir_rx_owner=ker_reload_upstream_reload_gendir_rx_owner
+    ff_reload_gendir_rx_reclaim=ker_reload_upstream_reload_gendir_rx_reclaim
+    ff_reload_gendir_rx_release=ker_reload_upstream_reload_gendir_rx_release
+    ff_reload_gendir_user_add=ker_reload_upstream_reload_gendir_user_add
+    ff_reload_gendir_user_release=ker_reload_upstream_reload_gendir_user_release
+    ff_reload_gendir_user_stop=ker_reload_upstream_reload_gendir_user_stop
+    ff_reload_gendir_users_active=ker_reload_upstream_reload_gendir_users_active
+    ff_reload_gendir_users_clear=ker_reload_upstream_reload_gendir_users_clear
+    ff_reload_handover_ack=ker_reload_upstream_reload_handover_ack
+    ff_reload_handover_arm=ker_reload_upstream_reload_handover_arm
+    ff_reload_handover_parked=ker_reload_upstream_reload_handover_parked
+    ff_reload_heartbeat_counter=ker_reload_upstream_reload_heartbeat_counter
+    ff_reload_heartbeat_eval=ker_reload_upstream_reload_heartbeat_eval
+    ff_reload_heartbeat_sample=ker_reload_upstream_reload_heartbeat_sample
+    ff_reload_heartbeat_set_timeout=ker_reload_upstream_reload_heartbeat_set_timeout
+    ff_reload_heartbeat_tick=ker_reload_upstream_reload_heartbeat_tick
+    ff_reload_hw_locked=ker_reload_upstream_reload_hw_locked
+    ff_reload_kni_owner_gen=ker_reload_upstream_reload_kni_owner_gen
+    ff_reload_kni_owner_match=ker_reload_upstream_reload_kni_owner_match
+    ff_reload_master_abort=ker_reload_upstream_reload_master_abort
+    ff_reload_master_begin=ker_reload_upstream_reload_master_begin
+    ff_reload_master_complete=ker_reload_upstream_reload_master_complete
+    ff_reload_msg_fill=ker_reload_upstream_reload_msg_fill
+    ff_reload_msg_parse=ker_reload_upstream_reload_msg_parse
+    ff_reload_msg_ring_name=ker_reload_upstream_reload_msg_ring_name
+    ff_reload_msg_ring_name_e=ker_reload_upstream_reload_msg_ring_name_e
+    ff_reload_peer_block=ker_reload_upstream_reload_peer_block
+    ff_reload_peer_coord=ker_reload_upstream_reload_peer_coord
+    ff_reload_peer_draining=ker_reload_upstream_reload_peer_draining
+    ff_reload_peer_mirror_draining=ker_reload_upstream_reload_peer_mirror_draining
+    ff_reload_phase_ms_get=ker_reload_upstream_reload_phase_ms_get
+    ff_reload_phase_ms_set=ker_reload_upstream_reload_phase_ms_set
+    ff_reload_publish_ready=ker_reload_upstream_reload_publish_ready
+    ff_reload_ready_matches=ker_reload_upstream_reload_ready_matches
+    ff_reload_ready_word=ker_reload_upstream_reload_ready_word
+    ff_reload_reclaim_timeout_ms=ker_reload_upstream_reload_reclaim_timeout_ms
+    ff_reload_reclaim_timeout_set=ker_reload_upstream_reload_reclaim_timeout_set
+    ff_reload_rx_owner_gen=ker_reload_upstream_reload_rx_owner_gen
+    ff_reload_rx_owner_gen_set=ker_reload_upstream_reload_rx_owner_gen_set
+    ff_reload_rx_release=ker_reload_upstream_reload_rx_release
+    ff_reload_rx_release_epoch=ker_reload_upstream_reload_rx_release_epoch
+    ff_reload_rx_stopped=ker_reload_upstream_reload_rx_stopped
+    ff_reload_rx_stopped_set=ker_reload_upstream_reload_rx_stopped_set
+    ff_reload_set_epoch=ker_reload_upstream_reload_set_epoch
+    ff_reload_set_gen=ker_reload_upstream_reload_set_gen
+    ff_reload_set_slot=ker_reload_upstream_reload_set_slot
+    ff_reload_shared_epoch=ker_reload_upstream_reload_shared_epoch
+    ff_reload_slot=ker_reload_upstream_reload_slot
+    ff_reload_state_attached=ker_reload_upstream_reload_state_attached
+    ff_reload_state_valid=ker_reload_upstream_reload_state_valid
+    ff_reload_target_gen=ker_reload_upstream_reload_target_gen
+    ff_reload_worker_gen=ker_reload_upstream_reload_worker_gen
+)
+set_target_properties(ker-reload PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0
+    EXPORT_NAME reload C_VISIBILITY_PRESET hidden)
+install(TARGETS ker-reload EXPORT kerTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES include/ker/reload-directory.h include/ker/reload.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ker)
+install(FILES third_party/fstack-reload/LICENSE third_party/fstack-reload/UPSTREAM.json
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-reload)

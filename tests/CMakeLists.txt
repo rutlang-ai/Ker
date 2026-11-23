@@ -945,3 +945,334 @@ add_test(NAME fstack-config-oversized-jumbo
         SourceCases.test_config_oversized_jumbo)
 set_tests_properties(fstack-config-oversized-jumbo PROPERTIES
     TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
+# Exact callback behavior missing from the strict launcher INI schema.
+add_executable(ker-fstack-ini-callback-test fstack-ini-callback.c)
+target_link_libraries(ker-fstack-ini-callback-test PRIVATE ker::ini)
+target_compile_options(ker-fstack-ini-callback-test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME fstack-ini-callback-no-section COMMAND ker-fstack-ini-callback-test no-section)
+set_tests_properties(fstack-ini-callback-no-section PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
+add_test(NAME fstack-ini-callback-handler-rejection COMMAND ker-fstack-ini-callback-test handler-rejection)
+set_tests_properties(fstack-ini-callback-handler-rejection PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
+add_test(NAME fstack-ini-callback-null-file COMMAND ker-fstack-ini-callback-test null-file)
+set_tests_properties(fstack-ini-callback-null-file PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
+add_test(NAME fstack-ini-callback-long-section COMMAND ker-fstack-ini-callback-test long-section)
+set_tests_properties(fstack-ini-callback-long-section PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
+add_test(NAME fstack-ini-callback-user-data COMMAND ker-fstack-ini-callback-test user-data)
+set_tests_properties(fstack-ini-callback-user-data PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
+add_test(NAME fstack-ini-callback-multiline COMMAND ker-fstack-ini-callback-test multiline)
+set_tests_properties(fstack-ini-callback-multiline PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
+add_test(NAME fstack-ini-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ini-import.py")
+set_tests_properties(fstack-ini-import PROPERTIES TIMEOUT 15 LABELS "provenance")
+add_test(NAME fstack-ipc-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ipc-import.py")
+set_tests_properties(fstack-ipc-import PROPERTIES TIMEOUT 15 LABELS "provenance")
+add_test(NAME fstack-reload-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/reload-import.py")
+set_tests_properties(fstack-reload-import PROPERTIES TIMEOUT 15 LABELS "provenance")
+
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-ipc-test fstack-ipc.c)
+    target_link_libraries(ker-fstack-ipc-test PRIVATE ker::ipc Threads::Threads)
+    target_compile_options(ker-fstack-ipc-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-fstack-ipc-stash-test fstack-ipc-stash-origin.c)
+    target_link_libraries(ker-fstack-ipc-stash-test PRIVATE ker-ipc-test-adapter)
+    target_compile_options(ker-fstack-ipc-stash-test PRIVATE -Wall -Wextra -Werror)
+    string(JOIN ":" ker_ipc_test_libraries ${DPDK_LIBRARY_DIRS})
+    add_test(NAME fstack-ipc-stash-origin COMMAND ker-fstack-ipc-stash-test)
+    set_tests_properties(fstack-ipc-stash-origin PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-ipc-process COMMAND ker-fstack-ipc-test process)
+    set_tests_properties(fstack-ipc-process PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-ipc-generation COMMAND ker-fstack-ipc-test generation)
+    set_tests_properties(fstack-ipc-generation PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-ipc-generation-epoch COMMAND ker-fstack-ipc-test generation-epoch)
+    set_tests_properties(fstack-ipc-generation-epoch PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-ipc-coordinate COMMAND ker-fstack-ipc-test coordinate)
+    set_tests_properties(fstack-ipc-coordinate PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-ipc-generation-option-epoch COMMAND ker-fstack-ipc-test generation-option-epoch)
+    set_tests_properties(fstack-ipc-generation-option-epoch PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-ipc-generation-option COMMAND ker-fstack-ipc-test generation-option)
+    set_tests_properties(fstack-ipc-generation-option PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-ipc-malformed COMMAND ker-fstack-ipc-test malformed)
+    set_tests_properties(fstack-ipc-malformed PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-ipc-own-reply COMMAND ker-fstack-ipc-test own-reply)
+    set_tests_properties(fstack-ipc-own-reply PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-ipc-foreign-live COMMAND ker-fstack-ipc-test foreign-live)
+    set_tests_properties(fstack-ipc-foreign-live PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-ipc-foreign-no-send COMMAND ker-fstack-ipc-test foreign-no-send)
+    set_tests_properties(fstack-ipc-foreign-no-send PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-ipc-orphan COMMAND ker-fstack-ipc-test orphan)
+    set_tests_properties(fstack-ipc-orphan PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-ipc-probe COMMAND ker-fstack-ipc-test probe)
+    set_tests_properties(fstack-ipc-probe PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+endif()
+if(KER_WITH_DPDK)
+    add_test(NAME fstack-ipc-epoch-names COMMAND ker-fstack-ipc-test epoch-names)
+    add_test(NAME fstack-ipc-legacy-names COMMAND ker-fstack-ipc-test legacy-names)
+    set_tests_properties(fstack-ipc-epoch-names fstack-ipc-legacy-names PROPERTIES
+        TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_executable(ker-fstack-ipc-multiprocess-test fstack-ipc-multiprocess.c)
+    target_link_libraries(ker-fstack-ipc-multiprocess-test PRIVATE ker::reload)
+    target_compile_options(ker-fstack-ipc-multiprocess-test PRIVATE -Wall -Wextra -Werror)
+    list(GET DPDK_LIBRARY_DIRS 0 ker_ipc_pmd_root)
+    add_test(NAME fstack-ipc-multiprocess
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-ipc-multiprocess.py"
+            --app "$<TARGET_FILE:ker-fstack-ipc-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-ipc-test>" --reload-app "$<TARGET_FILE:ker-fstack-reload-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-ipc-multiprocess PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77
+        LABELS "fstack;fstack-ipc;multiprocess")
+endif()
+
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-reload-test fstack-reload.c)
+    target_link_libraries(ker-fstack-reload-test PRIVATE ker::reload)
+    target_compile_options(ker-fstack-reload-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-message-serdes COMMAND ker-fstack-reload-test)
+    set_tests_properties(fstack-reload-message-serdes PROPERTIES TIMEOUT 15
+        LABELS "fstack;fstack-reload;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+endif()
+
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-reload-poll-test fstack-reload-poll.c)
+    target_link_libraries(ker-fstack-reload-poll-test PRIVATE ker::reload)
+    target_compile_options(ker-fstack-reload-poll-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-markers COMMAND ker-fstack-reload-poll-test markers)
+    add_test(NAME fstack-reload-barrier COMMAND ker-fstack-reload-poll-test barrier)
+    set_tests_properties(fstack-reload-markers fstack-reload-barrier PROPERTIES TIMEOUT 15
+        LABELS "fstack;fstack-reload;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    find_library(ker_reload_ring_pmd NAMES rte_net_ring HINTS ${DPDK_LIBRARY_DIRS} NO_DEFAULT_PATH REQUIRED)
+    add_executable(ker-fstack-reload-multiprocess-test fstack-reload-multiprocess.c)
+    target_link_libraries(ker-fstack-reload-multiprocess-test PRIVATE ker::reload "${ker_reload_ring_pmd}")
+    target_compile_options(ker-fstack-reload-multiprocess-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-multiprocess
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-multiprocess.py"
+            --app "$<TARGET_FILE:ker-fstack-reload-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-poll-test>" --heartbeat-app "$<TARGET_FILE:ker-fstack-reload-heartbeat-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-reload-multiprocess PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77
+        LABELS "fstack;fstack-reload;multiprocess")
+endif()
+
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-reload-heartbeat-test fstack-reload-heartbeat.c)
+    target_include_directories(ker-fstack-reload-heartbeat-test PRIVATE "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
+    target_link_libraries(ker-fstack-reload-heartbeat-test PRIVATE ker::reload)
+    target_compile_options(ker-fstack-reload-heartbeat-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-heartbeat COMMAND ker-fstack-reload-heartbeat-test)
+    set_tests_properties(fstack-reload-heartbeat PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-reload;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+endif()
+
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-reload-controller-test fstack-reload-controller.c)
+    target_link_libraries(ker-fstack-reload-controller-test PRIVATE ker-example-reload-policy)
+    target_compile_options(ker-fstack-reload-controller-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-fsm-transitions COMMAND ker-fstack-reload-controller-test transitions)
+    add_test(NAME fstack-reload-fsm-legal COMMAND ker-fstack-reload-controller-test legal)
+    add_test(NAME fstack-reload-fsm-illegal COMMAND ker-fstack-reload-controller-test illegal)
+    add_test(NAME fstack-reload-fsm-recovery COMMAND ker-fstack-reload-controller-test recovery)
+    set_tests_properties(fstack-reload-fsm-transitions fstack-reload-fsm-legal
+        fstack-reload-fsm-illegal fstack-reload-fsm-recovery PROPERTIES TIMEOUT 15
+        LABELS "fstack;fstack-reload;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-reload-controller
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-controller.py"
+            --app "$<TARGET_FILE:ker-reload-controller>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-controller-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-reload-controller PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77
+        LABELS "fstack;fstack-reload;multiprocess")
+endif()
+add_test(NAME fstack-reload-controller-import
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/reload-controller-import.py")
+set_tests_properties(fstack-reload-controller-import PROPERTIES TIMEOUT 15 LABELS provenance)
+
+add_test(NAME fstack-pool-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/pool-import.py")
+set_tests_properties(fstack-pool-import PROPERTIES TIMEOUT 15 LABELS provenance)
+add_executable(ker-fstack-address-policy-test fstack-address-policy.c)
+add_test(NAME fstack-address-policy-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/address-policy-import.py")
+set_tests_properties(fstack-address-policy-import PROPERTIES TIMEOUT 15 LABELS provenance)
+add_test(NAME fstack-packet-dispatcher-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/packet-dispatcher-import.py")
+set_tests_properties(fstack-packet-dispatcher-import PROPERTIES TIMEOUT 15 LABELS provenance)
+add_test(NAME fstack-reload-live-slot-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/reload-live-slot-import.py")
+set_tests_properties(fstack-reload-live-slot-import PROPERTIES TIMEOUT 15 LABELS provenance)
+target_link_libraries(ker-fstack-address-policy-test PRIVATE ker::address_policy)
+target_compile_options(ker-fstack-address-policy-test PRIVATE -Wall -Wextra -Werror)
+add_executable(ker-address-policy-lifetime-test address-policy-lifetime.c)
+target_link_libraries(ker-address-policy-lifetime-test PRIVATE ker::address_policy Threads::Threads)
+target_compile_options(ker-address-policy-lifetime-test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME fstack-address-policy-lifetime COMMAND ker-address-policy-lifetime-test)
+set_tests_properties(fstack-address-policy-lifetime PROPERTIES TIMEOUT 10 LABELS fstack)
+add_test(NAME fstack-address-policy-register COMMAND ker-fstack-address-policy-test register)
+add_test(NAME fstack-address-policy-default COMMAND ker-fstack-address-policy-test default)
+add_test(NAME fstack-address-policy-ipv4 COMMAND ker-fstack-address-policy-test ipv4)
+add_test(NAME fstack-address-policy-ipv6 COMMAND ker-fstack-address-policy-test ipv6)
+set_tests_properties(fstack-address-policy-register fstack-address-policy-default
+    fstack-address-policy-ipv4 fstack-address-policy-ipv6 PROPERTIES TIMEOUT 10 LABELS fstack)
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-pool-test fstack-pools.c)
+    add_executable(ker-fstack-dispatcher-test fstack-packet-dispatcher.c)
+    add_executable(ker-packet-dispatcher-pmd-test packet-dispatcher-pmd.c)
+    target_link_libraries(ker-packet-dispatcher-pmd-test PRIVATE ker::packet_dispatcher "${ker_reload_ring_pmd}")
+    target_compile_options(ker-packet-dispatcher-pmd-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-packet-dispatcher-lifetime-test packet-dispatcher-lifetime.c)
+    target_link_libraries(ker-packet-dispatcher-lifetime-test PRIVATE ker::packet_dispatcher Threads::Threads)
+    target_compile_options(ker-packet-dispatcher-lifetime-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-packet-dispatcher-lifetime COMMAND ker-packet-dispatcher-lifetime-test)
+    set_tests_properties(fstack-packet-dispatcher-lifetime PROPERTIES TIMEOUT 10 LABELS fstack)
+    add_test(NAME fstack-packet-dispatcher-pmd COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/packet-dispatcher-pmd.py"
+        --app "$<TARGET_FILE:ker-packet-dispatcher-pmd-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-packet-dispatcher-pmd PROPERTIES TIMEOUT 45 LABELS fstack)
+    target_link_libraries(ker-fstack-dispatcher-test PRIVATE ker::packet_dispatcher)
+    target_compile_options(ker-fstack-dispatcher-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-packet-dispatcher-plain COMMAND ker-fstack-dispatcher-test plain)
+    add_test(NAME fstack-packet-dispatcher-context COMMAND ker-fstack-dispatcher-test context)
+    add_test(NAME fstack-packet-dispatcher-unregister COMMAND ker-fstack-dispatcher-test unregister)
+    set_tests_properties(fstack-packet-dispatcher-plain fstack-packet-dispatcher-context
+        fstack-packet-dispatcher-unregister PROPERTIES TIMEOUT 10 LABELS fstack)
+    get_target_property(ker_pool_private_definitions ker-pools COMPILE_DEFINITIONS)
+    get_target_property(ker_pool_private_includes ker-pools INCLUDE_DIRECTORIES)
+    target_compile_definitions(ker-fstack-pool-test PRIVATE ${ker_pool_private_definitions})
+    target_include_directories(ker-fstack-pool-test PRIVATE ${ker_pool_private_includes})
+    target_link_libraries(ker-fstack-pool-test PRIVATE PkgConfig::DPDK)
+    add_executable(ker-fstack-pool-multiprocess-test fstack-pool-multiprocess.c)
+    target_link_libraries(ker-fstack-pool-multiprocess-test PRIVATE ker::pools ker::ipc "${ker_reload_ring_pmd}")
+    target_compile_options(ker-fstack-pool-multiprocess-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-pool-generation COMMAND ker-fstack-pool-test generation)
+    add_test(NAME fstack-pool-cache COMMAND ker-fstack-pool-test cache)
+    set_tests_properties(fstack-pool-generation fstack-pool-cache PROPERTIES TIMEOUT 30
+        LABELS "fstack;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-pool-legacy-consumer
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-pools.py"
+            --app "$<TARGET_FILE:ker-fstack-pool-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-pool-test>" --pmd-root "${ker_ipc_pmd_root}" --legacy-only)
+    set_tests_properties(fstack-pool-legacy-consumer PROPERTIES TIMEOUT 60 LABELS "fstack;pool-foundation")
+    add_test(NAME fstack-pool-multiprocess
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-pools.py"
+            --app "$<TARGET_FILE:ker-fstack-pool-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-pool-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-pool-multiprocess PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77
+        LABELS "fstack;multiprocess")
+endif()
+
+if(KER_WITH_DPDK)
+    # Compile the actual production TU with private fixture access. This target
+    # deliberately does not link ker::reload or install fixture entry points.
+    add_executable(ker-fstack-reload-directory-test fstack-reload-directory.c)
+    get_target_property(ker_reload_private_definitions ker-reload COMPILE_DEFINITIONS)
+    get_target_property(ker_reload_private_includes ker-reload INCLUDE_DIRECTORIES)
+    target_compile_definitions(ker-fstack-reload-directory-test PRIVATE ${ker_reload_private_definitions})
+    target_include_directories(ker-fstack-reload-directory-test PRIVATE ${ker_reload_private_includes})
+    target_link_libraries(ker-fstack-reload-directory-test PRIVATE ker::ipc)
+    add_executable(ker-fstack-reload-live-slot-test fstack-reload-live-slot.c)
+    target_compile_definitions(ker-fstack-reload-live-slot-test PRIVATE ${ker_reload_private_definitions})
+    target_include_directories(ker-fstack-reload-live-slot-test PRIVATE ${ker_reload_private_includes})
+    target_link_libraries(ker-fstack-reload-live-slot-test PRIVATE ker::ipc)
+    add_test(NAME fstack-reload-live-slot COMMAND ker-fstack-reload-live-slot-test)
+    set_tests_properties(fstack-reload-live-slot PROPERTIES TIMEOUT 15 LABELS fstack
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-reload-live-slot-multiprocess
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-live-slot.py"
+            --app "$<TARGET_FILE:ker-fstack-reload-directory-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-live-slot-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-reload-live-slot-multiprocess PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "fstack;multiprocess")
+    add_executable(ker-fstack-reload-directory-eal-test fstack-reload-directory-eal.c)
+    target_include_directories(ker-fstack-reload-directory-eal-test PRIVATE "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
+    target_link_libraries(ker-fstack-reload-directory-eal-test PRIVATE ker::reload)
+    target_compile_options(ker-fstack-reload-directory-eal-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-fstack-reload-directory-multiprocess-test fstack-reload-directory-multiprocess.c)
+    target_link_libraries(ker-fstack-reload-directory-multiprocess-test PRIVATE ker::reload "${ker_reload_ring_pmd}")
+    target_compile_options(ker-fstack-reload-directory-multiprocess-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-directory-multiprocess
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-directory.py"
+            --app "$<TARGET_FILE:ker-fstack-reload-directory-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-directory-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-reload-directory-multiprocess PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77
+        LABELS "fstack;fstack-reload;multiprocess")
+    # Isolated production-TU copy with an address-specific CAS barrier for the
+    # proof/CAS interleaving. The normal multiprocess/public-consumer targets
+    # continue linking the installed production component.
+    add_executable(ker-fstack-reload-directory-reclaim-race-test
+        fstack-reload-directory-multiprocess.c "${PROJECT_SOURCE_DIR}/src/compat/reload.c")
+    target_compile_definitions(ker-fstack-reload-directory-reclaim-race-test PRIVATE
+        ${ker_reload_private_definitions} KER_RELOAD_TESTING)
+    target_include_directories(ker-fstack-reload-directory-reclaim-race-test PRIVATE
+        ${ker_reload_private_includes})
+    target_link_libraries(ker-fstack-reload-directory-reclaim-race-test PRIVATE ker::ipc "${ker_reload_ring_pmd}")
+    target_compile_options(ker-fstack-reload-directory-reclaim-race-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-reload-directory-reclaim-race-test PROPERTIES
+        C_VISIBILITY_PRESET hidden POSITION_INDEPENDENT_CODE ON)
+    add_test(NAME fstack-reload-directory-reclaim-race
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-directory.py"
+            --app "$<TARGET_FILE:ker-fstack-reload-directory-reclaim-race-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-directory-test>" --pmd-root "${ker_ipc_pmd_root}"
+            --verify-reclaim-gate)
+    set_tests_properties(fstack-reload-directory-reclaim-race PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77
+        LABELS "fstack;fstack-reload;multiprocess")
+    # Negative control removes only the new poll/reclaim gate, retaining the
+    # exact same production CAS interposition and fixture.
+    add_executable(ker-fstack-reload-directory-reclaim-negative-test
+        fstack-reload-directory-multiprocess.c "${PROJECT_SOURCE_DIR}/src/compat/reload.c")
+    target_compile_definitions(ker-fstack-reload-directory-reclaim-negative-test PRIVATE
+        ${ker_reload_private_definitions} KER_RELOAD_TESTING KER_RELOAD_TESTING_NO_RECLAIM_GATE)
+    target_include_directories(ker-fstack-reload-directory-reclaim-negative-test PRIVATE
+        ${ker_reload_private_includes})
+    target_link_libraries(ker-fstack-reload-directory-reclaim-negative-test PRIVATE ker::ipc "${ker_reload_ring_pmd}")
+    target_compile_options(ker-fstack-reload-directory-reclaim-negative-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-reload-directory-reclaim-negative-test PROPERTIES
+        C_VISIBILITY_PRESET hidden POSITION_INDEPENDENT_CODE ON)
+    add_test(NAME fstack-reload-directory-reclaim-negative-control
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-directory.py"
+            --app "$<TARGET_FILE:ker-fstack-reload-directory-reclaim-negative-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-directory-test>" --pmd-root "${ker_ipc_pmd_root}"
+            --negative-control)
+    set_tests_properties(fstack-reload-directory-reclaim-negative-control PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77
+        LABELS "fstack;fstack-reload;multiprocess")
+    add_test(NAME fstack-reload-coordinate-multiprocess
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-coordinates.py"
+            --app "$<TARGET_FILE:ker-fstack-reload-directory-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-directory-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-reload-coordinate-multiprocess PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77
+        LABELS "fstack;fstack-reload;multiprocess")
+    add_test(NAME fstack-reload-directory-foundation COMMAND ker-fstack-reload-directory-test)
+    add_test(NAME fstack-reload-directory-primary-eal COMMAND ker-fstack-reload-directory-eal-test)
+    set_tests_properties(fstack-reload-directory-foundation fstack-reload-directory-primary-eal PROPERTIES TIMEOUT 30
+        LABELS "fstack;fstack-reload;directory-foundation"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+endif()
+
+if(KER_WITH_DPDK)
+    add_test(NAME fstack-reload-m5-arbitration COMMAND ker-fstack-reload-directory-test m5-arbitration)
+    add_test(NAME fstack-reload-m5-probe COMMAND ker-fstack-reload-directory-test m5-probe)
+    add_test(NAME fstack-reload-m5-names COMMAND ker-fstack-reload-directory-test m5-names)
+    add_test(NAME fstack-reload-m5-handover COMMAND ker-fstack-reload-directory-test m5-handover)
+    set_tests_properties(fstack-reload-m5-arbitration fstack-reload-m5-probe
+        fstack-reload-m5-names fstack-reload-m5-handover PROPERTIES TIMEOUT 30
+        LABELS "fstack;fstack-reload;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+endif()
+
+if(KER_WITH_DPDK)
+    add_test(NAME fstack-reload-directory-hw-users COMMAND ker-fstack-reload-directory-test hw-users)
+    add_test(NAME fstack-reload-directory-reclaim COMMAND ker-fstack-reload-directory-test reclaim)
+    add_test(NAME fstack-reload-directory-release COMMAND ker-fstack-reload-directory-test release)
+    add_test(NAME fstack-reload-directory-orphans COMMAND ker-fstack-reload-directory-test orphans)
+    add_test(NAME fstack-reload-directory-ring-census COMMAND ker-fstack-reload-directory-test ring-census)
+    set_tests_properties(fstack-reload-directory-hw-users fstack-reload-directory-reclaim
+        fstack-reload-directory-release fstack-reload-directory-orphans fstack-reload-directory-ring-census
+        PROPERTIES TIMEOUT 30 LABELS "fstack;fstack-reload;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+endif()

@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 218 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 127 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 260 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 12 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 91 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为218 scenario-adapted、18 partial、127 blocked，共145项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为260 scenario-adapted、12 partial、91 blocked，共103项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -50,9 +50,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共219项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：149项行为未完成
-（18 partial + 131 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共173项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：103项行为未完成
+（12 partial + 91 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -63,18 +63,18 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
-| Design generation-aware reload, IPC and drain ownership | 64 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
+| Design generation-aware reload, IPC and drain ownership | 28 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
 | Define a supported host exception bridge and KNI policy adaptation | 6 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
 | Qualify RSS steering and queue-aware source-port contracts | 31 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
 | Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
-| Resolve device/run lifecycle and upstream fault-injection contracts | 4 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
+| Resolve device/run lifecycle and upstream fault-injection contracts | 2 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
 | Adapt typed vdev, bond and multi-port configuration | 3 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
 | Define a Linux-native zero-copy send and ownership contract | 7 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
-| Resolve remaining typed configuration and intentional schema differences | 14 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
+| Resolve remaining typed configuration and intentional schema differences | 13 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
 | Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
-| Resolve unmapped host memory, time, environment and kqueue helpers | 8 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
+| Resolve unmapped host memory, time, environment and kqueue helpers | 3 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
 | Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
 | Record FreeBSD thread context and join-result assertions | 3 | 架构专用 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
@@ -1904,3 +1904,118 @@ Valid names of1/32 characters and `XX` remain supported: F-Stack’s numeric
 This is configuration evidence, not a callback/global-array ABI or traffic pass.
 The permissive over-max skip case remains blocked. Counts are218 adapted,
 18 partial,127 blocked,15 architecture-specific and55 harness-only.
+
+
+### 本轮未完成案例迁移：IPC 地址与消息所有权（12 项）
+
+可选导出组件 `ker::ipc` 以未修改的固定 F-Stack 消息传输实现适配调用方拥有的
+原版 EAL、共享池与队列。12 个 `test_ff_ipc.c` 源案例从 blocked 完成场景适配；
+[运行合同及逐项验证](fstack-ipc.md)记录源名字、真实 secondary 所有权、
+死亡回收、probe 和安装后的调用方验证。隔离 guest 运行原版 EAL primary 和
+20 个独立 secondary，12 个源标记全部通过，64/64 对象回收，示例退出 0，
+guest 正常关机。宿主机没有共享 hugepages 时的 skip 不构成该证据。
+
+以 `7f46febca` 为基线，本轮累计 **21/50** 个不同的原未完成案例；当前总数
+239 scenario-adapted、17 partial、107 blocked。余下 29 个仍需实际实现及验证。
+此组件不实现 FreeBSD 控制命令、驻留服务完整 reload 或网络协议状态机。
+
+
+### M5 队列命名与旧布局运行适配（2 项）
+
+`ker_ipc_format_ring` 为实际 provider 创建队列，保留原版 epoch-slot 映射、
+slot0/legacy 命名、长度错误与关闭 generation 时的逐字节不变量。
+`fstack-ipc-epoch-names`、`fstack-ipc-legacy-names` 覆盖两个完整源断言，
+guest2 再以真实原版 EAL secondary 验证 AUTO 发现旧名称队列及实际收发、
+64/64 对象回收。参见 [IPC 资格证据](fstack-ipc.md)。两个源案例从 blocked
+完成场景适配，本轮累计 **23/50**，总数 241 adapted、105 blocked、17 partial；
+还需完成 27 个基线中的未完成案例。
+
+
+### UT-NR-14 原始消息序列化完成
+
+此前 resident 控制协议的 partial 证据保留其有限范围。现在独立的
+`ker::reload` 以未修改的固定 `ff_reload.c` 完成原始 FF_RELOAD 填充/解析合同，
+包括全部七种子命令、无效消息/命令、NULL 消息与可选输出。真实原版 EAL
+primary 使用同一 helper 回答 QUERY，secondary 保留 PID/cookie/负载往返
+所有子命令；其他控制操作仍明确返回不支持。
+[运行合同与资格证据](fstack-reload-messages.md)记录 guest3 的 15 项源断言、
+22 个 secondary、64/64 回收以及安装调用方。
+
+该源案例从 partial 完成场景适配，本轮累计 **24/50**；当前 242 adapted、
+16 partial、105 blocked，剩余目标为 26 个基线未完成源案例。此计数不代表
+驻留控制协议获得 F-Stack ABI，也不代表完整 reload 或硬件切换完成。
+
+
+### 同一 master 的 RX 标记与 park barrier（2 项）
+
+`ker_reload_poll` 使用未修改的原版 gate 决定是否调用应用的同步收发函数；
+拒绝轮次在先前回调返回后写入原版 epoch-tagged 确认。两个完整源断言由
+`fstack-reload-markers`、`fstack-reload-barrier` 覆盖，并在真实原版 EAL
+secondary/net_ring 中验证：未完成回调阻止切换、单纯回调返回仍不足、旧 epoch
+不能满足新轮次、所有旧 worker 确认后接管、切回及同 slot 后继进程重用。
+仓库程序和安装后的独立消费者各得到原版 PMD RX/TX 4/4、63/63 对象回收，
+guest 正常关闭。完整合同与散列见 [polling 资格证据](fstack-reload-polling.md)。
+
+两个原 blocked 案例完成场景适配，本轮累计 **26/50**，当前 244 adapted、
+16 partial、103 blocked。尚需完成 24 个基线未完成案例。跨 master 目录、
+硬件用户证明、崩溃回收、Linux 网络报文及完整 reload 不在本批完成范围内。
+
+
+### 原版目标 heartbeat、READY 与轮次控制（1 项）
+
+`test_ut_nr_22_heartbeat_and_rx_return` 的全部源断言已通过；实际 poll 在目标
+generation 的每一轮（含拒绝 RX 的轮次）调用原版 heartbeat helper。真实
+secondary 被 SIGSTOP 后，由父进程 WUNTRACED 确认，原版 DPDK timer sampler
+只报告 stall/rebase，不转移 RX；SIGCONT 后推进恢复，READY 与实际 PID/epoch
+关联，完成与中止保留原始观察值。仓库和安装消费者均通过 PMD4/4、63/63
+回收及正常退出，见 [heartbeat 资格证据](fstack-reload-heartbeat.md)。
+
+本轮累计 **27/50**，总数 245 adapted、16 partial、102 blocked；剩余目标
+为 23 个基线未完成案例。未将纯 helper、宿主 skip 或重复安装验证另计为完成。
+
+
+### 调用方的原版 reload 策略（4 项）
+
+UT-NR-10 四项纯 FSM 源合同现由未修改的固定 nginx 策略头及调用方 controller
+适配。应用策略只在示例/测试中，未加入 Ker 库。状态实际约束 READY、park、
+交接、mbuf drain、旧 worker 退场及 pidfd 确认；仓库示例和独立安装消费者
+均完成两次原版 EAL/net_ring 切换、一次安全停用后的 abort/reset、PMD4/4
+收发及63/63回收。四项断言覆盖全部12个合法转换、7×11矩阵、无效状态、
+五个错误入口与恢复，参见 [调用方策略合同](fstack-reload-controller.md)。
+
+仅这四个原 blocked 源案例新增完成，本轮累计 **31/50**，总数249 adapted、
+16 partial、98 blocked，剩余目标19项。实际 rollback 证明 READY-timeout
+公共路径，并非所有运行期崩溃排列；完整 nginx reload、跨 master、Linux
+流量和 TCP 连续性仍未完成。
+
+
+### 独立 master 的目录与使用者证明（5 项）
+
+`test_p2_hw_user_proof`、`test_p2_reclaim_needs_user_proof`、
+`test_p2_release_epoch_needs_proof`、`test_p2_orphan_workers_keep_epoch_live`、
+`test_rx15_ring_user_census_and_purge_lock` 现已完整适配。
+未修改的原始 P2/RX-15 断言、实际两 master/四 secondary EAL、原版 net_ring
+收发、孤儿/停用/死亡证明和 ring 保留/回收/重新准入，在仓库和安装程序中通过。
+来源、边界及 guest10 散列见[目录合同](fstack-reload-directory.md)。
+本目标当前累计 **36/50**，254 adapted、96 blocked、13 partial；尚需完成14项。
+物理 NIC、TCP 连续性和完整应用 reload 不在这五项证明范围内。
+
+
+### M5 目录定位、完整命名矩阵与同代交接（4 项）
+
+`test_ut_nr_m5_gendir_arbitration`、`test_ut_nr_m5_probe_epoch_fallback`、
+`test_ut_nr_m5_cross_master_name_isolation`、`test_ut_nr_m5_cross_master_handover_sequence`
+现已完整适配。原始完整函数断言、QUERY 驱动的原版 IPC 队列选择、160 个坐标组合
+及独立 master 的同代交接/故障回退在仓库和安装消费者中通过；
+见 [M5 合同与散列](fstack-reload-coordinates.md)。
+目标累计 **40/50**，258 adapted、93 blocked、12 partial，尚需10个基线未完成案例。
+
+
+### 原版 generation pool 与三类 cache 策略（2 项）
+
+`test_ut_nr_18_gen_pool_config`、`test_ut_nr_21_shared_pool_cache_size` 现已完整适配。
+`ker::pools` 编译未修改的原始内存策略/选择函数，并提供真实 DPDK 创建、借用和分配。
+仓库与安装消费者验证 legacy cache256/16/256 的实际使用/flush、新 EAL 在旧 mbuf
+未归还时加入、同 lcore0 的跨代归还、真实 PMD4/4 和五个共享池63/63回收；
+[pool合同](fstack-pools.md)记录来源与guest13散列。目标累计 **42/50**，剩余8项。
+当前260 adapted、91 blocked、12 partial；不将 reference 缓存策略冒充 FreeBSD page-array ABI。

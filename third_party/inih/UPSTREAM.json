@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/F-Stack/f-stack",
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "mode": "unchanged source; Ker symbols and argument guards live in src/compat/ini.c",
+  "files": {
+    "ff_ini_parser.c": {
+      "source_file": "lib/ff_ini_parser.c",
+      "sha256": "ab74321bec6e2b76ddd807e065050b53135adbb04d7f934e8d042ef854ad7aa3",
+      "git_blob": "72862398767d2d4af7f9ccc8fbf8edf4bd158e58"
+    },
+    "ff_ini_parser.h": {
+      "source_file": "lib/ff_ini_parser.h",
+      "sha256": "4b24f9bb31ebde8f957e6f7d9a4a096ee086390d75238e3ded2c5c8fd82b3dd9",
+      "git_blob": "2a610c2104ce0834807e6d3d289fc7493fcaac38"
+    }
+  }
+}

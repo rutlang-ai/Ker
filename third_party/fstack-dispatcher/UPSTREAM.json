@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/F-Stack/f-stack",
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "mode": "Exact original callback layout, globals, setters/unsetters and invocation block. No FreeBSD packet/protocol routing. Shared full unchanged sources in fstack-address-policy and fstack-pools.",
+  "files": {
+    "../fstack-address-policy/ff_api.h": {
+      "sha256": "46f538fa416450410d3a603220ac8d77b38b5fb5716fff599cba2b9c43fec15c",
+      "git_blob": "6da2007e60f5697a5f3efec72d7e84e30bb02063"
+    },
+    "../fstack-pools/ff_dpdk_if.c": {
+      "sha256": "6d8800e5ab069a4ede742ec1ec75dfa8fc08ef05999a7528dda8c95d519e3cbe",
+      "git_blob": "4864c63f28051336326dda1df241ab7290a2a72f"
+    }
+  }
+}
