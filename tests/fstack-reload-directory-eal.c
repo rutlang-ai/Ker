@@ -103,16 +103,19 @@ static void primary_eal(void)
     CHECK(!ker_reload_directory_destroy());
     ker_reload_unbind_state();
     CHECK(!rte_eal_cleanup());
-    char runtime_parent[PATH_MAX], runtime_prefix[PATH_MAX], registration_lock[PATH_MAX];
+    char runtime_parent[PATH_MAX], runtime_prefix[PATH_MAX], lock_path[PATH_MAX];
     int length = snprintf(runtime_parent, sizeof(runtime_parent), "%s/dpdk", runtime_root);
     CHECK(length > 0 && (size_t)length < sizeof(runtime_parent));
     length = snprintf(runtime_prefix, sizeof(runtime_prefix), "%s/ker-test-%ld", runtime_parent, (long)getpid());
     CHECK(length > 0 && (size_t)length < sizeof(runtime_prefix));
-    length = snprintf(registration_lock, sizeof(registration_lock), "%s/ker-reload-gendir-register.lock", runtime_prefix);
-    CHECK(length > 0 && (size_t)length < sizeof(registration_lock));
+    length = snprintf(lock_path, sizeof(lock_path), "%s/ker-reload-gendir-register.lock", runtime_prefix);
+    CHECK(length > 0 && (size_t)length < sizeof(lock_path));
     /* The lock inode must remain stable for every EAL participant. This test
      * removes it only after EAL cleanup has ended the namespace lifetime. */
-    CHECK(!unlink(registration_lock));
+    CHECK(!unlink(lock_path));
+    length = snprintf(lock_path, sizeof(lock_path), "%s/ker-reload-gendir-attach.lock", runtime_prefix);
+    CHECK(length > 0 && (size_t)length < sizeof(lock_path));
+    CHECK(!unlink(lock_path));
     CHECK(!rmdir(runtime_prefix));
     CHECK(!rmdir(runtime_parent));
     CHECK(!rmdir(runtime_root));
