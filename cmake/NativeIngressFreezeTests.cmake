@@ -31,9 +31,10 @@ if(BUILD_TESTING)
 			--worker "$<TARGET_FILE:ker-io-worker>"
 			--dpdk-plugin-dir "${ker_session_pmd_dir}"
 			--client "$<TARGET_FILE:ker-c24-ingress-freeze-tap-client>")
+	string(JSON ker_c24_native_fingerprint GET "${ker_native_json}" fingerprint)
 	set_tests_properties(native-c24-ingress-freeze-tap PROPERTIES
 		TIMEOUT 120 LABELS "native-tcp;ingress-freeze;original-linux;tap;wire"
-		ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+		ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;KER_C24_NATIVE_FINGERPRINT=${ker_c24_native_fingerprint}")
 
 	add_executable(ker-ff-ingress-freeze-state-test
 		"${PROJECT_SOURCE_DIR}/tests/posix/ff-ingress-freeze-state-test.c"
