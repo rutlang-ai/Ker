@@ -1488,19 +1488,40 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 time.sleep(0.01)
             handoff = after['handoff']; protocol = after['handoff_protocol']
             endpoint_name = ready['exception_endpoint_name']
-            require(handoff['app_pid'] == before['app_pid'] and
-                handoff['old_worker_pid'] == before['attached']['pid'] and
-                handoff['peer_worker_pid'] == before['handoff_peer_attached']['pid'] and
-                handoff['old_exception_fd_closed'] and handoff['old_owner_key'] != handoff['new_owner_key'] and
-                endpoint_name in handoff['old_tun_interfaces_before'] and
-                endpoint_name not in handoff['old_tun_interfaces_after'] and
-                endpoint_name in handoff['successor_tun_interfaces'] and
-                handoff['resident']['token'] == handoff['new_owner_key'] and
-                handoff['successor']['generation'] == 1 and
-                protocol['negative_prepare']['status'] == -1 and protocol['negative_prepare']['same_replay'] and
-                protocol['replay_prepare']['same_response'] and
-                not select.select([app_pidfd, owner_pidfd, peer_pidfd], [], [], 0)[0],
-                'handoff changed process/endpoint identity or failed exact PREPARE/replay validation')
+            handoff_identity_checks = dict(
+                app_pid_matches=handoff['app_pid'] == before['app_pid'],
+                old_worker_pid_matches=handoff['old_worker_pid'] == before['attached']['pid'],
+                peer_worker_pid_matches=handoff['peer_worker_pid'] == before['handoff_peer_attached']['pid'],
+                old_exception_fd_closed=handoff['old_exception_fd_closed'],
+                owner_key_changed=handoff['old_owner_key'] != handoff['new_owner_key'],
+                old_endpoint_was_present=endpoint_name in handoff['old_tun_interfaces_before'],
+                old_endpoint_was_removed=endpoint_name not in handoff['old_tun_interfaces_after'],
+                successor_endpoint_is_same=endpoint_name in handoff['successor_tun_interfaces'],
+                resident_granted_new_owner=handoff['resident']['token'] == handoff['new_owner_key'],
+                successor_generation_is_one=handoff['successor']['generation'] == 1,
+                negative_prepare_rejected=protocol['negative_prepare']['status'] == -1,
+                negative_prepare_replay_matches=protocol['negative_prepare']['same_replay'],
+                prepare_replay_matches=protocol['replay_prepare']['same_response'])
+            readable_pidfds = set(select.select([app_pidfd, owner_pidfd, peer_pidfd], [], [], 0)[0])
+            actor_pidfd_readable = dict(app=app_pidfd in readable_pidfds,
+                producer=owner_pidfd in readable_pidfds, consumer=peer_pidfd in readable_pidfds)
+            handoff_identity_checks.update({f'{actor}_pidfd_not_readable': not readable
+                for actor, readable in actor_pidfd_readable.items()})
+            if not all(handoff_identity_checks.values()):
+                try:
+                    handoff_runner_stderr_tail = runner_stderr_path.read_text(errors='replace').splitlines()[-40:]
+                except OSError as error:
+                    handoff_runner_stderr_tail = [f'<could not read runner stderr: {error}>']
+                handoff_identity_evidence = dict(
+                    checks=handoff_identity_checks, pidfd_readable=actor_pidfd_readable,
+                    mode=mode, runner_returncode=runner.poll(), stats_stage=after.get('stage'),
+                    stats_handoff=handoff, stats_protocol=protocol,
+                    runner_stderr_tail=handoff_runner_stderr_tail)
+            else:
+                handoff_identity_evidence = None
+            require(all(handoff_identity_checks.values()),
+                'handoff changed process/endpoint identity or failed exact PREPARE/replay validation: ' +
+                json.dumps(handoff_identity_evidence, sort_keys=True))
             if mode == 'frame-death-queued':
                 require(os.write(handoff_write, b'A') == 1,
                     'could not acknowledge live app/producer/consumer identities before queued producer death')
