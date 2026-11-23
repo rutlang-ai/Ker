@@ -537,23 +537,24 @@ def read_bounded_line(process, timeout=25, max_bytes=1 << 20):
     deadline = time.monotonic() + timeout
     value = bytearray()
     fd = process.stdout.fileno()
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise RuntimeError('packet-session output timed out before a complete line')
-        readable, _, _ = select.select([fd], [], [], remaining)
-        if not readable:
-            raise RuntimeError('packet-session output timed out before a complete line')
-        chunk = os.read(fd, 1)
-        if not chunk:
-            if value:
-                raise RuntimeError('packet-session output ended before a complete line')
-            return bytes(value)
-        value.extend(chunk)
-        if len(value) > max_bytes:
-            raise RuntimeError('packet-session output line exceeded its byte limit')
-        if chunk == b'\n':
-            return bytes(value)
+    with selectors.DefaultSelector() as selector:
+        selector.register(fd, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError('packet-session output timed out before a complete line')
+            if not selector.select(remaining):
+                raise RuntimeError('packet-session output timed out before a complete line')
+            chunk = os.read(fd, 1)
+            if not chunk:
+                if value:
+                    raise RuntimeError('packet-session output ended before a complete line')
+                return bytes(value)
+            value.extend(chunk)
+            if len(value) > max_bytes:
+                raise RuntimeError('packet-session output line exceeded its byte limit')
+            if chunk == b'\n':
+                return bytes(value)
 
 
 def read_bounded_stderr(stderr, timeout=0.1, max_bytes=8192):
@@ -562,17 +563,18 @@ def read_bounded_stderr(stderr, timeout=0.1, max_bytes=8192):
     deadline = time.monotonic() + timeout
     value = bytearray()
     fd = stderr.fileno()
-    while len(value) < max_bytes:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        readable, _, _ = select.select([fd], [], [], remaining)
-        if not readable:
-            break
-        chunk = os.read(fd, min(4096, max_bytes - len(value)))
-        if not chunk:
-            break
-        value.extend(chunk)
+    with selectors.DefaultSelector() as selector:
+        selector.register(fd, selectors.EVENT_READ)
+        while len(value) < max_bytes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if not selector.select(remaining):
+                break
+            chunk = os.read(fd, min(4096, max_bytes - len(value)))
+            if not chunk:
+                break
+            value.extend(chunk)
     return value.decode(errors='replace')
 
 
