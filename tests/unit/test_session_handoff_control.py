@@ -25,6 +25,13 @@ import unittest
 SOURCE = Path(__file__).resolve().parents[2] / 'tools' / 'ker_session_run.py'
 
 
+PROFILE_SOURCE = Path(__file__).resolve().parents[1] / 'posix' / 'session-native-packets.py'
+sys.path.insert(0, str(PROFILE_SOURCE.parent))
+PROFILE_SPEC = importlib.util.spec_from_file_location('session_native_packets_line_reader_test', PROFILE_SOURCE)
+PROFILE = importlib.util.module_from_spec(PROFILE_SPEC)
+PROFILE_SPEC.loader.exec_module(PROFILE)
+
+
 def nested_code(code, name):
     for item in code.co_consts:
         if isinstance(item, types.CodeType):
@@ -399,6 +406,127 @@ class HandoffControlPathTests(unittest.TestCase):
             with self.subTest(metrics=metrics, code=code, stats=stats):
                 with self.assertRaises(RuntimeError):
                     validate(metrics, True, code, stats)
+
+    def test_session_marker_reader_deadline_covers_partial_pipe_lines(self):
+        def run(source):
+            return subprocess.Popen([sys.executable, '-c', source], stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, bufsize=0)
+
+        partial = run("import sys,time;sys.stdout.buffer.write(b'KER_SESSION_READY {');sys.stdout.flush();time.sleep(1)")
+        try:
+            self.assertTrue(select.select([partial.stdout], [], [], 2)[0],
+                'partial marker bytes did not become readable before the deadline test')
+            started = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, 'timed out before a complete line') as raised:
+                PROFILE.record(partial, 'KER_SESSION_READY', timeout=0.05)
+            self.assertIn("b'KER_SESSION_READY {'", str(raised.exception))
+            self.assertLess(time.monotonic() - started, 0.5,
+                'partial readable output must not escape the marker deadline')
+        finally:
+            if partial.poll() is None:
+                partial.kill()
+            partial.communicate(timeout=1)
+
+        held_stderr = run('import os,time;os.close(1);time.sleep(1)')
+        started = time.monotonic()
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'exited early'):
+                PROFILE.record(held_stderr, 'KER_SESSION_READY', timeout=1)
+            self.assertLess(time.monotonic() - started, 0.5,
+                'EOF diagnostics must not wait for inherited stderr writers')
+        finally:
+            if held_stderr.poll() is None:
+                held_stderr.kill()
+            held_stderr.communicate(timeout=1)
+
+        wrong_with_inherited_stderr = run(
+            "import subprocess,sys;subprocess.Popen([sys.executable,'-c','import time;time.sleep(1)'],"
+            "stdout=subprocess.DEVNULL);sys.stdout.write('OTHER {\\\"ok\\\":true}\\n');sys.stdout.flush()")
+        started = time.monotonic()
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'unexpected output'):
+                PROFILE.record(wrong_with_inherited_stderr, 'KER_SESSION_READY', timeout=1)
+            self.assertLess(time.monotonic() - started, 0.75,
+                'wrong-prefix diagnostics must not wait for descendant-held stderr')
+        finally:
+            wrong_with_inherited_stderr.communicate(timeout=1)
+
+        split = run("import sys,time;sys.stdout.buffer.write(b'KER_SESSION_READY {');sys.stdout.flush();"
+            "time.sleep(0.02);sys.stdout.buffer.write(b'\\\"ok\\\":true}\\n');sys.stdout.flush()")
+        try:
+            self.assertEqual(PROFILE.record(split, 'KER_SESSION_READY', timeout=1), {'ok': True})
+            split.communicate(timeout=1)
+        finally:
+            if split.poll() is None:
+                split.kill(); split.wait()
+
+        partial_eof = run("import sys;sys.stdout.buffer.write(b'KER_SESSION_READY {\\\"ok\\\":true}')")
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'ended before a complete line'):
+                PROFILE.record(partial_eof, 'KER_SESSION_READY', timeout=1)
+            partial_eof.communicate(timeout=1)
+        finally:
+            if partial_eof.poll() is None:
+                partial_eof.kill(); partial_eof.wait()
+
+
+    def test_bounded_capture_does_not_wait_for_descendant_pipe_writers(self):
+        process = subprocess.Popen([sys.executable, '-c',
+            'import subprocess,sys; p=subprocess.Popen([sys.executable,"-c",'
+            '"import time; time.sleep(10)"]); print(p.pid, flush=True)'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        try:
+            self.assertTrue(select.select([process.stdout], [], [], 2)[0],
+                'child PID did not become readable before the bounded-capture test')
+            started = time.monotonic()
+            output, errors = PROFILE.communicate_bounded(process, timeout=0.2)
+            self.assertLess(time.monotonic() - started, 2)
+            self.assertGreater(int(output.decode().strip()), 0)
+            self.assertEqual(errors, b'')
+            self.assertIsNotNone(process.poll())
+        finally:
+            try:
+                os.killpg(process.pid, 9)
+            except ProcessLookupError:
+                pass
+            for stream in (process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
+
+    def test_frame_owner_waits_for_exit_after_stdout_eof(self):
+        source = SOURCE.read_text()
+        finish = source[source.index('    def finish_frame_owner_output():'):
+            source.index('    def validate_frame_commit_drain_bijection():')]
+        self.assertIn('wait_after_pipe_eof(worker,', finish)
+        process = subprocess.Popen([sys.executable, '-c',
+            'import os,sys; os.close(1); sys.stdin.buffer.read(1)'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            self.assertTrue(select.select([process.stdout], [], [], 1)[0])
+            self.assertIsNone(process.poll(), 'fixture must observe EOF before process exit')
+            process.stdin.write(b'x')
+            process.stdin.flush()
+            process.stdin.close()
+            process.stdin = None
+            self.assertEqual(self.launcher.wait_after_pipe_eof(process, 1,
+                'fixture process did not exit'), 0)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=1)
+
+
+    def test_frame_success_stays_out_of_fatal_profile_wait(self):
+        # Evaluate the guard around the fatal runner exit check from the fixture.
+        tree = ast.parse(PROFILE_SOURCE.read_text())
+        guards = [node.test for node in ast.walk(tree) if isinstance(node, ast.If)
+            and node.body and isinstance(node.body[0], ast.Try)
+            and "fatal handoff fixture did not terminate" in ast.unparse(node.body[0])]
+        self.assertEqual(len(guards), 1)
+        guard = compile(ast.Expression(guards[0]), str(PROFILE_SOURCE), 'eval')
+        for mode in ('positive', 'frame-positive'):
+            self.assertFalse(eval(guard, {'mode': mode}))
+        self.assertTrue(eval(guard, {'mode': 'bad-capability'}))
 
 
 if __name__ == '__main__':

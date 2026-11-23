@@ -10,9 +10,9 @@ import os
 from pathlib import Path
 import re
 import select
+import selectors
 import shlex
 import signal
-import selectors
 import socket
 import stat
 import struct
@@ -303,20 +303,98 @@ def report_hugepage_cleanup_refusal(mode, original_error, cleanup_error):
         raise cleanup_error.with_traceback(cleanup_error.__traceback__)
 
 
-def line(process, timeout=25, stderr_path=None):
+def read_bounded_line(process, timeout=25, max_bytes=1 << 20):
+    """Read one complete line without letting readline block past the deadline."""
+    require(process.stdout is not None, 'packet-session stdout is unavailable')
+    deadline = time.monotonic() + timeout
+    value = bytearray()
+    fd = process.stdout.fileno()
     with selectors.DefaultSelector() as selector:
-        selector.register(process.stdout, selectors.EVENT_READ)
-        require(selector.select(timeout), 'packet-session output timed out')
-    value = process.stdout.readline()
+        selector.register(fd, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError('packet-session output timed out before a complete line; '
+                    f'partial bytes={bytes(value[:256])!r}, truncated={len(value) > 256}')
+            if not selector.select(remaining):
+                raise RuntimeError('packet-session output timed out before a complete line; '
+                    f'partial bytes={bytes(value[:256])!r}, truncated={len(value) > 256}')
+            chunk = os.read(fd, 1)
+            if not chunk:
+                if value:
+                    raise RuntimeError('packet-session output ended before a complete line; '
+                        f'partial bytes={bytes(value[:256])!r}, truncated={len(value) > 256}')
+                return bytes(value)
+            value.extend(chunk)
+            if len(value) > max_bytes:
+                raise RuntimeError('packet-session output line exceeded its byte limit')
+            if chunk == b'\n':
+                return bytes(value)
+
+
+def read_bounded_stderr(stderr, timeout=0.1, max_bytes=8192):
+    """Capture a bounded diagnostic without waiting on inherited pipe writers."""
+    if stderr is None:
+        return ''
+    deadline = time.monotonic() + timeout
+    value = bytearray()
+    fd = stderr.fileno()
+    with selectors.DefaultSelector() as selector:
+        selector.register(fd, selectors.EVENT_READ)
+        while len(value) < max_bytes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if not selector.select(remaining):
+                break
+            chunk = os.read(fd, min(4096, max_bytes - len(value)))
+            if not chunk:
+                break
+            value.extend(chunk)
+    return value.decode(errors='replace')
+
+
+def line(process, timeout=25, stderr_path=None):
+    value = read_bounded_line(process, timeout)
     if not value:
         if stderr_path is not None:
             diagnostic = Path(stderr_path).read_text(errors='replace') if Path(stderr_path).exists() else ''
         elif process.stderr is not None:
-            diagnostic = process.stderr.read().decode(errors='replace')
+            diagnostic = read_bounded_stderr(process.stderr)
         else:
             diagnostic = ''
         raise RuntimeError('packet-session exited early: ' + diagnostic)
     return value.decode().strip()
+
+
+def communicate_bounded(process, timeout=5):
+    """Collect child output without waiting forever for inherited pipe writers."""
+    if process.stdout is None and process.stderr is None:
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+        return b'', b''
+    if all(stream is None or stream.closed for stream in (process.stdout, process.stderr)):
+        return b'', b''
+    try:
+        return process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        # A descendant may have inherited either pipe, so killing/reaping the
+        # direct child does not guarantee that communicate() will see EOF.
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
+        output = error.output or b''
+        stderr = error.stderr or b''
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        return output, stderr
 
 
 def resolve_dpdk_plugin_dir(plugin_dir, environ=None):
@@ -363,15 +441,15 @@ def namespace_reexec_command(args, plugin_dir, script=None):
     return command
 
 
-def record(process, prefix):
-    value = line(process)
+def record(process, prefix, stderr_path=None, timeout=25):
+    value = line(process, timeout=timeout, stderr_path=stderr_path)
     if not value.startswith(prefix + ' '):
         diagnostic = ''
         if process.poll() is None:
             try: process.wait(timeout=3)
             except subprocess.TimeoutExpired: pass
         if process.poll() is not None and process.stderr is not None:
-            diagnostic = process.stderr.read().decode(errors='replace')
+            diagnostic = read_bounded_stderr(process.stderr)
         raise RuntimeError('unexpected output: ' + value + (('\nchild stderr:\n' + diagnostic) if diagnostic else ''))
     return json.loads(value[len(prefix) + 1:])
 
@@ -479,26 +557,19 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     runner.terminate()
                     try: runner.wait(timeout=5)
                     except subprocess.TimeoutExpired:
-                        runner.kill(); runner.wait()
+                        runner.kill(); runner.wait(timeout=2)
                 runner_output = b''
                 if runner is not None and runner.stdout is not None:
-                    try: runner_output, _ = runner.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        runner.kill(); runner_output, _ = runner.communicate()
+                    runner_output, _ = communicate_bounded(runner, timeout=5)
                 latest_raw = stats_path.read_text(errors='replace') if stats_path.exists() else ''
                 try: latest = json.loads(latest_raw) if latest_raw else None
                 except json.JSONDecodeError: latest = None
                 if primary is not None and primary.poll() is None:
                     if primary.stdin is not None:
                         primary.stdin.close(); primary.stdin = None
-                    try: resident_output, resident_errors = primary.communicate(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        primary.terminate()
-                        try: resident_output, resident_errors = primary.communicate(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            primary.kill(); resident_output, resident_errors = primary.communicate()
+                    resident_output, resident_errors = communicate_bounded(primary, timeout=10)
                 else:
-                    resident_output, resident_errors = primary.communicate(timeout=5)
+                    resident_output, resident_errors = communicate_bounded(primary, timeout=5)
                 runner_errors = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
                 mp_errors = eal_mp_channel_errors(runner_errors, resident_errors.decode(errors='replace'))
                 if mp_errors:
@@ -556,12 +627,10 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     runner.terminate()
                     try: runner.wait(timeout=5)
                     except subprocess.TimeoutExpired:
-                        runner.kill(); runner.wait()
+                        runner.kill(); runner.wait(timeout=2)
                 runner_output = b''
                 if runner is not None and runner.stdout is not None:
-                    try: runner_output, _ = runner.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        runner.kill(); runner_output, _ = runner.communicate()
+                    runner_output, _ = communicate_bounded(runner, timeout=5)
                 latest = None
                 latest_raw = ''
                 if stats_path.exists():
@@ -573,16 +642,9 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 if primary is not None and primary.poll() is None:
                     if primary.stdin is not None:
                         primary.stdin.close(); primary.stdin = None
-                    try: primary_output, primary_errors = primary.communicate(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        primary.terminate()
-                        try: primary_output, primary_errors = primary.communicate(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            primary.kill(); primary_output, primary_errors = primary.communicate()
+                    primary_output, primary_errors = communicate_bounded(primary, timeout=10)
                 elif primary is not None and primary.stdout is not None:
-                    try: primary_output, primary_errors = primary.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        primary.kill(); primary_output, primary_errors = primary.communicate()
+                    primary_output, primary_errors = communicate_bounded(primary, timeout=5)
                 mp_errors = eal_mp_channel_errors(stderr, primary_errors.decode(errors='replace'))
                 if mp_errors:
                     reason += '; EAL multiprocess diagnostics: ' + repr(mp_errors)
@@ -842,11 +904,11 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     resident_returncode=primary.returncode), sort_keys=True), flush=True)
                 print(f'PASS: {mode} drained a pending heartbeat, preserved queued H, returned exact rejection, and resumed the packet loop')
                 return
-            if mode != 'positive':
+            if mode not in ('positive', 'frame-positive'):
                 try:
                     runner_output, _ = runner.communicate(timeout=20)
                 except subprocess.TimeoutExpired as error:
-                    runner.kill(); runner_output, _ = runner.communicate()
+                    runner_output, _ = communicate_bounded(runner, timeout=5)
                     raise RuntimeError('fatal handoff fixture did not terminate: ' +
                         (runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else '')) from error
                 runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
@@ -1052,7 +1114,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                             except subprocess.TimeoutExpired:
                                 process.kill(); process.wait(timeout=10)
                         if process.poll() is not None:
-                            cleanup_outputs[label] = process.communicate(timeout=5)
+                            cleanup_outputs[label] = communicate_bounded(process, timeout=5)
                         else:
                             raise RuntimeError(f'{label} did not exit during fixture cleanup')
                     except BaseException as error:
