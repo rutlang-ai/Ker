@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 277 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 285 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 12 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 74 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 66 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为277 scenario-adapted、12 partial、74 blocked，共86项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为285 scenario-adapted、12 partial、66 blocked，共78项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -50,9 +50,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共156项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：86项行为未完成
-（12 partial + 74 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共148项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：78项行为未完成
+（12 partial + 66 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -71,7 +71,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Resolve device/run lifecycle and upstream fault-injection contracts | 2 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
 | Adapt typed vdev, bond and multi-port configuration | 3 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
 | Define a Linux-native zero-copy send and ownership contract | 7 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
-| Resolve remaining typed configuration and intentional schema differences | 13 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
+| Resolve remaining typed configuration and intentional schema differences | 12 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
 | Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
 | Resolve unmapped host memory, time, environment and kqueue helpers | 3 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
@@ -2066,3 +2066,61 @@ behavioral cases incomplete. The pure metadata tests do not qualify Linux
 SYN/PCB integration, half-open packet dispatch, cross-generation transport,
 TCP continuity or full graceful reload. Original Linux retains protocol state;
 application routing policy remains outside Ker libraries.
+
+## PEER callback ownership boundary
+
+`test_ut_nr_27_dispatch_peer_boundary` is now scenario-adapted through the
+optional `ker::peer_dispatcher` ownership bridge. The callback still borrows
+data; successful peer enqueue transfers the original mbuf, while full and
+closed-window paths release it exactly once. Real EAL/net_ring FIFO checks,
+segment-based counters, unique-pool reclamation and an independently installed
+consumer qualify this memory/transport boundary. See
+[qualification](fstack-peer-dispatch.md).
+
+Only this case changes status:277/12/74 becomes278/12/73
+(adapted/partial/blocked), leaving85 behavioral cases incomplete. Peer discovery,
+USR2 mirror selection, native PCB integration, cross-master transport and full
+reload remain outside this qualification. P1 foreign-epoch TX remains blocked
+by the current bank's one-identity-per-generation admission boundary.
+
+## Parked TX ownership and burst guards
+
+Four source integration scenarios now have public Ker counterparts:
+`test_it_a09_tx_divert_no_hw`, `test_it_a09_drain_ring_tx_watermark`,
+`test_it_a09_send_burst_guard` and `test_it_a09_main_loop_parked_pass`.
+The optional `ker::reload_tx` byte/mbuf adapter retains caller-selected
+queue/ring policy and routes every hardware burst through the synchronous
+reload poll gate. Real EAL/net_ring and independent TX callbacks preserve
+the original12-packet,4x64/255+1,32-packet guard and five-packet residue
+assertions, with FIFO verification and complete512-object reclamation.
+See [qualification](fstack-parked-tx.md).
+
+This batch changes278/12/73 to282/12/69 (adapted/partial/blocked), leaving81
+behavioral cases incomplete. It carries the already merged PEER ownership
+change from the former feature branch into the integration branch as well.
+Boot/veth/config ABI, native PCB hooks, concurrent/cross-master takeover,
+physical NIC and full application reload remain unqualified.
+
+## A10 synthetic dispatch and window mechanisms
+
+Exactly `test_it_a10_halfopen_dispatch` and
+`test_it_a10_halfopen_window_mechanism` now have source-shaped real-EAL
+qualification. The original source harness simulates metadata admission and
+links no protocol stack. Its unchanged classifier and packet/key builders run
+in a caller-only policy fixture, composed with existing public peer/reload
+components and the original flow table. Actual PMD input, exact application
+input bytes/ownership, parked software consumption without recirculation,
+closed-window drop and complete512-object reclamation are verified. See
+[qualification](fstack-a10-dispatch.md).
+
+Only these two source cases change status:282/12/69 becomes284/12/67
+(adapted/partial/blocked), leaving79 behavioral cases incomplete. This does not
+qualify actual half-open TCP connections, Linux SYN/PCB hooks, ESTABLISHED,
+no-RST, real syncache drain, two-process handover or full RV12/reload.
+Ker libraries, native protocol implementations and upstream code remain unchanged.
+
+## Separate configuration-unload migration
+
+One additional source case is qualified through the unchanged caller-side parser,
+not through Ker runtime configuration. See [scope and validation](fstack-config-inspector.md).
+The current catalog becomes285/12/66; all remaining runtime contracts stay open.
