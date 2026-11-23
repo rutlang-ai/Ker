@@ -45,7 +45,7 @@ def main():
 #include "runtime/tx-export.h"
 #include "runtime/arp.h"
 #include <linux/bug.h>
-#include <linux/if_ether.h>
+#include "compat/ethernet-abi.h"
 #include <string.h>
 #include <arpa/inet.h>
 #define neigh_hh_init(n) ker_neighbor_output_unsupported_hh()

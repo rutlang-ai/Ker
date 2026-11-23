@@ -7,7 +7,7 @@
 #include "runtime/skb.h"
 #include "runtime/skb-queue-internal.h"
 #include "runtime/arp.h"
-#include <linux/if_ether.h>
+#include "compat/ethernet-abi.h"
 #include <linux/neighbour.h>
 #include <rte_lcore.h>
 #include <errno.h>
