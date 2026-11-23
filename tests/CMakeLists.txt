@@ -73,10 +73,34 @@ if(KER_WITH_DPDK)
     add_test(NAME address-import COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/address-import.py" "${PROJECT_SOURCE_DIR}"
         "${CMAKE_C_COMPILER}" "${KER_LINUX_INCLUDE}" "${KER_SKB_IMPORT}" "${KER_ETH_IMPORT}" ${DPDK_INCLUDE_DIRS})
+    add_executable(ker-neighbor-timer-test neighbor-timer.c)
+    target_include_directories(ker-neighbor-timer-test PRIVATE "${KER_ARP_PROBE_IMPORT}" "${KER_NEIGH_UPDATE_IMPORT}" "${KER_NEIGH_EVENT_SEND_IMPORT}")
+    target_compile_definitions(ker-neighbor-timer-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-neighbor-timer-test PRIVATE ker_neighbor_timer_headers
+        ker_neighbor_timer_port ker_timer_list_port ker_neighbor_port
+        ker_neighbor_update_headers ker_neighbor_update_port ker_neighbor_event_send_headers ker_neighbor_event_send_port ker_address_port ker_arp_headers ker_arp_port ker_arp_probe_port ker_eth_port ker_linux_port ker_dpdk_port ker_skb_port Threads::Threads)
+    add_test(NAME neighbor-timer COMMAND ker-neighbor-timer-test)
+    set_tests_properties(neighbor-timer PROPERTIES TIMEOUT 30)
+    add_test(NAME neighbor-timer-import COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/neighbor-timer-import.py" "${PROJECT_SOURCE_DIR}"
+        "${CMAKE_C_COMPILER}" "${KER_LINUX_INCLUDE}" "${KER_SKB_IMPORT}" "${KER_ETH_IMPORT}"
+        "${KER_ADDR_IMPORT}" "${KER_NAPI_IMPORT}" "${KER_NEIGH_IMPORT}" "${KER_TIMER_LIST_IMPORT}" ${DPDK_INCLUDE_DIRS})
+    add_test(NAME arp-probe-import COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/arp-probe-import.py" "${KER_LINUX_DIR}"
+        "${KER_ARP_PROBE_MANIFEST}" "${KER_ARP_PROBE_IMPORT}"
+        "${PROJECT_SOURCE_DIR}/tools/import-linux-arp-probe.py")
+    add_test(NAME neighbor-update-import COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/neighbor-update-import.py" "${KER_LINUX_DIR}"
+        "${KER_NEIGH_UPDATE_MANIFEST}" "${KER_NEIGH_UPDATE_IMPORT}"
+        "${PROJECT_SOURCE_DIR}/tools/import-linux-neighbor-update.py")
+    add_test(NAME neighbor-event-send-import COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/neighbor-event-send-import.py" "${KER_LINUX_DIR}"
+        "${KER_NEIGH_EVENT_SEND_MANIFEST}" "${KER_NEIGH_EVENT_SEND_IMPORT}"
+        "${PROJECT_SOURCE_DIR}/tools/import-linux-neighbor-event-send.py")
     add_executable(ker-neighbor-test neighbor.c)
     target_compile_definitions(ker-neighbor-test PRIVATE _GNU_SOURCE)
-    target_link_libraries(ker-neighbor-test PRIVATE ker_neighbor_headers ker_neighbor_port
-        ker_address_port ker_arp_headers ker_arp_port ker_napi_port ker_eth_port
+    target_link_libraries(ker-neighbor-test PRIVATE ker_neighbor_headers ker_neighbor_port ker_receive_headers
+        ker_address_port ker_arp_headers ker_arp_port ker_receive_port ker_napi_port ker_eth_port
         ker_linux_port ker_dpdk_port ker_skb_port Threads::Threads)
     add_test(NAME neighbor COMMAND ker-neighbor-test)
     set_tests_properties(neighbor PROPERTIES TIMEOUT 30)
@@ -85,8 +109,11 @@ if(KER_WITH_DPDK)
         "${CMAKE_C_COMPILER}" "${KER_LINUX_INCLUDE}" "${KER_SKB_IMPORT}" "${KER_ETH_IMPORT}"
         "${KER_ADDR_IMPORT}" "${KER_NAPI_IMPORT}" ${DPDK_INCLUDE_DIRS})
     add_executable(ker-arp-receive-test arp-receive.c)
+    target_include_directories(ker-arp-receive-test PRIVATE "${KER_NEIGH_UPDATE_IMPORT}")
     target_compile_definitions(ker-arp-receive-test PRIVATE _GNU_SOURCE)
     target_link_libraries(ker-arp-receive-test PRIVATE ker_arp_rx_headers ker_arp_rx_port
+        ker_arp_neighbor_feedback_port ker_neighbor_timer_headers ker_neighbor_timer_port
+        ker_neighbor_update_headers ker_neighbor_update_port ker_neighbor_event_send_port ker_timer_list_port ker_neighbor_port
         ker_address_port ker_arp_port ker_receive_port ker_napi_port ker_eth_port
         ker_linux_port ker_dpdk_port ker_skb_port Threads::Threads)
     add_test(NAME arp-receive COMMAND ker-arp-receive-test)
@@ -95,6 +122,15 @@ if(KER_WITH_DPDK)
         "${CMAKE_CURRENT_SOURCE_DIR}/arp-receive-import.py" "${PROJECT_SOURCE_DIR}"
         "${CMAKE_C_COMPILER}" "${KER_LINUX_INCLUDE}" "${KER_SKB_IMPORT}" "${KER_ETH_IMPORT}"
         "${KER_NAPI_IMPORT}" "${KER_RX_IMPORT}" "${KER_ARP_IMPORT}" ${DPDK_INCLUDE_DIRS})
+    add_executable(ker-timer-list-test timer-list.c)
+    target_compile_definitions(ker-timer-list-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-timer-list-test PRIVATE ker_timer_list_headers ker_timer_list_port
+        ker_linux_port ker_dpdk_port Threads::Threads)
+    add_test(NAME timer-list COMMAND ker-timer-list-test)
+    set_tests_properties(timer-list PROPERTIES TIMEOUT 30)
+    add_test(NAME timer-list-import COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/timer-list-import.py" "${PROJECT_SOURCE_DIR}"
+        "${CMAKE_C_COMPILER}" "${KER_LINUX_INCLUDE}" "${KER_SKB_IMPORT}" "${KER_ETH_IMPORT}" ${DPDK_INCLUDE_DIRS})
     add_executable(ker-skb-queue-test skb-queue.c)
     target_compile_definitions(ker-skb-queue-test PRIVATE _GNU_SOURCE)
     target_link_libraries(ker-skb-queue-test PRIVATE ker_neighbor_headers ker_neighbor_port
@@ -106,7 +142,8 @@ if(KER_WITH_DPDK)
     target_link_libraries(ker-fstack-adapted-test PRIVATE ker_neighbor_headers ker_neighbor_port
         ker_address_port ker_napi_port ker_eth_port ker_linux_port ker_dpdk_port ker_skb_port Threads::Threads)
     foreach(fstack_case mbuf-release clock-monotonic empty-export null-context packet-export
-            multiseg-boundary queue-isolation queue-full-ownership)
+            multiseg-boundary queue-isolation queue-full-ownership export-exhaustion-retry
+            offload-metadata-rejection headroom-export)
         add_test(NAME fstack-${fstack_case} COMMAND ker-fstack-adapted-test ${fstack_case})
         set_tests_properties(fstack-${fstack_case} PROPERTIES TIMEOUT 30)
         list(APPEND ker_fstack_tests fstack-${fstack_case})
@@ -117,6 +154,6 @@ if(KER_WITH_DPDK)
     set_tests_properties(skb PROPERTIES TIMEOUT 30)
     set_tests_properties(dpdk-memory PROPERTIES TIMEOUT 30)
     list(JOIN DPDK_LIBRARY_DIRS ":" ker_dpdk_library_path)
-    set_tests_properties(checksum timer refcount dpdk-memory skb worker ethernet napi receive arp ipv4-address neighbor arp-receive skb-queue ${ker_fstack_tests} PROPERTIES
+    set_tests_properties(checksum timer refcount dpdk-memory skb worker ethernet napi receive arp ipv4-address neighbor-timer neighbor arp-receive skb-queue timer-list arp-probe-import neighbor-update-import ${ker_fstack_tests} PROPERTIES
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_dpdk_library_path}:$ENV{LD_LIBRARY_PATH}")
 endif()
