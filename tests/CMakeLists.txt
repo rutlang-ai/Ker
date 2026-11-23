@@ -11,6 +11,52 @@ target_link_libraries(ker-refcount-test PRIVATE ker_port_headers ker_linux_port 
 add_test(NAME refcount COMMAND ker-refcount-test)
 
 if(KER_WITH_DPDK)
+    add_executable(ker-fstack-config-unload-test fstack-config-unload.c)
+    target_link_libraries(ker-fstack-config-unload-test PRIVATE ker-example-fstack-config)
+    target_compile_options(ker-fstack-config-unload-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-config-unload-test PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-config-original-unload COMMAND ker-fstack-config-unload-test)
+    set_tests_properties(fstack-config-original-unload PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/upstream/fstack/tests/unit" TIMEOUT 30)
+    add_test(NAME fstack-config-original-import COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
+    add_executable(ker-fstack-a10-dispatch-test fstack-a10-dispatch.c)
+    target_link_libraries(ker-fstack-a10-dispatch-test PRIVATE ker-example-a10-dispatch "${ker_controller_ring_pmd}")
+    target_compile_options(ker-fstack-a10-dispatch-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-a10-dispatch-test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-a10-halfopen-dispatch COMMAND ker-fstack-a10-dispatch-test dispatch)
+    add_test(NAME fstack-a10-window-mechanism COMMAND ker-fstack-a10-dispatch-test mechanism)
+    add_test(NAME fstack-a10-classifier-bounds COMMAND ker-fstack-a10-dispatch-test bounds)
+    add_test(NAME fstack-a10-source-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/a10-dispatch-import.py")
+    set_tests_properties(fstack-a10-halfopen-dispatch fstack-a10-window-mechanism fstack-a10-classifier-bounds
+        fstack-a10-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;dpdk")
+endif()
+
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-parked-tx-test fstack-parked-tx.c)
+    target_link_libraries(ker-fstack-parked-tx-test PRIVATE ker::reload_tx ker::packet_dispatcher "${ker_controller_ring_pmd}")
+    target_compile_options(ker-fstack-parked-tx-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-parked-tx-test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-parked-tx-divert COMMAND ker-fstack-parked-tx-test divert)
+    add_test(NAME fstack-parked-tx-watermark COMMAND ker-fstack-parked-tx-test watermark)
+    add_test(NAME fstack-parked-tx-guard COMMAND ker-fstack-parked-tx-test guard)
+    add_test(NAME fstack-parked-tx-pass COMMAND ker-fstack-parked-tx-test pass)
+    add_test(NAME fstack-parked-tx-ownership COMMAND ker-fstack-parked-tx-test ownership)
+    set_tests_properties(fstack-parked-tx-divert fstack-parked-tx-watermark fstack-parked-tx-guard
+        fstack-parked-tx-pass fstack-parked-tx-ownership PROPERTIES TIMEOUT 30 LABELS "fstack;dpdk")
+endif()
+
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-peer-dispatch-test fstack-peer-dispatch.c)
+    target_link_libraries(ker-fstack-peer-dispatch-test PRIVATE ker::peer_dispatcher "${ker_controller_ring_pmd}")
+    target_compile_options(ker-fstack-peer-dispatch-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-peer-dispatch-test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-peer-dispatch-ownership COMMAND ker-fstack-peer-dispatch-test)
+    set_tests_properties(fstack-peer-dispatch-ownership PROPERTIES TIMEOUT 30 LABELS "fstack;dpdk")
+endif()
+
+if(KER_WITH_DPDK)
     add_test(NAME fstack-flow-map-router COMMAND ker-flow-map-router)
     set_tests_properties(fstack-flow-map-router PROPERTIES TIMEOUT 30 LABELS "fstack;flow-map;dpdk")
     add_executable(ker-fstack-flow-map-test fstack-flow-map.c)
