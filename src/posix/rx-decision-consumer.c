@@ -240,21 +240,11 @@ static int receive_message(int fd, bool nonblocking, struct received_message *me
     if (nonblocking) flags |= MSG_DONTWAIT;
     ssize_t received = (ssize_t)syscall(SYS_recvmsg, fd, &header, flags);
     if (received < 0) return -errno;
-    if (received == 0) return -EPIPE;
-    if ((header.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
-        (size_t)received > sizeof(message->bytes)) {
-        for (struct cmsghdr *item = CMSG_FIRSTHDR(&header); item;
-             item = CMSG_NXTHDR(&header, item)) {
-            if (item->cmsg_level == SOL_SOCKET && item->cmsg_type == SCM_RIGHTS &&
-                item->cmsg_len >= CMSG_LEN(0) &&
-                (item->cmsg_len - CMSG_LEN(0)) % sizeof(int) == 0) {
-                int *fds = (int *)CMSG_DATA(item);
-                size_t count = (item->cmsg_len - CMSG_LEN(0)) / sizeof(int);
-                for (size_t i = 0; i < count; ++i) (void)syscall(SYS_close, fds[i]);
-            }
-        }
-        return -EMSGSIZE;
-    }
+    /* recvmsg can install descriptors even for an empty or truncated record. */
+    int error = 0;
+    if (received == 0) error = -EPIPE;
+    else if ((header.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
+            (size_t)received > sizeof(message->bytes)) error = -EMSGSIZE;
     message->length = (size_t)received;
     for (struct cmsghdr *item = CMSG_FIRSTHDR(&header); item;
          item = CMSG_NXTHDR(&header, item)) {
@@ -266,24 +256,24 @@ static int receive_message(int fd, bool nonblocking, struct received_message *me
             item->cmsg_len >= CMSG_LEN(0) &&
             (item->cmsg_len - CMSG_LEN(0)) % sizeof(int) == 0) {
             size_t count = (item->cmsg_len - CMSG_LEN(0)) / sizeof(int);
-            if (count > 2 || message->descriptor_count + count > 2) {
+            if (count > 2 - message->descriptor_count) {
                 int *received_fds = (int *)CMSG_DATA(item);
                 for (size_t i = 0; i < count; ++i)
                     (void)syscall(SYS_close, received_fds[i]);
-                close_message_fds(message);
-                return -EMSGSIZE;
+                if (!error) error = -EMSGSIZE;
+            } else {
+                memcpy(&message->descriptors[message->descriptor_count], CMSG_DATA(item),
+                    count * sizeof(int));
+                message->descriptor_count += count;
             }
-            memcpy(&message->descriptors[message->descriptor_count], CMSG_DATA(item),
-                count * sizeof(int));
-            message->descriptor_count += count;
-        } else {
-            close_message_fds(message);
-            return -EPROTO;
+        } else if (!error) {
+            error = -EPROTO;
         }
     }
-    if (!message->have_credentials) {
+    if (!message->have_credentials && !error) error = -EPROTO;
+    if (error) {
         close_message_fds(message);
-        return -EPROTO;
+        return error;
     }
     return 0;
 }
