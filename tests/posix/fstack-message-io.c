@@ -187,6 +187,21 @@ static void fixed_duplicate(void)
     CHECK(close(host[0]) == 0 && close(host[1]) == 0);
     finish(c);
 }
+static void host_signal_owner(void)
+{
+    int host[2];
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, host) == 0);
+    CHECK(fcntl(host[0], F_GETOWN) == 0);
+
+    pid_t owner = getpid();
+    CHECK(fcntl(host[0], F_SETOWN, owner) == 0);
+    CHECK(fcntl(host[0], F_GETOWN) == owner);
+    pid_t group = getpgrp();
+    CHECK(group > 0 && fcntl(host[0], F_SETOWN, -group) == 0);
+    errno = EDOM;
+    CHECK(fcntl(host[0], F_GETOWN) == -group && errno == EDOM);
+    CHECK(close(host[0]) == 0 && close(host[1]) == 0);
+}
 static void message_short_read(void)
 {
     struct connection c = connection();
@@ -213,6 +228,7 @@ int main(void)
         {"nonblocking-ioctl-peek-and-queue-length", nonblocking_ioctl},
         {"dup-shared-status-and-independent-lifetime", duplicate_lifetime},
         {"dup2-host-native-replacement", fixed_duplicate},
+        {"host-process-group-owner", host_signal_owner},
         {"short-message-read-retains-stream-remainder", message_short_read},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
