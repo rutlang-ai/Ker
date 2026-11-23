@@ -536,6 +536,9 @@ int ker_sb_preload_epoll_wait_mixed_locked(int fd, struct epoll_event *events,
             if (got < 0) { saved_errno = errno; goto finished; }
             count += got;
         }
+        /* A later poll can fail after the first backend consumed one-shot or
+         * edge-triggered events. Deliver those already collected to the caller. */
+        if (count > 0) result = count;
         if (!remote_first && count < maximum) {
             ker_sb_preload_lock();
             struct ker_socket_client *client = ker_sb_preload_client_locked();
