@@ -1256,7 +1256,7 @@ def _new_private_c34_network_input(args, environ):
 
 
 def _capture_private_c34_source_controller(args, expected, control_profile,
-        network_capture=None, network_temp=None):
+        network_capture=None, network_temp=None, *, test_capture=None):
     """Capture the fixed NEWC34 tuple after bridging the native dict record."""
     if (expected is None or type(expected) is not dict or control_profile is None or
             len(control_profile) != 8 or control_profile[7] is not True or
@@ -1285,7 +1285,13 @@ def _capture_private_c34_source_controller(args, expected, control_profile,
     profile_module = controller_module._c34_profile_module()
     artifact_module = profile_module._provider()
     origin_module = _load_source_origin_module()
-    if Path(control_profile[0]).resolve(strict=False) != artifact_module._FIXED_ARTIFACTS['nginx'][0]:
+    if test_capture is not None and (os.getpid() != 1 or
+            type(test_capture) is not artifact_module.PrivateC34ArtifactCapture or
+            not test_capture.is_test_fixture):
+        raise PermissionError('private C34 requires a captured repository test fixture')
+    expected_nginx = (artifact_module._FIXED_ARTIFACTS['nginx'][0] if test_capture is None
+        else test_capture.artifact('nginx').path)
+    if Path(control_profile[0]).resolve(strict=False) != expected_nginx:
         raise ValueError('private C34 selector rejects a conflicting Nginx executable')
     output_ini = control_profile[3].get('KER_FSTACK_NGINX_INI')
     if type(output_ini) is not str or not output_ini:
@@ -1295,7 +1301,8 @@ def _capture_private_c34_source_controller(args, expected, control_profile,
     if case is None:
         raise ValueError('private C34 selector requires the INI of a supported HUP case')
     selected_fault = origin_module.SOURCE_HUP_FAULTS.get(case)
-    if selected_fault != artifact_module._SOURCE_FAULT:
+    captured_fault = artifact_module._SOURCE_FAULT if test_capture is None else test_capture.source_fault
+    if selected_fault != captured_fault:
         raise ValueError('private C34 selector requires the matching pinned fault build')
     capture = None
     profile = None
@@ -1310,17 +1317,16 @@ def _capture_private_c34_source_controller(args, expected, control_profile,
                 source_network_startup._expected_key(expected)):
             raise ValueError('rendered original-case input differs from the parsed source network record')
 
-        capture = artifact_module.PrivateC34ArtifactCapture.capture(deadline)
+        capture = (artifact_module.PrivateC34ArtifactCapture.capture(deadline)
+            if test_capture is None else test_capture)
         nginx = capture.artifact('nginx')
         fixed_backend = capture.artifact('test_backend')
         if Path(command[0]).resolve(strict=True) != fixed_backend.path:
             raise ValueError('private C34 selector requires the fixed TEST_ONLY backend as args.command[0]')
-        source_root = artifact_module._SOURCE_ROOT.resolve(strict=True)
-        manifest_path = artifact_module._BUILD_MANIFEST.resolve(strict=True)
-        if manifest_path != artifact_module._BUILD_MANIFEST:
-            raise ValueError('private C34 build manifest path changed')
+        source_root = capture.source_root.resolve(strict=True)
         manifest = capture.artifact('build_manifest')
-        if (manifest.path != manifest_path or
+        manifest_path = manifest.path.resolve(strict=True)
+        if test_capture is None and (manifest_path != artifact_module._BUILD_MANIFEST or
                 manifest.sha256 != artifact_module._BUILD_MANIFEST_SHA256):
             raise ValueError('private C34 held build manifest differs from its frozen pin')
         output = ini_path.parent
@@ -3351,7 +3357,7 @@ def primary_channels():
         return (*pairs, *pipes)
 
 
-def main(*, retained_backend_handoff=None, source_shell_controller=None):
+def main(*, retained_backend_handoff=None, source_shell_controller=None, c34_test_capture=None):
     global _COMPANION_RELOAD_REQUESTED
     try:
         args = parse_arguments(defer_worker_limits=True)
@@ -3428,9 +3434,17 @@ def main(*, retained_backend_handoff=None, source_shell_controller=None):
         print(f'ker-run: {error}', file=sys.stderr)
         return 2
     try:
-        source_shell_controller = _select_source_shell_controller(args,
-            source_shell_controller, source_network_expected, control_nginx,
-            private_network_capture, private_network_temp)
+        if c34_test_capture is None:
+            source_shell_controller = _select_source_shell_controller(args,
+                source_shell_controller, source_network_expected, control_nginx,
+                private_network_capture, private_network_temp)
+        else:
+            if (source_shell_controller is not None or retained_backend_handoff is not None or
+                    not args.control_nginx_source_private_c34_profile):
+                raise ValueError('C34 test fixture requires its own private controller')
+            source_shell_controller = _capture_private_c34_source_controller(args,
+                source_network_expected, control_nginx, private_network_capture,
+                private_network_temp, test_capture=c34_test_capture)
         private_network_capture = None
         private_network_temp = None
     except (ImportError, OSError, PermissionError, TypeError, ValueError) as error:
@@ -3464,7 +3478,7 @@ def main(*, retained_backend_handoff=None, source_shell_controller=None):
         print('ker-run: source-shell startup requires its same-process controller',
             file=sys.stderr)
         return 125
-    if private_selected:
+    if private_selected and c34_test_capture is None:
         _close_private_c34_source_controller(source_shell_controller)
         print('ker-run: NEWC34_INTEROP held pending end-to-end qualification of original-shell '
             'ACTIVATE, master cutover, listener retirement, and STOP settlement',
@@ -4454,6 +4468,8 @@ def main(*, retained_backend_handoff=None, source_shell_controller=None):
                 source_shell_controller.unresolved = True
                 containment_unresolved = True
         if containment_unresolved:
+            if c34_test_capture is not None:
+                raise RuntimeError('C34 test fixture did not settle before namespace teardown')
             print('ker-run: supervised source/companion shutdown UNRESOLVED; retaining native broker and worker resources',
                 file=sys.stderr)
             while True:

@@ -1802,12 +1802,17 @@ class SourceShellC34InteropProvider(SourceShellC22Provider):
     def __init__(self, context, broker_readiness, helper_capture):
         import sys
         c34_module = sys.modules.get('_ker_nginx_source_c34_artifacts')
+        origin = getattr(getattr(context, 'owner_live', None), '__self__', None)
+        capture = getattr(origin, 'c34_artifact_capture', None)
+        fixture = (c34_module is not None and
+            type(capture) is c34_module.PrivateC34ArtifactCapture and
+            capture.is_test_fixture and capture.helper_capture is helper_capture)
         if (c34_module is None or
                 Path(c34_module.__file__).resolve(strict=True) !=
                     Path(__file__).with_name('nginx_source_c34_artifact_provider.py').resolve(strict=True) or
                 type(helper_capture) is not c34_module.PrivateC34HelperCapture or
                 helper_capture.source_command_abi != _C28_SOURCE_COMMAND_ABI or
-                helper_capture.sha256.hex() != c34_module._HELPER_SHA256 or
-                helper_capture.build_id != c34_module._HELPER_BUILD_ID):
+                (not fixture and (helper_capture.sha256.hex() != c34_module._HELPER_SHA256 or
+                    helper_capture.build_id != c34_module._HELPER_BUILD_ID))):
             raise TypeError('private C34 provider requires the fixed helper and reviewed ABI1 capture')
         super().__init__(context, broker_readiness, helper_capture)

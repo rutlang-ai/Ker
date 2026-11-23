@@ -1188,9 +1188,78 @@
     {
       "id": "tests/integration/test_graceful_reload.sh::entrypoint",
       "kind": "shell-e2e",
-      "status": "blocked",
-      "reason": "All 17 applicable unchanged upstream shell cases passed with the original verdicts, native STOP acknowledgments, zero outstanding resources, and zero-exit ECHILD in isolated private diagnostic runs. The full rv9 run passed 100 reloads at 15-second intervals, 7,948 fresh connections with zero failures, and flat resource trends. The rt25 run completed the real USR2/WINCH takeover with 90 successful fresh connections and all old workers retired. A reproducible CTest job for the complete original shell matrix remains to be registered. See docs/fstack-graceful-reload-gap.md.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "All 17 applicable cases from the unchanged pinned shell pass under the opt-in CTest matrix. Production and fault fixtures build the original Nginx caller and match the Ker shim to its ELF. Private guests run the original probes against native Linux and DPDK, verify the original zero-exit ECHILD receipt, and check native STOP and resource settlement where applicable. The original rt13 exclusion remains in force. See docs/fstack-graceful-reload-gap.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-original-shell-precheck",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-baseline",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt01",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt02",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rv9",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-gr0",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt12",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt20",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt20b",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt21",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt22",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt23",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt24",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt25",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt26",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt30",
+          "provenance_case": "fstack-original-shell-matrix"
+        },
+        {
+          "ctest": "fstack-original-shell-rt31",
+          "provenance_case": "fstack-original-shell-matrix"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_mtu.sh::entrypoint",
