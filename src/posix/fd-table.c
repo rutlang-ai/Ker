@@ -12,7 +12,8 @@
 #include <lkl.h>
 
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-static struct ker_fd *entries[KER_FD_LIMIT];
+_Static_assert(ATOMIC_POINTER_LOCK_FREE == 2, "Host fd lookup requires lock-free pointers");
+static _Atomic(struct ker_fd *) entries[KER_FD_LIMIT];
 static struct ker_fd *private_hosts;
 struct host_snapshot { int fd; struct host_snapshot *next; };
 static struct host_snapshot *snapshots;
@@ -58,8 +59,11 @@ static void unregister_snapshot(int fd)
 struct ker_fd *ker_fd_get(int fd)
 {
     if (fd < 0 || fd >= KER_FD_LIMIT) return NULL;
+    /* A signal handler can use a host fd while this thread holds the table
+     * mutex. Only a native entry needs a locked lookup and reference. */
+    if (!atomic_load_explicit(&entries[fd], memory_order_relaxed)) return NULL;
     pthread_mutex_lock(&mutex);
-    struct ker_fd *entry = entries[fd];
+    struct ker_fd *entry = atomic_load_explicit(&entries[fd], memory_order_relaxed);
     if (entry) atomic_fetch_add_explicit(&entry->references, 1, memory_order_relaxed);
     pthread_mutex_unlock(&mutex);
     return entry;

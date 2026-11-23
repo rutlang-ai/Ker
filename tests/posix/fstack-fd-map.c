@@ -8,6 +8,8 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/syscall.h>
@@ -16,6 +18,57 @@
 #include <lkl_host.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s (errno=%d)\n", __FILE__, __LINE__, #x, errno); exit(1); } } while (0)
+static _Thread_local volatile sig_atomic_t interrupt_next_lock;
+static _Thread_local volatile sig_atomic_t in_signal_handler;
+static volatile sig_atomic_t signal_pipe;
+
+int __real_pthread_mutex_lock(pthread_mutex_t *mutex);
+
+int __wrap_pthread_mutex_lock(pthread_mutex_t *mutex)
+{
+    if (in_signal_handler) {
+        static const char message[] = "Host fd lookup tried to lock in a signal handler\n";
+        (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+        _exit(2);
+    }
+    int rc = __real_pthread_mutex_lock(mutex);
+    if (!rc && interrupt_next_lock) {
+        interrupt_next_lock = 0;
+        CHECK(raise(SIGUSR1) == 0);
+    }
+    return rc;
+}
+
+static void notify_pipe(int signal_number)
+{
+    (void)signal_number;
+    int saved = errno;
+    in_signal_handler = 1;
+    if (ker_fd_get(signal_pipe) != NULL || write(signal_pipe, "s", 1) != 1)
+        _exit(3);
+    in_signal_handler = 0;
+    errno = saved;
+}
+
+static void host_pipe_during_native_lookup(int app)
+{
+    int pipe_fds[2];
+    CHECK(pipe2(pipe_fds, O_CLOEXEC | O_NONBLOCK) == 0);
+    signal_pipe = pipe_fds[1];
+    struct sigaction action = {.sa_handler = notify_pipe}, previous;
+    CHECK(sigemptyset(&action.sa_mask) == 0);
+    CHECK(sigaction(SIGUSR1, &action, &previous) == 0);
+
+    interrupt_next_lock = 1;
+    struct ker_fd *entry = ker_fd_get(app);
+    CHECK(!interrupt_next_lock && entry && ker_fd_put(entry) == 0);
+    char byte = 0;
+    CHECK(read(pipe_fds[0], &byte, 1) == 1 && byte == 's');
+
+    CHECK(sigaction(SIGUSR1, &previous, NULL) == 0);
+    CHECK(close(pipe_fds[0]) == 0 && close(pipe_fds[1]) == 0);
+}
+
 static int native_socket(int type)
 {
     long fd = lkl_sys_socket(LKL_AF_INET, type, 0);
@@ -128,6 +181,7 @@ int main(void)
     int app = ker_fd_export(first, KER_FD_SOCKET, -1, O_CLOEXEC, 0, -1);
     CHECK(app >= 0);
     CHECK(syscall(SYS_fcntl, app, F_GETFD) == FD_CLOEXEC);
+    host_pipe_during_native_lookup(app);
     struct ker_fd *old = ker_fd_get(app);
     CHECK(old && old->native == first && old->kind == KER_FD_SOCKET);
     socket_type(old->native, LKL_SOCK_DGRAM);
