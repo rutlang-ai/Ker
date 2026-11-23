@@ -2,6 +2,9 @@
 import importlib.util
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -28,6 +31,34 @@ class DpdkRuntimeTests(unittest.TestCase):
             # this fixture-owned directory instead of a global runtime path.
             (runtime / 'dpdk').mkdir(mode=0o700)
             self.assertTrue((runtime / 'dpdk').is_dir())
+
+    def test_private_runtime_is_owned_and_writable_by_mapped_namespace_root(self):
+        unshare = shutil.which('unshare')
+        if not unshare:
+            self.skipTest('unshare is unavailable')
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / 'runtime'
+            env = dpdk_runtime.private_runtime_environment(runtime, {
+                'RUNTIME_DIRECTORY': '/var/run',
+                'XDG_RUNTIME_DIR': '/run/user/0',
+            })
+            probe = (
+                'import os,pathlib,sys; p=pathlib.Path(sys.argv[1]); '
+                'assert os.getuid()==0; '
+                'assert int(open("/proc/self/uid_map").read().split()[0])==0; '
+                'assert p.stat().st_uid==os.getuid(); '
+                'assert p.stat().st_mode & 0o777==0o700; '
+                'assert os.environ["RUNTIME_DIRECTORY"]==str(p); '
+                'assert os.environ["XDG_RUNTIME_DIR"]==str(p); '
+                'd=p/"dpdk"; d.mkdir(mode=0o700); (d/"probe").touch()'
+            )
+            result = subprocess.run([unshare, '-Urn', sys.executable, '-c', probe, str(runtime.resolve())],
+                env=env, text=True, capture_output=True, timeout=10)
+            if result.returncode and ('Operation not permitted' in result.stderr or
+                                      'unshare failed' in result.stderr):
+                self.skipTest('user/network namespaces are unavailable: ' + result.stderr.strip())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((runtime / 'dpdk' / 'probe').is_file())
 
     def test_rejects_runtime_directory_with_group_or_other_access(self):
         with tempfile.TemporaryDirectory() as temporary:

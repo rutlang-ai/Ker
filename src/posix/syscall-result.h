@@ -11,4 +11,5 @@ static inline long ker_native_result(long value)
     if (value < 0) { errno = (int)-value; return -1; }
     return value;
 }
+long ker_native_write_result(long value, int flags);
 #endif

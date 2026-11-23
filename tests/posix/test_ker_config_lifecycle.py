@@ -41,6 +41,62 @@ class ConfigLifecycleTests(unittest.TestCase):
         self.assertNotIn('Traceback', result.stderr)
         self.assertNotIn('missing-ker-library', result.stderr.splitlines()[-1])
 
+    def test_missing_startup_settings_reject_before_worker_or_application(self):
+        marker = Path(self.directory.name) / 'executed'
+        worker = Path(self.directory.name) / 'worker'
+        worker.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\nexit 99\n')
+        worker.chmod(0o700)
+        # Upstream empty_ini actually invokes ff_load_config with no -c and
+        # no other options; it never creates or reads an empty INI file.
+        for options, missing in (([], ('address', 'port', 'eal')),
+                                 (['--address', '198.18.0.2/24'], ('port', 'eal')),
+                                 (BASE[:-1], ('eal',))):
+            with self.subTest(options=options):
+                result = subprocess.run([sys.executable, str(SOURCE), *options,
+                    '--io-worker', str(worker), '--library', '/missing-ker-library',
+                    '--', str(worker)], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                diagnostic = result.stderr.splitlines()[-1]
+                self.assertTrue(diagnostic.endswith('required via CLI or --config: ' +
+                    ', '.join('--' + name for name in missing)), diagnostic)
+                self.assertNotIn('Traceback', result.stderr)
+                self.assertFalse(marker.exists())
+        # Also check the exact no-options invocation used by the source.
+        result = subprocess.run([sys.executable, str(SOURCE)], capture_output=True,
+                                text=True, timeout=5)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('required via CLI or --config: --address, --port, --eal',
+                      result.stderr.splitlines()[-1])
+        self.assertEqual(self.parse(MINIMAL).port, 'net_tap0')
+
+    def test_missing_application_rejects_after_valid_settings(self):
+        result = subprocess.run([sys.executable, str(SOURCE), *BASE,
+            '--library', '/missing-ker-library', '--io-worker', '/missing-worker'],
+            capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertTrue(result.stderr.splitlines()[-1].endswith(
+            'an application command is required after --'), result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertEqual(self.parse(MINIMAL).command, ['/bin/true'])
+
+    def test_valid_cli_needs_no_config_file_and_empty_file_needs_cli_settings(self):
+        cli = launcher.parse_arguments([*BASE, '--', '/bin/true'])
+        empty = self.parse('', BASE)
+        minimal = self.parse(MINIMAL)
+        for args in (cli, empty, minimal):
+            self.assertEqual(str(args.address), '198.18.0.2/24')
+            self.assertEqual(args.port, 'net_tap0')
+            self.assertEqual(args.command, ['/bin/true'])
+        self.assertEqual(cli.eal_args, empty.eal_args)
+        self.path.write_text('')
+        result = subprocess.run([sys.executable, str(SOURCE), '--config', str(self.path),
+            '--library', '/missing-ker-library', '--', '/bin/true'],
+            capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('required via CLI or --config: --address, --port, --eal',
+                      result.stderr.splitlines()[-1])
+        self.assertNotIn('Traceback', result.stderr)
+
     def test_minimal_populates_typed_settings_and_defaults(self):
         args = self.parse(MINIMAL)
         self.assertEqual(str(args.address), '198.18.0.2/24')
@@ -49,6 +105,52 @@ class ConfigLifecycleTests(unittest.TestCase):
         self.assertEqual((args.mtu, args.max_mtu, args.mbuf_mode), (1500, 9000, 'large'))
         self.assertFalse(args.all_multicast)
         self.assertEqual(args.command, ['/bin/true'])
+
+    def test_malformed_vlan_section_rejects_before_worker_and_application(self):
+        marker = Path(self.directory.name) / 'executed'
+        worker = Path(self.directory.name) / 'worker'
+        worker.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\nexit 99\n')
+        worker.chmod(0o700)
+        good = '[vlan.10]\naddresses=198.19.10.2/24\n'
+        # F-Stack's malformed [vlanXX] suffix is expressed in Ker's
+        # supported [vlan.ID] syntax; the complete schemas are different.
+        for tag in ('XX', '', '-1', '+10', '10x', '１０', '0', '4095'):
+            bad = f'[vlan.{tag}]\naddresses=198.19.20.2/24\n'
+            for sections in (bad + good, good + bad):
+                with self.subTest(tag=tag, bad_first=sections.startswith(bad)):
+                    self.path.write_text(MINIMAL + sections)
+                    result = subprocess.run([sys.executable, str(SOURCE),
+                        '--config', str(self.path), '--library', '/missing-ker-library',
+                        '--io-worker', str(worker), '--', str(worker)],
+                        capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn('VLAN requires ID=IP/PREFIX', result.stderr.splitlines()[-1])
+                    self.assertNotIn('Traceback', result.stderr)
+                    self.assertFalse(marker.exists())
+
+    def test_vlan_reader_failure_has_no_partial_result_and_corrected_load_recovers(self):
+        good = '[vlan.10]\naddresses=198.19.10.2/24\n'
+        bad = '[vlan.XX]\naddresses=198.19.20.2/24\n'
+        for sections in (bad + good, good + bad):
+            with self.subTest(sections=sections):
+                self.path.write_text(MINIMAL + sections)
+                with self.assertRaisesRegex(ValueError, 'VLAN requires ID=IP/PREFIX'):
+                    launcher.load_configuration(self.path)
+                args = self.parse(MINIMAL + good + bad.replace('vlan.XX', 'vlan.20'))
+                self.assertEqual([tag for tag, _ in args.vlans], [10, 20])
+                self.assertEqual([str(address) for _, addresses in args.vlans
+                                  for address in addresses],
+                                 ['198.19.10.2/24', '198.19.20.2/24'])
+                self.assertEqual(self.parse(MINIMAL).vlans, ())
+
+    def test_vlan_section_boundaries_and_numeric_alias_collision(self):
+        text = MINIMAL + ('[vlan.1]\naddresses=198.19.1.2/24\n'
+                          '[vlan.4094]\naddresses=198.19.2.2/24\n')
+        self.assertEqual([tag for tag, _ in self.parse(text).vlans], [1, 4094])
+        self.reject_before_setup(MINIMAL + (
+            '[vlan.01]\naddresses=198.19.1.2/24\n'
+            '[vlan.1]\naddresses=198.19.2.2/24\n'), 'unique VLAN IDs')
+        self.assertEqual([tag for tag, _ in self.parse(text).vlans], [1, 4094])
 
     def test_empty_and_no_dpdk_sections_keep_defaults(self):
         for text in ('', '[network]\naddress=198.18.0.2/24\n'):

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Original virtio-user/vhost-net IPv4/IPv6 TSO with independent wire checks."""
 import argparse
+import atexit
 import concurrent.futures
 import importlib.util
 import json
@@ -13,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+
+from dpdk_runtime import private_runtime_environment
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('offloads', Path(__file__).with_name('tx-offloads.py'))
@@ -45,6 +48,9 @@ def main():
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
         if args.native_buffers: command.append('--native-buffers')
         return subprocess.run(command, env=environment).returncode
+    runtime = tempfile.TemporaryDirectory(prefix='ker-virtio-runtime-')
+    atexit.register(runtime.cleanup)
+    environment = private_runtime_environment(Path(runtime.name) / 'dpdk', environment)
     for command in (
             ['ip', 'link', 'set', 'lo', 'up'],
             ['ip', 'link', 'add', 'offhost', 'type', 'veth', 'peer', 'name', 'offlink'],
@@ -102,7 +108,7 @@ def main():
                 subprocess.run(['ip', *family, 'neigh', 'flush', 'dev', 'offhost'], check=True)
             sockets = []
             wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
-            wire.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+            offloads.configure_capture_socket(wire)
             wire.bind(('offhost', 0))
             stop = threading.Event()
             process = None
@@ -185,7 +191,7 @@ def main():
                                 native = record['native']
                                 require(native['buffer_allocations'] >= 75 and
                                         native['buffer_allocations'] == native['buffer_releases'] and
-                                        native['buffer_shutdown_releases'] == 1 and
+                                        native['buffer_shutdown_releases'] == 2 and
                                         native['buffers_live'] == native['buffer_bytes'] == native['buffer_option_guards_live'] == 0,
                                         'native VMA lifetime/reclamation failure: ' + str(native))
                             require(info['driver'] == 'net_virtio_user' and info['mac'] == '02:11:22:33:44:55',

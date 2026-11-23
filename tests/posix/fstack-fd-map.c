@@ -18,6 +18,11 @@
 #include <lkl_host.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s (errno=%d)\n", __FILE__, __LINE__, #x, errno); exit(1); } } while (0)
+
+/* This standalone fd-table test starts LKL directly rather than through the
+ * POSIX lifecycle; fd-table's own mappings identify its native descriptors. */
+bool ker_native_ready(void) { return false; }
+
 static _Thread_local volatile sig_atomic_t interrupt_next_lock;
 static _Thread_local volatile sig_atomic_t in_signal_handler;
 static volatile sig_atomic_t signal_pipe;

@@ -12,6 +12,7 @@
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s errno=%d\n", __FILE__, __LINE__, #x, errno); exit(1); } } while (0)
 static const char payload[] = "native-ipv6";
+static const char ipv4_final_ack[] = "native-vlan-final-ack";
 static int make_socket(int family, int type)
 {
     int fd = socket(family, type, 0), one = 1;
@@ -140,6 +141,12 @@ int main(int argc, char **argv)
     CHECK(recvfrom(ipv4, buffer, sizeof(buffer), 0, (void *)&peer, &length) == sizeof(payload));
     CHECK(!memcmp(buffer, payload, sizeof(payload)));
     CHECK(sendto(ipv4, buffer, sizeof(buffer), 0, (void *)&peer, length) == sizeof(payload));
+    struct sockaddr_in ack_peer = {0};
+    socklen_t ack_length = sizeof(ack_peer);
+    char ack[sizeof(ipv4_final_ack)];
+    CHECK(recvfrom(ipv4, ack, sizeof(ack), 0, (void *)&ack_peer, &ack_length) == sizeof(ack));
+    CHECK(!memcmp(ack, ipv4_final_ack, sizeof(ack)) && ack_peer.sin_family == peer.sin_family &&
+          ack_peer.sin_port == peer.sin_port && ack_peer.sin_addr.s_addr == peer.sin_addr.s_addr);
     CHECK(close(ipv4) == 0);
     puts("PASS: device-bound IPv6 VLAN TCP/UDP, metadata, VIPs and mixed IPv4");
     return 0;

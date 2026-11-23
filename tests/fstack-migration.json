@@ -850,7 +850,7 @@
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker’s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker’s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
+      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker\u2019s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker\u2019s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
       "ker_tests": [
         {
           "ctest": "ethdev-rx",
@@ -918,11 +918,23 @@
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Production epoch-status queries the resident exact-pidfd census. Distinct actual master/secondary epochs remain live while borrowers survive master death, including a frozen orphan. After exact borrower death and registration release their epochs become non-live while the resident epoch0 remains live. Reusing the old slot for a newer real secondary never revives the old epoch. This qualifies the source TC-4 liveness verdict, not its F-Stack heartbeat timeout implementation, drain-peer protocol or full reload flow.",
+      "reason": "Production epoch-status queries the resident exact-pidfd census. Distinct actual master/secondary epochs remain live while borrowers survive master death, including a frozen orphan. After exact borrower death and registration release their epochs become non-live while the resident epoch0 remains live. Reusing the old slot for a newer real secondary never revives the old epoch. This qualifies the source TC-4 liveness verdict, not its F-Stack heartbeat timeout implementation, drain-peer protocol or full reload flow. Supplemental primary-only master lifecycle profiles distinguish live socket EOF and SIGSTOP from exact process death, preserve unrelated epochs, reject foreign/stale releases and verify reclaimed-slot reuse; secondary/borrower semantics continue to rely on the standby test.",
       "ker_tests": [
         {
           "ctest": "native-fstack-session-standby",
           "provenance_case": "native-fstack-session-standby"
+        },
+        {
+          "ctest": "native-fstack-session-control-master-eof",
+          "provenance_case": "native-fstack-session-master-lifetime"
+        },
+        {
+          "ctest": "native-fstack-session-control-master-death",
+          "provenance_case": "native-fstack-session-master-lifetime"
+        },
+        {
+          "ctest": "native-fstack-session-control-master-frozen",
+          "provenance_case": "native-fstack-session-master-lifetime"
         }
       ]
     },
@@ -1285,9 +1297,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_empty_ini",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The pinned case named empty_ini invokes the loader with no -c and no other arguments; it does not open an empty file. The real Ker CLI likewise rejects the exact no-options invocation and reports all missing startup settings before library/worker/application setup. Tests also cover progressively supplied CLI fields, missing application, valid CLI-only and empty-file-plus-CLI recovery. Ker allows a complete CLI-only configuration and reports argparse exit2 instead of the F-Stack internal return-1; config filename/global layout equivalence is not claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-lifecycle",
+          "provenance_case": "native-fstack-missing-launch-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_isolated",
@@ -1480,9 +1497,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_bad_section_returns_zero",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The source malformed [vlanXX] section must fail configuration loading. Ker adapts this through its supported [vlan.ID] syntax: [vlan.XX] and malformed/non-ASCII/out-of-range tags fail the actual reader and CLI with exit2 before library, worker or application setup. Tests place malformed sections both before and after a valid VLAN, then correct the tag and verify both independent address records and a clean subsequent no-VLAN load. Valid IDs1/4094 and decimal alias collision are also tested. This is a strict typed-loader scenario adaptation, not F-Stack section spelling, global VLAN-array ABI or callback return-value compatibility; permissive orphan/filter and out-of-array skip contracts remain unadapted.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-lifecycle",
+          "provenance_case": "native-fstack-vlan-section-validation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vdev_cfg_handler_no_nb_vdev_returns_zero",
@@ -1540,9 +1562,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_port_cfg_handler_bad_section_returns_zero",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The pinned malformed [portXX] section must fail loading. The real Ker reader instead uses named [interface.NAME] sections: malformed empty, punctuated, whitespace, non-ASCII and overlong names reject with ValueError and CLI exit2 before worker/application execution, before or after a valid interface. Correcting the name recovers both independent typed records; later loads retain no partial or shared state. Valid1/32-character and XX names remain legal. This adapts the rejection scenario, not F-Stack numeric port IDs, callback return0/global-array ABI, full fixtures or network traffic. Literal [portXX] stays an unknown section; the permissive over-max skip case remains blocked.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-interface-section-validation",
+          "provenance_case": "native-fstack-interface-section-validation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_port_cfg_handler_id_over_max_returns_one",
@@ -1731,7 +1758,7 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_extra_keys",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Typed file-prefix and base-virtual-address configuration have real original-EAL runtime evidence: concurrent namespace/primary locks and actual mapped-address regions, with independent host TCP/UDP.",
+      "reason": "Typed file-prefix and base-virtual-address configuration have real original-EAL runtime evidence: concurrent namespace/primary locks and actual mapped-address regions, with independent host TCP/UDP. The exact source bond timing tuple poll100/up200/down300 now has original-PMD readback, independent Linux LACP, dual-stack ICMP/member-path-loss and zero-buffer runtime evidence.",
       "ker_tests": [
         {
           "ctest": "native-fstack-eal-file-prefix",
@@ -1740,15 +1767,23 @@
         {
           "ctest": "native-fstack-eal-base-virtaddr",
           "provenance_case": "native-fstack-eal-base-virtaddr"
+        },
+        {
+          "ctest": "native-fstack-typed-bond-source-timings",
+          "provenance_case": "native-fstack-bond-source-timings"
+        },
+        {
+          "ctest": "native-fstack-typed-bond-config",
+          "provenance_case": "native-fstack-bond-source-timings"
         }
       ],
-      "remaining": "The complete source fixture is not an exact Ker runtime configuration: `[dpdk] allow` and numeric `port_list` are not represented in the typed schema, and its `iface=net_pcap0` plus Unix-socket `path=/tmp/x` tuple is rejected by the pinned DPDK virtio-user PMD. Ker already validates and forwards vdev `cq` to the original DPDK argument and applies bond poll/up/down timing through original PMD setter/getter APIs; the qualified bond runtime profile read back down_delay=200, while the source fixture sets 300 and that exact value is not separately runtime-verified. The source F-Stack global config layout is not reproduced. Ker uses the literal file prefix rather than adding container-, and the base-virtual-address option remains an original-EAL hint: exact placement, collision fallback, shared hugepage mapping and secondary use are not claimed."
+      "remaining": "The complete source fixture is not an exact Ker runtime configuration: `[dpdk] allow` and numeric `port_list` are not represented in the typed schema, and its `iface=net_pcap0` plus Unix-socket `path=/tmp/x` tuple is rejected by the pinned DPDK virtio-user PMD. Ker already validates and forwards vdev `cq` to the original DPDK argument and applies bond poll/up/down timing through original PMD setter/getter APIs; both the established poll100/up100/down200 and the exact source poll100/up200/down300 tuples are now read back in real LACP/dual-stack ICMP runs with member-path loss and complete buffer cleanup; precise millisecond failover timing and physical NIC behavior are not qualified. The source F-Stack global config layout is not reproduced. Ker uses the literal file prefix rather than adding container-, and the base-virtual-address option remains an original-EAL hint: exact placement, collision fallback, shared hugepage mapping and secondary use are not claimed."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Exact pinned repeated bond and vdev strings retain final members/primary/MAC/policy/iface/path values. Repeated-invalid-to-valid configuration drives real original DPDK LACP bond and virtio-user/vhost traffic with final settings and complete buffer cleanup. The supported kernel-backend path=/dev/vhost-net with explicit iface now has actual IPv4/IPv6 TCP/UDP checksum/TSO, queue geometry and cleanup evidence.",
+      "reason": "Exact pinned repeated bond and vdev strings retain final members/primary/MAC/policy/iface/path values. Repeated-invalid-to-valid configuration drives real original DPDK LACP bond and virtio-user/vhost traffic with final settings and complete buffer cleanup. The supported kernel-backend path=/dev/vhost-net with explicit iface now has actual IPv4/IPv6 TCP/UDP checksum/TSO, queue geometry and cleanup evidence. The literal repeated source bond sequence now also has actual mode4 PMD readback for final members0/1, primary1,MACcc:dd:ee:ff:00:11 and l34, independent Linux LACP/dual-stack ICMP and member-path-loss cleanup evidence; source eth0/eth1 are explicitly mapped to TAP ethdev IDs.",
       "ker_tests": [
         {
           "ctest": "native-fstack-typed-vdev-config",
@@ -1769,6 +1804,14 @@
         {
           "ctest": "native-fstack-virtio-kernel-offloads",
           "provenance_case": "native-fstack-virtio-kernel-config"
+        },
+        {
+          "ctest": "native-fstack-typed-bond-source-repeat",
+          "provenance_case": "native-fstack-bond-source-repeat"
+        },
+        {
+          "ctest": "native-fstack-typed-bond-config",
+          "provenance_case": "native-fstack-bond-source-repeat"
         }
       ],
       "remaining": "The literal source fixture combines iface with a Unix socket path, which pinned DPDK explicitly rejects; the supported named vhost-kernel backend is separately qualified. Full F-Stack config structs, combined bond/vdev topology and C allocation-failure/strdup/free/valgrind ABI remain unqualified under issue224. Active kernel-backend queue pairs are not RSS evidence."
@@ -1915,9 +1958,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_disabled_port_over_1500_fails",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker adapts the disabled-jumbo policy through [dpdk] mtu_enable=0 / --no-mtu-enable: requested MTU above1500 is rejected before worker/application setup, while standard MTU succeeds. The effective startup/live ceiling on every interface is capped at1500, preserving any lower configured maximum. Tests cover CLI precedence, invalid limits, state isolation, additional interfaces and actual original-Linux/DPDK live MTU rejection followed by bidirectional ICMP and exact buffer reclamation. Ker preserves its existing enabled default; source global config ABI and whole fixture schema are not claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-mtu-enable-config",
+          "provenance_case": "native-fstack-mtu-enable"
+        },
+        {
+          "ctest": "native-fstack-mtu-enable-live",
+          "provenance_case": "native-fstack-mtu-enable"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_large_65535_fails",
@@ -2065,9 +2117,35 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_14_reload_msg_serdes",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Partial control-message boundary adaptation through the actual resident process, original DPDK EAL and production Python client over real credential-checked AF_UNIX SOCK_SEQPACKET connections. Three profiles verify STATUS/EPOCH_LIVE roundtrips including high-bit64-bit fields; truncated/oversized records disconnect; malformed magic/version/status, forbidden query fields and unsupported commands are rejected with signed errno replies and valid successor queries. Exact MASTER/RELEASE retransmissions return byte-identical cached replies; conflicting or older sequence numbers cannot release the epoch. Every profile verifies511 available objects, zero leases/users and exact resident/socket cleanup. No host-socket result is presented as native network-stack delivery. Additional Ker control-adapter profiles verify independent same-PID master connections and replay caches, foreign/released connection release rejection, corrupt and stale credentials, all three nonresident slots exhausted with cached ENOSPC, successful higher-sequence retry after release, and slot reuse with a strictly newer epoch. Rejected requests preserve live epochs, zero users and all511 available objects; final exact release and resident cleanup are required. These are primary-only adapter extensions, not evidence for F-Stack reload command semantics or cross-process ownership.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-control-roundtrip",
+          "provenance_case": "native-fstack-session-control-frames"
+        },
+        {
+          "ctest": "native-fstack-session-control-malformed",
+          "provenance_case": "native-fstack-session-control-frames"
+        },
+        {
+          "ctest": "native-fstack-session-control-replay",
+          "provenance_case": "native-fstack-session-control-frames"
+        },
+        {
+          "ctest": "native-fstack-session-control-isolation",
+          "provenance_case": "native-fstack-session-control-frames"
+        },
+        {
+          "ctest": "native-fstack-session-control-capacity",
+          "provenance_case": "native-fstack-session-control-frames"
+        },
+        {
+          "ctest": "native-fstack-session-control-recycle",
+          "provenance_case": "native-fstack-session-control-frames"
+        }
+      ],
+      "remaining": "F-Stack FF_RELOAD fill/parse ABI and positive READY/HANDOVER_REQ/HANDOVER_ACK/DRAIN_PROGRESS/DRAIN_DONE/REJECT/QUERY command semantics, generation/status/heartbeat payload meanings, NULL input and optional C output-pointer contracts are not implemented. Ker uses its own versioned same-host control ABI. These primary-only control-frame tests do not qualify secondary shared-ring messaging, Linux packet traffic, TCP continuity or full reload/handover."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_20_queue_mapping_config",
@@ -2128,9 +2206,23 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_name_isolation",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Partial master namespace-isolation adaptation through the production resident name builder and original DPDK ring APIs. All128 supported slot/generation/process/channel tuples create distinct names and actual ring objects; duplicate creation fails with EEXIST without replacing an existing object. Exact buffer capacity succeeds, truncation preserves canaries and invalid coordinates are explicitly rejected. All128 rings each hold64 distinct caller-owned tokens: full enqueue fails, FIFO pointer/byte identity is preserved and no other coordinate is consumed. Draining/freeing and recreating slots1/2 preserves queued objects in slots0/3. Every ring is drained, freed and absent from lookup before original EAL cleanup.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-namespace-names",
+          "provenance_case": "native-fstack-session-ring-namespaces"
+        },
+        {
+          "ctest": "native-fstack-session-namespace-isolation",
+          "provenance_case": "native-fstack-session-ring-namespaces"
+        },
+        {
+          "ctest": "native-fstack-session-namespace-recreate",
+          "provenance_case": "native-fstack-session-ring-namespaces"
+        }
+      ],
+      "remaining": "Ker has4 slots,2 generations,4 processes and4 channels. This does not implement the source F-Stack process IDs7/127, FF_SYSCTL..FF_MSG_NUM message-type namespace, legacy/no-epoch name equivalence or literal ff_msg_ring_* ABI. These are primary-only original-DPDK ring/component tests with caller-owned tokens, not mbuf leases, resident registration, secondary-EAL visibility, packet delivery, epoch admission/recycle authorization or full reload."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_graceful_zero_epoch_invariance",
@@ -2149,9 +2241,23 @@
     {
       "id": "tests/unit/test_ff_config.c::test_p2_hw_user_proof",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Partial user-registration proof through actual resident pre-EAL control reservations and read-only STATUS queries. Independent direct children perform byte-identical RESERVE retries that retain exactly one mbuf/user, duplicate-coordinate requests on a second connection that return EBUSY without changing the original lease, and invalid generation/process bounds or slot/session/epoch/token requests that allocate nothing. A valid generation1/process3 reservation succeeds after all invalid requests on the same connection. The live accepted borrower blocks MASTER RELEASE, survives transport EOF and is reclaimed only after exact pidfd death; final release restores511 available objects and zero slots/users.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-control-reservation-replay",
+          "provenance_case": "native-fstack-session-reservation-admission"
+        },
+        {
+          "ctest": "native-fstack-session-control-reservation-collision",
+          "provenance_case": "native-fstack-session-reservation-admission"
+        },
+        {
+          "ctest": "native-fstack-session-control-reservation-bounds",
+          "provenance_case": "native-fstack-session-reservation-admission"
+        }
+      ],
+      "remaining": "Only control-reservation registration and census are covered. These children do not attach a secondary EAL or use hardware. The source hardware-user ACTIVE/STOPPED table ABI, own user_add idempotence across distinct operations, explicit stop/release acknowledgements, users_clear/epoch_users_clear behavior and independent hardware-coordinate proofs remain unimplemented. Identical sequence replay is transport idempotence; Ker deliberately rejects a fresh RESERVE on an already reserved connection with EINVAL and a duplicate coordinate with EBUSY, so these are not equivalent to the source idempotent user_add API. No complete source pass, RX takeover or packet delivery is claimed."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_p2_reclaim_needs_user_proof",
@@ -2163,16 +2269,44 @@
     {
       "id": "tests/unit/test_ff_config.c::test_p2_release_epoch_needs_proof",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Partial release-proof adaptation through real resident control leases. Independent direct-child processes reserve actual control-pool mbufs at authenticated slot/generation/process coordinates. MASTER RELEASE returns EBUSY while a borrower lives, including after its socket EOF; no epoch or lease is lost. Exact normal exit or SIGKILL permits pidfd-based reclamation. With two borrowers at generation0/process0 and generation1/process3, reaping the first returns exactly one object but the survivor still blocks release; only the final death permits release. Every stage checks exact user/object counts and epoch liveness, with511 objects and zero slots/users at shutdown.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-control-reservation-eof",
+          "provenance_case": "native-fstack-session-reservation-proof"
+        },
+        {
+          "ctest": "native-fstack-session-control-reservation-death",
+          "provenance_case": "native-fstack-session-reservation-proof"
+        },
+        {
+          "ctest": "native-fstack-session-control-reservation-coordinates",
+          "provenance_case": "native-fstack-session-reservation-proof"
+        }
+      ],
+      "remaining": "These children reserve control leases only: they do not attach a secondary EAL, enter hardware, acknowledge STOPPED, transfer RX ownership to a new generation, test the bounded hardware reclaim timeout/refusal counter, or implement the F-Stack ff_reload_rx_release_epoch API. The original source owner-generation flip after proof remains unqualified; no complete source pass or network delivery is claimed."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_p2_orphan_workers_keep_epoch_live",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Partial orphan-epoch lifetime adaptation using real resident control reservations. A distinct master registers one or two direct-child borrowers, then dies by SIGKILL while the borrowers remain alive. EOF-disconnected and SIGSTOP-frozen borrowers retain their exact mbuf leases and epoch; two generation/process coordinates are reclaimed separately only after their exact pidfd deaths, and the final borrower death retires the epoch and frees the slot. A separate live master and resident epoch0 remain live throughout. Reuse requires a newer epoch and rejects the retired ticket. Each stage checks exact user/object counts; final resident cleanup restores511 objects and removes its socket.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-orphan-reservation-eof",
+          "provenance_case": "native-fstack-session-orphan-reservations"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-reservation-frozen",
+          "provenance_case": "native-fstack-session-orphan-reservations"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-reservation-staged",
+          "provenance_case": "native-fstack-session-orphan-reservations"
+        }
+      ],
+      "remaining": "These are pre-EAL control reservations, not secondary EALs or hardware users. Ker retains exact pidfd-backed registrations rather than F-Stack heartbeat timestamps. The source fresh/stale stamp takeover decisions, live-master/stale-stamp contrast, retired-slot takeover semantics, RX ownership transfer and ff_reload_gendir_rx_reclaim return/counter ABI remain unqualified. No complete source pass, hardware access or network delivery is claimed."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rx15_ring_user_census_and_purge_lock",
@@ -2799,9 +2933,35 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_rx15_primary_purges_orphaned_rings",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Partial resident-component adaptation using the production generation-ring adapter, real original DPDK EAL/rings/pools and real child pidfds. Three profiles seed16 distinct objects across eight RX/TX rings: exact live identities and six forged identity fields cannot reclaim or alter queued bytes/counts, including forged requests after death proof; confirmed generation1 death reclaims exactly8 objects while preserving generation0 RX and generation1 TX for its live consumer. The consumer either drains exact retained pointers/bytes in FIFO order or dies, allowing the final8 objects to be reclaimed. Replay fails and the127-object pool is fully restored. All adapter calls execute in the primary; children provide lifetimes only, not secondary EALs or packet workers. Three additional in-flight profiles now qualify active live-consumer RX/TX lease refusal, bounded reap timeout with gate rollback, partial-return refusal and complete-return recovery. This is not the source external purge-owner lock/reset API contract.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-orphan-live",
+          "provenance_case": "native-fstack-session-orphan-safety"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-identity",
+          "provenance_case": "native-fstack-session-orphan-safety"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-reap",
+          "provenance_case": "native-fstack-session-orphan-safety"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-inflight-rx",
+          "provenance_case": "native-fstack-session-orphan-inflight"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-inflight-tx",
+          "provenance_case": "native-fstack-session-orphan-inflight"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-inflight-both",
+          "provenance_case": "native-fstack-session-orphan-inflight"
+        }
+      ],
+      "remaining": "The source no-directory and not-yet-attached-consumer preservation, externally held purge-owner lock/reset timeout, dead-marker retirement with fresh unregistered-consumer packets, and whole-slot reset branches are not qualified. Ker enqueues require admitted target identities rather than directly populating unowned rings. This fixture does not qualify cross-process EAL visibility, full F-Stack directory/reset ABI, external packet delivery or a general reload/crash matrix."
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_no_ratelimit",
@@ -3498,9 +3658,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_advances",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt the observable two-refresh advancing-realtime scenario through ker_native_sync_realtime and original Linux clock_gettime in a booted private kernel. Each successful refresh must read host CLOCK_REALTIME exactly once and produce normalized seconds/nanoseconds bracketed by independent host observations. Two refreshes separated by a real 2ms sleep must yield strictly advancing native realtime while native monotonic stays inside host monotonic bounds. Separate Ker extension profiles inject host EIO or an invalid nanosecond value, require EIO/EINVAL with no epoch jump, then repeat a successful refresh. No cached F-Stack getter, nullable split-output ABI, fatal refresh-error policy, host clock modification, periodic synchronization or network delivery is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-realtime-refresh",
+          "provenance_case": "native-fstack-realtime-refresh"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_os_errno_mapping",
@@ -3650,16 +3815,34 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_sec",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported native current-time adapter reads original-Linux CLOCK_REALTIME with independently optional seconds/nanoseconds outputs. Actual kernel tests verify NULL seconds with valid nanoseconds and NULL nanoseconds with a synchronized Unix epoch; an intentionally old private Linux epoch proves no host fallback. Failure preserves supplied outputs and inactive reads fail ENETDOWN. This adapts optional-output read outcomes, not the F-Stack cached timestamp ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-current-time-optional",
+          "provenance_case": "native-fstack-current-time"
+        },
+        {
+          "ctest": "native-fstack-current-time-sockets",
+          "provenance_case": "native-fstack-current-time-sockets"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_nsec",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported native current-time adapter reads original-Linux CLOCK_REALTIME with independently optional seconds/nanoseconds outputs. Actual kernel tests verify NULL seconds with valid nanoseconds and NULL nanoseconds with a synchronized Unix epoch; an intentionally old private Linux epoch proves no host fallback. Failure preserves supplied outputs and inactive reads fail ENETDOWN. This adapts optional-output read outcomes, not the F-Stack cached timestamp ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-current-time-optional",
+          "provenance_case": "native-fstack-current-time"
+        },
+        {
+          "ctest": "native-fstack-current-time-sockets",
+          "provenance_case": "native-fstack-current-time-sockets"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_assert_fail_on_clock_error",
@@ -4583,7 +4766,7 @@
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero",
       "kind": "cmocka",
       "status": "architecture-specific",
-      "reason": "Asserts the initial FreeBSD head m_pkthdr.len field, not zero-filled payload storage. Linux VMA buffers have no mbuf header/write cursor. Explicit incompatible source layout under issue232 (Linux buffer-ownership contracts remain under issue225), not a Ker pass.",
+      "reason": "Asserts the initial FreeBSD head m_pkthdr.len field, not zero-filled payload storage. The native writer has a Ker-owned logical written length but does not expose the FreeBSD mbuf header/layout. This layout-only source assertion remains architecture-specific under issue232; accumulated append/no-op behavior is adapted separately under issue225, without claiming the source field ABI.",
       "ker_tests": []
     },
     {
@@ -4601,54 +4784,152 @@
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source allocates an owned minimal mbuf chain for zero capacity; native buffer_alloc(0) intentionally rejects EINVAL. No equivalent owned empty-chain API. Contract decision remains under issue225.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Owned native writer creation accepts capacity0 and owns an actual registered original-Linux VMA with minimal one-byte backing. The borrowed view is non-NULL while logical capacity and written length remain0; nonempty append fails and valid zero append is a no-op. Exact owner destruction/shutdown releases the VMA. Raw buffer_alloc(0) still rejects EINVAL. This adapts the source owned-empty-allocation outcome without a FreeBSD mbuf chain/header ABI. Dynamic-library IPv4/IPv6 loopback integration also verifies no queue/completion side effects from append, exact later payload/completion numbering and destruction only after completed sends, plus shutdown reclamation. Failure extensions verify construction rollback, isolated owner preservation and retryable destroy across synchronized thread handoff using targeted malloc/mmap/munmap faults and real successful Linux syscalls.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-buffer-writer-empty",
+          "provenance_case": "native-fstack-buffer-writer-empty"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-buffer-writer-sockets"
+        },
+        {
+          "ctest": "native-fstack-buffer-writer-constructor",
+          "provenance_case": "native-fstack-buffer-writer-failures"
+        },
+        {
+          "ctest": "native-fstack-buffer-writer-retry",
+          "provenance_case": "native-fstack-buffer-writer-failures"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_accumulates_pkthdr_len",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No staged write-cursor/owned-head length API. Filling a VMA or delivering a datagram does not prove repeated writes accumulate a head length. Remains under issue225.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A real owned native writer appends ab then cd, returns2 for each operation and exposes aggregate logical length4 with exact abcd bytes. Rejected overflow/NULL appends preserve both cursor and bytes; an alias append extends the payload correctly. This adapts accumulated owned-payload length and bytes through a logical cursor on an original-Linux VMA, not the literal FreeBSD m_pkthdr field or linked-chain ABI. Dynamic-library IPv4/IPv6 loopback integration also verifies no queue/completion side effects from append, exact later payload/completion numbering and destruction only after completed sends, plus shutdown reclamation. Failure extensions verify construction rollback, isolated owner preservation and retryable destroy across synchronized thread handoff using targeted malloc/mmap/munmap faults and real successful Linux syscalls.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-buffer-writer-append",
+          "provenance_case": "native-fstack-buffer-writer-append"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-buffer-writer-sockets"
+        },
+        {
+          "ctest": "native-fstack-buffer-writer-constructor",
+          "provenance_case": "native-fstack-buffer-writer-failures"
+        },
+        {
+          "ctest": "native-fstack-buffer-writer-retry",
+          "provenance_case": "native-fstack-buffer-writer-failures"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_overflow_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No staged write-cursor API. Send-range rejection occurs at a different phase and cannot substitute for source write-overflow rejection. Remains under issue225.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual ker_posix_buffer_write rejects an8-byte write into a4-byte original-Linux VMA allocation with -1/EINVAL, preserves every existing byte, and permits a subsequent exact-capacity write. Requested-size bounds also reject offset/length overflow and page-rounded slack. Tests require exact-base ownership, inactive/stale rejection and complete original-Linux VMA reclamation. This adapts the source write-capacity rejection outcome through explicit-offset native memory; it does not reproduce the FreeBSD mbuf header/cursor ABI. Actual dynamically resolved shared-library calls also preserve connected original-Linux loopback queues and zerocopy completion numbering after rejected writes, with valid subsequent sends and complete runtime cleanup. Cross-thread extensions verify independent per-buffer bytes/errno and synchronized ownership transfer through resize/write/free; these do not permit unsynchronized access.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-buffer-write-overflow",
+          "provenance_case": "native-fstack-buffer-write-overflow"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-buffer-write-socket-contracts"
+        },
+        {
+          "ctest": "native-fstack-buffer-write-parallel",
+          "provenance_case": "native-fstack-buffer-write-threads"
+        },
+        {
+          "ctest": "native-fstack-buffer-write-handoff",
+          "provenance_case": "native-fstack-buffer-write-threads"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_null_data_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No staged write-cursor API. Rejecting NULL send payloads does not prove NULL input rejection during owned-chain writes. Remains under issue225.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual ker_posix_buffer_write rejects NULL data with -1/EINVAL for a64-byte original-Linux VMA allocation, including length0, without changing bytes or registration. A later valid write succeeds at an explicit offset and preserves surrounding bytes. Tests require exact VMA/free/shutdown accounting. This adapts the source NULL-write rejection outcome, not the FreeBSD mbuf/header/implicit-cursor ABI. Actual dynamically resolved shared-library calls also preserve connected original-Linux loopback queues and zerocopy completion numbering after rejected writes, with valid subsequent sends and complete runtime cleanup. Cross-thread extensions verify independent per-buffer bytes/errno and synchronized ownership transfer through resize/write/free; these do not permit unsynchronized access.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-buffer-write-null",
+          "provenance_case": "native-fstack-buffer-write-null"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-buffer-write-socket-contracts"
+        },
+        {
+          "ctest": "native-fstack-buffer-write-parallel",
+          "provenance_case": "native-fstack-buffer-write-threads"
+        },
+        {
+          "ctest": "native-fstack-buffer-write-handoff",
+          "provenance_case": "native-fstack-buffer-write-threads"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_zero_len_noop",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No staged write-cursor/head-length API. Linux zero-byte UDP send is a real datagram with a completion ID, not this no-op write. Remains under issue225.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A valid zero-length append to a real native writer returns0 and preserves the initially empty logical length, and preserves a later nonempty prefix and length after a successful append. NULL data remains invalid even at length0. This is the source no-op-write outcome on an original-Linux VMA owner, distinct from Linux zero-byte socket sends and not a FreeBSD header ABI. Dynamic-library IPv4/IPv6 loopback integration also verifies no queue/completion side effects from append, exact later payload/completion numbering and destruction only after completed sends, plus shutdown reclamation. Failure extensions verify construction rollback, isolated owner preservation and retryable destroy across synchronized thread handoff using targeted malloc/mmap/munmap faults and real successful Linux syscalls.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-buffer-writer-zero",
+          "provenance_case": "native-fstack-buffer-writer-zero"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-buffer-writer-sockets"
+        },
+        {
+          "ctest": "native-fstack-buffer-writer-constructor",
+          "provenance_case": "native-fstack-buffer-writer-failures"
+        },
+        {
+          "ctest": "native-fstack-buffer-writer-retry",
+          "provenance_case": "native-fstack-buffer-writer-failures"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_multi_segment",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source asserts per-mbuf m_len, m_next and head-length mutation. Actual multi-VMA Linux sendmsg proves scatter-gather delivery/completions, not a source owned-chain write cursor. Remains under issue225.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production owned segmented writer spans two distinct registered original-Linux VMAs. One178-byte append fills first128 and second50, with exact bytes, per-node used lengths and aggregate length178. Additional cross-boundary/alias appends, rejection atomicity, stale handles, failure rollback and retryable teardown are qualified. This adapts the owned per-segment write contract, not FreeBSD mbuf fields or end-to-end zero-copy.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-buffer-segments-layout",
+          "provenance_case": "native-fstack-buffer-segments"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-buffer-segment-sockets"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_mb_null_returns_einval",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Real native SO_ZEROCOPY send/sendmsg/sendmmsg reject NULL nonempty payloads with EFAULT before GUP; no receiver data, completion or caller-byte mutation. Linux EFAULT intentionally replaces the source owned-chain EINVAL; this maps the rejection scenario, not errno/API equivalence.",
+      "reason": "Real native SO_ZEROCOPY send/sendmsg/sendmmsg reject NULL nonempty payloads with EFAULT before GUP; no receiver data, completion or caller-byte mutation. Linux EFAULT intentionally replaces the source owned-chain EINVAL; this maps the rejection scenario, not errno/API equivalence. The explicit owned-writer send API now also returns EINVAL for NULL owner/INT_MAX overflow before dispatch, while valid prefix and offset ranges use actual original-Linux sends and retain caller ownership/completion semantics.",
       "ker_tests": [
         {
           "ctest": "native-fstack-zc-validation",
           "provenance_case": "native-zc-send_mb_null_returns_einval"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-owned-writer-send"
         }
       ]
     },
@@ -4656,30 +4937,43 @@
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_nbytes_overflow_returns_einval",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Real MSG_ZEROCOPY send/sendmsg reject one mapped extent of INT_MAX+1 bytes with EFAULT before GUP; no data, completion or caller-byte mutation. Native allocations are limited to INT_MAX. This maps single-extent rejection, not the ff_zc ABI or an aggregate iovec INT_MAX limit.",
+      "reason": "Real MSG_ZEROCOPY send/sendmsg reject one mapped extent of INT_MAX+1 bytes with EFAULT before GUP; no data, completion or caller-byte mutation. Native allocations are limited to INT_MAX. This maps single-extent rejection, not the ff_zc ABI or an aggregate iovec INT_MAX limit. The explicit owned-writer send API now also returns EINVAL for NULL owner/INT_MAX overflow before dispatch, while valid prefix and offset ranges use actual original-Linux sends and retain caller ownership/completion semantics.",
       "ker_tests": [
         {
           "ctest": "native-fstack-zc-validation",
           "provenance_case": "native-zc-send_nbytes_overflow_returns_einval"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-owned-writer-send"
         }
       ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_zero_nbytes_returns_einval",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source owned-chain send rejects zero bytes; original Linux UDP permits an empty datagram and allocates a zerocopy completion ID. Preserve Linux semantics; no equivalent owned-chain rejection API. Contract decision remains under issue225.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The explicit owned-writer send adapter rejects a zero-byte requested payload with -1/EINVAL before socket dispatch, preserving the owner and queues/completion numbering. Actual original-Linux IPv4/IPv6 loopback tests also require valid full/offset sends through the same production native send helper. Ordinary POSIX/Linux empty UDP datagrams remain successful with completion ID0; no Linux protocol semantics are changed. This adapts the source owned-send rejection outcome, not its FreeBSD mbuf-consuming ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-owned-writer-send"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_valid_args_proceeds",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Source asserts only that a non-NULL 16-byte argument passes its mirror validator. Actual registered 16-byte MSG_ZEROCOPY send reaches original Linux, delivers exact peer bytes and completes through original MSG_ERRQUEUE starting at ID zero. No claim of FreeBSD owned-chain handoff or end-to-end copy elimination.",
+      "reason": "Source asserts only that a non-NULL 16-byte argument passes its mirror validator. Actual registered 16-byte MSG_ZEROCOPY send reaches original Linux, delivers exact peer bytes and completes through original MSG_ERRQUEUE starting at ID zero. No claim of FreeBSD owned-chain handoff or end-to-end copy elimination. The explicit owned-writer send API now also returns EINVAL for NULL owner/INT_MAX overflow before dispatch, while valid prefix and offset ranges use actual original-Linux sends and retain caller ownership/completion semantics.",
       "ker_tests": [
         {
           "ctest": "native-fstack-zc-validation",
           "provenance_case": "native-zc-send_valid_args_proceeds"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-owned-writer-send"
         }
       ]
     },

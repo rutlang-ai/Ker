@@ -2,6 +2,7 @@
 """Run a POSIX application against imported Linux, with DPDK Ethernet I/O."""
 import argparse
 import concurrent.futures
+import contextlib
 import configparser
 import ipaddress
 import json
@@ -14,6 +15,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -140,7 +142,7 @@ def exception_ports(value):
     return ','.join(result)
 
 
-CONFIG_DEFAULTS = dict(rx_lcores=None, exception_mode='ethertype', exception_policy='accept', exception_tcp_ports=None, exception_udp_ports=None, exception_iface=None, exception_type=0, exception_queue=256, exception_rate=0, exception_console_rate=0, exception_general_rate=0, tx_offloads='off', rss=False, queues=1, interfaces=(), nb_bond=0, bonds=(), nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(rx_lcores=None, exception_mode='ethertype', exception_policy='accept', exception_tcp_ports=None, exception_udp_ports=None, exception_iface=None, exception_type=0, exception_queue=256, exception_rate=0, exception_console_rate=0, exception_general_rate=0, tx_offloads='off', rss=False, queues=1, interfaces=(), nb_bond=0, bonds=(), nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, mtu_enable=True, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -162,7 +164,7 @@ CONFIG_SCHEMA = {
     'network': {'vip_addresses6': ('vip_addresses6', vip_addresses6), 'ephemeral_ports': ('ephemeral_ports', ephemeral_ports), 'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
-    'dpdk': {'rx_lcores': ('rx_lcores', str), 'exception_mode': ('exception_mode', str), 'exception_policy': ('exception_policy', str), 'exception_tcp_ports': ('exception_tcp_ports', str), 'exception_udp_ports': ('exception_udp_ports', str), 'exception_iface': ('exception_iface', str), 'exception_type': ('exception_type', int), 'exception_queue': ('exception_queue', int), 'exception_rate': ('exception_rate', int), 'exception_console_rate': ('exception_console_rate', int), 'exception_general_rate': ('exception_general_rate', int), 'tx_offloads': ('tx_offloads', str), 'rss': ('rss', bool), 'queues': ('queues', int), 'nb_bond': ('nb_bond', int), 'nb_vdev': ('nb_vdev', int), 'base_virtaddr': ('base_virtaddr', base_virtaddr), 'file_prefix': ('file_prefix', str), 'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
+    'dpdk': {'mtu_enable': ('mtu_enable', bool), 'rx_lcores': ('rx_lcores', str), 'exception_mode': ('exception_mode', str), 'exception_policy': ('exception_policy', str), 'exception_tcp_ports': ('exception_tcp_ports', str), 'exception_udp_ports': ('exception_udp_ports', str), 'exception_iface': ('exception_iface', str), 'exception_type': ('exception_type', int), 'exception_queue': ('exception_queue', int), 'exception_rate': ('exception_rate', int), 'exception_console_rate': ('exception_console_rate', int), 'exception_general_rate': ('exception_general_rate', int), 'tx_offloads': ('tx_offloads', str), 'rss': ('rss', bool), 'queues': ('queues', int), 'nb_bond': ('nb_bond', int), 'nb_vdev': ('nb_vdev', int), 'base_virtaddr': ('base_virtaddr', base_virtaddr), 'file_prefix': ('file_prefix', str), 'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'idle_sleep': ('idle_sleep_us', int), 'all_multicast': ('all_multicast', bool), 'promiscuous': ('promiscuous', bool)},
     'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
     'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
@@ -248,6 +250,16 @@ def query_dpdk_max_numa_nodes(worker_path):
     return limits['max_numa_nodes']
 
 
+def validate_selected_bond_limits(args):
+    """Query the selected worker once and validate configured bond sockets."""
+    if not args.bonds:
+        return
+    max_numa_nodes = query_dpdk_max_numa_nodes(args.io_worker)
+    for bond in args.bonds:
+        if not -1 <= bond['socket_id'] < max_numa_nodes:
+            raise ValueError(f'[bond0] socket_id must be -1 or in 0..{max_numa_nodes - 1}')
+
+
 def validate_bond_member_name(member):
     # Pinned DPDK RTE_DEV_NAME_MAX_LEN is 64 bytes including the final NUL.
     if (not isinstance(member, str) or len(member) > 63 or
@@ -277,7 +289,9 @@ def bond_devices(ini, max_numa_nodes=None):
             'xmit_policy': fields.get('xmit_policy', 'l2')}
     if bond['mode'] not in range(7):
         raise ValueError('[bond0] invalid mode')
-    if max_numa_nodes is not None and not -1 <= bond['socket_id'] < max_numa_nodes:
+    if bond['socket_id'] < -1:
+        raise ValueError('[bond0] socket_id must be -1 or nonnegative')
+    if max_numa_nodes is not None and bond['socket_id'] >= max_numa_nodes:
         raise ValueError(f'[bond0] socket_id must be -1 or in 0..{max_numa_nodes - 1}')
     if not 1 <= len(bond['slave']) <= 16 or len(set(bond['slave'])) != len(bond['slave']):
         raise ValueError('[bond0] requires 1..16 distinct members')
@@ -369,7 +383,7 @@ def additional_interfaces(ini):
 
 
 def read_configuration(stream, directory, source='<stream>', worker_path=None,
-                       eal_override=None):
+                       eal_override=None, defer_worker_limits=False):
     # Match F-Stack's repeated-key precedence: convert only the final value.
     # A repeated section continues the same section; unknown names remain errors.
     ini = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(';',),
@@ -426,24 +440,24 @@ def read_configuration(stream, directory, source='<stream>', worker_path=None,
             if convert is Path and not value.is_absolute():
                 value = directory / value
             values[field] = value
-    if bonds:
+    if bonds and not defer_worker_limits:
         if worker_path is None:
             raise ValueError('cannot validate [bond0] socket_id without the selected DPDK worker')
-        # All typed fields and every worker EAL mode are now validated. Only
-        # then may this capability probe execute the selected worker.
+        # Standalone reader callers request selected-build bounds here. The
+        # CLI defers this query until its final semantic checks have passed.
         bonds = bond_devices(ini, query_dpdk_max_numa_nodes(worker_path))
         values['bonds'] = bonds
     return values
 
 
-def load_configuration(path, worker_path=None, eal_override=None):
+def load_configuration(path, worker_path=None, eal_override=None, defer_worker_limits=False):
     path = path.resolve()
     with path.open(encoding='utf-8') as stream:
         return read_configuration(stream, path.parent, path, worker_path,
-                                  eal_override)
+                                  eal_override, defer_worker_limits)
 
 
-def parse_arguments(argv=None):
+def parse_arguments(argv=None, *, defer_worker_limits=False):
     parser = argparse.ArgumentParser(description=__doc__, argument_default=argparse.SUPPRESS)
     parser.add_argument('--exception-mode', choices=('ethertype', 'ports'))
     parser.add_argument('--exception-policy', choices=('accept', 'reject'))
@@ -474,6 +488,8 @@ def parse_arguments(argv=None):
     parser.add_argument('--queues', type=int, help='active DPDK RX/TX pairs, 1..16; all RX queues polled, application TX uses queue 0')
     parser.add_argument('--mbuf-mode', choices=('large', 'scatter'), help='DPDK packet storage; scatter uses chained standard-size mbufs')
     parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
+    parser.add_argument('--mtu-enable', action=argparse.BooleanOptionalAction,
+        help='allow MTU above 1500; disabling caps startup/live MTU on every interface (default enabled)')
     parser.add_argument('--max-mtu', type=int, help='startup/live MTU ceiling and large-buffer capacity, 1280..9000 (default 9000)')
     parser.add_argument('--tcp-ecn', choices=tuple(TCP_ECN),
         help='off, passive acceptance, or active/passive ECN; default preserves Linux policy')
@@ -523,7 +539,8 @@ def parse_arguments(argv=None):
     if supplied.config is not None:
         try:
             values.update(load_configuration(supplied.config, supplied.io_worker,
-                                             getattr(supplied, 'eal', None)))
+                                             getattr(supplied, 'eal', None),
+                                             defer_worker_limits=True))
         except MemoryError:
             parser.error(f'{supplied.config}: configuration allocation failed')
         except (OSError, UnicodeError, configparser.Error, ValueError) as error:
@@ -643,6 +660,8 @@ def parse_arguments(argv=None):
         parser.error('--mtu must be in 1280..9000')
     if not 1280 <= args.max_mtu <= 9000:
         parser.error('--max-mtu must be in 1280..9000')
+    if not args.mtu_enable:
+        args.max_mtu = min(args.max_mtu, 1500)
     if args.mtu > args.max_mtu:
         parser.error('--mtu must not exceed --max-mtu')
     if args.tcp_ecn is not None and args.tcp_ecn not in TCP_ECN:
@@ -775,6 +794,11 @@ def parse_arguments(argv=None):
     for interface in args.interfaces:
         for key in ('mtu', 'max_mtu', 'mbuf_mode', 'queues', 'rss', 'tx_offloads'):
             interface.setdefault(key, getattr(args, key))
+        # Validate the configured ceiling before deriving the global policy cap.
+        if not 1280 <= interface['max_mtu'] <= 9000:
+            parser.error('additional interface max_mtu must be in 1280..9000')
+        if not args.mtu_enable:
+            interface['max_mtu'] = min(interface['max_mtu'], 1500)
         if not 1280 <= interface['mtu'] <= interface['max_mtu'] <= 9000:
             parser.error('additional interface MTU must satisfy 1280 <= mtu <= max_mtu <= 9000')
         if interface['tx_offloads'] not in TX_OFFLOADS:
@@ -819,7 +843,59 @@ def parse_arguments(argv=None):
             if any(network.overlaps(previous) for network in interface_networks6 for previous in networks6):
                 parser.error('IPv6 networks must not overlap across interfaces')
             networks6.extend(interface_networks6)
+    # The CLI must finish all pure validation, including CLI overrides and
+    # auxiliary address/queue/MTU ownership, before executing the worker query.
+    # Standalone reader callers retain their selected-build validation above.
+    if args.bonds and not defer_worker_limits:
+        try:
+            validate_selected_bond_limits(args)
+        except MemoryError:
+            parser.error('configuration allocation failed')
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
     return args
+
+
+def worker_done_record(line):
+    value = json.loads(line.removeprefix('KER_IO_DONE '))
+    if (not isinstance(value, dict) or type(value.get('outstanding')) is not int or
+            value['outstanding'] < 0):
+        raise RuntimeError('invalid DPDK DONE outstanding-object count')
+    return value
+
+
+def worker_ready_record(line):
+    value = json.loads(line.removeprefix('KER_IO_READY '))
+    if not isinstance(value, dict):
+        raise RuntimeError('invalid DPDK READY object')
+    mac, features = value.get('mac'), value.get('tx_offload_features')
+    if not isinstance(mac, str) or not re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}', mac):
+        raise RuntimeError('invalid DPDK READY MAC')
+    # Match the actual native virtio consumer, including checksum dependency.
+    if (type(features) is not int or features < 0 or features & ~0x1801 or
+            features & 0x1800 and not features & 1):
+        raise RuntimeError('invalid DPDK READY TX features')
+    return value
+
+
+def read_worker_startup(process, label, timeout=20, maximum=65536):
+    """Bound the complete record, including a writer that stalls mid-line."""
+    deadline = time.monotonic() + timeout
+    data = bytearray()
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                raise RuntimeError(label + ' startup timed out')
+            byte = os.read(process.stdout.fileno(), 1)
+            if not byte:
+                raise RuntimeError(label + ' exited before a complete startup record')
+            data.extend(byte)
+            if len(data) > maximum:
+                raise RuntimeError(label + ' startup record exceeds limit')
+            if byte == b'\n':
+                return data.decode('utf-8').strip()
 
 
 class AdditionalWorker:
@@ -867,16 +943,12 @@ class AdditionalWorker:
             pass_fds=(self.io_packet.fileno(), self.io_mtu.fileno(), self.stop_read),
             stdout=subprocess.PIPE, text=True)
         self.io_packet.close(); self.io_mtu.close(); os.close(self.stop_read); self.stop_read = -1
-        with selectors.DefaultSelector() as selector:
-            selector.register(self.process.stdout, selectors.EVENT_READ)
-            if not selector.select(20):
-                raise RuntimeError('additional DPDK worker startup timed out: ' + item['name'])
-            line = self.process.stdout.readline().strip()
+        line = read_worker_startup(self.process, 'additional DPDK worker ' + item['name'])
         if line.startswith('KER_IO_DONE '):
-            self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
+            self.stats = worker_done_record(line)
         if not line.startswith('KER_IO_READY '):
             raise RuntimeError('additional DPDK worker failed before READY: ' + item['name'])
-        self.info = json.loads(line.removeprefix('KER_IO_READY '))
+        self.info = worker_ready_record(line)
 
     def app_fds(self):
         return self.app_packet.fileno(), self.app_mtu.fileno()
@@ -909,8 +981,19 @@ class AdditionalWorker:
                 output, _ = self.process.communicate(timeout=10)
             except subprocess.TimeoutExpired:
                 self.process.kill(); output, _ = self.process.communicate(); failed = timed_out = True
+            completions = int(self.stats is not None)
             for line in output.splitlines():
-                if line.startswith('KER_IO_DONE '): self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
+                if line.startswith('KER_IO_DONE '):
+                    completions += 1
+                    if completions > 1:
+                        print(f'ker-run: duplicate additional DPDK worker completion record: {self.interface["name"]}',
+                              file=sys.stderr)
+                        failed = True
+                    try:
+                        self.stats = worker_done_record(line)
+                    except (ValueError, RuntimeError) as error:
+                        print(f'ker-run: additional worker completion: {error}', file=sys.stderr)
+                        failed = True
             failed |= self.process.returncode != 0 or self.stats is None or self.stats.get('outstanding', 1) != 0
         if self.stats is not None:
             self.stats.update(name=self.interface['name'], io=self.info, pid=self.process.pid if self.process else None,
@@ -967,8 +1050,23 @@ def normal_native_shutdown_markers(startup_status):
     return True
 
 
+
+def native_statistics(startup_status):
+    records = [line.removeprefix(b'KER_NATIVE_STATS ') for line in startup_status.splitlines()
+               if line.startswith(b'KER_NATIVE_STATS ')]
+    if not records:
+        return None
+    if len(records) != 1:
+        raise ValueError('duplicate native statistics records')
+    result = json.loads(records[0])
+    if not isinstance(result, dict) or any(type(value) is not int or value < 0
+                                           for value in result.values()):
+        raise ValueError('native statistics must contain nonnegative integer counters')
+    return result
+
 def collect_worker(process, stats):
     failed = timed_out = False
+    completions = int(stats is not None)
     try:
         output, _ = process.communicate(timeout=10)
     except subprocess.TimeoutExpired:
@@ -976,7 +1074,15 @@ def collect_worker(process, stats):
         print('ker-run: DPDK worker shutdown timed out', file=sys.stderr)
     for line in output.splitlines():
         if line.startswith('KER_IO_DONE '):
-            stats = json.loads(line.removeprefix('KER_IO_DONE '))
+            completions += 1
+            if completions > 1:
+                print('ker-run: duplicate DPDK worker completion record', file=sys.stderr)
+                failed = True
+            try:
+                stats = worker_done_record(line)
+            except (ValueError, RuntimeError) as error:
+                print(f'ker-run: DPDK worker completion: {error}', file=sys.stderr)
+                failed = True
     if stats is not None:
         stats.update(shutdown_timed_out=timed_out, worker_exit_code=process.returncode)
     return stats, failed or process.returncode != 0 or stats is None
@@ -995,21 +1101,78 @@ def finish_concurrently(operations):
         return results
 
 
+
+def write_statistics(path, stats):
+    """Replace a complete report; never truncate an earlier successful report."""
+    payload = json.dumps(stats, indent=2) + '\n'
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                dir=path.parent, prefix='.' + path.name + '.', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+def primary_channels():
+    """Transfer channels only after the complete IPC bundle is allocated."""
+    with contextlib.ExitStack() as cleanup:
+        pairs = []
+        for kind in (socket.SOCK_DGRAM | socket.SOCK_NONBLOCK,
+                     socket.SOCK_SEQPACKET, socket.SOCK_SEQPACKET):
+            pair = socket.socketpair(socket.AF_UNIX, kind)
+            for channel in pair:
+                cleanup.callback(channel.close)
+            pairs.extend(pair)
+        pipes = []
+        for flags in (os.O_CLOEXEC, os.O_CLOEXEC | os.O_NONBLOCK):
+            pair = os.pipe2(flags)
+            for fd in pair:
+                cleanup.callback(os.close, fd)
+            pipes.extend(pair)
+        pairs[4].setblocking(False)
+        cleanup.pop_all()
+        return (*pairs, *pipes)
+
+
 def main():
     try:
-        args = parse_arguments()
+        args = parse_arguments(defer_worker_limits=True)
     except MemoryError:
         print('ker-run: configuration allocation failed', file=sys.stderr)
         return 2
-    library = args.library.resolve(strict=True)
-    worker_path = args.io_worker.resolve(strict=True)
-    channel_app, channel_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
-    mtu_app, mtu_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-    run_parent, run_app = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-    run_parent.setblocking(False)
+    try:
+        library = args.library.resolve(strict=True)
+        worker_path = args.io_worker.resolve(strict=True)
+        app_guard = (worker_path.parent / 'ker-app').resolve(strict=True)
+        for artifact in (library, worker_path, app_guard):
+            if not artifact.is_file():
+                raise ValueError(f'{artifact}: runtime artifact must be a regular file')
+        for artifact in (worker_path, app_guard):
+            if not os.access(artifact, os.X_OK):
+                raise ValueError(f'{artifact}: runtime artifact must be executable')
+    except (OSError, ValueError) as error:
+        print(f'ker-run: runtime artifact: {error}', file=sys.stderr)
+        return 125
+    try:
+        validate_selected_bond_limits(args)
+    except MemoryError:
+        print('ker-run: configuration allocation failed', file=sys.stderr)
+        return 2
+    except (OSError, ValueError) as error:
+        print(f'ker-run: {error}', file=sys.stderr)
+        return 2
+    try:
+        (channel_app, channel_io, mtu_app, mtu_io, run_parent, run_app,
+         control_read, control_write, startup_read, startup_write) = primary_channels()
+    except OSError as error:
+        print(f'ker-run: IPC setup: {error}', file=sys.stderr)
+        return 125
     worker_finished = run_finished = False
-    control_read, control_write = os.pipe2(os.O_CLOEXEC)
-    startup_read, startup_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
     signal.signal(signal.SIGTERM, interrupted)
     worker = app = None
     additional = []
@@ -1057,19 +1220,15 @@ def main():
         mtu_io.close()
         os.close(control_read)
         control_read = -1
-        with selectors.DefaultSelector() as selector:
-            selector.register(worker.stdout, selectors.EVENT_READ)
-            if not selector.select(20):
-                raise RuntimeError('DPDK worker startup timed out')
-            ready = worker.stdout.readline().strip()
+        ready = read_worker_startup(worker, 'DPDK worker')
         if not ready.startswith('KER_IO_READY '):
             # A worker that fails after EAL initialization can emit its cleanup
             # snapshot as the first line. Preserve it for --stats: communicate()
             # below cannot read this already-consumed line again.
             if ready.startswith('KER_IO_DONE '):
-                stats = json.loads(ready.removeprefix('KER_IO_DONE '))
+                stats = worker_done_record(ready)
             raise RuntimeError('DPDK worker failed before packet I/O became ready: ' + ready)
-        info = json.loads(ready.removeprefix('KER_IO_READY '))
+        info = worker_ready_record(ready)
         for interface in args.interfaces:
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
@@ -1115,7 +1274,6 @@ def main():
             env['KER_NATIVE_TCP_ECN'] = str(TCP_ECN[args.tcp_ecn])
         if args.gateway:
             env['LKL_HIJACK_NET_GATEWAY'] = str(args.gateway)
-        app_guard = worker_path.parent / 'ker-app'
         app = subprocess.Popen([str(app_guard), *args.command], env=env,
             pass_fds=(channel_app.fileno(), mtu_app.fileno(), startup_write, run_app.fileno(),
                       *(fd for extra in additional for fd in extra.app_fds())))
@@ -1195,7 +1353,9 @@ def main():
                         stats, failed = reaped[0]
                     for result in reaped[1:]:
                         failed |= result if isinstance(result, bool) else True
-                    failed |= b'KER_NATIVE_DONE\n' not in startup_status
+                    if not normal_native_shutdown_markers(startup_status):
+                        print('ker-run: invalid native run shutdown marker sequence', file=sys.stderr)
+                        failed = True
                     failed |= stats is None or stats.get('outstanding', 1) != 0
                     if stats is not None:
                         stats['run_shutdown'] = True
@@ -1255,6 +1415,10 @@ def main():
                 startup_status += extra
             except BlockingIOError:
                 break
+            except OSError as error:
+                print(f'ker-run: startup status drain: {error}', file=sys.stderr)
+                infrastructure_failure = True
+                break
         os.close(startup_read)
         if app and b'KER_NATIVE_READY\n' in startup_status and b'KER_NATIVE_DONE\n' not in startup_status:
             print('ker-run: native Linux shutdown did not complete', file=sys.stderr)
@@ -1265,21 +1429,50 @@ def main():
             extra.stop_channels()
         if worker:
             if not worker_finished:
-                stats, failed = collect_worker(worker, stats)
-                infrastructure_failure |= failed
+                try:
+                    stats, failed = collect_worker(worker, stats)
+                    infrastructure_failure |= failed
+                except (OSError, ValueError, RuntimeError) as error:
+                    print(f'ker-run: primary worker collection: {error}', file=sys.stderr)
+                    infrastructure_failure = True
+                    stats = None
+                    # A failed read must not leave a live child or prevent the
+                    # auxiliary workers from reaching their own teardown.
+                    try:
+                        if worker.poll() is None:
+                            worker.kill()
+                        worker.wait(timeout=10)
+                    except (OSError, subprocess.TimeoutExpired) as reap_error:
+                        print(f'ker-run: primary worker reap: {reap_error}', file=sys.stderr)
+                    finally:
+                        if worker.stdout is not None:
+                            worker.stdout.close()
             infrastructure_failure |= stats is None or stats.get('outstanding', 1) != 0
             if stats is not None:
                 stats['io'] = info
-                for line in startup_status.splitlines():
-                    if line.startswith(b'KER_NATIVE_STATS '):
-                        stats['native'] = json.loads(line.removeprefix(b'KER_NATIVE_STATS '))
-            for extra in additional:
-                infrastructure_failure |= extra.finish()
+            try:
+                native = native_statistics(startup_status)
+                if native is not None and stats is not None:
+                    stats['native'] = native
+            except (ValueError, UnicodeError) as error:
+                print(f'ker-run: native statistics: {error}', file=sys.stderr)
+                infrastructure_failure = True
+            results = finish_concurrently([extra.finish for extra in additional]) if additional else []
+            for result in results:
+                if isinstance(result, Exception):
+                    print(f'ker-run: additional worker cleanup: {result}', file=sys.stderr)
+                    infrastructure_failure = True
+                else:
+                    infrastructure_failure |= result
             if stats is not None and additional:
                 stats['interfaces'] = [extra.stats for extra in additional]
                 stats['worker_pid'] = worker.pid
             if args.stats and stats:
-                args.stats.write_text(json.dumps(stats, indent=2) + '\n')
+                try:
+                    write_statistics(args.stats, stats)
+                except (OSError, ValueError, TypeError) as error:
+                    print(f'ker-run: statistics output: {error}', file=sys.stderr)
+                    infrastructure_failure = True
     return resolve_exit_code(exit_code, app.returncode if app else None,
         infrastructure_failure, preserve_signal)
 

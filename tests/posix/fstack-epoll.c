@@ -11,7 +11,9 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 #define EXPECT_ERROR(call, code) do { errno = 0; CHECK((call) == -1); CHECK(errno == (code)); } while (0)
@@ -336,10 +338,157 @@ static void empty_datagram_readiness(void)
         CHECK(close(ep) == 0 && close(rx) == 0 && close(tx) == 0);
     }
 }
+/* Faulting poll arrays must not consume native or host readiness. */
+static int null_poll_array(int variant, nfds_t count)
+{
+    int (*volatile poll_fn)(struct pollfd *, nfds_t, int) = poll;
+    int (*volatile ppoll_fn)(struct pollfd *, nfds_t, const struct timespec *, const sigset_t *) = ppoll;
+    struct timespec zero = {0};
+    return variant ? ppoll_fn(NULL, count, &zero, NULL) : poll_fn(NULL, count, 0);
+}
+static void null_poll_array_recovery(void)
+{
+    struct connection c = connection();
+    int pipes[2];
+    CHECK(pipe2(pipes, O_CLOEXEC | O_NONBLOCK) == 0);
+    put(c, "poll-pointer");
+    CHECK(write(pipes[1], "h", 1) == 1);
+    struct pollfd tcp_ready = {.fd = c.receiver, .events = POLLIN};
+    CHECK(poll(&tcp_ready, 1, 2000) == 1 && (tcp_ready.revents & POLLIN));
+    for (int variant = 0; variant < 2; ++variant) {
+        CHECK(null_poll_array(variant, 0) == 0);
+        EXPECT_ERROR(null_poll_array(variant, 1), EFAULT);
+        struct pollfd ready[] = {{.fd = c.receiver, .events = POLLIN},
+                                 {.fd = pipes[0], .events = POLLIN}};
+        CHECK(poll(ready, 2, 2000) == 2);
+        CHECK((ready[0].revents & POLLIN) && (ready[1].revents & POLLIN));
+    }
+    take(c, "poll-pointer");
+    char byte;
+    CHECK(read(pipes[0], &byte, 1) == 1 && byte == 'h');
+    struct pollfd empty[] = {{.fd = c.receiver, .events = POLLIN},
+                             {.fd = pipes[0], .events = POLLIN}};
+    CHECK(poll(empty, 2, 0) == 0);
+    put(c, "recovered");
+    CHECK(poll(empty, 2, 2000) == 1 && (empty[0].revents & POLLIN));
+    take(c, "recovered");
+    CHECK(close(pipes[0]) == 0 && close(pipes[1]) == 0);
+    finish(c);
+}
+
+extern int __fxstat(int, int, struct stat *);
+extern int __fxstat64(int, int, struct stat64 *);
+static int null_stat_output(int fd, int variant)
+{
+    int (*volatile stat_fn)(int, struct stat *) = fstat;
+    int (*volatile stat64_fn)(int, struct stat64 *) = fstat64;
+    int (*volatile fxstat_fn)(int, int, struct stat *) = __fxstat;
+    int (*volatile fxstat64_fn)(int, int, struct stat64 *) = __fxstat64;
+    if (variant == 0) return stat_fn(fd, NULL);
+    if (variant == 1) return stat64_fn(fd, NULL);
+    if (variant == 2) return fxstat_fn(1, fd, NULL);
+    return fxstat64_fn(1, fd, NULL);
+}
+static void null_stat_recovery(void)
+{
+    struct connection c = connection();
+    int datagram = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    int pipes[2];
+    CHECK(datagram >= 0 && pipe2(pipes, O_CLOEXEC) == 0);
+    int descriptors[] = {c.receiver, datagram, pipes[0]};
+    for (size_t i = 0; i < sizeof(descriptors) / sizeof(descriptors[0]); ++i) {
+        struct stat before, after;
+        CHECK(fstat(descriptors[i], &before) == 0);
+        CHECK(i == 2 ? S_ISFIFO(before.st_mode) : S_ISSOCK(before.st_mode));
+        for (int variant = 0; variant < 4; ++variant) {
+            EXPECT_ERROR(null_stat_output(-1, variant), EBADF);
+            EXPECT_ERROR(null_stat_output(descriptors[i], variant), EFAULT);
+            CHECK(fstat(descriptors[i], &after) == 0);
+            CHECK(after.st_mode == before.st_mode && after.st_ino == before.st_ino);
+        }
+    }
+    put(c, "stat-recovery");
+    struct pollfd ready = {.fd = c.receiver, .events = POLLIN};
+    CHECK(poll(&ready, 1, 2000) == 1);
+    take(c, "stat-recovery");
+    CHECK(write(pipes[1], "s", 1) == 1);
+    char byte;
+    CHECK(read(pipes[0], &byte, 1) == 1 && byte == 's');
+    CHECK(close(datagram) == 0 && close(pipes[0]) == 0 && close(pipes[1]) == 0);
+    finish(c);
+}
+
+static void protected_event_buffers(void)
+{
+    struct connection c = connection();
+    long page = sysconf(_SC_PAGESIZE);
+    CHECK(page > (long)sizeof(struct epoll_event));
+    char *memory = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(memory != MAP_FAILED);
+    CHECK(mprotect(memory + page, (size_t)page, PROT_NONE) == 0);
+    struct epoll_event *bad = (void *)(memory + page);
+    EXPECT_ERROR(epoll_ctl(c.ep, EPOLL_CTL_ADD, c.receiver, bad), EFAULT);
+    control(c, EPOLL_CTL_ADD, EPOLLIN | EPOLLONESHOT, 10);
+    EXPECT_ERROR(epoll_ctl(c.ep, EPOLL_CTL_MOD, c.receiver, bad), EFAULT);
+    CHECK(epoll_wait(c.ep, bad, 1, 0) == 0);
+    put(c, "f");
+    struct pollfd ready = {.fd = c.receiver, .events = POLLIN};
+    CHECK(poll(&ready, 1, 2000) == 1);
+    EXPECT_ERROR(epoll_wait(c.ep, bad, 1, 0), EFAULT);
+    event(c, EPOLLIN, 10);
+    empty(c);
+    CHECK(epoll_ctl(c.ep, EPOLL_CTL_DEL, c.receiver, bad) == 0);
+    take(c, "f");
+    CHECK(munmap(memory, (size_t)page * 2) == 0);
+    finish(c);
+}
+static void partial_mixed_event_output(void)
+{
+    struct connection c = connection();
+    int pipes[2];
+    CHECK(pipe2(pipes, O_CLOEXEC) == 0);
+    control(c, EPOLL_CTL_ADD, EPOLLIN | EPOLLONESHOT, 1);
+    struct epoll_event registration = {.events = EPOLLIN | EPOLLONESHOT, .data.u64 = 2};
+    CHECK(epoll_ctl(c.ep, EPOLL_CTL_ADD, pipes[0], &registration) == 0);
+    put(c, "t");
+    CHECK(write(pipes[1], "p", 1) == 1);
+    struct pollfd ready = {.fd = c.receiver, .events = POLLIN};
+    CHECK(poll(&ready, 1, 2000) == 1);
+    long page = sysconf(_SC_PAGESIZE);
+    CHECK(page > (long)sizeof(struct epoll_event));
+    char *memory = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(memory != MAP_FAILED);
+    CHECK(mprotect(memory + page, (size_t)page, PROT_READ) == 0);
+    struct epoll_event *split = (void *)(memory + page - sizeof(*split));
+    CHECK(epoll_wait(c.ep, split, 2, 0) == 1);
+    uint64_t first = split->data.u64;
+    CHECK(first == 1 || first == 2);
+    struct epoll_event other[2];
+    CHECK(epoll_wait(c.ep, other, 1, 0) == 1);
+    CHECK(other[0].data.u64 == (first == 1 ? 2 : 1));
+    empty(c);
+    control(c, EPOLL_CTL_MOD, EPOLLIN | EPOLLONESHOT, 1);
+    CHECK(epoll_ctl(c.ep, EPOLL_CTL_MOD, pipes[0], &registration) == 0);
+    CHECK(epoll_wait(c.ep, other, 2, 0) == 2);
+    CHECK(other[0].data.u64 + other[1].data.u64 == 3);
+    take(c, "t");
+    char byte;
+    CHECK(read(pipes[0], &byte, 1) == 1 && byte == 'p');
+    CHECK(munmap(memory, (size_t)page * 2) == 0);
+    CHECK(close(pipes[0]) == 0 && close(pipes[1]) == 0);
+    finish(c);
+}
+
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"create-and-invalid-arguments", create_and_arguments},
+        {"protected-event-buffer-and-registration-recovery", protected_event_buffers},
+        {"partial-mixed-event-output-and-oneshot-recovery", partial_mixed_event_output},
+        {"null-stat-output-and-descriptor-recovery", null_stat_recovery},
+        {"null-poll-array-and-mixed-readiness-recovery", null_poll_array_recovery},
         {"null-event-and-registration-recovery", null_event_non_delete},
         {"null-wait-buffer-and-oneshot-recovery", null_wait_recovery},
         {"add-modify-delete-and-u64-data", add_modify_delete},

@@ -63,6 +63,27 @@ HOSTED_SAFE = (
 
 SESSION_DIRECT = "native-fstack-session-native-packets"
 SESSION_CTEST = (
+    "native-fstack-session-control-roundtrip",
+    "native-fstack-session-control-malformed",
+    "native-fstack-session-control-replay",
+    "native-fstack-session-control-isolation",
+    "native-fstack-session-control-capacity",
+    "native-fstack-session-control-recycle",
+    "native-fstack-session-control-master-eof",
+    "native-fstack-session-control-master-death",
+    "native-fstack-session-control-master-frozen",
+    "native-fstack-session-control-reservation-eof",
+    "native-fstack-session-control-reservation-death",
+    "native-fstack-session-control-reservation-coordinates",
+    "native-fstack-session-control-reservation-replay",
+    "native-fstack-session-control-reservation-collision",
+    "native-fstack-session-control-reservation-bounds",
+    "native-fstack-session-orphan-reservation-eof",
+    "native-fstack-session-orphan-reservation-frozen",
+    "native-fstack-session-orphan-reservation-staged",
+    "native-fstack-session-namespace-names",
+    "native-fstack-session-namespace-isolation",
+    "native-fstack-session-namespace-recreate",
     "native-packet-header",
     "native-fstack-session-peer-drain-retry",
     "native-fstack-session-lease-input",
@@ -82,6 +103,12 @@ SESSION_CTEST = (
     "native-fstack-session-generation-detach",
     "native-fstack-session-generation-empty-config",
     "native-fstack-session-generation-invalid-selected-entry",
+    "native-fstack-session-orphan-identity",
+    "native-fstack-session-orphan-inflight-both",
+    "native-fstack-session-orphan-inflight-rx",
+    "native-fstack-session-orphan-inflight-tx",
+    "native-fstack-session-orphan-live",
+    "native-fstack-session-orphan-reap",
 )
 
 MANDATORY_SESSION_PROFILES = frozenset({

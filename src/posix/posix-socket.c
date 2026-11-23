@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
+#include "lkl-overlay/arch/lkl/include/asm/ker-host-usercopy.h"
+#include <ker/posix.h>
 #include "native-buffer.h"
 #include "mtu-control.h"
 #include "syscall-result.h"
@@ -11,27 +13,100 @@
 #include <stdbool.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
-#include <asm/sockios.h>
+#include <linux/sockios.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
 #include <lkl.h>
+#include <lkl/linux/capability.h>
 
-static long sent(struct ker_fd *entry, long value, int flags)
+long ker_native_write_result(long value, int flags)
 {
-    ker_fd_put(entry);
     if (value == -EPIPE && !(flags & MSG_NOSIGNAL)) pthread_kill(pthread_self(), SIGPIPE);
     return ker_native_result(value);
 }
+static long sent(struct ker_fd *entry, long value, int flags)
+{
+    ker_fd_put(entry);
+    return ker_native_write_result(value, flags);
+}
+
+/* Netlink authorization checks both the sender's current credentials and the
+ * immutable credentials captured when the socket file is created. Keep route
+ * dumps available while ensuring every send API remains unable to mutate
+ * administrative state outside Ker's coordinated adapters. */
+struct netlink_cap_guard {
+    struct __lkl__user_cap_header_struct header;
+    struct __lkl__user_cap_data_struct original[2];
+    bool restore;
+};
+
+static long netlink_cap_drop(struct netlink_cap_guard *guard)
+{
+    memset(guard, 0, sizeof(*guard));
+    guard->header.version = _LKL_LINUX_CAPABILITY_VERSION_3;
+    long result = lkl_sys_capget(&guard->header, guard->original);
+    if (result < 0) return result;
+    unsigned int word = LKL_CAP_NET_ADMIN / 32;
+    unsigned int mask = 1U << (LKL_CAP_NET_ADMIN % 32);
+    if (!(guard->original[word].effective & mask)) return 0;
+    struct __lkl__user_cap_data_struct restricted[2] = {
+        guard->original[0], guard->original[1]};
+    restricted[word].effective &= ~mask;
+    result = lkl_sys_capset(&guard->header, restricted);
+    if (result >= 0) guard->restore = true;
+    return result;
+}
+
+static long netlink_cap_restore(struct netlink_cap_guard *guard)
+{
+    if (!guard->restore) return 0;
+    guard->restore = false;
+    return lkl_sys_capset(&guard->header, guard->original);
+}
+
+static long netlink_socket_without_admin(int type, int protocol)
+{
+    struct netlink_cap_guard guard;
+    long result = netlink_cap_drop(&guard);
+    if (result < 0) return result;
+    long fd = lkl_sys_socket(AF_NETLINK, type, protocol);
+    long restored = netlink_cap_restore(&guard);
+    if (restored < 0) {
+        if (fd >= 0) lkl_sys_close((int)fd);
+        return restored;
+    }
+    return fd;
+}
+
+static long netlink_send_begin(const struct ker_fd *entry, struct netlink_cap_guard *guard)
+{
+    memset(guard, 0, sizeof(*guard));
+    if (entry->kind != KER_FD_NETLINK) return 0;
+    return netlink_cap_drop(guard);
+}
+
+static long netlink_send_end(struct netlink_cap_guard *guard)
+{
+    return netlink_cap_restore(guard);
+}
+
 int socket(int domain, int type, int protocol)
 {
-    if (domain != AF_INET && domain != AF_INET6) return syscall(SYS_socket, domain, type, protocol);
+    if (domain != AF_INET && domain != AF_INET6 && domain != AF_NETLINK && domain != AF_PACKET) return syscall(SYS_socket, domain, type, protocol);
     if (!ker_native_ready()) { errno = ENETDOWN; return -1; }
-    long fd = lkl_sys_socket(domain, type, protocol);
+    long fd = domain == AF_NETLINK ? netlink_socket_without_admin(type, protocol) :
+        lkl_sys_socket(domain, type, protocol);
     if (fd < 0) return ker_native_result(fd);
-    return ker_fd_export(fd, KER_FD_SOCKET, -1, type & SOCK_CLOEXEC, 0, -1);
+    enum ker_fd_kind kind = KER_FD_SOCKET;
+    if (domain == AF_NETLINK) kind = KER_FD_NETLINK;
+    else if (domain == AF_PACKET) kind = KER_FD_PACKET;
+    return ker_fd_export(fd, kind, -1, type & SOCK_CLOEXEC, 0, -1);
 }
 int close(int fd) { return ker_fd_close(fd); }
 
@@ -59,6 +134,14 @@ int setsockopt(int fd, int level, int option, const void *value, socklen_t lengt
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_setsockopt, fd, level, option, value, length);
+    if (entry->kind != KER_FD_EPOLL && level == SOL_SOCKET &&
+        (option == SO_ATTACH_BPF || option == SO_ATTACH_REUSEPORT_EBPF)) {
+        /* These arguments are host program descriptors. There is no imported
+         * BPF-program ownership bridge; never reinterpret their numbers. */
+        ker_fd_put(entry);
+        errno = EOPNOTSUPP;
+        return -1;
+    }
     struct ker_native_option_guard *guard = NULL;
     int token = level == SOL_SOCKET && option == SO_ZEROCOPY ? ker_native_buffer_option_begin(entry->native, &guard) : 0;
     long result;
@@ -92,26 +175,67 @@ int accept(int fd, struct sockaddr *address, socklen_t *length)
         long call_result = lkl_sys_##name native_args; \
         return sent(entry, call_result, signal_flags); \
     }
+#define NETLINK_IO_CALL(name, signature, host_args, native_args) \
+    ssize_t name signature { \
+        struct ker_fd *entry = ker_fd_get(fd); \
+        if (!entry) return syscall(SYS_##name, ARGS host_args); \
+        struct netlink_cap_guard guard; \
+        long call_result = netlink_send_begin(entry, &guard); \
+        if (call_result >= 0) call_result = lkl_sys_##name native_args; \
+        long restored = netlink_send_end(&guard); \
+        if (call_result >= 0 && restored < 0) call_result = restored; \
+        return sent(entry, call_result, 0); \
+    }
 IO_CALL(read, (int fd, void *bytes, size_t length), (fd, bytes, length),
     (entry->native, bytes, length), MSG_NOSIGNAL)
-IO_CALL(write, (int fd, const void *bytes, size_t length), (fd, bytes, length),
-    (entry->native, (void *)bytes, length), 0)
+NETLINK_IO_CALL(write, (int fd, const void *bytes, size_t length), (fd, bytes, length),
+    (entry->native, (void *)bytes, length))
 IO_CALL(readv, (int fd, const struct iovec *iov, int count), (fd, iov, count),
     (entry->native, (void *)iov, count), MSG_NOSIGNAL)
-IO_CALL(writev, (int fd, const struct iovec *iov, int count), (fd, iov, count),
-    (entry->native, (void *)iov, count), 0)
+NETLINK_IO_CALL(writev, (int fd, const struct iovec *iov, int count), (fd, iov, count),
+    (entry->native, (void *)iov, count))
+/* Shared by POSIX sendto and the explicit owned-payload entry point. */
+static ssize_t native_sendto(struct ker_fd *entry, const void *bytes, size_t length, int flags,
+    const struct sockaddr *address, socklen_t address_length)
+{
+    struct iovec vector = {(void *)bytes, length};
+    struct ker_native_option_guard *guard = NULL;
+    int token = ker_native_buffer_send_begin(entry->native, &vector, 1, flags, &guard);
+    struct netlink_cap_guard cap_guard;
+    long result = token < 0 ? token : netlink_send_begin(entry, &cap_guard);
+    if (result >= 0) result = lkl_sys_sendto(entry->native, (void *)bytes,
+        length, flags, (void *)address, address_length);
+    long restored = token < 0 ? 0 : netlink_send_end(&cap_guard);
+    if (result >= 0 && restored < 0) result = restored;
+    ker_native_buffer_send_end(guard);
+    return sent(entry, result, flags);
+}
 ssize_t sendto(int fd, const void *bytes, size_t length, int flags,
     const struct sockaddr *address, socklen_t address_length)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_sendto, fd, bytes, length, flags, address, address_length);
-    struct iovec vector = {(void *)bytes, length};
+    return native_sendto(entry, bytes, length, flags, address, address_length);
+}
+int ker_posix_buffer_writer_send(struct ker_posix_buffer_writer *writer, int fd,
+    size_t offset, size_t length, int flags)
+{
+    struct iovec single, *vectors;
+    size_t count;
+    int error = ker_native_writer_range(writer, offset, length, &single, &vectors, &count);
+    if (error) { errno = -error; return -1; }
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) { if (vectors != &single) free(vectors); errno = EBADF; return -1; }
+    if (entry->kind != KER_FD_SOCKET) {
+        ker_fd_put(entry); if (vectors != &single) free(vectors); errno = ENOTSOCK; return -1;
+    }
     struct ker_native_option_guard *guard = NULL;
-    int token = ker_native_buffer_send_begin(entry->native, &vector, 1, flags, &guard);
-    long result = token < 0 ? token : lkl_sys_sendto(entry->native, (void *)bytes,
-        length, flags, (void *)address, address_length);
+    int token = ker_native_buffer_send_begin(entry->native, vectors, count, flags, &guard);
+    struct msghdr message = {.msg_iov = vectors, .msg_iovlen = count};
+    long result = token < 0 ? token : lkl_sys_sendmsg(entry->native, (void *)&message, flags);
     ker_native_buffer_send_end(guard);
-    return sent(entry, result, flags);
+    if (vectors != &single) free(vectors);
+    return (int)sent(entry, result, flags);
 }
 IO_CALL(recvfrom, (int fd, void *bytes, size_t length, int flags,
     struct sockaddr *address, socklen_t *address_length),
@@ -121,10 +245,22 @@ ssize_t sendmsg(int fd, const struct msghdr *message, int flags)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_sendmsg, fd, message, flags);
+    if (entry->kind == KER_FD_EPOLL)
+        return sent(entry, lkl_sys_sendmsg(entry->native, (void *)message, flags), flags);
     struct ker_native_option_guard *guard = NULL;
-    int token = message ? ker_native_buffer_send_begin(entry->native,
-        message->msg_iov, message->msg_iovlen, flags, &guard) : -EFAULT;
-    long result = token < 0 ? token : lkl_sys_sendmsg(entry->native, (void *)message, flags);
+    struct msghdr copied;
+    int token = 0;
+    if (flags & MSG_ZEROCOPY) {
+        if (ker_host_usercopy(&copied, message, sizeof(copied), 0))
+            return sent(entry, -EFAULT, flags);
+        token = ker_native_buffer_send_begin(entry->native,
+            copied.msg_iov, copied.msg_iovlen, flags, &guard);
+    }
+    struct netlink_cap_guard cap_guard;
+    long result = token < 0 ? token : netlink_send_begin(entry, &cap_guard);
+    if (result >= 0) result = lkl_sys_sendmsg(entry->native, (void *)message, flags);
+    long restored = token < 0 ? 0 : netlink_send_end(&cap_guard);
+    if (result >= 0 && restored < 0) result = restored;
     ker_native_buffer_send_end(guard);
     return sent(entry, result, flags);
 }
@@ -142,8 +278,14 @@ int sendmmsg(int fd, struct mmsghdr *messages, unsigned int count, int flags)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_sendmmsg, fd, messages, count, flags);
+    if (entry->kind == KER_FD_EPOLL)
+        return (int)sent(entry, lkl_sys_sendmmsg(entry->native, (void *)messages, count, flags), flags);
     if (!(flags & MSG_ZEROCOPY) || !count) {
-        long value = lkl_sys_sendmmsg(entry->native, (void *)messages, count, flags);
+        struct netlink_cap_guard guard;
+        long value = netlink_send_begin(entry, &guard);
+        if (value >= 0) value = lkl_sys_sendmmsg(entry->native, (void *)messages, count, flags);
+        long restored = netlink_send_end(&guard);
+        if (value >= 0 && restored < 0) value = restored;
         return (int)sent(entry, value, flags);
     }
     /* Validate each original Linux operation just before execution, so a late
@@ -153,12 +295,24 @@ int sendmmsg(int fd, struct mmsghdr *messages, unsigned int count, int flags)
     unsigned int done = 0;
     long value = 0;
     while (done < count) {
-        struct msghdr *message = &messages[done].msg_hdr;
+        uintptr_t address = (uintptr_t)messages;
+        size_t offset = (size_t)done * sizeof(*messages);
+        if (address > UINTPTR_MAX - offset) { value = -EFAULT; break; }
+        struct mmsghdr *current = (void *)(address + offset);
+        struct msghdr message;
+        if (ker_host_usercopy(&message, current, sizeof(message), 0)) {
+            value = -EFAULT;
+            break;
+        }
         struct ker_native_option_guard *guard = NULL;
         int token = ker_native_buffer_send_begin(entry->native,
-            message->msg_iov, message->msg_iovlen, flags, &guard);
-        value = token < 0 ? token : lkl_sys_sendmmsg(entry->native,
-            (void *)&messages[done], 1, flags | (done + 1 < count ? MSG_BATCH : 0));
+            message.msg_iov, message.msg_iovlen, flags, &guard);
+        struct netlink_cap_guard cap_guard;
+        value = token < 0 ? token : netlink_send_begin(entry, &cap_guard);
+        if (value >= 0) value = lkl_sys_sendmmsg(entry->native,
+            (void *)current, 1, flags | (done + 1 < count ? MSG_BATCH : 0));
+        long restored = token < 0 ? 0 : netlink_send_end(&cap_guard);
+        if (value >= 0 && restored < 0) value = restored;
         ker_native_buffer_send_end(guard);
         if (value <= 0) break;
         done++;
@@ -173,15 +327,25 @@ int sendmmsg(int fd, struct mmsghdr *messages, unsigned int count, int flags)
          * sendmmsg call returns. */
         size_t payload = 0;
         bool payload_overflow = false;
-        for (size_t i = 0; i < message->msg_iovlen; i++) {
-            size_t length = message->msg_iov[i].iov_len;
+        for (size_t i = 0; i < message.msg_iovlen; i++) {
+            struct iovec vector;
+            uintptr_t vectors = (uintptr_t)message.msg_iov;
+            if (i > (UINTPTR_MAX - vectors) / sizeof(vector) ||
+                ker_host_usercopy(&vector, (void *)(vectors + i * sizeof(vector)), sizeof(vector), 0)) {
+                payload_overflow = true;
+                break;
+            }
+            size_t length = vector.iov_len;
             if (length > SIZE_MAX - payload) {
                 payload_overflow = true;
                 break;
             }
             payload += length;
         }
-        if (payload_overflow || messages[done - 1].msg_len < payload) break;
+        unsigned int accepted;
+        if (payload_overflow || ker_host_usercopy(&accepted,
+                (void *)((uintptr_t)current + offsetof(struct mmsghdr, msg_len)), sizeof(accepted), 0) ||
+            accepted < payload) break;
     }
     return (int)sent(entry, done ? (long)done : value, flags);
 }
@@ -248,6 +412,7 @@ int fcntl(int fd, int command, ...)
         va_end(args);
     }
     }
+    if (command == KER_F_DUPFD_QUERY) return ker_fd_same_file(fd, (int)argument);
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) {
         if (command != F_GETOWN) return syscall(SYS_fcntl, fd, command, argument);
@@ -289,6 +454,12 @@ int ioctl(int fd, unsigned long request, ...)
     if (!entry) return syscall(SYS_ioctl, fd, request, argument);
     if (request == FIOASYNC || request == FIOSETOWN || request == SIOCSPGRP) {
         ker_fd_put(entry); errno = EOPNOTSUPP; return -1;
+    }
+    /* These socket operations unconditionally transfer an integer. LKL's
+     * in-process uaccess cannot recover a host NULL dereference. */
+    if (!argument && (request == FIONBIO || ((entry->kind == KER_FD_SOCKET || entry->kind == KER_FD_PACKET) &&
+        (request == FIONREAD || request == SIOCOUTQ)))) {
+        ker_fd_put(entry); errno = EFAULT; return -1;
     }
     long value = ker_mtu_ioctl(entry->native, request, argument);
     ker_fd_put(entry);

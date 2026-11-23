@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Actual EAL queue owners over original virtio/vhost/TAP and Linux sockets."""
 import argparse
+import atexit
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+
+from dpdk_runtime import private_runtime_environment
 
 
 def require(value, message):
@@ -88,6 +91,9 @@ def main():
         for name in ('launcher', 'library', 'worker', 'app', 'bridge', 'pmd-root', 'mtu-failure'):
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
         return subprocess.run(command, env=environment).returncode
+    runtime = tempfile.TemporaryDirectory(prefix='ker-rx-lcores-runtime-')
+    atexit.register(runtime.cleanup)
+    environment = private_runtime_environment(Path(runtime.name) / 'dpdk', environment)
     for command in (
             ['ip', 'link', 'set', 'lo', 'up'],
             ['ip', 'link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink'],

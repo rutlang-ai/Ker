@@ -3,12 +3,22 @@
 #include <dlfcn.h>
 #include <linux/errqueue.h>
 #include <poll.h>
+#include <sys/epoll.h>
+#include <sys/mman.h>
 #include <stdint.h>
 #include <pthread.h>
 #include <limits.h>
 static void *(*buffer_allocate)(size_t);
 static int (*buffer_release)(void *);
 static void *(*buffer_resize)(void *, size_t);
+static int (*buffer_write)(void *, size_t, const void *, size_t);
+static struct ker_posix_buffer_writer *(*writer_create)(size_t);
+static struct ker_posix_buffer_writer *(*writer_create_segmented)(size_t, size_t);
+static const void *(*writer_segment)(struct ker_posix_buffer_writer *, size_t, size_t *, size_t *, size_t *);
+static int (*writer_append)(struct ker_posix_buffer_writer *, const void *, size_t);
+static const void *(*writer_view)(struct ker_posix_buffer_writer *, size_t *, size_t *);
+static int (*writer_destroy)(struct ker_posix_buffer_writer *);
+static int (*writer_send)(struct ker_posix_buffer_writer *, int, size_t, size_t, int);
 static int (*buffer_run)(ker_posix_loop_func, void *);
 static void (*buffer_stop)(void);
 static unsigned sent_ids, completed_ids, family_copied[2], family_direct[2], current_family;
@@ -35,9 +45,19 @@ static void buffer_init(void)
     buffer_allocate = dlsym(RTLD_DEFAULT, "ker_posix_buffer_alloc");
     buffer_release = dlsym(RTLD_DEFAULT, "ker_posix_buffer_free");
     buffer_resize = dlsym(RTLD_DEFAULT, "ker_posix_buffer_realloc");
+    buffer_write = dlsym(RTLD_DEFAULT, "ker_posix_buffer_write");
+    writer_create = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_create");
+    writer_create_segmented = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_create_segmented");
+    writer_segment = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_segment");
+    check(writer_create_segmented && writer_segment, "native segmented writer ABI");
+    writer_append = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_append");
+    writer_view = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_view");
+    writer_destroy = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_destroy");
+    writer_send = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_send");
+    check(writer_create && writer_append && writer_view && writer_destroy && writer_send, "native owned writer ABI");
     buffer_run = dlsym(RTLD_DEFAULT, "ker_posix_run");
     buffer_stop = dlsym(RTLD_DEFAULT, "ker_posix_stop_run");
-    check(buffer_allocate && buffer_release && buffer_resize && buffer_run && buffer_stop, "native buffer API");
+    check(buffer_allocate && buffer_release && buffer_resize && buffer_write && buffer_run && buffer_stop, "native buffer API");
     int sentinel = 0xCAFE;
     check(buffer_resize(&sentinel, 0) == &sentinel && sentinel == 0xCAFE, "zero resize pointer identity");
     errno = 0; check(!buffer_allocate(0) && errno == EINVAL, "zero allocation rejected");
@@ -140,6 +160,172 @@ static void *buffer_toggle(void *opaque)
     }
     return NULL;
 }
+static void writer_no_delivery(int fd, int receiver)
+{
+    unsigned char byte; char control[256];
+    struct iovec vector = {&byte, 1};
+    struct msghdr message = {.msg_iov=&vector, .msg_iovlen=1,
+        .msg_control=control, .msg_controllen=sizeof(control)};
+    check(recv(receiver, &byte, 1, MSG_DONTWAIT) == -1 && errno == EAGAIN,
+          "writer append delivered no datagram");
+    check(recvmsg(fd, &message, MSG_ERRQUEUE | MSG_DONTWAIT) == -1 && errno == EAGAIN,
+          "writer append consumed no completion ID");
+}
+static void buffer_segment_writers(int fd, int receiver)
+{
+    unsigned char pattern[256], received[256];
+    for (size_t i = 0; i < sizeof(pattern); i++) pattern[i] = (unsigned char)(i & 0x7f);
+    struct ker_posix_buffer_writer *owner = writer_create_segmented(256, 128);
+    check(owner, "segmented socket owner");
+    check(writer_append(owner, pattern, 178) == 178, "source178-byte multi-node append");
+    struct iovec vectors[2];
+    const void *nodes[2];
+    for (size_t i = 0; i < 2; i++) {
+        size_t used = SIZE_MAX, capacity = SIZE_MAX, total = SIZE_MAX;
+        nodes[i] = writer_segment(owner, i, &used, &capacity, &total);
+        check(nodes[i] && used == (i ? 50 : 128) && capacity == 128 && total == 178,
+              "real segment length/capacity and aggregate cursor");
+        check(!memcmp(nodes[i], pattern + i*128, used), "owned per-node source bytes");
+        vectors[i] = (struct iovec){(void *)nodes[i], used};
+    }
+    check(nodes[0] != nodes[1], "separate registered segment VMAs");
+    check(writer_send(owner, fd, 0, 179, MSG_ZEROCOPY) == -1 && errno == EINVAL,
+          "segmented owned send rejects unwritten suffix");
+    check(writer_append(owner, pattern, SIZE_MAX) == -1 && errno == EINVAL,
+          "segmented append bounds before socket syscall");
+    size_t a = 41, b = 42, c = 43;
+    check(!writer_segment(owner, 2, &a, &b, &c) && errno == EINVAL && a == 41 && b == 42 && c == 43,
+          "invalid segment preserves output sentinels");
+    writer_no_delivery(fd, receiver);
+    unsigned prior = sent_ids;
+    struct msghdr message = {.msg_iov=vectors, .msg_iovlen=2};
+    check(writer_send(owner, fd, 0, 178, MSG_ZEROCOPY) == 178 &&
+          recv(receiver, received, sizeof(received), 0) == 178 && !memcmp(received, pattern, 178),
+          "owned128+50-byte segments reach original Linux UDP peer");
+    buffer_sent(178, true); buffer_complete(fd);
+    check(sent_ids == prior+1 && completed_ids == sent_ids, "rejected segmented operations consume no completion IDs");
+    /* No mutation/release while the preceding send holds a zerocopy reference. */
+    check(writer_append(owner, pattern+178, 78) == 78, "append tail only after completion");
+    for (size_t i = 0; i < 2; i++) {
+        size_t used = SIZE_MAX, capacity = SIZE_MAX, total = SIZE_MAX;
+        check(writer_segment(owner, i, &used, &capacity, &total) == nodes[i] &&
+              used == 128 && capacity == 128 && total == 256 && !memcmp(nodes[i], pattern+i*128, 128),
+              "post-completion segment cursor and exact bytes");
+    }
+    vectors[0] = (struct iovec){(unsigned char *)nodes[0]+100, 28};
+    vectors[1] = (struct iovec){(void *)nodes[1], 72};
+    check(sendmsg(fd, &message, MSG_ZEROCOPY) == 100 &&
+          recv(receiver, received, sizeof(received), 0) == 100 && !memcmp(received, pattern+100, 100),
+          "cross-node offset range delivered exactly");
+    buffer_sent(100, true); buffer_complete(fd);
+    check(writer_send(owner, fd, 100, 100, MSG_ZEROCOPY) == 100 &&
+          recv(receiver, received, sizeof(received), 0) == 100 && !memcmp(received, pattern+100, 100),
+          "explicit owned send spans two original Linux VMAs");
+    buffer_sent(100, true); buffer_complete(fd);
+    check(sent_ids == prior+3 && completed_ids == sent_ids && !writer_destroy(owner),
+          "segmented owner released after both real completions");
+    struct ker_posix_buffer_writer *replacement = writer_create_segmented(256, 128);
+    check(replacement, "replacement segmented socket owner");
+    check(!writer_segment(owner, 0, NULL, NULL, NULL) && errno == EINVAL &&
+          writer_destroy(owner) == -1 && errno == EINVAL, "stale socket owner cannot affect replacement");
+    size_t total = SIZE_MAX;
+    check(writer_segment(replacement, 0, NULL, NULL, &total) && !total && !writer_destroy(replacement),
+          "replacement socket owner remains empty and live");
+}
+static void buffer_writers(void)
+{
+    for (unsigned family = 0; family < 2; ++family) {
+        int domain = family ? AF_INET6 : AF_INET;
+        int receiver = socket(domain, SOCK_DGRAM, 0), fd = socket(domain, SOCK_DGRAM, 0);
+        check(receiver >= 0 && fd >= 0, "owned writer loopback sockets");
+        struct sockaddr_storage address = {0};
+        socklen_t size = family ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+        if (family) {
+            struct sockaddr_in6 *a = (void *)&address; a->sin6_family = AF_INET6; a->sin6_addr = in6addr_loopback;
+        } else {
+            struct sockaddr_in *a = (void *)&address; a->sin_family = AF_INET; a->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        }
+        check(!bind(receiver, (void *)&address, size) && !getsockname(receiver, (void *)&address, &size) &&
+              !connect(fd, (void *)&address, size), "owned writer real native loopback peer");
+        struct timeval timeout = {.tv_sec=3};
+        check(!setsockopt(receiver, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)), "writer timeout");
+        buffer_socket(fd, family, false);
+        struct ker_posix_buffer_writer *empty = writer_create(0); check(empty, "owned empty VMA");
+        size_t length = SIZE_MAX, capacity = SIZE_MAX;
+        const void *data = writer_view(empty, &length, &capacity);
+        check(data && !length && !capacity, "owned empty logical view");
+        check(writer_append(empty, "x", 0) == 0 && writer_append(empty, "x", 1) == -1 && errno == EINVAL,
+              "empty capacity rejects payload and preserves zero append");
+        check(writer_send(empty, fd, 0, 0, MSG_ZEROCOPY) == -1 && errno == EINVAL,
+              "explicit owned send rejects zero bytes without changing ordinary UDP");
+        writer_no_delivery(fd, receiver);
+        unsigned char received[64];
+        check(send(fd, data, 0, MSG_ZEROCOPY) == 0 && recv(receiver, received, sizeof(received), 0) == 0,
+              "ordinary Linux zero-byte UDP remains one real datagram");
+        buffer_sent(0, true); buffer_complete(fd);
+        check(sent_ids == 1 && completed_ids == 1, "empty UDP owns completion ID zero");
+        writer_no_delivery(fd, receiver);
+        check(!writer_destroy(empty), "empty owner released after actual completion");
+        struct ker_posix_buffer_writer *owner = writer_create(64); check(owner, "owned payload VMA");
+        check(writer_append(owner, "ab", 2) == 2 && writer_append(owner, "cd", 2) == 2,
+              "owned append cumulative payload");
+        data = writer_view(owner, &length, &capacity);
+        check(data && length == 4 && capacity == 64 && !memcmp(data, "abcd", 4), "owned aggregate length/bytes");
+        check(writer_append(owner, "x", SIZE_MAX) == -1 && errno == EINVAL &&
+              writer_append(owner, NULL, 0) == -1 && errno == EINVAL, "owned rejected append");
+        check(writer_append(owner, "x", 0) == 0 && writer_view(owner, &length, NULL) == data && length == 4 &&
+              !memcmp(data, "abcd", 4), "owned no-op/rejection preserves length and bytes");
+        check(buffer_release((void *)data) == -1 && errno == EBUSY &&
+              buffer_write((void *)data, 0, "x", 1) == -1 && errno == EBUSY &&
+              !buffer_resize((void *)data, 128) && errno == EBUSY, "writer owner cannot be bypassed");
+        check(writer_send(owner, fd, 0, 0, MSG_ZEROCOPY) == -1 && errno == EINVAL &&
+              writer_send(owner, fd, SIZE_MAX, 1, MSG_ZEROCOPY) == -1 && errno == EINVAL &&
+              writer_send(owner, fd, 3, 2, MSG_ZEROCOPY) == -1 && errno == EINVAL &&
+              writer_send(owner, fd, 0, SIZE_MAX, MSG_ZEROCOPY) == -1 && errno == EINVAL,
+              "owned send rejects empty/overflow/unwritten ranges");
+        check(writer_send(NULL, fd, 0, 4, MSG_ZEROCOPY) == -1 && errno == EINVAL &&
+              writer_send(owner, fd, 0, (size_t)INT_MAX+1, MSG_ZEROCOPY) == -1 && errno == EINVAL,
+              "owned send rejects NULL owner and source INT_MAX overflow");
+        check(writer_send(owner, -1, 0, 4, MSG_ZEROCOPY) == -1 && errno == EBADF, "owned send rejects invalid descriptor");
+        int epoll = epoll_create1(EPOLL_CLOEXEC); check(epoll >= 0, "native epoll for owned send rejection");
+        check(writer_send(owner, epoll, 0, 4, MSG_ZEROCOPY) == -1 && errno == ENOTSOCK,
+              "owned send rejects imported non-socket");
+        check(!close(epoll), "owned non-socket rejection cleanup");
+        int host_pair[2];
+        check(!socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0, host_pair), "host pair for owned send rejection");
+        check(writer_send(owner, host_pair[0], 0, 4, MSG_ZEROCOPY) == -1 && errno == EBADF &&
+              recv(host_pair[1], received, sizeof(received), MSG_DONTWAIT) == -1 && errno == EAGAIN,
+              "owned send never routes to a host descriptor");
+        check(!close(host_pair[0]) && !close(host_pair[1]), "host rejection pair cleanup");
+        check(writer_view(owner, &length, NULL) == data && length == 4 && !memcmp(data, "abcd", 4),
+              "rejected owned sends preserve caller owner");
+        writer_no_delivery(fd, receiver);
+        check(writer_send(owner, fd, 0, length, MSG_ZEROCOPY) == 4 && recv(receiver, received, sizeof(received), 0) == 4 &&
+              !memcmp(received, "abcd", 4), "owned bytes reach original Linux after rejected append");
+        buffer_sent(4, true); buffer_complete(fd);
+        check(sent_ids == 2 && completed_ids == 2, "owned payload retains next completion ID");
+        check(writer_send(owner, fd, 2, 2, MSG_ZEROCOPY) == 2 && recv(receiver, received, sizeof(received), 0) == 2 &&
+              !memcmp(received, "cd", 2), "owned explicit offset range delivered");
+        buffer_sent(2, true); buffer_complete(fd);
+        check(writer_view(owner, &length, NULL) == data && length == 4 && !memcmp(data, "abcd", 4),
+              "successful owned send retains cursor and ownership");
+        check(writer_append(owner, "EFGH", 4) == 4 && writer_view(owner, &length, NULL) == data && length == 8 &&
+              !memcmp(data, "abcdEFGH", 8), "append only after actual zerocopy completion");
+        struct iovec vectors[] = {{(void *)data, 2}, {(unsigned char *)data+2, 6}};
+        struct msghdr message = {.msg_iov=vectors, .msg_iovlen=2};
+        check(sendmsg(fd, &message, MSG_ZEROCOPY) == 8 && recv(receiver, received, sizeof(received), 0) == 8 &&
+              !memcmp(received, "abcdEFGH", 8), "owned scatter-gather bytes delivered");
+        buffer_sent(8, true); buffer_complete(fd);
+        check(sent_ids == 4 && completed_ids == 4 && !writer_destroy(owner), "owned release follows all completions");
+        buffer_segment_writers(fd, receiver);
+        check(!close(fd) && !close(receiver), "writer sockets closed");
+    }
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_multi_segment");
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_get_zero_len_returns_minimal_chain");
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_accumulates_pkthdr_len");
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_zero_len_noop");
+    puts("BUFFER_SOURCE_CASE test_ff_zc_send_zero_nbytes_returns_einval");
+}
 static void buffer_guards(void)
 {
     int receiver = socket(AF_INET, SOCK_DGRAM, 0), fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -154,8 +340,29 @@ static void buffer_guards(void)
     unsigned char *registered = buffer_allocate(16384), received[16384], *host_bytes = malloc(host_size);
     check(host_bytes, "foreign host malloc storage with live native VMAs");
     check(registered, "live VMA during foreign-memory guard tests");
-    memset(registered, 0x41, 16384); memset(host_bytes, 0x5b, host_size);
+    unsigned char initial[16384]; memset(initial, 0x41, sizeof(initial));
+    check(buffer_write(registered, 0, initial, 8192) == 8192 &&
+          buffer_write(registered, 8192, initial+8192, 8192) == 8192,
+          "dynamic bounded writes fill registered pages");
+    memset(host_bytes, 0x5b, host_size);
     buffer_socket(fd, 0, false);
+    check(buffer_write(registered, 16380, host_bytes, 8) == -1 && errno == EINVAL,
+          "bounded write past requested extent rejected");
+    check(buffer_write(registered, SIZE_MAX, host_bytes, 1) == -1 && errno == EINVAL,
+          "bounded write offset overflow rejected");
+    check(buffer_write(registered, 0, host_bytes, SIZE_MAX) == -1 && errno == EINVAL,
+          "bounded write length overflow rejected");
+    buffer_rejected(fd, receiver, registered);
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_overflow_returns_error");
+    check(buffer_write(registered, 0, NULL, 4) == -1 && errno == EINVAL,
+          "dynamic NULL write rejected");
+    check(buffer_write(registered, 0, NULL, 0) == -1 && errno == EINVAL,
+          "dynamic zero-length NULL write rejected");
+    buffer_rejected(fd, receiver, registered);
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_null_data_returns_error");
+    check(buffer_write(registered, 16384, host_bytes, 0) == 0,
+          "dynamic zero write at exact end is a no-op");
+    buffer_rejected(fd, receiver, registered);
     check(send(fd, NULL, 16, MSG_ZEROCOPY) == -1 && errno == EFAULT, "NULL native send rejected");
     struct iovec invalid = {NULL, 16};
     struct msghdr invalid_message = {.msg_iov = &invalid, .msg_iovlen = 1};
@@ -178,6 +385,33 @@ static void buffer_guards(void)
           "valid mapped bytes delivered exactly");
     buffer_sent(16, true); buffer_complete(fd); /* First successful send must retain ID zero. */
     puts("BUFFER_SOURCE_CASE test_ff_zc_send_valid_args_proceeds");
+    long page = sysconf(_SC_PAGESIZE);
+    check(page >= 4096, "host page size");
+    char *memory = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    check(memory != MAP_FAILED && mprotect(memory + page, (size_t)page, PROT_NONE) == 0,
+        "protected zerocopy metadata mapping");
+    void *bad = memory + page;
+    check(sendmsg(fd, bad, MSG_ZEROCOPY) == -1 && errno == EFAULT,
+        "protected zerocopy message header");
+    check(sendmmsg(fd, bad, 1, MSG_ZEROCOPY) == -1 && errno == EFAULT,
+        "protected zerocopy batch header");
+    struct msghdr protected_iov = {.msg_iov = bad, .msg_iovlen = 1};
+    check(sendmsg(fd, &protected_iov, MSG_ZEROCOPY) == -1 && errno == EFAULT,
+        "protected registered-send iovec");
+    protected_iov.msg_iov = (void *)(memory + page - sizeof(struct iovec) / 2);
+    check(sendmsg(fd, &protected_iov, MSG_ZEROCOPY) == -1 && errno == EFAULT,
+        "split registered-send iovec");
+    struct mmsghdr *split_batch = (void *)(memory + page - sizeof(*split_batch));
+    struct iovec prefix_iov = {registered, 16};
+    *split_batch = (struct mmsghdr){.msg_hdr = {.msg_iov = &prefix_iov, .msg_iovlen = 1}, .msg_len = 777};
+    check(sendmmsg(fd, split_batch, 2, MSG_ZEROCOPY) == 1 && split_batch->msg_len == 16,
+        "accepted batch prefix before protected next header");
+    check(recv(receiver, received, sizeof(received), 0) == 16 && !memcmp(received, registered, 16),
+        "protected suffix retains exact accepted prefix");
+    buffer_sent(16, true); buffer_complete(fd);
+    check(munmap(memory, (size_t)page * 2) == 0, "release protected metadata mapping");
+
     check(send(fd, host_bytes, host_size, MSG_ZEROCOPY) == -1 && errno == EFAULT,
           "foreign zerocopy storage rejected before GUP with live VMAs");
     check(send(fd, registered + 16380, 16, MSG_ZEROCOPY) == -1 && errno == EFAULT, "mapping range overflow rejected");
@@ -200,7 +434,9 @@ static void buffer_guards(void)
     check(recv(receiver, received, sizeof(received), 0) == 16, "suffix delivered once");
     buffer_sent(16, true); buffer_complete(fd);
     unsigned char *second = buffer_allocate(4097); check(second, "second registered VMA");
-    memset(second, 0x42, 4097);
+    memset(initial, 0x42, 4097);
+    check(buffer_write(second, 0, initial, 4097) == 4097,
+          "bounded write prepares second registered sendmsg extent");
     struct iovec valid[] = {{registered, 4096}, {second, 4096}};
     mixed.msg_iov = valid;
     check(sendmsg(fd, &mixed, MSG_ZEROCOPY) == 8192, "native scatter-gather registered sendmsg");
@@ -227,6 +463,7 @@ static void buffer_guards(void)
     check(!pthread_join(toggler, NULL) && !close(alias), "option updates and alias joined");
     check(!close(fd) && !close(receiver) && !buffer_release(registered) && !buffer_release(second), "guard mapping/socket cleanup");
     free(host_bytes);
+    buffer_writers();
     memset(family_copied, 0, sizeof(family_copied)); memset(family_direct, 0, sizeof(family_direct));
     memset(copied_bytes, 0, sizeof(copied_bytes)); memset(direct_bytes, 0, sizeof(direct_bytes));
     memset(udp_copied_bytes, 0, sizeof(udp_copied_bytes)); memset(tcp_direct_bytes, 0, sizeof(tcp_direct_bytes));
@@ -236,8 +473,17 @@ static void buffer_finish(void)
 {
     /* Deliberate residual mapping: explicit run teardown must reclaim it. */
     void *residual = buffer_allocate(8193); check(residual, "residual mapping");
+    struct ker_posix_buffer_writer *owner = writer_create(0); check(owner, "residual empty owner");
     check(!buffer_run(buffer_end, NULL), "mapped-buffer socket drain and native shutdown");
     errno = 0; check(!buffer_allocate(1) && errno == ENETDOWN, "allocation after shutdown rejected");
+    size_t length = 91, capacity = 92;
+    check(!writer_view(owner, &length, &capacity) && errno == ENETDOWN && length == 91 && capacity == 92,
+          "writer view after shutdown rejects without output mutation");
+    check(writer_append(owner, "x", 0) == -1 && errno == ENETDOWN &&
+          writer_destroy(owner) == -1 && errno == ENETDOWN, "owner lifetime ends at explicit shutdown");
+    char final_byte = 'x';
+    check(buffer_write(residual, 0, &final_byte, 1) == -1 && errno == ENETDOWN,
+          "bounded write after shutdown rejected without dereference");
     check(buffer_release(residual) == -1 && errno == ENETDOWN, "stale release after shutdown rejected without dereference");
     for (unsigned family = 0; family < 2; family++)
         printf("BUFFER_COMPLETIONS {\"family\":%u,\"copied\":%u,\"direct\":%u,\"copied_bytes\":%zu,\"direct_bytes\":%zu,\"udp_copied_bytes\":%zu,\"tcp_direct_bytes\":%zu}\n",

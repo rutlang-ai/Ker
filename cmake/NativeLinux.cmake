@@ -38,8 +38,9 @@ foreach(artifact config library)
     endif()
 endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
-    src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c
-    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c)
+    src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c src/posix/posix-interface.c src/posix/posix-statvfs.c src/posix/posix-process.c
+    src/posix/posix-stdio.c
+    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 add_library(ker::posix ALIAS ker-posix)
@@ -51,6 +52,12 @@ target_link_options(ker-posix PRIVATE -Wl,--no-undefined
     "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
 set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
+include(CheckStructHasMember)
+check_struct_has_member("struct statvfs" f_type "sys/statvfs.h" KER_STATVFS_HAS_TYPE LANGUAGE C)
+if(KER_STATVFS_HAS_TYPE)
+    target_compile_definitions(ker-posix PRIVATE KER_STATVFS_HAS_TYPE=1)
+endif()
+
 set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME posix)
 add_executable(ker-app src/posix/app-guard.c)
 set(ker_io_worker_sources src/posix/worker-rx-lcores.c src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/io-worker.c src/posix/worker-offload.c src/posix/worker-receive-mode.c src/posix/worker-rss.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
@@ -208,6 +215,91 @@ if(BUILD_TESTING)
     target_compile_options(ker-session-envelope-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-session-envelope COMMAND ker-session-envelope-test)
     set_tests_properties(native-fstack-session-envelope PROPERTIES TIMEOUT 10 LABELS "fstack;session")
+    add_test(NAME native-fstack-session-control-roundtrip
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile roundtrip)
+    add_test(NAME native-fstack-session-control-malformed
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile malformed)
+    add_test(NAME native-fstack-session-control-replay
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile replay)
+    add_test(NAME native-fstack-session-control-isolation
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile isolation)
+    add_test(NAME native-fstack-session-control-capacity
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile capacity)
+    add_test(NAME native-fstack-session-control-recycle
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile recycle)
+    add_test(NAME native-fstack-session-control-master-eof
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile master-eof)
+    add_test(NAME native-fstack-session-control-master-death
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile master-death)
+    add_test(NAME native-fstack-session-control-master-frozen
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile master-frozen)
+    add_test(NAME native-fstack-session-control-reservation-eof
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile reservation-eof)
+    add_test(NAME native-fstack-session-control-reservation-death
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile reservation-death)
+    add_test(NAME native-fstack-session-control-reservation-coordinates
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile reservation-coordinates)
+    add_test(NAME native-fstack-session-control-reservation-replay
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile reservation-replay)
+    add_test(NAME native-fstack-session-control-reservation-collision
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile reservation-collision)
+    add_test(NAME native-fstack-session-control-reservation-bounds
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile reservation-bounds)
+    set_tests_properties(native-fstack-session-control-roundtrip native-fstack-session-control-malformed
+        native-fstack-session-control-replay native-fstack-session-control-isolation
+        native-fstack-session-control-capacity native-fstack-session-control-recycle
+        native-fstack-session-control-master-eof native-fstack-session-control-master-death
+        native-fstack-session-control-master-frozen
+        native-fstack-session-control-reservation-eof native-fstack-session-control-reservation-death
+        native-fstack-session-control-reservation-coordinates
+        native-fstack-session-control-reservation-replay native-fstack-session-control-reservation-collision
+        native-fstack-session-control-reservation-bounds PROPERTIES TIMEOUT 30 LABELS "fstack;session;dpdk"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_test(NAME native-fstack-session-orphan-reservation-eof
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-orphan-reservations.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile orphan-eof)
+    add_test(NAME native-fstack-session-orphan-reservation-frozen
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-orphan-reservations.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile orphan-frozen)
+    add_test(NAME native-fstack-session-orphan-reservation-staged
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-orphan-reservations.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile orphan-staged)
+    set_tests_properties(native-fstack-session-orphan-reservation-eof
+        native-fstack-session-orphan-reservation-frozen native-fstack-session-orphan-reservation-staged
+        PROPERTIES TIMEOUT 30 LABELS "fstack;session;dpdk" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_test(NAME native-fstack-session-tc3-observer
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-tc3-observer.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
@@ -271,6 +363,34 @@ if(BUILD_TESTING)
             --test "$<TARGET_FILE:ker-session-generation-rings-test>")
     set_tests_properties(native-fstack-session-generation-rings PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
         LABELS "fstack;session;dpdk")
+    add_executable(ker-session-ring-namespaces-test tests/posix/session-ring-namespaces.c)
+    target_include_directories(ker-session-ring-namespaces-test PRIVATE src/posix tests)
+    target_compile_options(ker-session-ring-namespaces-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-session-ring-namespaces-test PRIVATE PkgConfig::DPDK)
+    target_link_options(ker-session-ring-namespaces-test PRIVATE -Wl,--disable-new-dtags)
+    set_target_properties(ker-session-ring-namespaces-test PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
+    add_test(NAME native-fstack-session-namespace-names COMMAND ker-session-ring-namespaces-test names)
+    add_test(NAME native-fstack-session-namespace-isolation COMMAND ker-session-ring-namespaces-test isolation)
+    add_test(NAME native-fstack-session-namespace-recreate COMMAND ker-session-ring-namespaces-test recreate)
+    set_tests_properties(native-fstack-session-namespace-names native-fstack-session-namespace-isolation
+        native-fstack-session-namespace-recreate PROPERTIES TIMEOUT 20 LABELS "fstack;session;dpdk")
+    add_executable(ker-session-orphan-safety-test
+        tests/posix/session-orphan-safety.c src/posix/session-generation-rings.c)
+    target_include_directories(ker-session-orphan-safety-test PRIVATE src/posix tests)
+    target_compile_options(ker-session-orphan-safety-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-session-orphan-safety-test PRIVATE PkgConfig::DPDK)
+    target_link_options(ker-session-orphan-safety-test PRIVATE -Wl,--disable-new-dtags)
+    set_target_properties(ker-session-orphan-safety-test PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
+    add_test(NAME native-fstack-session-orphan-live COMMAND ker-session-orphan-safety-test live)
+    add_test(NAME native-fstack-session-orphan-identity COMMAND ker-session-orphan-safety-test identity)
+    add_test(NAME native-fstack-session-orphan-reap COMMAND ker-session-orphan-safety-test reap)
+    add_test(NAME native-fstack-session-orphan-inflight-rx COMMAND ker-session-orphan-safety-test inflight-rx)
+    add_test(NAME native-fstack-session-orphan-inflight-tx COMMAND ker-session-orphan-safety-test inflight-tx)
+    add_test(NAME native-fstack-session-orphan-inflight-both COMMAND ker-session-orphan-safety-test inflight-both)
+    set_tests_properties(native-fstack-session-orphan-live native-fstack-session-orphan-identity
+        native-fstack-session-orphan-reap native-fstack-session-orphan-inflight-rx
+        native-fstack-session-orphan-inflight-tx native-fstack-session-orphan-inflight-both
+        PROPERTIES TIMEOUT 20 LABELS "fstack;session;dpdk")
     add_test(NAME native-fstack-session-generation-rings-registration
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-generation-rings-registration.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
@@ -415,6 +535,21 @@ if(BUILD_TESTING)
     target_compile_options(ker-entropy-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-entropy COMMAND ker-entropy-test)
     set_tests_properties(native-fstack-entropy PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_executable(ker-current-time-test tests/posix/current-time.c src/posix/current-time.c
+        src/posix/realtime-clock.c src/posix/host-memory.c src/posix/host-clock.c)
+    target_include_directories(ker-current-time-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-current-time-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_link_libraries(ker-current-time-test PRIVATE "${ker_native_tools}/liblkl.a"
+        Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_link_options(ker-current-time-test PRIVATE -Wl,--wrap=lkl_syscall)
+    target_compile_options(ker-current-time-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-current-time-optional COMMAND ker-current-time-test optional)
+    add_test(NAME native-fstack-current-time-errors COMMAND ker-current-time-test errors)
+    add_test(NAME native-fstack-current-time-parallel COMMAND ker-current-time-test parallel)
+    set_tests_properties(native-fstack-current-time-optional native-fstack-current-time-errors native-fstack-current-time-parallel
+        PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-realtime-test tests/posix/fstack-realtime.c src/posix/realtime-clock.c src/posix/host-memory.c src/posix/host-clock.c)
     target_include_directories(ker-realtime-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-realtime-test SYSTEM PRIVATE
@@ -424,6 +559,12 @@ if(BUILD_TESTING)
     target_compile_options(ker-realtime-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-realtime COMMAND ker-realtime-test)
     set_tests_properties(native-fstack-realtime PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-realtime-refresh COMMAND ker-realtime-test advance)
+    add_test(NAME native-fstack-realtime-refresh-host-error COMMAND ker-realtime-test host-error)
+    add_test(NAME native-fstack-realtime-refresh-invalid-nsec COMMAND ker-realtime-test invalid-nsec)
+    set_tests_properties(native-fstack-realtime-refresh
+        native-fstack-realtime-refresh-host-error native-fstack-realtime-refresh-invalid-nsec
+        PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-host-runtime-test tests/posix/fstack-host-runtime.c src/posix/host-memory.c src/posix/host-clock.c)
     target_include_directories(ker-host-runtime-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-host-runtime-test SYSTEM PRIVATE
@@ -480,6 +621,94 @@ if(BUILD_TESTING)
     target_compile_options(ker-native-buffer-resize-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-buffer-resize COMMAND ker-native-buffer-resize-test)
     set_tests_properties(native-fstack-buffer-resize PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_executable(ker-native-buffer-write-test tests/posix/native-buffer-write.c
+        src/posix/native-buffer.c src/posix/host-memory.c src/posix/host-clock.c)
+    target_include_directories(ker-native-buffer-write-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-native-buffer-write-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_link_libraries(ker-native-buffer-write-test PRIVATE "${ker_native_tools}/liblkl.a"
+        Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_compile_options(ker-native-buffer-write-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-buffer-write-overflow COMMAND ker-native-buffer-write-test overflow)
+    add_test(NAME native-fstack-buffer-write-null COMMAND ker-native-buffer-write-test null)
+    add_test(NAME native-fstack-buffer-write-copy COMMAND ker-native-buffer-write-test copy)
+    set_tests_properties(native-fstack-buffer-write-overflow native-fstack-buffer-write-null
+        native-fstack-buffer-write-copy PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_executable(ker-native-buffer-write-threads-test tests/posix/native-buffer-write-threads.c
+        src/posix/native-buffer.c src/posix/host-memory.c src/posix/host-clock.c)
+    target_include_directories(ker-native-buffer-write-threads-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-native-buffer-write-threads-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_link_libraries(ker-native-buffer-write-threads-test PRIVATE "${ker_native_tools}/liblkl.a"
+        Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_compile_options(ker-native-buffer-write-threads-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-buffer-write-parallel COMMAND ker-native-buffer-write-threads-test parallel)
+    add_test(NAME native-fstack-buffer-write-handoff COMMAND ker-native-buffer-write-threads-test handoff)
+    set_tests_properties(native-fstack-buffer-write-parallel native-fstack-buffer-write-handoff
+        PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_executable(ker-native-buffer-writer-test tests/posix/native-buffer-writer.c
+        src/posix/native-buffer.c src/posix/host-memory.c src/posix/host-clock.c)
+    target_include_directories(ker-native-buffer-writer-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-native-buffer-writer-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_link_libraries(ker-native-buffer-writer-test PRIVATE "${ker_native_tools}/liblkl.a"
+        Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_compile_options(ker-native-buffer-writer-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-buffer-writer-empty COMMAND ker-native-buffer-writer-test empty)
+    add_test(NAME native-fstack-buffer-writer-append COMMAND ker-native-buffer-writer-test append)
+    add_test(NAME native-fstack-buffer-writer-zero COMMAND ker-native-buffer-writer-test zero)
+    add_test(NAME native-fstack-buffer-writer-stale COMMAND ker-native-buffer-writer-test stale)
+    set_tests_properties(native-fstack-buffer-writer-empty native-fstack-buffer-writer-append
+        native-fstack-buffer-writer-zero native-fstack-buffer-writer-stale PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_executable(ker-native-buffer-writer-failures-test tests/posix/native-buffer-writer-failures.c
+        src/posix/native-buffer.c src/posix/host-memory.c src/posix/host-clock.c)
+    target_include_directories(ker-native-buffer-writer-failures-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-native-buffer-writer-failures-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_link_libraries(ker-native-buffer-writer-failures-test PRIVATE "${ker_native_tools}/liblkl.a"
+        Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_link_options(ker-native-buffer-writer-failures-test PRIVATE
+        -Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=lkl_syscall)
+    target_compile_options(ker-native-buffer-writer-failures-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-buffer-writer-constructor COMMAND ker-native-buffer-writer-failures-test constructor)
+    add_test(NAME native-fstack-buffer-writer-retry COMMAND ker-native-buffer-writer-failures-test retry)
+    set_tests_properties(native-fstack-buffer-writer-constructor native-fstack-buffer-writer-retry
+        PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_executable(ker-native-buffer-segments-test tests/posix/native-buffer-segments.c
+        src/posix/native-buffer.c src/posix/host-memory.c src/posix/host-clock.c)
+    target_include_directories(ker-native-buffer-segments-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-native-buffer-segments-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_link_libraries(ker-native-buffer-segments-test PRIVATE "${ker_native_tools}/liblkl.a"
+        Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_link_options(ker-native-buffer-segments-test PRIVATE -Wl,--wrap=malloc -Wl,--wrap=lkl_syscall)
+    target_compile_options(ker-native-buffer-segments-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-buffer-segments-ranges COMMAND ker-native-buffer-segments-test ranges)
+    add_test(NAME native-fstack-buffer-segments-layout COMMAND ker-native-buffer-segments-test layout)
+    add_test(NAME native-fstack-buffer-segments-failures COMMAND ker-native-buffer-segments-test failures)
+    add_test(NAME native-fstack-buffer-segments-constructor-matrix COMMAND ker-native-buffer-segments-test constructor-matrix)
+    add_test(NAME native-fstack-buffer-segments-destroy-matrix COMMAND ker-native-buffer-segments-test destroy-matrix)
+    set_tests_properties(native-fstack-buffer-segments-ranges native-fstack-buffer-segments-layout native-fstack-buffer-segments-failures
+        native-fstack-buffer-segments-constructor-matrix native-fstack-buffer-segments-destroy-matrix
+        PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_executable(ker-native-buffer-segment-threads-test tests/posix/native-buffer-segment-threads.c
+        src/posix/native-buffer.c src/posix/host-memory.c src/posix/host-clock.c)
+    target_include_directories(ker-native-buffer-segment-threads-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-native-buffer-segment-threads-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_link_libraries(ker-native-buffer-segment-threads-test PRIVATE "${ker_native_tools}/liblkl.a"
+        Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_compile_options(ker-native-buffer-segment-threads-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-buffer-segments-parallel COMMAND ker-native-buffer-segment-threads-test parallel)
+    add_test(NAME native-fstack-buffer-segments-handoff COMMAND ker-native-buffer-segment-threads-test handoff)
+    set_tests_properties(native-fstack-buffer-segments-parallel native-fstack-buffer-segments-handoff
+        PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     foreach(page_mode debug release)
         add_executable(ker-host-pages-${page_mode}-test tests/posix/fstack-host-pages.c src/posix/host-memory.c)
         target_include_directories(ker-host-pages-${page_mode}-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
@@ -557,11 +786,29 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-launcher-config
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run_config.py")
     set_tests_properties(native-fstack-launcher-config PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-mtu-enable-config
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_mtu_enable.py")
+    set_tests_properties(native-fstack-mtu-enable-config PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-fstack-config-lifecycle
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_lifecycle.py")
     set_tests_properties(native-fstack-config-lifecycle PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-interface-section-validation
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_interface_sections.py")
+    set_tests_properties(native-fstack-interface-section-validation PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-bond-worker-limits
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_bond_worker_limits.py")
+    set_tests_properties(native-fstack-bond-worker-limits PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-ker-run-boundaries
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_launcher_boundaries.py")
+    set_tests_properties(native-ker-run-boundaries PROPERTIES TIMEOUT 60 LABELS fstack)
     add_test(NAME native-ker-run-exit-status
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run.py")
+    add_test(NAME native-linux-fetch-lock
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_native_linux_fetch.py")
+    set_tests_properties(native-linux-fetch-lock PROPERTIES TIMEOUT 40 LABELS fstack)
+    add_test(NAME native-linux-artifact-lock
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_native_linux_artifact_lock.py")
+    set_tests_properties(native-linux-artifact-lock PROPERTIES TIMEOUT 30)
     add_test(NAME native-linux-fingerprint-stale-inputs
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_native_linux_fingerprint.py"
             --builder "${PROJECT_SOURCE_DIR}/tools/build-native-linux.py"
@@ -862,16 +1109,93 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(native-posix-tcp-interop native-posix-tcp-loss-reorder native-posix-tcp-zero-window native-posix-tcp-errors
         PROPERTIES TIMEOUT 90 LABELS native-tcp)
+    add_executable(ker-posix-host-usercopy-test tests/posix/host-usercopy.c src/posix/host-usercopy.c)
+    target_compile_options(ker-posix-host-usercopy-test PRIVATE -Wall -Wextra -Werror)
+    target_include_directories(ker-posix-host-usercopy-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix/lkl-overlay/arch/lkl/include")
+    add_test(NAME native-fstack-host-usercopy COMMAND ker-posix-host-usercopy-test)
+    set_tests_properties(native-fstack-host-usercopy PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-raw-icmp-test tests/posix/raw-icmp-contracts.c)
+    target_compile_options(ker-posix-raw-icmp-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME host-native-raw-icmp-reference COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/posix/packet-socket-reference.py" --app "$<TARGET_FILE:ker-posix-raw-icmp-test>")
+    set_tests_properties(host-native-raw-icmp-reference PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-raw-icmp-contracts COMMAND ${ker_native_test_command}
+        --fd-app "$<TARGET_FILE:ker-posix-raw-icmp-test>")
+    set_tests_properties(native-raw-icmp-contracts PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-packet-sockets-test tests/posix/fstack-packet-sockets.c)
+    target_compile_options(ker-posix-packet-sockets-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-posix-packet-sockets-test PRIVATE ${CMAKE_DL_LIBS})
+    add_test(NAME host-fstack-packet-sockets-reference COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/posix/packet-socket-reference.py" --app "$<TARGET_FILE:ker-posix-packet-sockets-test>")
+    set_tests_properties(host-fstack-packet-sockets-reference PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-packet-sockets COMMAND ${ker_native_test_command}
+        --fd-app "$<TARGET_FILE:ker-posix-packet-sockets-test>")
+    set_tests_properties(native-fstack-packet-sockets PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-stdio-exit-test tests/posix/stdio-exit.c)
+    target_compile_options(ker-posix-stdio-exit-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-stdio-exit COMMAND ${ker_native_test_command}
+        --stdio-exit-app "$<TARGET_FILE:ker-posix-stdio-exit-test>")
+    set_tests_properties(native-fstack-stdio-exit PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-stdio-short-write-test
+        tests/posix/stdio-short-write.c src/posix/posix-stdio.c)
+    target_include_directories(ker-posix-stdio-short-write-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_include_directories(ker-posix-stdio-short-write-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_compile_features(ker-posix-stdio-short-write-test PRIVATE c_std_11)
+    target_compile_options(ker-posix-stdio-short-write-test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(ker-posix-stdio-short-write-test PRIVATE -Wl,--wrap=write -Wl,--wrap=close)
+    target_link_libraries(ker-posix-stdio-short-write-test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME stdio-cookie-short-write-retries COMMAND ker-posix-stdio-short-write-test retry-complete)
+    add_test(NAME stdio-cookie-short-write-reports-error COMMAND ker-posix-stdio-short-write-test partial-error)
+    add_test(NAME stdio-cookie-closed-error-does-not-poison-shutdown
+        COMMAND ker-posix-stdio-short-write-test handled-closed-error)
+    add_test(NAME stdio-host-flush-error-does-not-poison-native-shutdown
+        COMMAND ker-posix-stdio-short-write-test host-flush-error)
+    set_tests_properties(stdio-cookie-short-write-retries stdio-cookie-short-write-reports-error
+        stdio-cookie-closed-error-does-not-poison-shutdown stdio-host-flush-error-does-not-poison-native-shutdown
+        PROPERTIES TIMEOUT 30 LABELS fstack)
     add_executable(ker-posix-fstack-socket-contracts-test tests/posix/fstack-socket-contracts.c)
     target_compile_options(ker-posix-fstack-socket-contracts-test PRIVATE -Wall -Wextra -Werror)
-    target_link_libraries(ker-posix-fstack-socket-contracts-test PRIVATE ${CMAKE_DL_LIBS})
-    add_test(NAME host-fstack-socket-contracts-reference COMMAND ker-posix-fstack-socket-contracts-test)
+    target_link_libraries(ker-posix-fstack-socket-contracts-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    add_test(NAME host-fstack-socket-contracts-reference COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/posix/packet-socket-reference.py"
+        --app "$<TARGET_FILE:ker-posix-fstack-socket-contracts-test>")
     set_tests_properties(host-fstack-socket-contracts-reference PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-fstack-socket-contracts COMMAND ${ker_native_test_command}
-        --fd-app "$<TARGET_FILE:ker-posix-fstack-socket-contracts-test>" --fd-coexistence)
+        --fd-app "$<TARGET_FILE:ker-posix-fstack-socket-contracts-test>" --fd-coexistence --fd-payload-faults --fd-reuseport-filter)
     set_tests_properties(native-fstack-socket-contracts PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fortify-poll-cancel-allocation-test
+        tests/posix/fortify-poll-cancel-allocation.c src/posix/posix-fortify.c)
+    target_include_directories(ker-posix-fortify-poll-cancel-allocation-test PRIVATE src/posix)
+    target_include_directories(ker-posix-fortify-poll-cancel-allocation-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_compile_options(ker-posix-fortify-poll-cancel-allocation-test PRIVATE
+        -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+    target_compile_definitions(ker-posix-fortify-poll-cancel-allocation-test PRIVATE KER_FORTIFY_POLL_TEST)
+    target_link_libraries(ker-posix-fortify-poll-cancel-allocation-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    target_link_options(ker-posix-fortify-poll-cancel-allocation-test PRIVATE
+        -Wl,--gc-sections -Wl,--wrap=calloc -Wl,--wrap=free -Wl,--wrap=syscall)
+    add_test(NAME host-fortify-poll-cancel-allocation-balance
+        COMMAND ker-posix-fortify-poll-cancel-allocation-test)
+    set_tests_properties(host-fortify-poll-cancel-allocation-balance PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_executable(ker-posix-fortify-bounds-test tests/posix/fortify-bounds.c src/posix/posix-fortify.c)
+    target_compile_options(ker-posix-fortify-bounds-test PRIVATE -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -DKER_FORTIFY_BOUNDS_STANDALONE -Wall -Wextra -Werror)
+    target_link_libraries(ker-posix-fortify-bounds-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    add_test(NAME native-fstack-fortify-bounds COMMAND ker-posix-fortify-bounds-test)
+    set_tests_properties(native-fstack-fortify-bounds PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_executable(ker-posix-fstack-fortified-test tests/posix/fstack-socket-contracts.c)
+    target_compile_options(ker-posix-fstack-fortified-test PRIVATE -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wall -Wextra -Werror)
+    target_link_libraries(ker-posix-fstack-fortified-test PRIVATE ${CMAKE_DL_LIBS})
+    add_test(NAME host-fstack-fortified-io-reference COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/posix/packet-socket-reference.py"
+        --app "$<TARGET_FILE:ker-posix-fstack-fortified-test>")
+    set_tests_properties(host-fstack-fortified-io-reference PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-fortified-io COMMAND ${ker_native_test_command}
+        --fd-app "$<TARGET_FILE:ker-posix-fstack-fortified-test>" --fd-coexistence --fd-payload-faults --fd-reuseport-filter)
+    set_tests_properties(native-fstack-fortified-io PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-readiness-test tests/posix/fstack-readiness.c)
     target_compile_options(ker-posix-fstack-readiness-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-posix-fstack-readiness-test PRIVATE Threads::Threads)
     add_test(NAME host-fstack-readiness-reference COMMAND ker-posix-fstack-readiness-test)
     set_tests_properties(host-fstack-readiness-reference PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-fstack-readiness COMMAND ${ker_native_test_command}
@@ -884,6 +1208,7 @@ if(BUILD_TESTING)
     set_tests_properties(native-fstack-stream-io PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-sendmmsg-short-test tests/posix/sendmmsg-short.c src/posix/posix-socket.c)
     target_include_directories(ker-posix-sendmmsg-short-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_include_directories(ker-posix-sendmmsg-short-test PRIVATE "${PROJECT_SOURCE_DIR}/include")
     target_include_directories(ker-posix-sendmmsg-short-test SYSTEM PRIVATE
         "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
     target_compile_options(ker-posix-sendmmsg-short-test PRIVATE -Wall -Wextra -Werror -ffunction-sections)
@@ -1127,6 +1452,12 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-icmp-mtu-test>" --dynamic
             --failure-library "$<TARGET_FILE:ker-mtu-failure>")
     set_tests_properties(native-fstack-live-mtu PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-mtu-enable-live
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/icmp-mtu.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-icmp-mtu-test>" --dynamic
+            --mtu-policy-only --failure-library "$<TARGET_FILE:ker-mtu-failure>")
+    set_tests_properties(native-fstack-mtu-enable-live PROPERTIES TIMEOUT 60 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-rx-lcores-mtu
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/icmp-mtu.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
@@ -1207,6 +1538,22 @@ if(BUILD_TESTING)
     target_include_directories(ker-native-buffer-test PRIVATE "${PROJECT_SOURCE_DIR}/include")
     target_compile_options(ker-native-buffer-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-native-buffer-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    add_executable(ker-current-time-sockets-test tests/posix/current-time-sockets.c)
+    target_include_directories(ker-current-time-sockets-test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+    target_compile_options(ker-current-time-sockets-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-current-time-sockets-test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME native-fstack-current-time-sockets
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/current-time-sockets.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-current-time-sockets-test>"
+            --pmd-root "${ker_offload_library_root}")
+    add_test(NAME native-fstack-current-time-parallel-sockets
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/current-time-sockets.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-current-time-sockets-test>"
+            --pmd-root "${ker_offload_library_root}" --parallel)
+    set_tests_properties(native-fstack-current-time-sockets native-fstack-current-time-parallel-sockets
+        PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-zc-validation
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/zc-validation.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
@@ -1285,6 +1632,20 @@ if(BUILD_TESTING)
                 --worker "$<TARGET_FILE:ker-io-worker-bond>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
                 --pmd-root "${ker_vdev_library_root}")
         set_tests_properties(native-fstack-typed-bond PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
+        add_test(NAME native-fstack-typed-bond-source-timings
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-bond.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker-bond>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
+                --pmd-root "${ker_vdev_library_root}" --source-timings)
+        set_tests_properties(native-fstack-typed-bond-source-timings PROPERTIES TIMEOUT 120
+            SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
+        add_test(NAME native-fstack-typed-bond-source-repeat
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-bond.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker-bond>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
+                --pmd-root "${ker_vdev_library_root}" --source-repeat-bond)
+        set_tests_properties(native-fstack-typed-bond-source-repeat PROPERTIES TIMEOUT 120
+            SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
         add_test(NAME native-fstack-typed-bond-large-member
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-bond.py"
                 --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"

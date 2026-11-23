@@ -2,13 +2,16 @@
 """Verify the non-FRAME profile's real early-marker diagnostic wrapper."""
 import importlib.util
 from pathlib import Path
+import select
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
 FIXTURE = Path(__file__).resolve().parents[1] / 'posix' / 'session-native-packets.py'
+LAUNCHER = Path(__file__).resolve().parents[2] / 'tools' / 'ker_session_run.py'
 
 
 class HandoffProfileDiagnosticsTests(unittest.TestCase):
@@ -18,6 +21,9 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('session_native_packets_diag_test', FIXTURE)
         cls.fixture = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.fixture)
+        launcher_spec = importlib.util.spec_from_file_location('ker_session_run_eof_test', LAUNCHER)
+        cls.launcher = importlib.util.module_from_spec(launcher_spec)
+        launcher_spec.loader.exec_module(cls.launcher)
 
     def test_nonframe_peer_marker_uses_redirected_stderr_and_failure_snapshot(self):
         with tempfile.TemporaryDirectory(prefix='session-handoff-marker-') as directory:
@@ -43,10 +49,87 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
 
     def test_nonframe_callsite_uses_profile_failure_diagnostics(self):
         source = FIXTURE.read_text()
-        branch = source[source.index("if mode == 'nonframe-active-reap':", source.index('def run_live_handoff_profile')):]
-        branch = branch[:branch.index("            if mode == 'frame-positive':")]
+        branch = source[source.index("if mode == 'nonframe-active-reap':",
+            source.index('handoff_census_before = connection.request')):]
+        boundary = branch.index("if mode in ('frame-positive'")
+        branch = branch[:boundary]
         self.assertIn("record_handoff_marker(runner, 'KER_SESSION_TEST_NONFRAME_PEER_KILLED'", branch)
         self.assertIn('runner_stderr_path, fatal_profile_diagnostics)', branch)
+
+    def test_bounded_capture_does_not_wait_for_descendant_pipe_writers(self):
+        process = subprocess.Popen([sys.executable, '-c',
+            'import subprocess,sys; p=subprocess.Popen([sys.executable,"-c",'
+            '"import time; time.sleep(10)"]); print(p.pid, flush=True)'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        try:
+            self.assertTrue(select.select([process.stdout], [], [], 2)[0],
+                'child PID did not become readable before the bounded-capture test')
+            started = time.monotonic()
+            process.wait(timeout=2)
+            output, errors = self.fixture._communicate_bounded(process, timeout=0.2)
+            self.assertLess(time.monotonic() - started, 2)
+            child_pid = int(output.decode().strip())
+            self.assertEqual(errors, b'')
+            self.assertIsNotNone(process.poll())
+        finally:
+            try:
+                import os
+                os.killpg(process.pid, 9)
+            except ProcessLookupError:
+                pass
+            for stream in (process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
+
+    def test_frame_owner_waits_for_exit_after_stdout_eof(self):
+        source = LAUNCHER.read_text()
+        self.assertIn('def wait_after_pipe_eof(process, timeout, failure_message):', source)
+        self.assertIn("wait_after_pipe_eof(worker, 1, 'secondary packet worker remained live after stdout EOF')", source)
+        process = subprocess.Popen([sys.executable, '-c',
+            'import os,sys; os.close(1); sys.stdin.buffer.read(1)'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            self.assertTrue(select.select([process.stdout], [], [], 1)[0])
+            self.assertIsNone(process.poll(), 'fixture must observe EOF before process exit')
+            process.stdin.write(b'x')
+            process.stdin.flush()
+            process.stdin.close()
+            process.stdin = None
+            self.assertEqual(self.launcher.wait_after_pipe_eof(process, 1,
+                'fixture process did not exit'), 0)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            if process.stdin is not None:
+                process.stdin.close()
+                process.stdin = None
+            process.communicate(timeout=1)
+
+    def test_failure_diagnostics_use_bounded_capture_for_fallbacks(self):
+        source = FIXTURE.read_text()
+        diagnostic_helpers = source[source.index('            def startup_failure(reason):'):
+            source.index('            try:\n                ready_line = line(runner')]
+        diagnostic_helpers += source[source.index('            def fatal_profile_diagnostics(reason):'):
+            source.index("            require(not select.select([app_pidfd, owner_pidfd, peer_pidfd]")]
+        diagnostic_helpers += source[source.index('            if _is_fatal_handoff_profile(mode):'):
+            source.index("            if mode == 'timeout':")]
+        self.assertIn('_communicate_bounded(', diagnostic_helpers)
+        self.assertIn('_stop_timed_out_runner(', diagnostic_helpers)
+
+    def test_positive_modes_are_not_classified_as_fatal_negative_profiles(self):
+        source = FIXTURE.read_text()
+        branch = source[source.index('            if _is_fatal_handoff_profile(mode):'):
+            source.index("            if mode == 'timeout':")]
+        self.assertFalse(self.fixture._is_fatal_handoff_profile('positive'))
+        self.assertFalse(self.fixture._is_fatal_handoff_profile('frame-positive'))
+        self.assertFalse(self.fixture._is_fatal_handoff_profile('nonframe-active-reap'))
+        self.assertTrue(self.fixture._is_fatal_handoff_profile('bad-capability'))
+        self.assertTrue(self.fixture._is_fatal_handoff_profile('peer-death'))
+        self.assertTrue(self.fixture._is_fatal_handoff_profile('timeout'))
+        with self.assertRaisesRegex(ValueError, 'unknown handoff profile classification:'):
+            self.fixture._is_fatal_handoff_profile('typo')
+        self.assertIn('runner.communicate(timeout=20)', branch)
+        self.assertIn('if _is_fatal_handoff_profile(mode):', source)
 
 
 if __name__ == '__main__':

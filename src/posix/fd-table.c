@@ -3,6 +3,7 @@
 #include "syscall-result.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/close_range.h>
 #include <sys/epoll.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -67,6 +68,29 @@ struct ker_fd *ker_fd_get(int fd)
     if (entry) atomic_fetch_add_explicit(&entry->references, 1, memory_order_relaxed);
     pthread_mutex_unlock(&mutex);
     return entry;
+}
+int ker_fd_same_file(int fd, int other)
+{
+    pthread_mutex_lock(&mutex);
+    struct ker_fd *left = fd >= 0 && fd < KER_FD_LIMIT ? entries[fd] : NULL;
+    struct ker_fd *right = other >= 0 && other < KER_FD_LIMIT ? entries[other] : NULL;
+    if (left && right) {
+        atomic_fetch_add_explicit(&left->references, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&right->references, 1, memory_order_relaxed);
+        pthread_mutex_unlock(&mutex);
+        long result = lkl_sys_fcntl(left->native, KER_F_DUPFD_QUERY, right->native);
+        ker_fd_put(right); ker_fd_put(left);
+        return ker_native_result(result);
+    }
+    /* Keep host classification and the host syscall in the same critical
+     * section as dup2/close. No temporary fd allocation is needed. */
+    long result;
+    if (!left && !right) result = syscall(SYS_fcntl, fd, KER_F_DUPFD_QUERY, other);
+    else result = syscall(SYS_fcntl, left ? other : fd, F_GETFD) < 0 ? -1 : 0;
+    int saved = errno;
+    pthread_mutex_unlock(&mutex);
+    errno = saved;
+    return (int)result;
 }
 long ker_fd_put(struct ker_fd *entry)
 {
@@ -224,4 +248,25 @@ void ker_fd_close_all(void)
         struct ker_fd *entry = ker_fd_get(fd);
         if (entry) { ker_fd_close(fd); ker_fd_put(entry); }
     }
+}
+
+int close_range(unsigned first, unsigned last, int flags)
+{
+    if (first > last || (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC))) {
+        errno = EINVAL; return -1;
+    }
+    /* CLOEXEC belongs to the application's host reservations. Closing or
+     * unsharing the host table would strand native entries and can also close
+     * runtime-private channels; expose that unsupported boundary explicitly. */
+    pthread_mutex_lock(&mutex);
+    bool native = ker_native_ready() || private_hosts || snapshots;
+    if (!native) for (int fd = 0; fd < KER_FD_LIMIT; ++fd)
+        if (entries[fd]) { native = true; break; }
+    long value;
+    if (native && flags != CLOSE_RANGE_CLOEXEC) { errno = EOPNOTSUPP; value = -1; }
+    else value = syscall(SYS_close_range, first, last, flags);
+    int saved = errno;
+    pthread_mutex_unlock(&mutex);
+    if (value < 0) errno = saved;
+    return value;
 }

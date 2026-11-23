@@ -454,3 +454,118 @@ UDP 计数。见 [共存合同及四条尚未迁移的配置断言](stack-coexis
 进程模式：`native-fstack-eal-file-prefix` 还验证主/附加接口显式 secondary
 在 worker exec 前拒绝，已有 primary 存活并完成 TCP/UDP，auto 实际选择 primary
 及 CLI primary 覆盖旧 INI secondary。见[六项仍未完成的源进程合同](process-modes.md)。
+
+
+MTU 禁用策略：`native-fstack-mtu-enable-config` 与 `native-fstack-mtu-enable-live`
+分组适配 `test_mtu_disabled_port_over_1500_fails`。显式关闭 jumbo 后，每个接口的
+启动及运行时 ceiling 都不超过1500；更低配置仍保留，CLI可覆盖策略。配置检查与
+原版 Linux/真实 TAP 的动态拒绝、继续收发及回收分别执行。这里只新增一项源案例
+适配，五个配置检查及运行扩展不另计为五项上游迁移。
+
+
+缺失启动配置：`native-fstack-config-lifecycle` 的三项追加检查对应固定源
+`test_ff_load_config_empty_ini` 的真实无参数调用，并扩展参数缺失、命令缺失和
+恢复。该源用例没有读取空文件；Ker完整CLI无需配置文件的既有行为继续保留。
+
+
+VLAN 节名校验：`native-fstack-config-lifecycle` 新增三项相关检查，适配
+`test_vlan_cfg_handler_bad_section_returns_zero` 的加载失败场景。Ker使用
+`[vlan.ID]`，验证畸形ID的真实CLI拒绝、worker/application未启动及修正后的恢复。
+孤立/filter与越界数组的成功跳过不是本批适配内容。
+
+
+连续实时时钟刷新：`native-fstack-realtime-refresh` 适配
+`test_ff_get_current_time_advances` 的两次更新后时间严格前进场景，调用生产适配器
+及真实原版Linux时钟。两个相关独立CTest覆盖宿主EIO、非法纳秒值和成功恢复；
+缓存getter、NULL输出参数及F-Stack fatal错误ABI继续保留缺口。
+
+
+RX-15 部分迁移：`native-fstack-session-orphan-live/identity/reap` 以primary组件
+测试验证真实DPDK队列的pidfd拒绝、精确死亡回收、活消费者FIFO保留和最终释放。
+子进程仅提供lifetime，不代表secondary EAL/packet worker。源purge锁与未附加
+消费者等分支仍未完成，案例仅标partial，完整适配数量不增加。
+
+
+RX-15 in-flight 扩展：`native-fstack-session-orphan-inflight-rx/tx/both` 检查活
+消费者持有RX/TX对象时的readiness拒绝、实际reap超时回滚、逐个归还及成功重试。
+与原有三例一起验证FIFO及完全回收；仍是primary组件证据，RX-15保持partial。
+
+
+控制消息部分迁移：`native-fstack-session-control-roundtrip/malformed/replay`
+启动真实resident，以生产Python client和实际控制socket验证64-bit字段、畸形帧
+拒绝、请求重放及零资源泄漏。此证据只覆盖Ker控制适配器；UT-NR-14的F-Stack
+reload ABI/subcommand与C指针合同保留缺口，源案例仅从blocked推进到partial。
+
+控制槽位边界扩展：`native-fstack-session-control-isolation/capacity/recycle`
+在同一真实resident上验证同PID多连接的身份与缓存隔离、三个槽位耗尽时ENOSPC及
+后继重试、显式释放后slot复用与旧epoch拒绝。每例检查实时资源计数与退出回收；
+不增加UT-NR-14完成数，不覆盖跨进程死亡、secondary EAL或F-Stack reload ABI。
+
+master进程生命周期扩展：`native-fstack-session-control-master-eof/master-death/master-frozen`
+通过独立子进程证明控制socket EOF及SIGSTOP都不是退出证明，精确pidfd死亡之后
+才回收slot/epoch，并检查其他master、resident epoch0及复用后的凭据隔离。
+本批无secondary EAL或报文流量；作为TC-4既有映射补充，完成计数不变。
+
+P2释放证明的控制lease子集：`native-fstack-session-control-reservation-eof/reservation-death/reservation-coordinates`
+验证独立direct-child持有实际mbuf lease时RELEASE拒绝、socket EOF保留、精确死亡
+逐项回收和最后借用者退出后释放。源案例`test_p2_release_epoch_needs_proof`仅推进
+为partial；没有secondary EAL、硬件STOPPED证明或RX-owner generation转移证据。
+
+P2登记证明子集：`native-fstack-session-control-reservation-replay/reservation-collision/reservation-bounds`
+验证RESERVE相同序列号重放只保留一个lease、重复坐标与非法凭据/边界不改变登记，
+以及同一连接拒绝后的有效登记。`test_p2_hw_user_proof`仅推进为partial；
+没有硬件ACTIVE/STOPPED表、操作级user_add幂等或users_clear证明。
+
+孤儿控制借用者：`native-fstack-session-orphan-reservation-eof/frozen/staged`
+验证真实master死亡后，EOF/冻结的活借用者保留epoch与mbuf lease，多个坐标按
+精确pidfd死亡分别回收，最后才可复用slot。P2 orphan源案例仅推进为partial；
+没有secondary EAL、heartbeat老化接管或硬件RX-owner证明。
+
+M5 ring命名空间子集：`native-fstack-session-namespace-names/isolation/recreate`
+通过生产命名helper和128个真实DPDK ring验证唯一性、同名拒绝、独立FIFO与选择性
+重建。源cross-master名字隔离案例推进为partial；高process编号、消息type家族和
+F-Stack字面/legacy名字ABI仍有缺口，组件token结果不计为secondary或网络证据。
+
+精确bond时序：`native-fstack-typed-bond-source-timings`读取源dpdk_extra_keys
+fixture的poll/up/down=100/200/300，验证真实PMD的initial/final读回、独立Linux
+LACP、双栈ICMP和成员链路移除后的流量恢复。仍是partial案例的子缺口补齐，
+不计精确failover延迟、物理NIC或完整fixture通过。
+
+重复bond字段：`native-fstack-typed-bond-source-repeat`保留源fixture的重复
+字段顺序，原版PMD读回最终primary1/MACcc:dd:ee:ff:00:11/l34及两个成员；独立
+LACP、双栈ICMP和链路失效恢复通过。eth0/eth1显式映射到测试TAP ethdev0/1，
+仍不计combined bond/vdev、C分配器ABI或源省略时序的默认合同通过。
+
+有界原生写：`native-fstack-buffer-write-overflow/null/copy`以原版Linux VMA
+和生产登记验证容量/NULL错误以及多页、重叠、零长度和完整回收。仅将源写溢出
+及NULL数据错误返回两例推进为scenario-adapted；无implicit cursor、mbuf header/
+chain或网络证明。三个测试列入无需EAL/PMD的CI必跑清单。
+
+有界写入socket集成：`native-fstack-zc-validation`严格验证六个source marker，
+并通过真实动态库、原版Linux loopback与completion ID证明非法写入无队列副作用，
+有效后继发送及scatter-gather正常；完整virtio/native-buffer回归另行通过。
+
+跨线程有界写入：`native-fstack-buffer-write-parallel/handoff`验证独立VMA的
+多页字节/errno隔离和明确同步后的resize/write/free所有权交接，精确匹配回收。
+不扩大为未同步共享访问、mbuf ABI或网络证据；迁移完成计数不变。
+
+Owned writer：`native-fstack-buffer-writer-empty/append/zero`验证最小空owner、
+多次append累计长度/字节及零写no-op；生产VMA登记负责所有权与完整回收。三项源
+行为完成场景适配，不计FreeBSD头布局、多节点链或零字节send拒绝通过。
+
+Writer集成：`native-fstack-zc-validation`严格验证九个source marker；原版Linux
+IPv4/IPv6 loopback证明append无投递、副作用回滚、真实零字节UDP及连续completion，
+完成后才append/destroy。退出精确回收raw与writer两个残留，完整virtio回归另行通过。
+
+Writer失败：`native-fstack-buffer-writer-constructor/retry`验证定点malloc/mmap
+回滚、munmap失败保留owner、明确线程交接后的append及成功重试，另一owner与
+精确回收计数保持正确。不新增源案例完成数，不计FreeBSD分配器或无同步竞争证明。
+
+Owned-send：`native-fstack-zc-validation`以十个source marker和真实双栈原生
+socket验证非空written range、NULL/溢出/host fd拒绝及精确prefix/offset传输。
+仅将源零字节owned-send错误合同推进为场景适配，普通Linux空UDP语义不变。
+
+命名接口节名校验：`native-fstack-interface-section-validation` 通过实际 reader/CLI
+适配 `test_port_cfg_handler_bad_section_returns_zero` 的错误拒绝场景。无效名称在
+合法接口记录前后均失败，worker/application 不执行；修正后两条记录独立恢复。
+Ker 使用 `[interface.NAME]`，不模拟 F-Stack 数字端口 ABI，也不计网络互通通过。

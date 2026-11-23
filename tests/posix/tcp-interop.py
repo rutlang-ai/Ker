@@ -76,6 +76,49 @@ def client(command, env):
     return result.stdout
 
 
+def stdio_exit(args, launcher, work, env, log):
+    if not args.stdio_exit_app:
+        return
+    for native in (False, True):
+        port = 28790 + int(native)
+        app = str(args.stdio_exit_app)
+        stats_path = work / 'stdio-exit.json'
+        command = [app, 'client', '198.18.0.1', str(port)]
+        if native:
+            command = [*launcher, '--stats', str(stats_path), '--', *command]
+        captured = []
+        with server([app, 'server', '198.18.0.1', str(port)], port, log, env, captured=captured):
+            client(command, env)
+        if 'PASS: independent host received exact buffered exit payload and EOF' not in ''.join(captured):
+            raise RuntimeError('stdio exit peer did not validate payload/EOF')
+        if native:
+            stats = json.loads(stats_path.read_text())
+            if stats['native']['active_opens'] != 1 or not stats['tx'] or not stats['rx'] or stats['outstanding']:
+                raise RuntimeError('stdio exit did not use original TCP or leaked: ' + str(stats))
+
+    for native in (False, True):
+        port = 28792 + int(native)
+        app = str(args.stdio_exit_app)
+        command = [app, 'client-error', '198.18.0.1', str(port)]
+        if native:
+            command = [*launcher, '--', *command]
+        captured = []
+        with server([app, 'server-error', '198.18.0.1', str(port)], port, log, env, captured=captured):
+            result = subprocess.run(command, capture_output=True, text=True, env=env, timeout=40)
+            if 'PASS: application returns with buffered native FILE output' not in result.stdout:
+                raise RuntimeError('stdio failure client did not reach buffered exit: ' + result.stdout + result.stderr)
+            if native:
+                if (result.returncode == 0 or
+                        'buffered native stdio could not flush before shutdown' not in result.stderr or
+                        'native Linux shutdown did not complete' not in result.stderr):
+                    raise RuntimeError('native buffered exit failure was not reported: ' + result.stdout + result.stderr)
+            elif result.returncode != 0:
+                raise RuntimeError('host buffered-error baseline failed: ' + result.stdout + result.stderr)
+        if 'PASS: independent host saw failed buffered stream EOF without payload' not in ''.join(captured):
+            raise RuntimeError('stdio failure peer missed exact empty EOF')
+    print('PASS: native buffered exit flush failure is explicit after orderly teardown', flush=True)
+
+
 def validate_fault_evidence(client_output, native_stats, client_endpoint):
     match = re.search(r"TCP_INFO total_retrans=(\d+)", client_output)
     if not match or int(match[1]) == 0:
@@ -113,8 +156,8 @@ def install_tcp_fault_qdiscs(env):
         item = matching[0]
         nested = item.get('stats', {})
         baseline = {key: item.get(key, nested.get(key)) for key in ('packets', 'bytes', 'drops', 'overlimits')}
-        if any(not isinstance(value, int) or value != 0 for value in baseline.values()):
-            raise RuntimeError(f'{device} netem did not start with clean counters: {item}')
+        if any(not isinstance(value, int) or value < 0 for value in baseline.values()):
+            raise RuntimeError(f'{device} netem has invalid initial counters: {item}')
         evidence[device] = baseline
     return evidence
 
@@ -157,6 +200,9 @@ def remove_tcp_fault_qdiscs(env):
 
 
 def gated_client(command, port, env, gate_path):
+    # Wait for TAP/EAL initialization before installing qdiscs: TAP startup
+    # replaces the root qdisc. The client remains blocked before connect(), so
+    # the installed counters are a baseline for only post-release TCP traffic.
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
         ready(process, port)
@@ -2245,15 +2291,23 @@ def inside(args):
                 stream_compat(args, launcher, work, env, log)
                 application_compat(args, launcher, work, env)
                 udp_cork(args, launcher, work, env, log)
+                stdio_exit(args, launcher, work, env, log)
                 if args.fd_app:
                     stats_path = work / 'fd-app.json'
                     fd_output = client([*launcher, '--stats', str(stats_path), '--', str(args.fd_app)], env)
                     stats = json.loads(stats_path.read_text())
                     if args.fd_coexistence:
                         if ('PASS: independent host/native UDP same tuple, mixed epoll and both close orders' not in fd_output
-                                or stats['native']['udp_in_datagrams'] != 3
-                                or stats['native']['udp_out_datagrams'] != 3):
+                                or stats['native']['udp_in_datagrams'] != (3 + int(args.fd_payload_faults) + 3 * int(args.fd_reuseport_filter))
+                                or stats['native']['udp_out_datagrams'] != (3 + 2 * int(args.fd_payload_faults) + 3 * int(args.fd_reuseport_filter))):
                             raise RuntimeError('host/native coexistence missed isolated kernel UDP accounting: ' + str(stats))
+                    if args.fd_payload_faults or args.fd_reuseport_filter:
+                        expected = {'udp_in_errors': int(args.fd_payload_faults), 'udp_no_ports': 0,
+                                    'udp6_in_datagrams': int(args.fd_payload_faults) + 3 * int(args.fd_reuseport_filter),
+                                    'udp6_out_datagrams': 2 * int(args.fd_payload_faults) + 3 * int(args.fd_reuseport_filter),
+                                    'udp6_in_errors': int(args.fd_payload_faults), 'udp6_no_ports': 0}
+                        if any(stats['native'][key] != value for key, value in expected.items()):
+                            raise RuntimeError('payload copy-fault accounting differs from original UDP: ' + str(stats))
                     if (stats['outstanding'] or not stats['native']['active_opens'] or
                             not stats['native']['passive_opens']):
                         raise RuntimeError('fd scenarios did not use native TCP or leaked: ' + str(stats))
@@ -2299,6 +2353,9 @@ def main():
     parser.add_argument('--udp-cork-app', type=Path)
     parser.add_argument('--fd-app', type=Path)
     parser.add_argument('--fd-coexistence', action='store_true')
+    parser.add_argument('--stdio-exit-app', type=Path)
+    parser.add_argument('--fd-payload-faults', action='store_true')
+    parser.add_argument('--fd-reuseport-filter', action='store_true')
     parser.add_argument('--dualstack-app', type=Path)
     parser.add_argument('--epoll-app', type=Path)
     parser.add_argument('--message-app', type=Path)

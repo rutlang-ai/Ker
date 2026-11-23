@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 204 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 12 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 147 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 218 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 127 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为204 scenario-adapted、12 partial、147 blocked，共159项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为218 scenario-adapted、18 partial、127 blocked，共145项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -50,9 +50,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共229项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：159项行为未完成
-（12 partial + 147 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共219项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：149项行为未完成
+（18 partial + 131 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -71,10 +71,10 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Resolve device/run lifecycle and upstream fault-injection contracts | 4 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
 | Adapt typed vdev, bond and multi-port configuration | 3 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
 | Define a Linux-native zero-copy send and ownership contract | 7 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
-| Resolve remaining typed configuration and intentional schema differences | 17 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
+| Resolve remaining typed configuration and intentional schema differences | 14 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
 | Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
-| Resolve unmapped host memory, time, environment and kqueue helpers | 9 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
+| Resolve unmapped host memory, time, environment and kqueue helpers | 8 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
 | Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
 | Record FreeBSD thread context and join-result assertions | 3 | 架构专用 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
@@ -295,7 +295,7 @@ IPv6 jumbo 外部互通现由 ICMP 静态/动态清单验证；1280 下限保证
 `[network] max_mtu` / `--max-mtu` 提供独立部署上限（默认 9000，范围 1280–9000），请求 MTU 不得超过它。
 9000 请求对 2000 上限在启动前拒绝；CLI 覆盖上限到 9000 后执行同一真实 jumbo 互通测试。
 `test_mtu_port_over_max_fails` 已从部分覆盖转为场景适配；此上限不是硬件能力探测；动态 MTU 适配下，large pool 会按上限预留帧容量。
-F-Stack mtu_enable 禁用分支及其内部配置 ABI 继续保留缺口。
+显式 mtu_enable 禁用分支已由后续 MTU policy 批次适配；内部配置 ABI 不声明等价。
 
 ## TCP ECN 策略
 
@@ -1488,3 +1488,419 @@ TX checksum/TSO software-path evidence is separate: the approved host-only resul
 CTest profiles on TAP and virtio/vhost-kernel. The tested offload source blobs are byte-identical
 to qualified parent `87a705d96a368dfa30606df830b81a756b9c08f5`; the 13-suite session guest adds no
 offload run. No physical-NIC result is claimed; issue #221 remains open.
+
+
+## MTU 禁用策略迁移
+
+`test_mtu_disabled_port_over_1500_fails` 通过 `[dpdk] mtu_enable=0` 或
+`--no-mtu-enable` 适配。主接口与所有附加接口的有效 `max_mtu` 均取配置上限与
+1500 的较小值，因此启动请求和运行中的 MTU 修改都受同一上限约束。
+Ker 保持已有的默认启用行为，区别于 F-Stack 默认关闭；这里只适配显式禁用场景。
+
+`native-fstack-mtu-enable-config` 的五项检查覆盖 1280/1500 边界、1501/2000/9000
+拒绝、worker/application 尚未执行、CLI 覆盖、重复键、更低上限、配置恢复和
+附加接口无法扩大上限。非法配置上限在求有效上限前仍拒绝。
+`native-fstack-mtu-enable-live` 比较显式 1500 ceiling、CLI 禁用与 INI 禁用：原版 Linux
+在三个阶段保持 MTU1500，拒绝9000后双向 IPv4/IPv6 ICMP仍成功，真实 TAP MTU、
+DPDK counters、抓包 checksum 和零 outstanding 都须通过。
+当前共205项 scenario-adapted、12项 partial、146项 blocked；158项行为仍未完成。
+
+本批验证：相关8项CTest通过；扩充INI运行profile后专用live CTest再次通过。
+配置相关80项Python检查、专用5项检查及21项清单审计测试通过，
+106个固定源文件/433项清单完整性审计通过；全量完成门禁仍因158项未完成而失败。
+
+
+## 缺失启动配置的源合同
+
+`test_ff_load_config_empty_ini` 名称含 empty_ini，但固定源代码实际仅用
+`argc=1` 调用 loader，检查未提供任何配置的失败；它没有创建或读取空INI。
+`native-fstack-config-lifecycle` 新增三项相关检查，验证真实CLI无参数、逐项缺失
+address/port/eal、缺失应用命令均在库/worker/application初始化前返回2，
+并验证随后有效配置恢复。完整CLI参数不必提供配置文件；空文件配合完整CLI也可
+启动解析，但空文件本身不能补齐所需字段。这保留Ker既有CLI行为，不强制必传-c，
+也不将F-Stack内部-1返回值解释成相同公共ABI。
+
+本批只将上述一项源案例转为scenario-adapted。当前206项scenario-adapted、
+12项partial、145项blocked，共157项行为仍待完成。
+
+
+## 畸形 VLAN 节名拒绝
+
+`test_vlan_cfg_handler_bad_section_returns_zero` 的源断言是畸形 `[vlanXX]`
+使配置加载失败。Ker以自己的 `[vlan.ID]` 语法适配此场景：`[vlan.XX]`、
+空/带符号/非ASCII/超范围ID在真实reader和CLI中拒绝，返回2且worker/application
+没有执行。不是直接执行整个F-Stack配置fixture，也不声明C callback返回值或
+全局VLAN数组ABI等价。
+
+`native-fstack-config-lifecycle` 新增三项相关检查，覆盖畸形节在合法节之前或
+之后、修正后双VLAN的地址列表、随后无VLAN的干净加载、合法ID1/4094及01/1
+数值别名冲突。源用例中孤立VLAN/filter和越界数组项的成功跳过行为继续保留缺口。
+当前207项scenario-adapted、12项partial、144项blocked，156项行为仍待完成。
+
+本批16项配置生命周期检查、对应CTest及21项清单审计测试均通过；
+完整清单仍因144项blocked和12项partial保持未完成。
+
+
+## 原始 Linux 实时时钟连续刷新
+
+`test_ff_get_current_time_advances` 通过 `native-fstack-realtime-refresh`
+适配其两次刷新后时间前进的可观察场景。测试实际启动私有原版 Linux，使用生产
+`ker_native_sync_realtime` 同步，再通过原始 `clock_gettime` 读取；每次刷新
+必须读取宿主realtime一次，结果的秒/纳秒规范且处于独立宿主采样窗口内。
+两次刷新之间实际等待2ms，原生realtime严格前进，原生monotonic的增量保持在
+宿主monotonic采样窗口中。只修改私有内核时钟，不修改宿主时钟。
+
+同批两个独立CTest `native-fstack-realtime-refresh-host-error` 与
+`native-fstack-realtime-refresh-invalid-nsec` 是Ker扩展：宿主EIO或原版Linux
+拒绝非法纳秒值时必须分别返回-EIO/-EINVAL，时钟保持原来的连续进度；去除故障后
+刷新恢复成功。它们不另计两项上游迁移，也不将错误返回冒充F-Stack fatal断言。
+F-Stack缓存getter、NULL分离输出参数ABI及fatal刷新错误场景继续保留缺口。
+
+本批原有realtime与三个新增CTest全部通过；编译启用-Wall -Wextra -Werror。
+当前208项scenario-adapted、12项partial、143项blocked，155项行为尚未完成。
+
+本批Debug/Release各4项realtime CTest通过，21项清单审计测试与
+106文件/433项完整性审计通过；完整迁移门禁仍因155项未完成返回2。
+
+
+## RX-15 resident 孤儿 ring 回收安全
+
+`test_rx15_primary_purges_orphaned_rings` 从blocked推进为partial，继续留在
+issue #218；完整适配仍为208项，13项partial、142项blocked，共155项行为未完成。
+三个独立CTest `native-fstack-session-orphan-live`、`-identity`、`-reap` 使用
+生产generation-ring adapter、真实原版DPDK EAL/ring/mempool及真实子进程pidfd。
+所有adapter调用由primary执行，子进程仅提供实际存活/死亡证据，不是secondary
+EAL或packet-worker集成，也不发送原生Linux网络流量。
+
+每例将16个独立payload对象分布到两代、两队列的八条RX/TX ring。活身份和六种
+错误身份均不能回收或改变队列、对象字节及引用；进程死亡后错误身份仍被拒绝。
+确认gen1死亡后恰好释放8个归属已死消费者的对象，保留gen0 RX与gen1 TX中的
+8个活消费者对象。live/identity例验证原指针、完整字节和FIFO，reap例让最后
+一个消费者也死亡并回收剩余对象。重复reap拒绝，最终127对象池全部恢复；
+销毁前的quiescent telemetry验证TX drop分别为4或8且无full/packet-drop事件。
+
+源用例中的无directory、尚未附加消费者、外部purge锁及reset timeout、dead
+marker退役后保留新未注册消费者数据、完整slot reset分支继续保留缺口。Ker生产
+enqueue要求目标已admit，不能靠直接向未归属ring写对象来冒充这些合同已实现。
+
+本批Debug/Release各3项独立CTest通过，21项清单审计测试和106文件/433项
+完整性审计通过。完整迁移门禁仍因142项blocked及13项partial返回2。
+
+
+## RX-15 活消费者持有对象时的拒绝与恢复
+
+三个新增CTest `native-fstack-session-orphan-inflight-rx`、`-tx`、`-both`
+验证生产adapter中活消费者持有RX对象、TX peer对象或两者时的回收行为。
+确认gen1死亡后，readiness返回-EBUSY；实际reap达到有界超时后同样返回-EBUSY，
+八条ring的剩余对象、已取出的对象字节/引用和pool计数都保持不变。
+相同活身份重新admit成功，证明超时路径恢复了两代operation gate。
+
+both例只归还一个对象时再次验证拒绝与超时回滚；全部归还后readiness成功且不
+回收对象，随后reap重试成功。保留对象仍以原指针及完整字节按FIFO交付，最终127
+对象池完全恢复，quiescent TX drop仍精确为4。所有adapter调用仍由primary执行，
+子进程仅提供实际pidfd lifetime。
+
+这里验证的是active-operation lease，不是源用例的外部purge-owner锁/reset ABI。
+RX-15继续partial，原有remaining不变；当前208项完整适配、13项partial、142项
+blocked，共155项行为未完成。本批Debug/Release各6项orphan CTest全部通过，
+包含原有三例和三个新增profile。
+
+本批21项清单审计测试及106文件/433项完整性审计通过；完整迁移门禁继续返回2。
+
+
+## UT-NR-14 resident 控制消息边界
+
+`test_ut_nr_14_reload_msg_serdes` 从blocked推进为partial，继续留在issue #218。
+`native-fstack-session-control-roundtrip/malformed/replay` 三个独立CTest启动
+真实production resident和原版DPDK EAL，以真实AF_UNIX SOCK_SEQPACKET连接
+执行生产Python client及原始帧请求；由resident验证真实peer credentials/pidfd。
+使用私有runtime目录、no-huge/no-PCI模式，明确没有secondary EAL、PMD收发或
+原生Linux协议栈流量。宿主控制socket结果只证明这个运行适配器的控制消息行为。
+
+roundtrip验证STATUS/EPOCH_LIVE及高位64-bit epoch/sequence。malformed覆盖
+0/1/127/129/256字节记录、非法magic/version/status/字段及未知command，验证
+带符号errno、坏长度断开及同一连接或新连接上的有效后继查询。replay验证相同
+MASTER/RELEASE请求返回逐字节相同回复，冲突和较旧序列号被拒绝且不能释放epoch，
+真正release之后epoch消失。每例验证511可用对象、无user/lease、resident正常退出
+以及自己的控制socket被删除。
+
+F-Stack的FF_RELOAD fill/parse ABI、各reload subcommand及gen/status/heartbeat
+语义、NULL输入和可空输出指针合同仍待实现，不将Ker命令编号映射成这些命令。
+CI将三个新CTest列入严格session必跑清单，并从实际CMake注册验证跳过/漏测/未知
+session测试仍失败。当前208项完整适配、14项partial、141项blocked；155项行为
+尚未完成，完整迁移门禁继续保持失败。
+
+本批Debug/Release各3项控制消息CTest、21项selector测试、21项迁移审计测试
+均通过；真实CMake图29项session测试与CI必跑清单完全一致。
+
+## UT-NR-14 控制槽位边界扩展
+
+在同一真实resident控制通道组中新增三个CTest：
+`native-fstack-session-control-isolation/capacity/recycle`。isolation验证同一PID
+的独立连接具有不同slot/epoch及独立重放缓存，其他连接即使持有有效ticket也不能
+release，不正确token同样不能释放。capacity申请全部三个非resident槽位，验证
+第四个申请及其重放返回ENOSPC；释放一个槽位之后，旧序列号继续返回缓存错误，
+更高序列号成功申请。recycle验证显式release后复用槽位时epoch严格递增，旧ticket、
+混合epoch和已release连接都不能释放新持有者，旧epoch保持失效。
+
+每例通过实际STATUS/EPOCH_LIVE查询验证拒绝请求没有改变持有者、user数或511个
+可用对象，最后验证精确释放、resident正常退出和socket清理。没有模拟resident，
+没有secondary EAL或网络报文，也不将同一PID的多连接证据扩展为跨进程死亡回收。
+UT-NR-14保持partial，原始FF_RELOAD ABI、reload子命令及C指针合同仍由issue #218
+跟踪；迁移计数保持208项完整适配、14项partial、141项blocked，155项行为未完成。
+
+本批Debug/Release各6项控制CTest通过，21项迁移审计测试及22项CI选择器测试
+通过；两个真实CMake图各32项session注册均与严格CI清单一致。
+
+## TC-4 master 控制进程生命周期扩展
+
+`native-fstack-session-control-master-eof/master-death/master-frozen` 使用独立
+Python master子进程及真实credential/pidfd校验。eof在子进程确认关闭socket后
+检查epoch仍live，正常退出后才回收；death在保持控制连接时SIGKILL；frozen关闭
+socket后以精确pidfd发送SIGSTOP，确认进程已停止，全部三个槽位保持占用且第四个
+申请返回ENOSPC，再SIGKILL并等待实际死亡回收。每例保留其他活master作隔离对照，
+验证resident epoch0存活、旧epoch失效、槽位复用时epoch递增及旧ticket被拒绝。
+STATUS验证511可用对象及零user/lease，最后验证resident和socket完整清理。
+
+这些是TC-4既有scenario-adapted映射的master控制适配器补充证据；本批只启动
+primary EAL，没有secondary EAL/borrower或网络流量。原有standby测试继续负责
+真实secondary/borrower存活证据，不将本批扩展为F-Stack heartbeat老化、硬件
+RX-owner接管、STOPPED用户确认或完整reload。208项完整适配、14项partial、
+141项blocked及155项行为未完成的计数不变。
+
+本批Debug/Release各9项控制CTest通过，21项迁移审计测试及22项CI选择器测试
+通过；两个真实CMake图各35项session注册均与严格CI清单一致。
+
+## P2 release-epoch proof 的控制 lease 子集
+
+`test_p2_release_epoch_needs_proof` 从blocked推进为partial，仍由issue #218
+跟踪。新增`native-fstack-session-control-reservation-eof/reservation-death/reservation-coordinates`
+三个CTest，由真实master的独立direct-child通过生产控制socket申请实际mbuf lease。
+只要借用进程存活，MASTER RELEASE就返回EBUSY；关闭socket也不构成退出证明。
+正常退出或SIGKILL后，以精确pidfd证明死亡，resident才回收对应lease。
+双坐标案例占用generation0/process0和generation1/process3，第一名子进程退出
+只归还一个对象，第二名仍阻止release；最后一名退出后master方可释放epoch。
+
+每阶段验证实际STATUS中的user数、占用及可用对象数和epoch存活，resident
+退出时验证511个对象全部归还、无slot/user以及socket清理。没有secondary EAL、
+硬件访问或网络报文；STOPPED确认、硬件reclaim超时和refusal计数、证明后切换
+RX-owner generation及F-Stack release API仍未实现，不计为完整源案例通过。
+当前208项scenario-adapted、15项partial、140项blocked，155项行为仍未完成。
+
+本批Debug/Release各12项控制CTest通过，21项迁移审计测试及22项CI选择器测试
+通过；两个真实CMake图各38项session注册均与严格CI清单一致。
+
+## P2 user-registration proof 的控制登记子集
+
+新增`native-fstack-session-control-reservation-replay/reservation-collision/reservation-bounds`
+三个真实resident测试，将`test_p2_hw_user_proof`从blocked推进为partial，继续留在
+issue #218。独立direct-child在generation1/process3登记实际控制mbuf lease：
+相同序列号的RESERVE重放回复逐字节相同且只占一个对象；另一个连接申请同一坐标
+返回EBUSY且原登记不变。generation/process越界（含UINT64_MAX）和错误slot、
+session、epoch、token均被拒绝，每次检查无user或对象分配；同一连接之后的
+有效登记成功。已登记连接用新序列号再次RESERVE返回EINVAL。
+
+每例检查live borrower阻止release、EOF后仍保留、精确pidfd死亡后回收，最后
+验证511可用对象、零slot/user、resident及socket清理。这是控制登记与只读census
+证据，没有secondary EAL或硬件。序列号缓存幂等不等于源user_add的操作幂等；
+源ACTIVE/STOPPED表、显式stop/release确认、users_clear/epoch_users_clear及
+独立硬件坐标证明仍未实现。当前208项scenario-adapted、16项partial、139项blocked，
+155项行为仍未完成。
+
+本批Debug/Release各15项控制CTest通过，21项迁移审计测试及22项CI选择器测试
+通过；两个真实CMake图各41项session注册均与严格CI清单一致。
+
+## P2 orphan epoch lifetime 的控制 lease 子集
+
+`native-fstack-session-orphan-reservation-eof/frozen/staged` 在真实resident上
+由独立master创建direct-child控制借用者，再SIGKILL master。eof借用者已关闭
+socket，frozen借用者已确认SIGSTOP；两者即使失去master仍保留epoch及实际mbuf
+lease。staged使用两个generation/process坐标，精确pidfd死亡后只回收对应对象，
+剩余活借用者继续保留epoch；最后一个退出后才释放slot，复用时要求更高epoch且
+拒绝旧ticket。另一个活master及resident epoch0全程保持live。
+
+测试进程临时作为subreaper，持有子进程pidfd并负责收养/回收孤儿，最后恢复原状态；
+独立私有进程组覆盖未完成启动时的清理。每阶段验证实际user/object计数，退出时
+要求511对象归还、无slot/user及socket清理。这里没有secondary EAL或硬件，
+精确pidfd登记不等于F-Stack fresh/stale heartbeat及RX reclaim合同。
+`test_p2_orphan_workers_keep_epoch_live`仅从blocked推进为partial，仍由issue #218
+跟踪；208项scenario-adapted、17项partial、138项blocked，155项行为仍未完成。
+
+本批Debug/Release各18项控制/孤儿reservation CTest通过，21项迁移审计测试及
+22项CI选择器测试通过；两个真实CMake图各44项session注册均与严格CI清单一致。
+
+## M5 cross-master ring 命名空间子集
+
+`native-fstack-session-namespace-names/isolation/recreate` 使用resident共用的
+`ker_session_ring_name`和原版DPDK EAL/rte_ring，创建全部4slot×2generation×
+4process×4channel共128个真实ring。名字与对象均唯一；同名创建返回EEXIST且
+不替换原对象。名字刚好放得下时成功，截断不越过canary，越界坐标明确拒绝。
+每个ring分别装满64个caller-owned token，检查满队列拒绝、FIFO指针/字节身份及
+跨坐标隔离；只释放重建slot1/2，slot0/3中的对象与数据仍保持。所有ring排空、
+释放、lookup消失后才允许EAL cleanup成功。
+
+生产格式保持`ker_sN_gN_pN_CHANNEL`不变，命名实现从io-session.c提取为共用helper，
+同时给未支持坐标增加显式EINVAL边界。测试没有复制一套命名算法，也没有修改
+Linux/DPDK上游。它们是primary-only组件测试，没有secondary EAL、mbuf lease、
+resident登记、网络流量或epoch复用授权证明。
+`test_ut_nr_m5_cross_master_name_isolation`从blocked推进为partial，继续留在
+issue #218：源proc7/127、FF_SYSCTL..FF_MSG_NUM、legacy/no-epoch及字面name ABI
+仍未实现。208项scenario-adapted、18项partial、137项blocked，155项行为仍未完成。
+
+本批Debug/Release各21项namespace/控制/孤儿reservation CTest通过，21项迁移
+审计测试及22项CI选择器测试通过；两个真实CMake图各47项session注册与CI清单一致。
+
+## dpdk_extra_keys 的精确 bond 时序值
+
+`native-fstack-typed-bond-source-timings`直接读取固定源fixture的bond
+poll/up/down=100/200/300，生产typed loader的字段测试和真实原版PMD运行
+分别验证配置保留及initial/final getter读回。两个TAP/veth成员连接独立宿主Linux
+802.3ad bond，双方达到collecting/distributing后完成原生Linux与host的IPv4/IPv6
+ICMP及完整wire校验；移除一个成员链路后仍收发成功，退出outstanding=0。
+原有100/100/200运行对照同样通过，8项bond配置测试通过。
+
+删除`test_ff_load_config_dpdk_extra_keys` remaining中“source down_delay=300
+尚无runtime读回”的具体缺口；该案例仍partial，allow/port_list、原始vdev tuple、
+完整配置ABI及base-address精确映射/secondary等边界继续留在原issue。这里没有
+精确毫秒级failover性能或物理NIC时序证明。当前208项scenario-adapted、18项partial、
+137项blocked，155项行为仍未完成，完成计数不变。
+
+## 重复 bond 字段的实际最终值
+
+`native-fstack-typed-bond-source-repeat`直接读取固定源fixture的重复bond
+字段序列，保留两次slave/primary/MAC/xmit_policy。仅将源eth0/eth1明确映射
+为独立测试的两个真实TAP ethdev ID0/1；原版mode4 PMD必须读回最终members=2、
+primary=1、MAC=cc:dd:ee:ff:00:11、l34。运行验证独立host Linux LACP、双向
+IPv4/IPv6 ICMP与完整wire校验，移除一条成员链路后继续收发，outstanding=0。
+该配置显式沿用100/100/200测试时序以隔离重复字段，不计源省略时序的默认值合同。
+
+9项bond配置测试及三组实际bond运行（既有、source timings、source repeat）通过；
+`test_ff_load_config_bond_vdev_repeat_keys_no_leak`继续partial，combined bond/vdev、
+源iface+socket tuple和C分配器ABI仍未实现。208项scenario-adapted、18项partial、
+137项blocked及155项行为未完成的计数不变。
+
+## 原生 VMA 有界写入错误合同
+
+`ker_posix_buffer_write`以精确登记base及显式offset检查实际请求长度，使用生产
+native-buffer登记和原版Linux VMA；不模拟mbuf/header或隐式cursor。三个CTest
+`native-fstack-buffer-write-overflow/null/copy`验证4字节范围拒绝8字节写、NULL数据
+拒绝、拒绝后字节/登记不变、有效后继写、size_t溢出、错基址、跨页/重叠/零长度、
+inactive/stale拒绝及最终VMA全部回收。原有resize测试继续通过。
+
+源`test_ff_zc_mbuf_write_overflow_returns_error`和
+`test_ff_zc_mbuf_write_null_data_returns_error`的错误返回场景推进为scenario-adapted，
+从issue225的未完成列表移除。U5/U8/multi-segment的pkthdr/cursor/chain合同、
+最小零长度分配及零字节send拒绝仍待实现；standalone测试不计网络或PMD证据。
+当前210项scenario-adapted、18项partial、135项blocked，153项行为未完成。
+
+本批Debug/Release各4项write/resize CTest通过，两种共享库均导出新符号；21项迁移
+审计及22项CI选择器测试通过。三项write测试纳入无需EAL/PMD的必跑清单。
+
+## 有界写入的共享库/socket 集成
+
+将有界写入接入实际preloaded共享库调用者：在原版Linux loopback UDP与
+MSG_ERRQUEUE前验证写溢出、NULL错误不投递数据、不消耗completion ID，原字节
+不变且后继有效发送/8192字节scatter-gather正常。runner严格要求六个唯一source
+marker；退出后再次write返回ENETDOWN，映射/guard/mbuf全部归还。
+
+Debug/Release的`native-fstack-zc-validation`均通过，Debug完整
+`native-fstack-native-buffers`软件virtio数据通路回归通过。按与CI相同方式设置
+配置DPDK安装目录的LD_LIBRARY_PATH以加载原版PMD依赖；loopback结果不计外部wire。
+这是既有两项写错误映射的集成补强，210项scenario-adapted、18项partial、
+135项blocked及153项行为未完成的计数不变。
+
+## 有界写入的跨线程所有权扩展
+
+新增`native-fstack-buffer-write-parallel/handoff`：四个实际pthread各自持有
+独立原版Linux VMA，重复多页写、溢出/NULL拒绝和精确字节验证，并检查各线程
+errno与主线程sentinel互不污染。另一个场景明确join生产者后交给消费者，验证
+扩容保留数据、旧base/非法写拒绝、跨页写和释放。全部alloc/release及唯一残留
+映射的shutdown回收必须精确匹配。这里不允许未同步write/free/send竞争。
+
+Debug/Release各两项新CTest通过；两例加入无需EAL/PMD的CI必跑清单。这是
+既有两个写入错误案例的Ker扩展，210项scenario-adapted、18项partial、
+135项blocked和153项行为未完成的计数不变。
+
+## 原生 VMA owned append cursor
+
+新增opaque native writer，owner与VMA登记共用生命周期；成功append才增加逻辑
+已写长度，失败保持长度/字节不变，view返回借用数据，raw free/write/realloc
+不能绕过owner。零容量持有最小backing，逻辑容量仍为0；raw buffer_alloc(0)继续
+EINVAL，普通Linux零字节UDP继续保持原语义。
+
+`native-fstack-buffer-writer-empty/append/zero`分别适配源owned empty allocation、
+两次ab/cd写入得到逻辑长度4及精确abcd、空/非空游标上的零长度写no-op。三例从
+blocked推进为scenario-adapted；仅有header字段断言的初始m_pkthdr.len案例继续
+architecture-specific，新增逻辑游标不声称该FreeBSD布局。m_next/per-node m_len
+多段链及owned零字节send拒绝仍由issue225保留，不用单VMA或普通UDP替代证明。
+当前213项scenario-adapted、18项partial、132项blocked，150项行为未完成。
+
+本批Debug/Release各9项buffer CTest通过，四个writer符号在两种共享库中均导出；
+21项迁移审计及22项CI选择器测试通过，三个新CTest加入hosted-safe必跑清单。
+
+## Owned writer 的共享库/socket 集成
+
+实际preloaded ABI在IPv4/IPv6原版Linux loopback上验证空owner、累计append、
+拒绝回滚与零append无队列副作用。普通零字节UDP仍有datagram及completion ID0，
+随后精确4字节发送和完成后的8字节scatter-gather保留编号与字节，完成后才destroy。
+退出回收raw残留和空owner，shutdown release数必须为2；迟到的view/append/destroy
+返回ENETDOWN且view输出不变。runner要求九个唯一source marker。
+
+Debug/Release的zc-validation通过，Debug完整virtio/native-buffer回归通过。
+这是三项既有writer源行为映射的集成补强，不覆盖source零字节send拒绝或mbuf
+布局/多节点链；213项scenario-adapted、18项partial、132项blocked，150项行为未完成。
+
+## Owned writer 的失败与同步交接
+
+新增`native-fstack-buffer-writer-constructor/retry`，使用thread-local定点故障
+验证构造malloc/mmap失败回滚、临时登记释放、munmap失败后的owner保留和真实
+重试。producer/consumer明确join后交接，失败owner仍可append且不影响另一owner；
+重复destroy不再触发unmap，最终3次成功分配/释放与唯一shutdown owner精确匹配。
+Debug/Release两项新CTest均通过，并列入hosted-safe必跑清单。
+
+这是已有三项owned writer映射的Ker适配器扩展，不新增FreeBSD malloc/chain ABI、
+无同步访问或网络证明；213项scenario-adapted、18项partial、132项blocked，
+150项行为未完成，计数不变。
+
+## Owned-send 的非空 payload 合同
+
+新增`ker_posix_buffer_writer_send`，非空且位于已写范围内才进入与普通sendto
+共用的原版Linux发送适配路径。NULL/零长度/INT_MAX及范围溢出返回EINVAL，
+host fd和native非socket被明确拒绝，无host fallback。IPv4/IPv6 loopback验证
+拒绝无datagram/completion、完整prefix与offset子范围精确送达、成功/失败均保留
+owner/cursor、完成后才再次append/destroy；普通Linux零字节UDP仍有datagram/ID0。
+runner要求十个唯一source marker。
+
+`test_ff_zc_send_zero_nbytes_returns_einval`从blocked推进为scenario-adapted，
+补强既有NULL/overflow/valid send映射。此合同不等于FreeBSD mbuf-consuming ABI，
+多节点m_len/m_next仍由issue225保留。当前214项scenario-adapted、18项partial、
+131项blocked，149项行为未完成。
+
+本批Debug/Release zc-validation均通过，Debug完整virtio/native-buffer回归通过；
+两种共享库导出writer_send，21项迁移审计及22项CI选择器测试通过。
+
+分段 owned writer 补齐 `test_ff_zc_mbuf_write_multi_segment`：真实原版 Linux
+VMA 节点分别保存128/50字节，暴露每段已写长度与总长度178。生产适配支持跨段
+追加、别名输入快照与失败原子性；构造回滚、部分销毁重试和shutdown回收均有测试。
+此项计为场景适配，不宣称FreeBSD mbuf字段/ABI、网络传输或全链路零拷贝等价。
+issue225的最后一个行为项已有映射，因此从未完成分组移除；issue232的两个头字段
+断言继续保留architecture-specific状态。
+
+可选current-time输出补齐源`test_ff_get_current_time_null_sec/null_nsec`两项，
+通过实际原版Linux CLOCK_REALTIME读取，不新建Ker时间缓存。旧私有epoch与
+直接kernel读数夹验排除host fallback；错误与inactive输出保留另有测试。
+源cached timestamp布局和clock-error致命断言不作为本批适配内容。
+
+## Named-interface malformed-section rejection
+
+`native-fstack-interface-section-validation` adapts only the pinned
+`test_port_cfg_handler_bad_section_returns_zero` rejection scenario through
+Ker’s actual `[interface.NAME]` grammar. Empty, punctuated, whitespace,
+non-ASCII and overlong names fail the reader and CLI before worker/application
+execution, on either side of a valid record. Correcting the section restores
+both typed interface records without leaking partial state into later loads.
+Valid names of1/32 characters and `XX` remain supported: F-Stack’s numeric
+`[portXX]` spelling is deliberately not that grammar and remains unknown.
+This is configuration evidence, not a callback/global-array ABI or traffic pass.
+The permissive over-max skip case remains blocked. Counts are218 adapted,
+18 partial,127 blocked,15 architecture-specific and55 harness-only.

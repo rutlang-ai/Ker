@@ -37,6 +37,8 @@ if port == 'aux0' and os.environ.get('FAKE_AUX_SIGNAL') == '1':
     print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:02', 'tx_offload_features': 0}}), flush=True)
     while True: signal.pause()
 print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:01', 'tx_offload_features': 0}}), flush=True)
+if port == 'aux0' and os.environ.get('FAKE_AUX_PID_FILE'):
+    Path(os.environ['FAKE_AUX_PID_FILE']).write_text(str(os.getpid()))
 if os.environ.get('FAKE_PRIMARY_PID_FILE'):
     Path(os.environ['FAKE_PRIMARY_PID_FILE']).write_text(str(os.getpid()))
 if os.environ.get('FAKE_WORKER_EXIT_EARLY') == '1':
@@ -55,7 +57,11 @@ elif os.environ.get('FAKE_EXIT_ON_PACKET_EOF') == '1':
             break
 else:
     while os.read(fd, 1): pass
-print('KER_IO_DONE {{"outstanding": 0}}', flush=True)
+if port == 'aux0' and os.environ.get('FAKE_AUX_DUPLICATE') == '1':
+    print('KER_IO_DONE ' + json.dumps({{'outstanding': int(os.environ['FAKE_AUX_DUPLICATE_FIRST'])}}), flush=True)
+    print('KER_IO_DONE ' + json.dumps({{'outstanding': int(os.environ['FAKE_AUX_DUPLICATE_LAST'])}}), flush=True)
+else:
+    print('KER_IO_DONE {{"outstanding": 0}}', flush=True)
 sys.exit(int(os.environ.get('FAKE_AUX_WORKER_EXIT' if port == 'aux0' else 'FAKE_WORKER_EXIT', '0')))
 '''
 
@@ -268,6 +274,22 @@ sys.exit(0)
     def test_malformed_auxiliary_completion_remains_an_infrastructure_failure(self):
         self.assertEqual(self.run_launcher(0, native_done=True, config=self.config,
             extra_env={'FAKE_AUX_MALFORMED': '1'}), 125)
+
+    def test_duplicate_auxiliary_completion_is_failure_and_children_recover(self):
+        for first, last in ((0, 0), (1, 0), (0, 1)):
+            with self.subTest(first=first, last=last):
+                result, stderr = self.run_launcher(0, native_done=True, config=self.config,
+                    capture_stderr=True, extra_env={
+                        'FAKE_AUX_DUPLICATE': '1',
+                        'FAKE_AUX_DUPLICATE_FIRST': str(first),
+                        'FAKE_AUX_DUPLICATE_LAST': str(last),
+                        'FAKE_AUX_PID_FILE': str(self.aux_pid_file)})
+                self.assertEqual(result, 125)
+                self.assertIn('duplicate additional DPDK worker completion record: aux', stderr)
+                pid = int(self.aux_pid_file.read_text())
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(pid, 0)
+        self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
 
 
 if __name__ == '__main__':

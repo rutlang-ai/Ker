@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
+#include "lkl-overlay/arch/lkl/include/asm/ker-host-usercopy.h"
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
@@ -33,6 +34,9 @@ static int64_t deadline_ns(int64_t duration)
 static int duration_ns(const struct timespec *value, int64_t *result)
 {
     if (!value) { *result = -1; return 0; }
+    struct timespec copied;
+    if (ker_host_usercopy(&copied, value, sizeof(copied), 0)) { errno = EFAULT; return -1; }
+    value = &copied;
     if (value->tv_sec < 0 || value->tv_nsec < 0 || value->tv_nsec >= 1000000000) {
         errno = EINVAL; return -1;
     }
@@ -58,6 +62,7 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout,
     const sigset_t *mask, bool selecting)
 {
     if (count > KER_FD_LIMIT) { errno = EINVAL; return -1; }
+    if (count && !fds) { errno = EFAULT; return -1; }
     struct ker_fd **pinned = calloc(count ? count : 1, sizeof(*pinned));
     int *host_snapshot = malloc((count ? count : 1) * sizeof(*host_snapshot));
     struct pollfd *host = calloc(count ? count : 1, sizeof(*host));
@@ -65,21 +70,28 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout,
     if (!pinned || !host_snapshot || !host || !native) {
         free(pinned); free(host_snapshot); free(host); free(native); errno = ENOMEM; return -1;
     }
+    struct pollfd *snapshot = malloc((count ? count : 1) * sizeof(*snapshot));
+    if (!snapshot || ker_host_usercopy(snapshot, fds, count * sizeof(*snapshot), 0)) {
+        int error = snapshot ? EFAULT : ENOMEM;
+        free(snapshot); free(pinned); free(host_snapshot); free(host); free(native);
+        errno = error; return -1;
+    }
     bool has_native = false;
     for (nfds_t i = 0; i < count; ++i) {
         host_snapshot[i] = -1;
-        pinned[i] = ker_fd_get(fds[i].fd);
-        host[i] = fds[i];
+        pinned[i] = ker_fd_get(snapshot[i].fd);
+        host[i] = snapshot[i];
         native[i].fd = -1;
         if (pinned[i]) {
             has_native = true;
             native[i].fd = pinned[i]->native;
-            native[i].events = fds[i].events;
+            native[i].events = snapshot[i].events;
             host[i].fd = -1;
             if (pinned[i]->kind == KER_FD_EPOLL) host_snapshot[i] = -2;
         }
     }
     int result = 0, saved = 0;
+    bool scanned = false;
     int64_t deadline = timeout < 0 ? INT64_MAX : deadline_ns(timeout);
     for (;;) {
         long n = has_native ? lkl_sys_poll(native, count, 0) : 0;
@@ -102,17 +114,23 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout,
             break;
         }
         int h = host_poll(host, count, wait, mask);
+        int host_error = h < 0 ? errno : 0;
         for (nfds_t i = 0; i < count; ++i) {
             if (host_snapshot[i] >= 0) {
                 ker_fd_host_put(host_snapshot[i]); host_snapshot[i] = -2;
             }
         }
-        if (h < 0) { result = -1; saved = errno; break; }
+        if (h < 0 && host_error != EINTR) { result = -1; saved = host_error; break; }
+        saved = host_error;
         for (nfds_t i = 0; i < count; ++i) {
-            fds[i].revents = host[i].revents | native[i].revents;
-            if (selecting) fds[i].revents = select_revents(fds[i].events, fds[i].revents);
-            result += fds[i].revents != 0;
+            snapshot[i].revents = host[i].revents | native[i].revents;
+            if (selecting) snapshot[i].revents = select_revents(snapshot[i].events, snapshot[i].revents);
+            result += snapshot[i].revents != 0;
         }
+        scanned = true;
+        /* Original poll gives discovered readiness precedence over a pending
+         * signal and copies revents even when interrupted without readiness. */
+        if (h < 0) { if (!result) result = -1; break; }
         if (result || timeout == 0 || (timeout >= 0 && now_ns() >= deadline)) break;
         if (selecting && (n || h)) {
             /* An implicit HUP/ERR can remain level-triggered indefinitely.
@@ -127,6 +145,13 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout,
             if (host_poll(NULL, 0, pause, mask) < 0) { result = -1; saved = errno; break; }
         }
     }
+    if (result >= 0 || (scanned && saved == EINTR)) for (nfds_t i = 0; i < count; ++i) {
+        void *output = (void *)((uintptr_t)fds + i * sizeof(*fds) + offsetof(struct pollfd, revents));
+        if (ker_host_usercopy(output, &snapshot[i].revents, sizeof(snapshot[i].revents), 1)) {
+            result = -1; saved = EFAULT; break;
+        }
+    }
+    free(snapshot);
     for (nfds_t i = 0; i < count; ++i) ker_fd_put(pinned[i]);
     free(pinned); free(host_snapshot); free(host); free(native);
     if (result < 0) errno = saved;
@@ -192,10 +217,7 @@ int epoll_ctl(int fd, int operation, int target, struct epoll_event *event)
         result = -1;
     } else if (entry) {
         native_call = true;
-        /* LKL shares this address space, so reject NULL before its user-copy
-         * path can dereference it. Linux does not read event for DEL. */
-        result = !event && operation != EPOLL_CTL_DEL ? -EFAULT :
-            lkl_sys_epoll_ctl(ep->native, operation, entry->native, (void *)event);
+        result = lkl_sys_epoll_ctl(ep->native, operation, entry->native, (void *)event);
     } else if (ep) {
         int host = ker_fd_host_dup(ep);
         if (host < 0) result = -1;
@@ -242,23 +264,21 @@ static int epoll_wait_ns(int fd, struct epoll_event *events, int maximum,
             bool native = pass == (native_first ? 0U : 1U);
             int host = native ? -1 : ker_fd_host_dup(entry);
             long count;
-            if (native && !events) {
-                /* LKL user copies share our address space. Probe the epoll
-                 * file without delivering events: Linux faults only when it
-                 * tries to copy a ready event, and must retain ET/ONESHOT
-                 * readiness after that fault. Empty waits still time out. */
-                struct lkl_pollfd probe = {.fd = entry->native, .events = POLLIN};
-                count = lkl_sys_poll(&probe, 1, 0);
-                if (count > 0) count = -EFAULT;
-            } else if (native) {
+            if (native) {
                 count = lkl_sys_epoll_wait(entry->native,
-                    (void *)(events + result), maximum - result, 0);
+                    events ? (void *)(events + result) : NULL, maximum - result, 0);
             } else {
                 count = host < 0 ? -1 : syscall(SYS_epoll_pwait, host,
                     events ? events + result : NULL, maximum - result, 0, NULL, 0);
             }
             if (!native && host >= 0) ker_fd_host_put(host);
-            if (count < 0) { saved = native ? (int)-count : errno; result = -1; break; }
+            if (count < 0) {
+                saved = native ? (int)-count : errno;
+                /* Earlier events have already been delivered, including
+                 * ONESHOT state changes. Preserve that successful prefix. */
+                if (!result) result = -1;
+                break;
+            }
             result += (int)count;
         }
         if (result || timeout == 0 || (timeout >= 0 && now_ns() >= deadline)) break;
@@ -296,7 +316,7 @@ int epoll_pwait2(int fd, struct epoll_event *events, int maximum, const struct t
     if (mask_enter(mask, &old)) return -1;
     return mask_leave(mask, &old, epoll_wait_ns(fd, events, maximum, duration, mask, true));
 }
-static int select_ns(int maximum, fd_set *reads, fd_set *writes, fd_set *errors, int64_t duration, const sigset_t *mask)
+static int select_snapshot_ns(int maximum, fd_set *reads, fd_set *writes, fd_set *errors, int64_t duration, const sigset_t *mask)
 {
     if (maximum < 0 || maximum > FD_SETSIZE) {
         errno = EINVAL; return -1;
@@ -311,9 +331,9 @@ static int select_ns(int maximum, fd_set *reads, fd_set *writes, fd_set *errors,
     }
     int ready = poll_ns(fds, count, duration, mask, true);
     if (ready < 0) return -1;
-    for (nfds_t i = 0; i < count; ++i) {
+    /* Linux copies result sets only after a successful descriptor scan. */
+    for (nfds_t i = 0; i < count; ++i)
         if (fds[i].revents & POLLNVAL) { errno = EBADF; return -1; }
-    }
     if (reads) FD_ZERO(reads);
     if (writes) FD_ZERO(writes);
     if (errors) FD_ZERO(errors);
@@ -331,22 +351,48 @@ static int select_ns(int maximum, fd_set *reads, fd_set *writes, fd_set *errors,
     }
     return result;
 }
+static int select_ns(int maximum, fd_set *reads, fd_set *writes, fd_set *errors, int64_t duration, const sigset_t *mask)
+{
+    if (maximum < 0 || maximum > FD_SETSIZE) { errno = EINVAL; return -1; }
+    /* Linux copies only the long-word-rounded nfds prefix, not sizeof(fd_set).
+     * In particular nfds=0 must not touch even a non-NULL inaccessible set. */
+    size_t bytes = ((size_t)maximum + sizeof(unsigned long) * 8 - 1) /
+        (sizeof(unsigned long) * 8) * sizeof(unsigned long);
+    fd_set sets[3] = {0}; fd_set *user[3] = {reads, writes, errors};
+    for (unsigned i = 0; i < 3; ++i) if (user[i] && ker_host_usercopy(&sets[i], user[i], bytes, 0)) {
+        errno = EFAULT; return -1;
+    }
+    int ready = select_snapshot_ns(maximum, reads ? &sets[0] : NULL, writes ? &sets[1] : NULL,
+        errors ? &sets[2] : NULL, duration, mask);
+    if (ready < 0) return -1;
+    for (unsigned i = 0; i < 3; ++i) if (user[i] && ker_host_usercopy(user[i], &sets[i], bytes, 1)) {
+        errno = EFAULT; return -1;
+    }
+    return ready;
+}
 int select(int maximum, fd_set *reads, fd_set *writes, fd_set *errors, struct timeval *timeout)
 {
-    if (timeout && (timeout->tv_sec < 0 || timeout->tv_usec < 0 || timeout->tv_usec >= 1000000)) {
+    struct timeval requested;
+    if (timeout && ker_host_usercopy(&requested, timeout, sizeof(requested), 0)) { errno = EFAULT; return -1; }
+    if (timeout && (requested.tv_sec < 0 || requested.tv_usec < 0 || requested.tv_usec >= 1000000)) {
         errno = EINVAL; return -1;
     }
-    struct timespec value = {timeout ? timeout->tv_sec : 0, timeout ? timeout->tv_usec * 1000 : 0};
+    struct timespec value = {timeout ? requested.tv_sec : 0, timeout ? requested.tv_usec * 1000 : 0};
     int64_t duration;
     if (duration_ns(timeout ? &value : NULL, &duration)) return -1;
     int64_t start = now_ns();
     int result = select_ns(maximum, reads, writes, errors, duration, NULL);
-    if (timeout) {
+    int saved = errno;
+    if (timeout && duration > 0) {
         int64_t left = duration - (now_ns() - start);
         if (left < 0) left = 0;
-        timeout->tv_sec = left / INT64_C(1000000000);
-        timeout->tv_usec = left % INT64_C(1000000000) / 1000;
+        struct timeval remaining = {.tv_sec = left / INT64_C(1000000000),
+            .tv_usec = left % INT64_C(1000000000) / 1000};
+        /* Linux's optional remaining-time update never overrides the result,
+         * even if the otherwise readable timeval is in read-only storage. */
+        (void)ker_host_usercopy(timeout, &remaining, sizeof(remaining), 1);
     }
+    errno = saved;
     return result;
 }
 int pselect(int maximum, fd_set *reads, fd_set *writes, fd_set *errors,

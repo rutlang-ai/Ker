@@ -20,6 +20,17 @@ def require(value, message):
         raise RuntimeError(message)
 
 
+CAPTURE_RCVBUF_BYTES = 4 * 1024 * 1024
+
+
+def configure_capture_socket(sock):
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, CAPTURE_RCVBUF_BYTES)
+    actual = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+    require(actual >= 2 * CAPTURE_RCVBUF_BYTES,
+            f'wire capture receive buffer is capped: requested={CAPTURE_RCVBUF_BYTES}, actual={actual}')
+    return actual
+
+
 def launch(command, **options):
     process = subprocess.Popen(command, start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, **options)
@@ -93,8 +104,10 @@ def capture(sock, stop, port):
                 coverage[version][relative:relative + len(data)] = b'\1' * len(data)
         key = 'udp6ext' if version == 6 and extension else ('tcp' if proto == 6 else 'udp') + str(version)
         counts[key] += 1
-    require(all(value.count(1) == 512 * 1024 for value in coverage.values()), 'wire capture missed TCP payload bytes')
     _, drops = struct.unpack('II', sock.getsockopt(263, 6, 8))
+    coverage_counts = {version: value.count(1) for version, value in coverage.items()}
+    require(all(count == 512 * 1024 for count in coverage_counts.values()),
+            f'wire capture missed TCP payload bytes: coverage={coverage_counts}, packet_drops={drops}')
     require(drops == 0, 'independent packet socket dropped ' + str(drops) + ' packets')
     return counts
 
@@ -176,7 +189,7 @@ def main():
         for mode, storage, fault in profiles:
             sockets = []
             wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
-            wire.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+            configure_capture_socket(wire)
             wire.bind(('offhost', 0))
             stop = threading.Event()
             port = 42000
