@@ -14,6 +14,7 @@ struct ker_rx_poll_queue {
     struct rte_ring *handoff;
     unsigned owner, observed;
     int cpu;
+    atomic_bool owner_ready;
     uint64_t polled, polls, stalled, shutdown, reconfigured, starts;
     struct rte_mbuf *pending[KER_RX_BURST];
     uint16_t count, index;

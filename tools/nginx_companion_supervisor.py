@@ -70,6 +70,24 @@ def _close_fds(fds):
 
 class NginxCompanion:
     """Own one helper and one exact pinned non-daemon Nginx master subtree."""
+    @staticmethod
+    def attach_source_origin(accepted_origin, *, revoke_native_auth):
+        """Create an attach-only observer for an already accepted source origin.
+
+        This path does not construct a helper or grant master lifecycle
+        authority.  The caller must keep the original source owner responsible
+        for failure revocation and eventual ECHILD settlement.
+        """
+        spec = importlib.util.spec_from_file_location(
+            '_ker_nginx_companion_attach', Path(__file__).resolve().with_name(
+                'nginx_companion_attach.py'))
+        if spec is None or spec.loader is None:
+            raise ImportError('cannot load attach adapter beside this module')
+        adapter = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(adapter)
+        return adapter.SourceAttachment(accepted_origin,
+            revoke_native_auth=revoke_native_auth)
+
     def __init__(self, binary, config, prefix, nginx_env, cycle_control_fd=None,
                  owner_ready_required=False, rx_owner_relay_fd=None,
                  candidate_slot_transfer_fd=None, initial_slot_transfer_fd=None,

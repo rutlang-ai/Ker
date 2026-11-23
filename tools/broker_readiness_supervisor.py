@@ -8,6 +8,7 @@ from pathlib import Path
 import select
 import secrets
 import socket
+import sys
 import time
 
 _WIRE_SPEC = importlib.util.spec_from_file_location(
@@ -20,6 +21,41 @@ _WIRE_SPEC.loader.exec_module(wire)
 
 _UCRED = __import__('struct').Struct('=3i')
 _PROFILE_DOMAIN = b'ker.socket-broker.worker-profile/v1\0'
+_PRIVATE_STOP_TOKEN = object()
+
+
+class _PrivateStopAuthorization:
+    __slots__ = ('token', 'broker', 'provider', 'context', 'pending', 'term_evidence',
+        'retirement_proof', 'controller', 'deadline_ns')
+
+    def __init__(self, token, broker, provider, context, pending, term_evidence,
+            retirement_proof, controller, deadline_ns):
+        if token is not _PRIVATE_STOP_TOKEN:
+            raise TypeError('private STOP authorization is broker-owned')
+        values = (token, broker, provider, context, pending, term_evidence,
+            retirement_proof, controller, deadline_ns)
+        for name, value in zip(self.__slots__, values):
+            object.__setattr__(self, name, value)
+
+    def __setattr__(self, _name, _value):
+        raise AttributeError('private STOP authorization is immutable')
+
+
+class PrivateStopAckReceipt:
+    __slots__ = ('token', 'broker', 'authorization', 'raw_ack', 'decoded',
+        'actor_identity', 'nonce', 'epoch', 'request', 'received_ns')
+
+    def __init__(self, token, broker, authorization, raw_ack, decoded,
+            actor_identity, nonce, epoch, request, received_ns):
+        if token is not _PRIVATE_STOP_TOKEN:
+            raise TypeError('private STOP ACK receipt is broker-owned')
+        values = (token, broker, authorization, bytes(raw_ack), tuple(decoded),
+            tuple(actor_identity), bytes(nonce), epoch, bytes(request), received_ns)
+        for name, value in zip(self.__slots__, values):
+            object.__setattr__(self, name, value)
+
+    def __setattr__(self, _name, _value):
+        raise AttributeError('private STOP ACK receipt is immutable')
 
 
 class _PollSliceElapsed(TimeoutError):
@@ -78,6 +114,11 @@ class BrokerReadiness:
         self._stop = None
         self._verify_sequence = 0
         self.last_verify_packet = None
+        self.last_verify_result = None
+        self._private_stop_authorization = None
+        self._private_stop_authorization_consumed = False
+        self._private_stop_ack_receipt = None
+        self._private_stop_ack_registry = {}
 
     def environment(self):
         return {
@@ -223,6 +264,7 @@ class BrokerReadiness:
             raise RuntimeError('broker VERIFY is unavailable or out of sequence')
         self._verify_sequence = sequence
         self.last_verify_packet = None
+        self.last_verify_result = None
         self._verify = {'fd': watch_fd, 'sequence': sequence,
             'deadline': time.monotonic() + timeout, 'sent': False}
 
@@ -268,8 +310,8 @@ class BrokerReadiness:
             # Keep only this one fixed-size record so a caller can retain exact
             # bounded diagnostics if strict decoding rejects the response.
             self.last_verify_packet = bytes(packet)
-            wire.unpack_verify_result(packet, self.nonce, self.epoch,
-                request['sequence'])
+            self.last_verify_result = wire.unpack_verify_result(packet, self.nonce,
+                self.epoch, request['sequence'])
         except _PollSliceElapsed:
             return None
         except BaseException:
@@ -278,23 +320,164 @@ class BrokerReadiness:
         self._verify = None
         return packet
 
-    def begin_stop(self, timeout=10.0):
+    def authorize_private_stop(self, provider, pending, term_evidence,
+            retirement_proof):
+        """Mint the sole bounded STOP admission for the exact candidate PREEXIT."""
+        retirement_provider = getattr(self,
+            '_private_initial_retirement_provider', None)
+        provider_module = sys.modules.get(type(provider).__module__)
+        provider_type = getattr(provider_module, 'SourceShellC34InteropProvider', None)
+        proof_type = getattr(provider_module, 'SourceInitialListenerRetirementProof', None)
+        context = getattr(provider, 'context', None)
+        origin = getattr(getattr(context, 'owner_live', None), '__self__', None)
+        origin_module = sys.modules.get(type(origin).__module__) if origin is not None else None
+        controller = getattr(retirement_proof, 'old_exit', None)
+        controller = getattr(controller, 'controller', None)
+        controller_module = sys.modules.get('_ker_nginx_source_shell_controller')
+        profile_module = sys.modules.get('_ker_nginx_source_c34_profile')
+        bootstrap_module = getattr(origin_module, 'bootstrap', None)
+        evidence_type = getattr(bootstrap_module, 'SupervisorTermEvidence', None)
+        pending_type = getattr(bootstrap_module, 'PendingSourceRetirement', None)
+        proof = getattr(provider, '_initial_retirement_proof', None)
+        registry = getattr(context, '_source_initial_listener_retirements', None)
+        pending_entry = (getattr(context, '_pending_preexits', {}).get(
+            getattr(pending, 'operation_id', None), (None, None, None)))
+        evidence = getattr(context, '_authorized_preexits', {}).get(
+            getattr(pending, 'operation_id', None))
+        if (retirement_provider is not provider or provider_module is None or
+                type(provider) is not provider_type or proof_type is None or type(proof) is not proof_type or
+                proof is not retirement_proof or type(registry) is not dict or
+                registry.get(id(provider)) is not proof or proof.provider is not provider or
+                proof.context is not context or evidence_type is None or
+                type(term_evidence) is not evidence_type or evidence is not term_evidence or
+                pending_type is None or type(pending) is not pending_type or
+                pending_entry[0] is not pending or pending_entry[2] is not
+                    getattr(context, 'worker_channels', {}).get((1, 1)) or
+                pending.key != (1, 1) or pending.worker_pid <= 0 or
+                term_evidence.worker_pid != pending.worker_pid or
+                term_evidence.worker_start_ticks != pending.worker_start_ticks or
+                term_evidence.phase != 'stopping' or term_evidence.signal != 'TERM' or
+                origin_module is None or
+                Path(getattr(origin_module, '__file__', '')).resolve(strict=True) !=
+                    Path(__file__).with_name('nginx_source_origin.py').resolve(strict=True) or
+                type(origin) is not getattr(origin_module, 'PrivateC34OriginalShellLaunch', None) or
+                controller_module is None or
+                type(controller) is not getattr(controller_module, 'SourceShellController', None) or
+                type(controller.profile) is not getattr(profile_module,
+                    'PrivateNewC34InteropProfile', None) or
+                controller.bootstrap_context is not context or controller.launch is not origin or
+                controller.c22_provider is not provider or
+                controller.profile.artifact_capture is not
+                    getattr(origin, 'c34_artifact_capture', None) or
+                controller.profile.helper_capture is not
+                    getattr(provider, '_private_c34_helper_capture', None) or
+                getattr(provider, 'broker_readiness', None) is not self or
+                getattr(controller, '_private_candidate_preexit_pending', None) is not pending or
+                getattr(controller, '_private_candidate_preexit_evidence', None) is not term_evidence or
+                getattr(controller, '_private_initial_retirement_proof', None) is not proof or
+                getattr(context, '_completed_master_barriers', set()) != {(1, 5), (1, 6)} or
+                getattr(context, '_source_shell_committed_plans', {}).get((1, 1)) is None or
+                getattr(context, 'control_only', False) is not True or
+                getattr(self, 'ready', False) is not True or getattr(self, 'stopped', True) or
+                self.stop_attempted or self._stop is not None or
+                type(pending.deadline_ns) is not int or
+                time.monotonic_ns() >= pending.deadline_ns or
+                pending.deadline_ns > context.deadline_ns or
+                pending.deadline_ns - time.monotonic_ns() > 100_000_000):
+            raise PermissionError('private broker STOP lacks the exact live PREEXIT/TERM/C34 proof join')
+        if self._private_stop_authorization is not None:
+            raise PermissionError('private broker STOP authorization is one-use')
+        authorization = _PrivateStopAuthorization(_PRIVATE_STOP_TOKEN, self,
+            provider, context, pending, term_evidence, proof, controller,
+            pending.deadline_ns)
+        self._private_stop_authorization = authorization
+        return authorization
+
+    def _private_stop_authorization_live(self, authorization, *, consumed=True):
+        context = getattr(authorization, 'context', None)
+        pending = getattr(authorization, 'pending', None)
+        provider = getattr(authorization, 'provider', None)
+        evidence = getattr(authorization, 'term_evidence', None)
+        proof = getattr(authorization, 'retirement_proof', None)
+        controller = getattr(authorization, 'controller', None)
+        if (type(authorization) is not _PrivateStopAuthorization or
+                authorization.token is not _PRIVATE_STOP_TOKEN or
+                authorization.broker is not self or
+                self._private_stop_authorization is not authorization or
+                self._private_stop_authorization_consumed is not consumed or
+                authorization.deadline_ns != getattr(pending, 'deadline_ns', None) or
+                time.monotonic_ns() >= authorization.deadline_ns or
+                getattr(context, '_pending_preexits', {}).get(
+                    getattr(pending, 'operation_id', None), (None,))[0] is not pending or
+                getattr(context, '_authorized_preexits', {}).get(
+                    getattr(pending, 'operation_id', None)) is not evidence or
+                getattr(controller, '_private_candidate_preexit_pending', None) is not pending or
+                getattr(controller, '_private_candidate_preexit_evidence', None) is not evidence or
+                getattr(controller, '_private_initial_retirement_proof', None) is not proof or
+                getattr(provider, '_initial_retirement_proof', None) is not proof or
+                getattr(context, '_source_initial_listener_retirements', {}).get(id(provider)) is not proof or
+                getattr(provider, 'broker_readiness', None) is not self or
+                getattr(context, 'control_only', False) is not True):
+            return False
+        return True
+
+    def begin_stop(self, timeout=10.0, *, private_authorization=None):
+        retirement_provider = getattr(self,
+            '_private_initial_retirement_provider', None)
+        if retirement_provider is not None:
+            authorization = private_authorization
+            if (type(authorization) is not _PrivateStopAuthorization or
+                    authorization.token is not _PRIVATE_STOP_TOKEN or
+                    authorization.broker is not self or
+                    authorization.provider is not retirement_provider or
+                    authorization.context is not getattr(retirement_provider, 'context', None) or
+                    authorization.pending is not getattr(authorization.controller,
+                        '_private_candidate_preexit_pending', None) or
+                    authorization.term_evidence is not getattr(authorization.controller,
+                        '_private_candidate_preexit_evidence', None) or
+                    authorization.retirement_proof is not getattr(
+                        authorization.controller, '_private_initial_retirement_proof', None) or
+                    not self._private_stop_authorization_live(authorization,
+                        consumed=False) or
+                    authorization.deadline_ns != authorization.pending.deadline_ns or
+                    self._private_stop_authorization is not authorization or
+                    self._private_stop_authorization_consumed or
+                    time.monotonic_ns() >= authorization.deadline_ns):
+                raise RuntimeError('private broker STOP is held without its exact one-use PREEXIT authorization')
+            deadline = authorization.deadline_ns / 1_000_000_000
+        else:
+            deadline = time.monotonic() + timeout
         if (not self.ready or self.stopped or self.stop_attempted or
                 self._verify is not None):
             raise RuntimeError('broker STOP requires READY with no VERIFY and is one-use')
+        if retirement_provider is not None:
+            self._private_stop_authorization_consumed = True
         self.stop_attempted = True
         self._stop = {'record': wire.pack_stop(wire.STOP, self.nonce, self.epoch,
             *self.supervisor[:3], self.supervisor[3]),
-            'deadline': time.monotonic() + timeout, 'sent': False}
+            'deadline': deadline, 'sent': False,
+            'private': retirement_provider is not None,
+            'authorization': private_authorization}
 
     def poll_stop(self):
         request = self._stop
         if request is None:
             return self.stopped
+        if request.get('unresolved'):
+            raise ConnectionError('broker STOP outcome is unresolved; replay is forbidden')
+        authorization = request.get('authorization')
+        if request.get('private'):
+            if (not self._private_stop_authorization_live(authorization) or
+                    authorization.deadline_ns != authorization.pending.deadline_ns or
+                    time.monotonic_ns() >= authorization.deadline_ns):
+                request['unresolved'] = True
+                raise TimeoutError('private broker STOP exceeded its PREEXIT deadline or authorization')
         if time.monotonic() >= request['deadline']:
             request['unresolved'] = True
             raise TimeoutError('broker STOP absolute deadline expired')
         if not request['sent']:
+            if request.get('private'):
+                request['send_attempted'] = True
             try:
                 sent = self.parent.send(request['record'],
                     getattr(socket, 'MSG_NOSIGNAL', 0))
@@ -302,6 +485,9 @@ class BrokerReadiness:
                     raise OSError(5, 'short broker STOP record')
                 request['sent'] = True
             except BlockingIOError:
+                if request.get('private'):
+                    request['unresolved'] = True
+                    raise
                 return False
             except BaseException:
                 request['unresolved'] = True
@@ -328,12 +514,49 @@ class BrokerReadiness:
                 *self.supervisor[:3], self.supervisor[3], wire.STOP_ID)
             if fields != expected:
                 raise PermissionError('broker STOP acknowledgement identity mismatch')
+            if request.get('private'):
+                raw_ack = bytes(packet)
+                decoded = tuple(wire.unpack_stop(raw_ack, wire.STOP_ACK))
+                received_ns = time.monotonic_ns()
+                authorization = request.get('authorization')
+                if (decoded != tuple(fields) or received_ns >= authorization.deadline_ns or
+                        self._private_stop_ack_receipt is not None):
+                    raise PermissionError('private STOP ACK failed its immutable receipt binding')
+                receipt = PrivateStopAckReceipt(_PRIVATE_STOP_TOKEN, self,
+                    authorization, raw_ack, decoded, self.app, self.nonce,
+                    self.epoch, request['record'], received_ns)
+                self._private_stop_ack_receipt = receipt
+                self._private_stop_ack_registry[id(receipt)] = receipt
         except BaseException:
             request['unresolved'] = True
             raise
         self.stopped = True
         self._stop = None
         return True
+
+    def private_stop_ack_receipt(self, authorization):
+        """Return only the retained immutable ACK bound to this authorization."""
+        receipt = self._private_stop_ack_receipt
+        if (type(authorization) is not _PrivateStopAuthorization or
+                authorization.token is not _PRIVATE_STOP_TOKEN or
+                authorization.broker is not self or
+                self._private_stop_authorization is not authorization or
+                not self._private_stop_authorization_consumed or
+                type(receipt) is not PrivateStopAckReceipt or
+                receipt.token is not _PRIVATE_STOP_TOKEN or receipt.broker is not self or
+                receipt.authorization is not authorization or
+                self._private_stop_ack_registry.get(id(receipt)) is not receipt or
+                receipt.raw_ack != bytes(receipt.raw_ack) or
+                receipt.actor_identity != self.app or receipt.nonce != self.nonce or
+                receipt.epoch != self.epoch or receipt.received_ns >= authorization.deadline_ns or
+                tuple(wire.unpack_stop(receipt.raw_ack, wire.STOP_ACK)) != receipt.decoded):
+            raise PermissionError('private STOP ACK receipt is missing or changed')
+        expected = (self.nonce, self.epoch, wire.EMPTY_MANIFEST_SHA256,
+            *self.supervisor[:3], self.supervisor[3], wire.STOP_ID)
+        if (receipt.decoded != expected or
+                tuple(wire.unpack_stop(receipt.request, wire.STOP)) != expected):
+            raise PermissionError('private STOP ACK receipt actor binding changed')
+        return receipt
 
     def close(self):
         if self.app_pidfd >= 0:

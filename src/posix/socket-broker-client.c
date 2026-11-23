@@ -10,6 +10,22 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <sys/epoll.h>
+
+_Static_assert(sizeof(struct ker_socket_event_snapshot) == 48,
+    "socket event snapshot ABI must be 48 bytes");
+_Static_assert(offsetof(struct ker_socket_event_snapshot, events) == 8,
+    "socket event snapshot events offset is part of the ABI");
+_Static_assert(offsetof(struct ker_socket_event_snapshot, family) == 16,
+    "socket event snapshot family offset is part of the ABI");
+_Static_assert(offsetof(struct ker_socket_event_snapshot, read_available) == 24,
+    "socket event snapshot read offset is part of the ABI");
+_Static_assert(offsetof(struct ker_socket_event_snapshot, write_accounting_space) == 32,
+    "socket event snapshot write offset is part of the ABI");
+_Static_assert(offsetof(struct ker_socket_event_snapshot, pending_hard_error) == 40,
+    "socket event snapshot error offset is part of the ABI");
+_Static_assert(offsetof(struct ker_socket_event_snapshot, flags) == 44,
+    "socket event snapshot flags offset is part of the ABI");
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
@@ -274,6 +290,7 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_FIONBIO || operation == KER_SB_FIONREAD;
     requires_zero = requires_zero || operation == KER_SB_REUSEPORT_GROUP_SELECT ||
         operation == KER_SB_TCP_OBSERVER_SNAPSHOT ||
+        operation == KER_SB_EVENT_SNAPSHOT ||
         operation == KER_SB_MEMBER_CENSUS_SNAPSHOT ||
         operation == KER_SB_MEMBER_PAYLOAD_SNAPSHOT ||
         operation == KER_SB_FF_OWNER_PAYLOAD ||
@@ -602,6 +619,40 @@ int ker_socket_client_fionbio(struct ker_socket_client *client, int cap_fd, int 
 int ker_socket_client_fionread(struct ker_socket_client *client, int cap_fd, int *available)
 {
     return ker_socket_client_ioctl(client, cap_fd, FIONREAD, available);
+}
+
+int ker_socket_client_event_snapshot(struct ker_socket_client *client, int cap_fd,
+    struct ker_socket_event_snapshot *snapshot)
+{
+    const uint32_t flag_mask = KER_SOCKET_EVENT_LISTENER |
+        KER_SOCKET_EVENT_ERROR_QUEUE_ONLY | KER_SOCKET_EVENT_READ_SHUTDOWN |
+        KER_SOCKET_EVENT_WRITE_SHUTDOWN;
+    const uint32_t event_mask = EPOLLIN | EPOLLPRI | EPOLLOUT | EPOLLERR |
+        EPOLLHUP | EPOLLRDNORM | EPOLLWRNORM | EPOLLRDHUP;
+    struct ker_socket_event_snapshot wire = {0};
+    int received = 0;
+
+    if (!snapshot) return fail(EINVAL);
+    if (socket_call(client, cap_fd, KER_SB_EVENT_SNAPSHOT, NULL, 0,
+            &wire, sizeof(wire), NULL, &received) < 0) return -1;
+    uint32_t expected_validity = KER_SOCKET_EVENT_READ_AVAILABLE_VALID |
+        KER_SOCKET_EVENT_HARD_ERROR_VALID;
+    if (!(wire.flags & KER_SOCKET_EVENT_LISTENER))
+        expected_validity |= KER_SOCKET_EVENT_WRITE_ACCOUNTING_VALID;
+    if (received != sizeof(wire) || wire.version != KER_SOCKET_EVENT_SNAPSHOT_VERSION ||
+        wire.size != sizeof(wire) || wire.reserved16 ||
+        (wire.events & ~event_mask) || wire.validity != expected_validity ||
+        (wire.flags & ~flag_mask) || wire.read_available < 0 ||
+        wire.write_accounting_space < 0 || wire.pending_hard_error < 0 ||
+        (!(wire.validity & KER_SOCKET_EVENT_WRITE_ACCOUNTING_VALID) &&
+            wire.write_accounting_space) ||
+        ((wire.flags & KER_SOCKET_EVENT_ERROR_QUEUE_ONLY) && wire.pending_hard_error) ||
+        ((wire.family != AF_INET && wire.family != AF_INET6) ||
+            wire.type != SOCK_STREAM || wire.protocol != IPPROTO_TCP))
+        return fail(EPROTO);
+    struct ker_socket_event_snapshot completed = wire;
+    *snapshot = completed;
+    return 0;
 }
 
 ssize_t ker_socket_client_send(struct ker_socket_client *client, int cap_fd,

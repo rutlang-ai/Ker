@@ -1,12 +1,14 @@
 #define _GNU_SOURCE
 #include <ff_api.h>
 #include <ff_config.h>
+#include <rte_ethdev.h>
 #include <ff_reload.h>
 #include "ff_flow_map.h"
 #include <ker/ini.h>
 #include <ker/socket-broker.h>
 #include "socket-broker-preload-internal.h"
 #include "nginx-source-bootstrap.h"
+#include "source-native-ini.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -36,6 +38,9 @@ struct runtime_config {
     int saw_version;
     int saw_path;
     int saw_graceful_reload;
+    int source_shell_profile;
+    struct ker_source_native_ini native_ini;
+    struct ker_source_native_ini_cycle_snapshot source_snapshot;
 };
 
 struct runtime_init_plan {
@@ -48,6 +53,39 @@ struct runtime_init_plan {
     int worker_generation;
     uint32_t source_round_epoch;
 };
+
+static int
+source_native_cycle_snapshot(const char *path,
+    struct ker_source_native_ini_cycle_snapshot *snapshot)
+{
+    typedef int (*snapshot_read_fn)(
+        struct ker_source_native_ini_cycle_snapshot *snapshot);
+    snapshot_read_fn read_snapshot;
+    size_t path_length;
+    unsigned config_bits = 0, ini_bits = 0;
+    if (!path || !snapshot) return -EINVAL;
+    read_snapshot = (snapshot_read_fn)dlsym(RTLD_DEFAULT,
+        "ker_nginx_source_native_ini_snapshot_read");
+    if (!read_snapshot) return -ENOTSUP;
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->version = KER_SOURCE_NATIVE_INI_SNAPSHOT_VERSION;
+    snapshot->size = sizeof(*snapshot);
+    int status = read_snapshot(snapshot);
+    if (status) return status;
+    if (!ker_source_native_ini_snapshot_abi_valid(snapshot)) return -EPROTO;
+    path_length = strnlen(snapshot->ini_path, sizeof(snapshot->ini_path));
+    for (size_t i = 0; i < sizeof(snapshot->config_sha256); i++) {
+        config_bits |= snapshot->config_sha256[i];
+        ini_bits |= snapshot->ini_sha256[i];
+    }
+    if (!snapshot->adapter_cycle_serial || !snapshot->cycle_identity) return -ESTALE;
+    if (path_length == 0 || path_length >= sizeof(snapshot->ini_path) ||
+        !config_bits || !ini_bits ||
+        ker_source_native_ini_finish(&snapshot->config, snapshot->ini_path) != 0)
+        return -EPROTO;
+    if (strcmp(snapshot->ini_path, path)) return -ESTALE;
+    return 0;
+}
 
 static int runtime_initialized;
 static char runtime_config_path[PATH_MAX];
@@ -85,6 +123,164 @@ int ff_socket_drain_count(void);
 int ff_socket_snd_pending(void);
 int ff_syncache_count(void);
 static void runtime_trace(const char *format, ...);
+
+#define KER_SOURCE_IO_CMDLINE_MAX 16384
+#define KER_SOURCE_IO_ARGC_MAX 128
+static int
+source_io_deadline_status(uint64_t deadline_ns)
+{
+    struct timespec now;
+    if (!deadline_ns) return -EINVAL;
+    if (syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &now) < 0) return -errno;
+    uint64_t now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+        (uint64_t)now.tv_nsec;
+    return now_ns < deadline_ns ? 0 : -ETIMEDOUT;
+}
+
+static int
+source_io_read_cmdline(uint32_t pid, char *buffer, size_t capacity, size_t *length,
+    uint64_t deadline_ns)
+{
+    char path[64];
+    int path_length = snprintf(path, sizeof(path), "/proc/%u/cmdline", pid);
+    if (pid == 0 || path_length <= 0 || (size_t)path_length >= sizeof(path)) return -EINVAL;
+    int fd;
+    do {
+        int status = source_io_deadline_status(deadline_ns);
+        if (status) return status;
+        fd = (int)syscall(SYS_openat, AT_FDCWD, path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW, 0);
+    } while (fd < 0 && errno == EINTR);
+    if (fd < 0) return -errno;
+    size_t used = 0;
+    int result = 0;
+    while (used < capacity) {
+        result = source_io_deadline_status(deadline_ns);
+        if (result) break;
+        ssize_t count = syscall(SYS_read, fd, buffer + used, capacity - used);
+        int read_errno = errno;
+        if (count < 0 && read_errno == EINTR) {
+            result = source_io_deadline_status(deadline_ns);
+            if (!result) continue;
+            break;
+        }
+        result = source_io_deadline_status(deadline_ns);
+        if (result) break;
+        if (count < 0) { result = -read_errno; break; }
+        if (count == 0) break;
+        used += (size_t)count;
+        result = source_io_deadline_status(deadline_ns);
+        if (result) break;
+    }
+    if (!result && used == capacity) result = -E2BIG;
+    if (syscall(SYS_close, fd) < 0 && !result) result = -errno;
+    if (!result) result = source_io_deadline_status(deadline_ns);
+    if (result) return result;
+    if (!used || buffer[used - 1] != '\0') return -EPROTO;
+    *length = used;
+    return 0;
+}
+
+static int
+source_shell_validate_io_binding(const struct ker_nginx_source_bootstrap *binding,
+    const struct ker_source_native_ini *config)
+{
+    char first[KER_SOURCE_IO_CMDLINE_MAX], second[KER_SOURCE_IO_CMDLINE_MAX];
+    size_t first_length = 0, second_length = 0, argc = 0;
+    char *argv[KER_SOURCE_IO_ARGC_MAX];
+    const struct ker_nginx_source_bootstrap_record *record;
+    if (!binding || !config || binding->io_pidfd < 0 ||
+        !(record = &binding->record)->io_pid || !record->io_start_ticks ||
+        !record->launch_epoch || !record->deadline_ns) return -ESTALE;
+    int status = ker_nginx_source_bootstrap_live(binding);
+    if (status) return status;
+    status = source_io_deadline_status(record->deadline_ns);
+    if (status) return status;
+    status = source_io_read_cmdline(record->io_pid, first, sizeof(first),
+        &first_length, record->deadline_ns);
+    if (status) return status;
+    status = source_io_read_cmdline(record->io_pid, second, sizeof(second),
+        &second_length, record->deadline_ns);
+    if (status) return status;
+    if (first_length != second_length || memcmp(first, second, first_length)) return -ESTALE;
+    status = source_io_deadline_status(record->deadline_ns);
+    if (status) return status;
+    status = ker_nginx_source_bootstrap_live(binding);
+    if (status) return status;
+    for (size_t offset = 0; offset < first_length;) {
+        if (argc == KER_SOURCE_IO_ARGC_MAX) return -E2BIG;
+        size_t end = offset;
+        while (end < first_length && first[end] != '\0') end++;
+        if (end == offset || end == first_length) return -EPROTO;
+        argv[argc++] = first + offset;
+        offset = end + 1;
+    }
+    if (ker_source_native_io_argv_validate(argv, argc, config,
+            record->run_nonce, record->launch_epoch)) return -EPROTO;
+    return ker_nginx_source_bootstrap_live(binding);
+}
+
+static int
+source_native_project_global(const struct runtime_config *config,
+    const char *filename, unsigned proc_id, const char *proc_type)
+{
+    struct ff_config projected = {0};
+    if (!config || !config->source_shell_profile || !filename || !proc_type ||
+        proc_id > 1 || config->native_ini.source_process_count != 2) return -EINVAL;
+    projected.filename = strdup(filename);
+    projected.dpdk.proc_type = strdup(proc_type);
+    projected.dpdk.lcore_mask = strdup(config->native_ini.lcore_mask);
+    projected.dpdk.file_prefix = strdup(config->native_ini.file_prefix);
+    projected.dpdk.proc_lcore = calloc(DPDK_MAX_LCORE, sizeof(uint16_t));
+    projected.dpdk.portid_list = calloc(1, sizeof(uint16_t));
+    projected.dpdk.port_cfgs = calloc(RTE_MAX_ETHPORTS, sizeof(struct ff_port_cfg));
+    if (projected.dpdk.port_cfgs) {
+        projected.dpdk.port_cfgs[0].name = strdup("port0");
+        projected.dpdk.port_cfgs[0].addr = strdup(config->native_ini.address);
+        projected.dpdk.port_cfgs[0].netmask = strdup(config->native_ini.netmask);
+        projected.dpdk.port_cfgs[0].broadcast = strdup(config->native_ini.broadcast);
+        projected.dpdk.port_cfgs[0].gateway = strdup(config->native_ini.gateway);
+    }
+    projected.log.dir = strdup(config->native_ini.log_prefix);
+    if (!projected.filename || !projected.dpdk.proc_type || !projected.dpdk.lcore_mask ||
+        !projected.dpdk.file_prefix || !projected.dpdk.proc_lcore ||
+        !projected.dpdk.portid_list || !projected.dpdk.port_cfgs ||
+        !projected.dpdk.port_cfgs[0].name || !projected.dpdk.port_cfgs[0].addr ||
+        !projected.dpdk.port_cfgs[0].netmask ||
+        !projected.dpdk.port_cfgs[0].broadcast ||
+        !projected.dpdk.port_cfgs[0].gateway || !projected.log.dir) {
+        free(projected.filename); free(projected.dpdk.proc_type);
+        free(projected.dpdk.lcore_mask); free(projected.dpdk.file_prefix);
+        free(projected.dpdk.proc_lcore); free(projected.dpdk.portid_list);
+        if (projected.dpdk.port_cfgs) {
+            free(projected.dpdk.port_cfgs[0].name);
+            free(projected.dpdk.port_cfgs[0].addr);
+            free(projected.dpdk.port_cfgs[0].netmask);
+            free(projected.dpdk.port_cfgs[0].broadcast);
+            free(projected.dpdk.port_cfgs[0].gateway);
+            free(projected.dpdk.port_cfgs);
+        }
+        free((void *)projected.log.dir);
+        return -ENOMEM;
+    }
+    projected.dpdk.proc_id = (int)proc_id;
+    projected.dpdk.nb_procs = 2;
+    projected.dpdk.proc_lcore[0] = 0;
+    projected.dpdk.proc_lcore[1] = 1;
+    projected.dpdk.primary_slim = 1;
+    projected.dpdk.graceful_reload = 1;
+    projected.dpdk.nb_ports = 1;
+    projected.dpdk.max_portid = 0;
+    projected.dpdk.portid_list[0] = 0;
+    projected.dpdk.port_cfgs[0].port_id = 0;
+    projected.dpdk.port_cfgs[0].nb_lcores = 1;
+    projected.dpdk.port_cfgs[0].lcore_list[0] = 1;
+    projected.dpdk.port_cfgs[0].mtu = FF_MTU_DEFAULT;
+    projected.dpdk.log_level = 0;
+    projected.log.level = 0;
+    ff_global_cfg = projected;
+    return 0;
+}
 
 static void source_drain_housekeeping(void)
 {
@@ -475,6 +671,15 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
     if (getenv("FF_FAULT") != NULL && !ker_fstack_nginx_source_fault_profile())
         return runtime_fail(ENOTSUP,
             "ker fstack runtime: FF_FAULT is unsupported in the broker profile\n");
+    const char *source_shell_enable = getenv("KER_NGINX_SOURCE_SHELL_ENABLE");
+    const char *source_first_hup = getenv("KER_NGINX_SOURCE_FIRST_HUP_ENABLE");
+    const char *source_bootstrap_path = getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH");
+    if (source_shell_enable && (strcmp(source_shell_enable, "1") ||
+        !source_bootstrap_path || !*source_bootstrap_path || !source_first_hup ||
+        strcmp(source_first_hup, "1")))
+        return runtime_fail(EPERM,
+            "ker fstack runtime: source-shell profile requires authenticated first-HUP bootstrap\n");
+    plan.config.source_shell_profile = source_shell_enable != NULL;
     if (argc != 4 || argv == NULL || argv[0] == NULL ||
         strcmp(argv[0], "nginx") != 0 || argv[1] == NULL || argv[2] == NULL ||
         argv[3] == NULL || strncmp(argv[1], "--conf=", 7) != 0 ||
@@ -494,20 +699,37 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
         return runtime_fail(ENOTSUP,
             "ker fstack runtime: worker role requires the validated two-worker Nginx shim\n");
 
-    config_file = fopen(argv[1] + 7, "r");
-    if (config_file == NULL) {
-        int saved_errno = errno;
-        runtime_trace("ff_init_stage stage=config_open_failed pid=%ld path=%s errno=%d\n",
-            (long)getpid(), argv[1] + 7, saved_errno);
-        errno = saved_errno;
-        return -1;
+    if (plan.config.source_shell_profile) {
+        struct ker_source_native_ini_cycle_snapshot snapshot;
+        parse_result = source_native_cycle_snapshot(argv[1] + 7, &snapshot);
+        if (parse_result != 0)
+            return runtime_fail(parse_result < 0 ? -parse_result : EIO,
+                "ker fstack runtime: current-cycle source-shell INI snapshot rejected\n");
+        plan.config.native_ini = snapshot.config;
+        plan.config.source_snapshot = snapshot;
+        memcpy(plan.config.broker_path, plan.config.native_ini.broker_path,
+            strlen(plan.config.native_ini.broker_path) + 1);
+        plan.config.version = 1;
+        plan.config.graceful_reload = 1;
+        plan.config.source_process_count = plan.config.native_ini.source_process_count;
+        plan.config.saw_version = plan.config.saw_path =
+            plan.config.saw_graceful_reload = plan.config.saw_lcore_mask = 1;
+    } else {
+        config_file = fopen(argv[1] + 7, "r");
+        if (config_file == NULL) {
+            int saved_errno = errno;
+            runtime_trace("ff_init_stage stage=config_open_failed pid=%ld path=%s errno=%d\n",
+                (long)getpid(), argv[1] + 7, saved_errno);
+            errno = saved_errno;
+            return -1;
+        }
+        parse_result = ker_ini_parse_file(config_file, runtime_ini, &plan.config);
+        close_result = fclose(config_file);
+        if (parse_result != 0 || close_result != 0 || !plan.config.saw_version ||
+            !plan.config.saw_path || !plan.config.saw_graceful_reload)
+            return runtime_fail(EINVAL,
+                "ker fstack runtime: config requires broker version/path and a valid graceful_reload value\n");
     }
-    parse_result = ker_ini_parse_file(config_file, runtime_ini, &plan.config);
-    close_result = fclose(config_file);
-    if (parse_result != 0 || close_result != 0 || !plan.config.saw_version ||
-        !plan.config.saw_path || !plan.config.saw_graceful_reload)
-        return runtime_fail(EINVAL,
-            "ker fstack runtime: config requires broker version/path and a valid graceful_reload value\n");
 
     if (getenv("FF_FAULT") && !plan.config.graceful_reload)
         return runtime_fail(ENOTSUP,
@@ -522,13 +744,27 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
         if (getenv("KER_NGINX_SOURCE_BOOTSTRAP_PATH")) {
             struct ff_reload_state **source = dlsym(RTLD_DEFAULT, "ngx_ff_reload_shm");
             struct ker_nginx_source_bootstrap binding;
-            int status = ker_nginx_source_bootstrap_from_environment(
-                proc_id == 0 ? KER_NGINX_SOURCE_ROLE_SLIM : KER_NGINX_SOURCE_ROLE_WORKER,
-                (uint32_t)plan.worker_generation, plan.source_round_epoch, *source, &binding);
+            int status = plan.config.source_shell_profile ?
+                ker_nginx_source_bootstrap_from_environment_source_shell(
+                    proc_id == 0 ? KER_NGINX_SOURCE_ROLE_SLIM : KER_NGINX_SOURCE_ROLE_WORKER,
+                    (uint32_t)plan.worker_generation, plan.source_round_epoch, *source,
+                    &plan.config.source_snapshot, &binding) :
+                ker_nginx_source_bootstrap_from_environment(
+                    proc_id == 0 ? KER_NGINX_SOURCE_ROLE_SLIM : KER_NGINX_SOURCE_ROLE_WORKER,
+                    (uint32_t)plan.worker_generation, plan.source_round_epoch, *source, &binding);
             runtime_trace("ff_init_stage stage=graceful_bootstrap_transport pid=%ld role=%u status=%d\n",
                 (long)getpid(), proc_id, status);
             if (status) return runtime_fail(-status,
                 "ker fstack runtime: source bootstrap transport rejected\n");
+            if (plan.config.source_shell_profile) {
+                status = source_shell_validate_io_binding(&binding,
+                    &plan.config.native_ini);
+                if (status) {
+                    ker_nginx_source_bootstrap_close(&binding);
+                    return runtime_fail(-status,
+                        "ker fstack runtime: authenticated native I/O argv binding rejected\n");
+                }
+            }
             if (proc_id == 0 && binding.record.flags == KER_NGINX_SOURCE_SLIM_CONTROL_ONLY) {
                 size_t length = strlen(argv[1] + 7);
                 if (length >= sizeof(plan.config_path)) {
@@ -661,6 +897,11 @@ ker_fstack_nginx_runtime_commit(void)
          * mask before creating the shared block or forking the slim primary.
          * Preflight accepts exactly two lcores, hence one source worker. */
         ff_global_cfg.dpdk.nb_procs = (int)pending_init_plan.config.source_process_count;
+        if (pending_init_plan.config.source_shell_profile &&
+            source_native_project_global(&pending_init_plan.config, runtime_config_path,
+                0, "primary"))
+            return runtime_fail(ENOMEM,
+                "ker fstack runtime: source-shell config projection allocation failed\n");
         /* Preserve the source-inherited state. The native I/O actor owns EAL;
          * this process has no packet queues or application socket authority. */
         runtime_initialized = 1;
@@ -685,6 +926,11 @@ ker_fstack_nginx_runtime_commit(void)
             return runtime_fail(ESTALE, "ker fstack runtime: incomplete source worker delegation\n");
         ff_global_cfg.dpdk.primary_slim = 1;
         ff_global_cfg.dpdk.nb_procs = (int)pending_init_plan.config.source_process_count;
+        if (pending_init_plan.config.source_shell_profile &&
+            source_native_project_global(&pending_init_plan.config, runtime_config_path,
+                pending_init_plan.proc_id, pending_init_plan.proc_type))
+            return runtime_fail(ENOMEM,
+                "ker fstack runtime: source-shell config projection allocation failed\n");
     }
 
     /* Legacy workers use the bounded graceful-off projection. Authenticated

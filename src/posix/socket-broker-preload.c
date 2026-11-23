@@ -1269,6 +1269,57 @@ static int copy_out(void *destination, const void *source, size_t length)
     return 0;
 }
 
+int ker_sb_preload_usercopy_in(void *local, const void *user, size_t length)
+{
+    return copy_in(local, user, length);
+}
+
+int ker_sb_preload_usercopy_out(void *user, const void *local, size_t length)
+{
+    return copy_out(user, local, length);
+}
+
+int ker_sb_preload_ff_event_snapshot(int fd,
+    struct ker_socket_event_snapshot *snapshot)
+{
+    if (!snapshot) { errno = EFAULT; return -1; }
+    if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
+    ker_sb_preload_lock();
+    int cap = -1;
+    int native = ker_sb_preload_network_fd_locked(fd, &cap);
+    struct ker_socket_client *client = NULL;
+    int result = -1;
+    struct ker_socket_event_snapshot observed = {0};
+    if (native == 0) {
+        /* Event metadata never falls back to a raw host socket. */
+        errno = EOPNOTSUPP;
+    } else if (native > 0 && (client = ker_sb_preload_client_locked()) != NULL) {
+        bool allowed = true;
+        if (ff_owner_context_started) {
+            if (!ker_sb_preload_ff_owner_active_locked()) {
+                errno = EOPNOTSUPP;
+                allowed = false;
+            } else {
+                int matches = ker_socket_client_ff_owner_match(client,
+                    ff_owner_capability, cap);
+                if (matches != 1) {
+                    if (matches == 0) errno = EXDEV;
+                    allowed = false;
+                }
+            }
+        }
+        if (allowed) {
+            result = ker_socket_client_event_snapshot(client, cap, &observed);
+            if (result == 0)
+                result = copy_out(snapshot, &observed, sizeof(observed));
+        }
+    }
+    int saved_errno = errno;
+    ker_sb_preload_unlock();
+    errno = saved_errno;
+    return result;
+}
+
 static bool descriptor_may_be_broker_capability(int fd)
 {
     struct stat status = {0};

@@ -72,6 +72,8 @@ struct consumer {
     bool owner_valid;
     bool stop_sent;
     int transport_error;
+    bool shutdown_receipt_valid;
+    struct ker_rx_decision_shutdown_receipt shutdown_receipt;
 };
 
 static pthread_mutex_t consumer_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -809,6 +811,26 @@ int ker_rx_decision_consumer_error(void)
     return error;
 }
 
+int ker_rx_decision_consumer_get_shutdown_receipt(
+        struct ker_rx_decision_shutdown_receipt *receipt)
+{
+    if (!receipt) return -EINVAL;
+    pthread_mutex_lock(&consumer_lock);
+    if (consumer.state != CONSUMER_SETTLED || !consumer.shutdown_receipt_valid ||
+        consumer.unresolved_packet || consumer.transport_error ||
+        consumer.shutdown_receipt.status ||
+        consumer.shutdown_receipt.last_packet_id != consumer.last_packet_id ||
+        consumer.shutdown_receipt.last_result_id != consumer.last_result_id ||
+        consumer.shutdown_receipt.last_packet_id != consumer.shutdown_receipt.last_result_id ||
+        consumer.shutdown_receipt.outstanding_count) {
+        pthread_mutex_unlock(&consumer_lock);
+        return -ENODATA;
+    }
+    *receipt = consumer.shutdown_receipt;
+    pthread_mutex_unlock(&consumer_lock);
+    return 0;
+}
+
 static int shutdown_receive(uint64_t deadline, struct received_message *message)
 {
     int result = wait_event(consumer.fd, POLLIN, deadline);
@@ -955,7 +977,7 @@ wait_for_settlement:
             result = validate_header(&message, &header, KER_RX_DECISION_SETTLED,
                 KER_RX_DECISION_STOP_CONTROL_ID, 0);
             if (!result && (message.length != sizeof(header) + sizeof(settled) ||
-                    header.deadline_ns)) result = -EPROTO;
+                    header.deadline_ns || message.descriptor_count)) result = -EPROTO;
             if (!result) {
                 memcpy(&settled, message.bytes + sizeof(header), sizeof(settled));
                 if (settled.reserved || settled.outstanding_count ||
@@ -963,11 +985,52 @@ wait_for_settlement:
                     settled.last_packet_id != consumer.last_result_id ||
                     settled.last_packet_id != consumer.last_packet_id) result = -EPROTO;
             }
+            struct ker_rx_decision_shutdown_receipt latched = {0};
+            if (!result) {
+                pthread_mutex_lock(&consumer_lock);
+                if (consumer.state != CONSUMER_STOPPING || !message.have_credentials ||
+                    message.credentials.pid != consumer.worker_pid ||
+                    message.credentials.uid != consumer.worker_uid ||
+                    message.credentials.gid != consumer.worker_gid ||
+                    consumer.unresolved_packet ||
+                    settled.last_packet_id != consumer.last_packet_id ||
+                    settled.last_packet_id != consumer.last_result_id) {
+                    result = -EPROTO;
+                } else {
+                    memcpy(latched.record, message.bytes, sizeof(latched.record));
+                    latched.worker_pid = (uint32_t)message.credentials.pid;
+                    latched.worker_uid = (uint32_t)message.credentials.uid;
+                    latched.worker_gid = (uint32_t)message.credentials.gid;
+                    latched.worker_start_ticks = consumer.worker_start_ticks;
+                    latched.supervisor_pid = (uint32_t)consumer.supervisor_pid;
+                    latched.supervisor_uid = (uint32_t)consumer.peer.uid;
+                    latched.supervisor_gid = (uint32_t)consumer.peer.gid;
+                    latched.supervisor_start_ticks = consumer.supervisor_start_ticks;
+                    memcpy(latched.nonce, consumer.run_nonce, sizeof(latched.nonce));
+                    latched.epoch = consumer.worker_epoch;
+                    latched.last_packet_id = settled.last_packet_id;
+                    latched.last_result_id = consumer.last_result_id;
+                    latched.outstanding_count = settled.outstanding_count;
+                    latched.status = 0;
+                }
+                pthread_mutex_unlock(&consumer_lock);
+            }
             close_message_fds(&message);
             if (result) break;
             close_registered_fds();
             pthread_mutex_lock(&consumer_lock);
+            if (consumer.state != CONSUMER_STOPPING || consumer.unresolved_packet ||
+                latched.last_packet_id != consumer.last_packet_id ||
+                latched.last_result_id != consumer.last_result_id) {
+                consumer.state = CONSUMER_FAILED;
+                consumer.transport_error = -EPROTO;
+                pthread_mutex_unlock(&consumer_lock);
+                return -EPROTO;
+            }
+            consumer.shutdown_receipt = latched;
+            consumer.shutdown_receipt_valid = true;
             consumer.state = CONSUMER_SETTLED;
+            consumer.transport_error = 0;
             consumer.handler = NULL;
             consumer.context = NULL;
             pthread_mutex_unlock(&consumer_lock);

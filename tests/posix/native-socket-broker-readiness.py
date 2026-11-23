@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """TAP proof for the opt-in socket-broker READY/STOP control path."""
 import argparse
+import array
 import ctypes
 import errno
 import importlib.machinery
@@ -9,16 +10,20 @@ import json
 import os
 from pathlib import Path
 import select
+import secrets
 import shlex
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 
+ROOT = Path(__file__).resolve().parents[2]
 WIRE_PATH = Path(__file__).resolve().parents[2] / 'tools' / 'broker_readiness_wire.py'
 WIRE_SPEC = importlib.util.spec_from_file_location('_c34_broker_wire', WIRE_PATH)
 wire = importlib.util.module_from_spec(WIRE_SPEC)
@@ -132,13 +137,517 @@ def build_eal(args):
         '--vdev=net_tap0,iface=kerpeer,remote=kerlink')
 
 
+def _attempt_record(attempt):
+    if attempt is None:
+        return None
+    return {
+        'record_hex': attempt['record'].hex(),
+        'flags': attempt['flags'],
+        'received_ns': attempt['received_ns'],
+        'deadline_ns': attempt['deadline_ns'],
+        'credentials': attempt['credentials'],
+        'ancillary': [{'level': level, 'type': kind, 'data_hex': data.hex()}
+            for level, kind, data in attempt['ancillary']],
+        'received_fd_count': attempt['received_fd_count'],
+        'fd_metadata': attempt['fd_metadata'],
+    }
+
+
+def _start_bounded_stderr_capture(stream, limit=8192):
+    captured = {'bytes': bytearray(), 'truncated': False}
+    lock = threading.Lock()
+
+    def drain():
+        while True:
+            try:
+                block = os.read(stream.fileno(), 1024)
+            except (OSError, ValueError):
+                return
+            if not block:
+                return
+            with lock:
+                remaining = limit - len(captured['bytes'])
+                if remaining > 0:
+                    captured['bytes'].extend(block[:remaining])
+                if len(block) > remaining:
+                    captured['truncated'] = True
+
+    thread = threading.Thread(target=drain, name='source-c22-helper-stderr', daemon=True)
+    thread.start()
+    captured['lock'] = lock
+    return captured, thread
+
+
+def _helper_failure_diagnostic(process, captured, reader_thread, wait_seconds=0.25):
+    if process is not None and process.poll() is None and wait_seconds > 0:
+        try:
+            process.wait(timeout=wait_seconds)
+        except subprocess.TimeoutExpired:
+            pass
+    if reader_thread is not None:
+        reader_thread.join(timeout=0.05)
+    if captured is None:
+        return {'returncode_before_cleanup': None, 'stderr_hex': '',
+            'stderr_truncated': False}
+    with captured['lock']:
+        data = bytes(captured['bytes'])
+        truncated = captured['truncated']
+    return {'returncode_before_cleanup': None if process is None else process.poll(),
+        'stderr_hex': data.hex(), 'stderr_text': data.decode('utf-8', 'replace'),
+        'stderr_truncated': truncated}
+
+
+def _bounded_controller_failure_cleanup(manager, app, supervisor_pid, timeout=12.0):
+    """Ask ker-run's installed handler for one authenticated STOP, then bound wait."""
+    cleanup = {'stop_signal_sent': False, 'stop_acknowledged': False,
+        'app_exited': False, 'fallback_kill': False, 'secondary_errors': []}
+    eligible = False
+    try:
+        eligible = (manager is not None and manager.ready and not manager.stop_attempted and
+            app is not None and app.poll() is None and os.getpid() == supervisor_pid and
+            manager.supervisor[0] == supervisor_pid and
+            manager.supervisor[3] == start_ticks(supervisor_pid) and manager.app is not None and
+            manager.app[0] == app.pid)
+    except (OSError, RuntimeError, ValueError, TypeError, IndexError) as identity_error:
+        cleanup['secondary_errors'].append(f'controller identity check: {identity_error!r}')
+    if eligible:
+        try:
+            os.kill(supervisor_pid, signal.SIGTERM)
+            cleanup['stop_signal_sent'] = True
+        except OSError as cleanup_error:
+            cleanup['secondary_errors'].append(repr(cleanup_error))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            cleanup['stop_acknowledged'] = bool(manager.stopped)
+            cleanup['app_exited'] = app.poll() is not None
+            if cleanup['stop_acknowledged'] and cleanup['app_exited']:
+                break
+            time.sleep(0.005)
+    if app is not None and app.poll() is None:
+        cleanup['fallback_kill'] = True
+        try:
+            app.kill()
+            app.wait(timeout=1.0)
+        except (OSError, subprocess.TimeoutExpired) as cleanup_error:
+            cleanup['secondary_errors'].append(repr(cleanup_error))
+    if manager is not None:
+        cleanup['stop_acknowledged'] = bool(manager.stopped)
+    if app is not None:
+        cleanup['app_exited'] = app.poll() is not None
+    return cleanup
+
+
+def _write_controller_failure_receipt(args, state, primary_error, launcher_result):
+    """Preserve failure and report cleanup only from ker-run's final evidence."""
+    if args.mode != 'source-c22-provider-wire' or args.source_c22_receipt is None:
+        return
+    manager = state.get('manager')
+    app = state.get('app')
+    stats = None
+    try:
+        stats_path = args.stats
+        info = stats_path.stat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+                info.st_nlink != 1 or info.st_size > 1024 * 1024):
+            raise ValueError('ker-run statistics are not a bounded private regular file')
+        current_identity = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
+        if current_identity == state.get('stats_before'):
+            raise ValueError('ker-run statistics file was not refreshed during this run')
+        stats = json.loads(stats_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError, TypeError) as error:
+        stats_error = repr(error)
+    else:
+        stats_error = None
+    settled = _controller_failure_settled(manager, None if app is None else app.poll(),
+        launcher_result, stats)
+    receipt = {
+        'classification': 'SETTLED' if settled else 'UNRESOLVED',
+        'qualification_result': 'FAIL',
+        'primary_controller_error': repr(primary_error),
+        'cleanup': state.get('controller_failure_cleanup'),
+        'manager': None if manager is None else {
+            'ready': manager.ready, 'stopped': manager.stopped,
+            'stop_attempted': manager.stop_attempted,
+            'app_pid': manager.app[0] if manager.app else None,
+        },
+        'app_returncode': None if app is None else app.poll(),
+        'launcher_result': launcher_result,
+        'statistics': stats,
+        'statistics_error': stats_error,
+        'settlement_basis': ('ker-run STOP/ACK, top-level control EOF/outstanding/worker status, '
+            'no-RX-decision profile, and native shutdown counters'
+            if settled else None),
+    }
+    path = args.source_c22_receipt.with_name(
+        args.source_c22_receipt.name + '.controller-failure.json')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                prefix=path.name + '.', delete=False) as output:
+            temporary = Path(output.name)
+            os.fchmod(output.fileno(), 0o600)
+            json.dump(receipt, output, sort_keys=True, separators=(',', ':'))
+            output.write('\n')
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+_NATIVE_SHUTDOWN_COUNTERS = frozenset((
+    'buffer_allocations', 'buffer_releases', 'buffer_shutdown_releases',
+    'buffers_live', 'buffer_bytes', 'buffer_option_guards_live'))
+
+
+def _native_shutdown_counters_clean(native):
+    if not isinstance(native, dict) or not _NATIVE_SHUTDOWN_COUNTERS <= native.keys():
+        return False
+    if any(type(native[name]) is not int or native[name] < 0
+            for name in _NATIVE_SHUTDOWN_COUNTERS):
+        return False
+    return (native['buffer_allocations'] == native['buffer_releases'] and
+        native['buffer_shutdown_releases'] == 0 and native['buffers_live'] == 0 and
+        native['buffer_bytes'] == 0 and native['buffer_option_guards_live'] == 0)
+
+
+def _controller_failure_settled(manager, app_returncode, launcher_result, stats):
+    native = stats.get('native') if isinstance(stats, dict) else None
+    return bool(manager is not None and manager.ready is True and manager.stopped is True and
+        type(app_returncode) is int and app_returncode == 0 and
+        type(launcher_result) is int and launcher_result == 143 and isinstance(stats, dict) and
+        type(stats.get('outstanding')) is int and stats['outstanding'] == 0 and
+        stats.get('run_shutdown') is True and stats.get('run_shutdown_ack') is True and
+        stats.get('control_eof') is True and
+        type(stats.get('worker_exit_code')) is int and stats['worker_exit_code'] == 0 and
+        stats.get('shutdown_timed_out') is False and
+        stats.get('rx_decision_enabled') is False and
+        stats.get('rx_decision_settled') is False and
+        _native_shutdown_counters_clean(native))
+
+
+def source_c22_provider_wire(args, manager):
+    """Exercise the real source-shell C22 producer over its private SCM channel.
+
+    The Python context below is deliberately a MODEL used only by the existing
+    parser/actor checks. It is not an accepted Origin or source grant.
+    """
+    provider_path = ROOT / 'tools' / 'nginx_source_c22_provider.py'
+    spec = importlib.util.spec_from_file_location('_source_c22_wire_provider', provider_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    helper = args.source_c22_helper.resolve(strict=True)
+    grant_deadline = time.monotonic_ns() + 20_000_000_000
+    source_nonce = secrets.token_bytes(16)
+    while not any(source_nonce):
+        source_nonce = secrets.token_bytes(16)
+    source_epoch = secrets.randbits(63) or 1
+    before_fds = set(os.listdir('/proc/self/fd'))
+    receipt_path = args.source_c22_receipt
+    receipt = {'classification':
+        'real C22 producer wire; explicitly seeded MODEL context only; no Origin/source claim',
+        'producer_path': str(helper), 'source_helper_sha256': None,
+        'broker_path': str(args.rpc_path), 'attempts': []}
+
+    def persist_receipt():
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                    dir=receipt_path.parent, prefix=receipt_path.name + '.',
+                    delete=False) as output:
+                temporary = Path(output.name)
+                os.fchmod(output.fileno(), 0o600)
+                json.dump(receipt, output, sort_keys=True, separators=(',', ':'))
+                output.write('\n')
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, receipt_path)
+            directory_fd = os.open(receipt_path.parent,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
+
+    persist_receipt()
+
+    def spawn(source_nonce_value, source_epoch_value):
+        context = SimpleNamespace(deadline_ns=grant_deadline)
+        held_fd, metadata, digest = module._open_pinned_executable(helper, grant_deadline)
+        receipt['source_helper_sha256'] = digest.hex()
+        persist_receipt()
+        parent = child = None
+        parent_pidfd = -1
+        process = None
+        instance = None
+        stderr_capture = stderr_thread = None
+        try:
+            parent, child = socket.socketpair(socket.AF_UNIX,
+                socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+            parent.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            parent_pidfd = os.pidfd_open(os.getpid(), 0)
+            parent_start = start_ticks(os.getpid())
+            command = [f'/proc/self/fd/{held_fd}', str(args.rpc_path),
+                str(child.fileno()), '--source-shell', '0.0.0.0', '80', '511',
+                source_nonce_value.hex(), str(source_epoch_value),
+                manager.nonce.hex(), str(manager.epoch), str(os.getpid()),
+                str(parent_start), str(grant_deadline), str(parent_pidfd)]
+            process = subprocess.Popen(command,
+                executable=f'/proc/self/fd/{held_fd}', stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                close_fds=True, pass_fds=(child.fileno(), held_fd, parent_pidfd))
+            stderr_capture, stderr_thread = _start_bounded_stderr_capture(process.stderr)
+            child.close()
+            child = None
+            actor = module._identity(process.pid)
+            instance = module.SourceShellC22Provider.__new__(
+                module.SourceShellC22Provider)
+            instance.context = context
+            instance.source_nonce = source_nonce_value
+            instance.source_epoch = source_epoch_value
+            instance.broker_nonce = manager.nonce
+            instance.broker_epoch = manager.epoch
+            instance.process = process
+            instance.pidfd = os.pidfd_open(process.pid, 0)
+            instance.start_ticks = actor[3]
+            instance._helper_fd = held_fd
+            instance._helper_metadata = metadata
+            instance._helper_sha256 = digest
+            instance._channel = parent
+            instance._closed = False
+            instance.slots = [-1, -1]
+            instance.watch_fd = -1
+            instance.slot_identities = None
+            instance._used_slots = set()
+            instance._verify_sequence = 0
+            held_fd = -1
+            parent = None
+            try:
+                instance._receive_bundle(min(grant_deadline,
+                    time.monotonic_ns() + module._STARTUP_NS))
+            except BaseException as error:
+                attempt = getattr(instance, '_last_bundle_attempt', None)
+                entry = {
+                    'result': 'rejected', 'error': f'{type(error).__name__}: {error}',
+                    'wire': _attempt_record(attempt),
+                    'helper': _helper_failure_diagnostic(process, stderr_capture,
+                        stderr_thread)}
+                receipt['attempts'].append(entry)
+                persist_receipt()
+                raise
+            attempt = instance._last_bundle_attempt
+            receipt['attempts'].append({'result': 'accepted',
+                'wire': _attempt_record(attempt),
+                'helper_pid': process.pid, 'helper_start_ticks': actor[3],
+                'helper_executable_sha256': digest.hex()})
+            persist_receipt()
+            try:
+                instance._check_actor(grant_deadline)
+            except BaseException as error:
+                receipt['attempts'][-1]['actor_validation_error'] = (
+                    f'{type(error).__name__}: {error}')
+                persist_receipt()
+                raise
+            receipt['attempts'][-1]['actor_validated'] = True
+            persist_receipt()
+            return instance
+        except BaseException:
+            if (receipt['attempts'] and 'helper' not in receipt['attempts'][-1] and
+                    process is not None):
+                receipt['attempts'][-1]['helper'] = _helper_failure_diagnostic(
+                    process, stderr_capture, stderr_thread, wait_seconds=0)
+                receipt['attempts'][-1]['diagnostic_capture_before_cleanup'] = True
+                persist_receipt()
+            if instance is not None:
+                try:
+                    instance.close(abort=True)
+                except BaseException:
+                    if process is not None and process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=2)
+                    try:
+                        instance.close(abort=True)
+                    except BaseException:
+                        pass
+            elif process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=2)
+            if process is not None:
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+            if stderr_thread is not None:
+                stderr_thread.join(timeout=0.05)
+            raise
+        finally:
+            if child is not None:
+                child.close()
+            if parent is not None:
+                parent.close()
+            if parent_pidfd >= 0:
+                os.close(parent_pidfd)
+            if held_fd >= 0:
+                os.close(held_fd)
+
+    primary = None
+    try:
+        primary = spawn(source_nonce, source_epoch)
+        primary_receipt = primary._last_received_bundle
+        fields = module._RECORD.unpack(primary_receipt['record'])
+        require(fields[:3] == (module._MAGIC, module._VERSION, module._RECORD.size) and
+            (fields[3], fields[4], fields[5], fields[6]) ==
+                (source_epoch, manager.epoch, source_nonce, manager.nonce) and
+            fields[7:10] == (0, 80, 511) and
+            primary_receipt['credentials'] ==
+                (primary.process.pid, os.getuid(), os.getgid()),
+            'actual C22 bundle record/session/credentials did not match producer launch')
+        require(len(primary.slots) == 2 and primary.watch_fd >= 0 and
+            all(module._validate_broker_fifo(fd, 'source C22 received capability')
+                for fd in (*primary.slots, primary.watch_fd)),
+            'actual C22 producer did not transfer the expected FIFO capabilities')
+
+        secondary_nonce = secrets.token_bytes(16)
+        while not any(secondary_nonce):
+            secondary_nonce = secrets.token_bytes(16)
+        secondary = spawn_duplicate_plan_failure(args, manager, module, helper,
+            grant_deadline, secondary_nonce, source_epoch + 1, receipt,
+            persist_receipt)
+        receipt.update({
+            'primary': {
+                'pid': primary.process.pid,
+                'start_ticks': primary.start_ticks,
+                'credentials': primary_receipt['credentials'],
+                'wire_record_hex': primary_receipt['record'].hex(),
+                'host_fds': primary_receipt['fds'],
+                'source_nonce': source_nonce.hex(),
+                'source_epoch': source_epoch,
+                'broker_nonce': manager.nonce.hex(),
+                'broker_epoch': manager.epoch,
+                'plan_profile': ['0.0.0.0', 80, 511],
+                'slot_count': len(primary.slots),
+                'generation_watch_capability_created_by_read_only_api': True,
+                'generation_watch_describe_status_flags': 0,
+                'generation_watch_describe_reports_logical_rights': False,
+                'generation_watch_READ_provenance':
+                    'owner_generation_watch_create API; server assigns READ in generation_watch_create',
+            },
+            'duplicate_plan': secondary,
+            'fd_census_restored': False,
+        })
+        persist_receipt()
+        primary.close()
+        primary = None
+        require(set(os.listdir('/proc/self/fd')) == before_fds,
+            'source C22 wire fixture leaked supervisor descriptors')
+        receipt['fd_census_restored'] = True
+        persist_receipt()
+        return {'source_c22_bundle_accepted': True,
+            'duplicate_port_plan_rejected': secondary['rejected'],
+            'fd_census_restored': True,
+            'raw_receipt': receipt}
+    finally:
+        if primary is not None:
+            try:
+                primary.close(abort=True)
+            except BaseException:
+                if primary.process is not None and primary.process.poll() is None:
+                    primary.process.kill()
+                    primary.process.wait(timeout=2)
+                try:
+                    primary.close(abort=True)
+                except BaseException:
+                    pass
+
+
+def spawn_duplicate_plan_failure(args, manager, module, helper, grant_deadline,
+        nonce, epoch, receipt, persist_receipt):
+    """Use a second real C client to observe server-side EADDRINUSE."""
+    held_fd, _, _ = module._open_pinned_executable(helper, grant_deadline)
+    parent, child = socket.socketpair(socket.AF_UNIX,
+        socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+    parent.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+    parent_pidfd = os.pidfd_open(os.getpid(), 0)
+    process = None
+    try:
+        command = [f'/proc/self/fd/{held_fd}', str(args.rpc_path),
+            str(child.fileno()), '--source-shell', '0.0.0.0', '80', '511',
+            nonce.hex(), str(epoch), manager.nonce.hex(), str(manager.epoch),
+            str(os.getpid()), str(start_ticks(os.getpid())), str(grant_deadline),
+            str(parent_pidfd)]
+        process = subprocess.Popen(command, executable=f'/proc/self/fd/{held_fd}',
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE, close_fds=True,
+            pass_fds=(child.fileno(), held_fd, parent_pidfd))
+        child.close()
+        readable, _, _ = select.select([parent], [], [], 2.0)
+        require(readable, 'duplicate C22 plan attempt did not close promptly')
+        payload, ancillary, flags, _ = parent.recvmsg(module._MAX_RECORD,
+            socket.CMSG_SPACE(64))
+        received = []
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                values = array.array('i')
+                values.frombytes(data[:len(data) - len(data) % values.itemsize])
+                received.extend(values)
+        for fd in received:
+            os.close(fd)
+        stderr = process.communicate(timeout=2)[1]
+        diagnostic = {'nonce': nonce.hex(), 'epoch': epoch,
+            'wire_bytes_hex': payload.hex(), 'ancillary_count': len(ancillary),
+            'ancillary_types': [(level, kind, len(data))
+                for level, kind, data in ancillary],
+            'flags': flags, 'exit_status': process.returncode,
+            'stderr_hex': stderr.hex(), 'expected_errno': errno.EADDRINUSE}
+        receipt['duplicate_plan_attempt'] = diagnostic
+        persist_receipt()
+        require(not payload and not ancillary and not flags &
+            (socket.MSG_TRUNC | socket.MSG_CTRUNC) and process.returncode == 1 and
+            b'SOURCE_C22_PLAN_ERRNO=' + str(errno.EADDRINUSE).encode() in stderr,
+            f'server did not reject duplicate wildcard:80 plan with EADDRINUSE: '
+            f'rc={process.returncode}, stderr={stderr!r}')
+        return {'rejected': True, 'errno': errno.EADDRINUSE,
+            'exit_status': process.returncode, 'wire_bytes': payload.hex(),
+            'ancillary_count': len(ancillary)}
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
+        if process is not None:
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+        child.close()
+        parent.close()
+        os.close(parent_pidfd)
+        os.close(held_fd)
+
+
 def supervisor(args, notify_fd=-1, retain_endpoint=False):
     if args.mode == 'generation-watch-relay-no-bootstrap':
         return supervisor_relay_startup_failure(args, notify_fd)
     if args.mode in ('generation-watch-relay-close-cancel', 'generation-watch-relay-happy'):
         return supervisor_relay_close_cancel(args, notify_fd)
     ker_run = load_ker_run(args.launcher)
-    state = {'manager': None, 'app': None, 'retainer_pid': -1}
+    try:
+        old_stats = args.stats.stat()
+        stats_before = (old_stats.st_dev, old_stats.st_ino,
+            old_stats.st_mtime_ns, old_stats.st_size)
+    except FileNotFoundError:
+        stats_before = None
+    state = {'manager': None, 'app': None, 'retainer_pid': -1,
+        'stats_before': stats_before}
     original_manager = ker_run.broker_readiness.BrokerReadiness
     barrier_listener = None
     barrier_channel = None
@@ -255,6 +764,8 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
                     'retainer_held': state.get('retainer_held', False)}) + '\n').encode())
             if args.mode == 'parent-death':
                 return
+            if args.mode == 'source-c22-provider-wire':
+                control_result.update(source_c22_provider_wire(args, manager))
             if args.mode in ('generation-watch', 'generation-watch-replay',
                              'generation-watch-rights', 'generation-watch-stop-cancel',
                              'generation-watch-close-cancel'):
@@ -627,9 +1138,10 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
                 f'broker application shutdown was not clean: {app.returncode}')
         except BaseException as error:
             control_errors.append(error)
+            manager = state.get('manager')
             app = state.get('app')
-            if app is not None and app.poll() is None:
-                app.kill()
+            state['controller_failure_cleanup'] = _bounded_controller_failure_cleanup(
+                manager, app, supervisor_pid)
             actor = state.get('watch_actor')
             if actor is not None and actor.poll() is None:
                 actor.kill()
@@ -671,6 +1183,11 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
     if thread.is_alive():
         raise RuntimeError('broker readiness controller did not terminate')
     if control_errors:
+        try:
+            _write_controller_failure_receipt(args, state, control_errors[0], launcher_result)
+        except (OSError, ValueError, TypeError) as receipt_error:
+            state.setdefault('controller_failure_cleanup', {}).setdefault(
+                'secondary_errors', []).append(f'failure receipt: {receipt_error!r}')
         raise RuntimeError(f'broker readiness controller failed: {control_errors[0]!r}')
     if args.mode == 'parent-death':
         raise RuntimeError('parent-death supervisor unexpectedly returned')
@@ -725,6 +1242,13 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
                     control_result.get('live_port_reservation_retained'))) and
             stats and stats.get('outstanding') == 0,
             f'generation watch did not enforce retirement evidence: {result!r}')
+    elif args.mode == 'source-c22-provider-wire':
+        require(launcher_result == 143 and
+            control_result.get('source_c22_bundle_accepted') and
+            control_result.get('duplicate_port_plan_rejected') and
+            control_result.get('fd_census_restored') and stats and
+            stats.get('outstanding') == 0 and stats.get('run_shutdown_ack') is True,
+            f'real C22 provider wire path failed to settle: {result!r}')
     return 0
 
 
@@ -1128,6 +1652,9 @@ def spawn_supervisor(args, mode, timeout=45):
                 'generation-watch-stop-cancel', 'generation-watch-close-cancel',
                 'generation-watch-relay-close-cancel', 'generation-watch-relay-happy'):
         command += ['--generation-watch-actor', str(args.generation_watch_actor.resolve())]
+    if mode == 'source-c22-provider-wire':
+        command += ['--source-c22-helper', str(args.source_c22_helper.resolve())]
+        command += ['--source-c22-receipt', str(args.source_c22_receipt.resolve())]
     retain = mode == 'parent-death'
     log_path = args.root / f'{mode}.supervisor.log'
     log_file = log_path.open('wb')
@@ -1254,6 +1781,8 @@ def main():
     for name in ('launcher', 'library', 'worker', 'broker', 'dpdk-plugin-dir'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--generation-watch-actor', type=Path)
+    parser.add_argument('--source-c22-helper', type=Path)
+    parser.add_argument('--source-c22-receipt', type=Path)
     parser.add_argument('--stats', type=Path,
         default=Path('/dev/shm/ker-broker-readiness-stats.json'))
     parser.add_argument('--rpc-path', type=Path,
@@ -1265,7 +1794,8 @@ def main():
         'no-bootstrap', 'parent-death', 'generation-watch', 'generation-watch-replay',
         'generation-watch-rights', 'generation-watch-stop-cancel',
         'generation-watch-close-cancel', 'generation-watch-relay-close-cancel',
-        'generation-watch-relay-happy', 'generation-watch-relay-no-bootstrap'), default='healthy')
+        'generation-watch-relay-happy', 'generation-watch-relay-no-bootstrap',
+        'source-c22-provider-wire'), default=None)
     parser.add_argument('--notify-fd', type=int, default=-1)
     args = parser.parse_args()
     if args.supervisor:
@@ -1279,19 +1809,32 @@ def main():
             '--stats', str(args.stats.resolve()), '--rpc-path', str(args.rpc_path.resolve())]
         if args.generation_watch_actor:
             command += ['--generation-watch-actor', str(args.generation_watch_actor.resolve())]
+        if args.mode:
+            command += ['--mode', args.mode]
+        if args.source_c22_helper:
+            command += ['--source-c22-helper', str(args.source_c22_helper.resolve())]
+        if args.source_c22_receipt:
+            command += ['--source-c22-receipt', str(args.source_c22_receipt.resolve())]
         subprocess.run(command, check=True)
         return 0
     set_up_network()
     enable_subreaper()
     with tempfile.TemporaryDirectory(prefix='ker-broker-readiness-') as directory:
         args.root = Path(directory)
-        modes = ('healthy', 'healthy-sigint', 'bad-stop', 'rights-stop', 'truncated-stop',
+        modes = (args.mode,) if args.mode else ('healthy', 'healthy-sigint', 'bad-stop', 'rights-stop', 'truncated-stop',
             'parent-death', 'no-bootstrap', 'generation-watch-relay-no-bootstrap')
-        if args.generation_watch_actor:
+        if args.generation_watch_actor and args.mode is None:
             modes += ('generation-watch', 'generation-watch-replay',
                 'generation-watch-rights', 'generation-watch-stop-cancel',
                 'generation-watch-close-cancel', 'generation-watch-relay-close-cancel',
                 'generation-watch-relay-happy')
+        if args.mode == 'source-c22-provider-wire':
+            require(args.source_c22_helper is not None and
+                args.source_c22_helper.is_file() and args.source_c22_receipt is not None,
+                'source C22 wire mode requires the compiled host helper')
+            require(args.source_c22_receipt.resolve() not in
+                (args.stats.resolve(), args.source_c22_helper.resolve()),
+                'source C22 receipt path must be distinct from statistics and helper artifacts')
         for mode in modes:
             spawn_supervisor(args, mode)
     print('BROKER_READINESS_TAP_OK authenticated_READY_STOP no-bootstrap malformed_STOP parent_pidfd_death')

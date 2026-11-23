@@ -26,7 +26,9 @@ SOURCE_ABORT_RETIRE = 18
 SOURCE_ABORT_RETIRED = 19
 SOURCE_RETRY_WATCH = 20
 SOURCE_SUCCESSOR_WATCH = 21
-MAX_RECORD_TYPE = SOURCE_SUCCESSOR_WATCH
+ATTACH = 22
+ATTACHED = 23
+MAX_RECORD_TYPE = ATTACHED
 
 CLEANUP_SETTLED = 0
 CLEANUP_UNRESOLVED = 1
@@ -39,6 +41,10 @@ SETTLED_BODY = struct.Struct('<iIIIQ32s')
 ERROR_BODY = struct.Struct('<iIIIQ32s')
 OWNER_READY_BODY = struct.Struct('<IIIIIIQQQQ')
 SOURCE_WATCH_BODY = struct.Struct('<IIIIQQQQ')
+# ATTACH is a binding request for an already accepted original launch.  It
+# carries identities only; the actual owner/master PIDFDs travel as SCM_RIGHTS.
+ATTACH_BODY = struct.Struct('<IIIIQQIIIIQ32s32s')
+ATTACHED_BODY = ATTACH_BODY
 MAX_SEQUENCE = 0xffffffffffffffff
 
 HELLO_BYTES = HEADER.size
@@ -51,6 +57,8 @@ SETTLED_BYTES = HEADER.size + SETTLED_BODY.size
 ERROR_BYTES = HEADER.size + ERROR_BODY.size
 OWNER_READY_BYTES = HEADER.size + OWNER_READY_BODY.size
 SOURCE_WATCH_BYTES = HEADER.size + SOURCE_WATCH_BODY.size
+ATTACH_BYTES = HEADER.size + ATTACH_BODY.size
+ATTACHED_BYTES = HEADER.size + ATTACHED_BODY.size
 
 assert HEADER.size == 48
 assert START_BODY.size == 120 and START_BYTES == 168
@@ -59,6 +67,8 @@ assert RELOAD_RESULT_BODY.size == 48 and RELOAD_RESULT_BYTES == 96
 assert SETTLED_BODY.size == 56 and SETTLED_BYTES == 104
 assert ERROR_BODY.size == 56 and ERROR_BYTES == 104
 assert OWNER_READY_BODY.size == 56 and OWNER_READY_BYTES == 104
+assert ATTACH_BODY.size == 120 and ATTACH_BYTES == 168
+assert ATTACHED_BODY.size == 120 and ATTACHED_BYTES == 168
 
 
 def pack_header(record_type, size, nonce, epoch, sequence):

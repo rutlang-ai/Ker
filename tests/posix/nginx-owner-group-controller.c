@@ -2,16 +2,761 @@
 #define _GNU_SOURCE
 #include <ker/socket-broker.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <poll.h>
 #include <time.h>
 #include <unistd.h>
 
 #define CHECK(x) do { if (!(x)) { perror(#x); return 1; } } while (0)
+
+#define SOURCE_PROVIDER_MAGIC "KERSC22P"
+#define SOURCE_PROVIDER_VERSION 1u
+#define SOURCE_C28_MAGIC "KERSC28Q"
+#define SOURCE_C28_VERSION 1u
+#define SOURCE_C28_REQUEST_BYTES 148u
+#define SOURCE_C28_REPLY_BYTES 180u
+#define SOURCE_C28_HEADER_BYTES 40u
+#define SOURCE_C28_PARK 1u
+#define SOURCE_C28_COMMIT 2u
+#define SOURCE_C28_ABORT 3u
+#define SOURCE_C28_CURRENT_CENSUS 4u
+#define SOURCE_C28_RETIRE_INITIAL_LISTENER 5u
+#define SOURCE_C28_CLOSE 6u
+#define SOURCE_C28_CUTOVER_BUDGET_NS UINT64_C(100000000)
+#define SOURCE_C28_RECV_ALLOWED_FLAGS MSG_CMSG_CLOEXEC
+struct source_provider_record {
+    char magic[8];
+    uint32_t version;
+    uint32_t bytes;
+    uint64_t source_epoch;
+    uint64_t broker_epoch;
+    uint8_t source_nonce[16];
+    uint8_t broker_nonce[16];
+    uint32_t address_ipv4;
+    uint32_t port;
+    uint32_t backlog;
+    uint64_t slot0_device;
+    uint64_t slot0_inode;
+    uint64_t slot1_device;
+    uint64_t slot1_inode;
+} __attribute__((__packed__));
+
+_Static_assert(sizeof(struct source_provider_record) == 108,
+    "source provider record ABI changed");
+_Static_assert(SOURCE_C28_HEADER_BYTES + sizeof(struct source_provider_record) ==
+    SOURCE_C28_REQUEST_BYTES, "C28 request wire layout changed");
+_Static_assert(SOURCE_C28_REPLY_BYTES - SOURCE_C28_REQUEST_BYTES == 32,
+    "C28 result extension wire layout changed");
+
+static uint64_t now_ns(void);
+static int pidfd_matches(int pidfd, pid_t pid);
+static int source_parent_live(int pidfd, pid_t pid, uint64_t expected_start);
+static uint16_t source_get_le16(const uint8_t *p);
+static uint32_t source_get_le32(const uint8_t *p);
+static uint64_t source_get_le64(const uint8_t *p);
+
+struct source_c28_received_credentials {
+    struct ucred value;
+    size_t count;
+    int unexpected;
+};
+
+/* Walk ancillary data and close every delivered right before checking the
+ * packet size or flags. Short and zero-length seqpackets can still carry
+ * installed SCM_RIGHTS descriptors. */
+static int source_c28_parse_received(ssize_t received_bytes,
+    struct msghdr *message, uint8_t request[SOURCE_C28_REQUEST_BYTES],
+    struct source_c28_received_credentials *credentials)
+{
+    memset(credentials, 0, sizeof(*credentials));
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(message); c;
+            c = CMSG_NXTHDR(message, c)) {
+        if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_CREDENTIALS &&
+                c->cmsg_len == CMSG_LEN(sizeof(struct ucred))) {
+            memcpy(&credentials->value, CMSG_DATA(c), sizeof(credentials->value));
+            ++credentials->count;
+        } else if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+            size_t bytes = c->cmsg_len >= CMSG_LEN(0) ?
+                c->cmsg_len - CMSG_LEN(0) : 0;
+            int *fds = (int *)CMSG_DATA(c);
+            for (size_t i = 0; i + sizeof(int) <= bytes; i += sizeof(int))
+                (void)close(fds[i / sizeof(int)]);
+            credentials->unexpected = 1;
+        } else {
+            credentials->unexpected = 1;
+        }
+    }
+    if ((message->msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
+            (message->msg_flags & ~SOURCE_C28_RECV_ALLOWED_FLAGS)) {
+        errno = EPROTO;
+        return -1;
+    }
+    if (received_bytes != SOURCE_C28_REQUEST_BYTES) {
+        errno = EPROTO;
+        return -1;
+    }
+    memcpy(request, message->msg_iov[0].iov_base, SOURCE_C28_REQUEST_BYTES);
+    if (credentials->unexpected || credentials->count != 1) {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
+}
+
+static int source_c28_request_deadline_valid(const uint8_t request[SOURCE_C28_REQUEST_BYTES],
+    uint64_t grant_deadline, uint64_t current_time)
+{
+    uint64_t request_deadline = source_get_le64(request + 24);
+    return request_deadline && request_deadline <= grant_deadline &&
+        current_time < request_deadline;
+}
+
+static int source_c28_validate_request(const uint8_t request[SOURCE_C28_REQUEST_BYTES],
+    const struct source_provider_record *bundle,
+    const struct source_c28_received_credentials *credentials,
+    int parent_pidfd, pid_t parent_pid, uint64_t parent_start,
+    uint64_t expected_sequence, uint64_t grant_deadline, uint64_t current_time)
+{
+    if (memcmp(request, SOURCE_C28_MAGIC, 8) ||
+            source_get_le16(request + 8) != SOURCE_C28_VERSION ||
+            source_get_le32(request + 12) != SOURCE_C28_REQUEST_BYTES ||
+            source_get_le32(request + 32) || source_get_le32(request + 36) ||
+            memcmp(request + SOURCE_C28_HEADER_BYTES, bundle, sizeof(*bundle)))
+        return EPROTO;
+    if (credentials->count != 1 || credentials->unexpected ||
+            credentials->value.pid != parent_pid ||
+            credentials->value.uid != getuid() || credentials->value.gid != getgid() ||
+            !source_parent_live(parent_pidfd, parent_pid, parent_start)) return EACCES;
+    uint64_t sequence = source_get_le64(request + 16);
+    if (!sequence || sequence != expected_sequence) return EALREADY;
+    if (!source_c28_request_deadline_valid(request, grant_deadline, current_time))
+        return ETIMEDOUT;
+    uint16_t operation = source_get_le16(request + 10);
+    if (operation < SOURCE_C28_PARK || operation > SOURCE_C28_CLOSE) return EOPNOTSUPP;
+    uint64_t deadline = source_get_le64(request + 24);
+    if (operation == SOURCE_C28_PARK &&
+            deadline - current_time > SOURCE_C28_CUTOVER_BUDGET_NS) return ETIMEDOUT;
+    return 0;
+}
+
+static uint16_t source_get_le16(const uint8_t *p)
+{
+    return (uint16_t)p[0] | (uint16_t)((uint16_t)p[1] << 8);
+}
+
+static uint32_t source_get_le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+        ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint64_t source_get_le64(const uint8_t *p)
+{
+    return (uint64_t)source_get_le32(p) |
+        ((uint64_t)source_get_le32(p + 4) << 32);
+}
+
+static void source_put_le32(uint8_t *p, uint32_t value)
+{
+    for (unsigned i = 0; i < 4; ++i) p[i] = (uint8_t)(value >> (i * 8));
+}
+
+static void source_put_le64(uint8_t *p, uint64_t value)
+{
+    source_put_le32(p, (uint32_t)value);
+    source_put_le32(p + 4, (uint32_t)(value >> 32));
+}
+
+static int source_parent_live(int pidfd, pid_t pid, uint64_t expected_start)
+{
+    struct pollfd pfd = {.fd = pidfd, .events = POLLIN | POLLHUP | POLLERR | POLLNVAL};
+    if (poll(&pfd, 1, 0) != 0 || !pidfd_matches(pidfd, pid)) return 0;
+    char path[64], line[4096];
+    if (snprintf(path, sizeof(path), "/proc/%ld/stat", (long)pid) <= 0) return 0;
+    FILE *stream = fopen(path, "re");
+    if (!stream) return 0;
+    size_t n = fread(line, 1, sizeof(line) - 1, stream);
+    int failed = ferror(stream);
+    if (fclose(stream) || failed || !n) return 0;
+    line[n] = '\0';
+    char *field = strrchr(line, ')');
+    if (!field) return 0;
+    field += 2;
+    for (unsigned index = 0; index < 19; ++index) {
+        field = strchr(field, ' ');
+        if (!field) return 0;
+        while (*field == ' ') ++field;
+    }
+    char *end = NULL;
+    errno = 0;
+    unsigned long long start = strtoull(field, &end, 10);
+    return !errno && end != field && start == expected_start;
+}
+
+static int source_wait_fd(int fd, short events, int parent_pidfd, pid_t parent_pid,
+    uint64_t parent_start, uint64_t deadline_ns)
+{
+    for (;;) {
+        uint64_t now = now_ns();
+        if (!now || now >= deadline_ns) { errno = ETIMEDOUT; return -1; }
+        if (!source_parent_live(parent_pidfd, parent_pid, parent_start)) {
+            errno = ESRCH; return -1;
+        }
+        uint64_t remaining = deadline_ns - now;
+        int timeout = (int)((remaining + UINT64_C(999999)) / UINT64_C(1000000));
+        struct pollfd fds[2] = {
+            {.fd = fd, .events = events | POLLERR | POLLHUP | POLLNVAL},
+            {.fd = parent_pidfd, .events = POLLIN | POLLHUP | POLLERR | POLLNVAL},
+        };
+        int ready = poll(fds, 2, timeout);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready <= 0) { if (!ready) errno = ETIMEDOUT; return -1; }
+        if (fds[1].revents) { errno = ESRCH; return -1; }
+        if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) { errno = EPIPE; return -1; }
+        if (fds[0].revents & events) return 0;
+    }
+}
+
+static int source_c28_wait_request(int transfer, int parent_pidfd, pid_t parent_pid,
+    uint64_t parent_start, uint64_t grant_deadline)
+{
+    uint64_t current = now_ns();
+    if (!current || current >= grant_deadline) { errno = ETIMEDOUT; return -1; }
+    if (!source_parent_live(parent_pidfd, parent_pid, parent_start)) {
+        errno = ESRCH;
+        return -1;
+    }
+    uint64_t remaining = grant_deadline - current;
+    int timeout = (int)((remaining + UINT64_C(999999)) / UINT64_C(1000000));
+    struct pollfd waits[2] = {
+        {.fd = transfer, .events = POLLIN | POLLERR | POLLHUP | POLLNVAL},
+        {.fd = parent_pidfd, .events = POLLIN | POLLHUP | POLLERR | POLLNVAL},
+    };
+    int ready;
+    do { ready = poll(waits, 2, timeout); } while (ready < 0 && errno == EINTR &&
+        now_ns() < grant_deadline);
+    if (ready == 0 || (ready < 0 && errno == EINTR)) { errno = ETIMEDOUT; return -1; }
+    if (ready < 0) return -1;
+    if (waits[1].revents) { errno = ESRCH; return -1; }
+    if (waits[0].revents & (POLLERR | POLLHUP | POLLNVAL)) { errno = EPIPE; return -1; }
+    if (!(waits[0].revents & POLLIN)) { errno = EIO; return -1; }
+    if (now_ns() >= grant_deadline) { errno = ETIMEDOUT; return -1; }
+    return 0;
+}
+
+static int source_c28_reply(int transfer, const uint8_t request[SOURCE_C28_REQUEST_BYTES],
+    int error, uint32_t phase, uint64_t lease, uint64_t listener_cookie,
+    uint32_t received, uint32_t accepted, int parent_pidfd, pid_t parent_pid,
+    uint64_t parent_start, uint64_t deadline_ns)
+{
+    uint8_t reply[SOURCE_C28_REPLY_BYTES];
+    memcpy(reply, request, SOURCE_C28_REQUEST_BYTES);
+    source_put_le32(reply + SOURCE_C28_REQUEST_BYTES, (uint32_t)(int32_t)error);
+    source_put_le32(reply + SOURCE_C28_REQUEST_BYTES + 4, phase);
+    source_put_le64(reply + SOURCE_C28_REQUEST_BYTES + 8, lease);
+    source_put_le64(reply + SOURCE_C28_REQUEST_BYTES + 16, listener_cookie);
+    source_put_le32(reply + SOURCE_C28_REQUEST_BYTES + 24, received);
+    source_put_le32(reply + SOURCE_C28_REQUEST_BYTES + 28, accepted);
+    while (now_ns() < deadline_ns) {
+        ssize_t n = send(transfer, reply, sizeof(reply), MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (n == (ssize_t)sizeof(reply)) {
+            if (now_ns() < deadline_ns) return 0;
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        if (n >= 0) { errno = EIO; return -1; }
+        if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return -1;
+        if (source_wait_fd(transfer, POLLOUT, parent_pidfd, parent_pid,
+                parent_start, deadline_ns)) return -1;
+    }
+    errno = ETIMEDOUT;
+    return -1;
+}
+
+static int source_c28_wait_phase(struct ker_socket_client *client, int cutover,
+    uint32_t target, int parent_pidfd, pid_t parent_pid, uint64_t parent_start,
+    uint64_t deadline_ns, struct ker_socket_group_cutover_status *state)
+{
+    for (;;) {
+        if (now_ns() >= deadline_ns) { errno = ETIMEDOUT; return -1; }
+        if (!source_parent_live(parent_pidfd, parent_pid, parent_start)) {
+            errno = ESRCH; return -1;
+        }
+        if (ker_socket_client_owner_group_cutover_poll(client, cutover, state)) return -1;
+        if (state->phase == target) return 0;
+        if (state->phase == KER_SOCKET_GROUP_CUTOVER_FAILED ||
+                state->phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED ||
+                state->phase == KER_SOCKET_GROUP_CUTOVER_ABORTED ||
+                state->phase == KER_SOCKET_GROUP_CUTOVER_COMMITTED) {
+            errno = state->result < 0 ? -state->result : EPROTO;
+            return -1;
+        }
+        struct timespec pause = {.tv_nsec = 1000000};
+        (void)nanosleep(&pause, NULL);
+    }
+}
+
+static int source_c28_command_loop(int transfer, struct ker_socket_client *client,
+    int plan, int group, int census, const struct source_provider_record *bundle,
+    int parent_pidfd, pid_t parent_pid, uint64_t parent_start, uint64_t grant_deadline)
+{
+    (void)group; /* retained for the lifetime of the plan and census */
+    if (setsockopt(transfer, SOL_SOCKET, SO_PASSCRED, &(int){1}, sizeof(int))) return -1;
+    uint64_t next_sequence = 1, park_deadline = 0;
+    int cutover = -1, committed = 0, retired = 0;
+    uint64_t park_lease = 0;
+    uint32_t park_received = 0, park_accepted = 0;
+    for (;;) {
+        if (source_c28_wait_request(transfer, parent_pidfd, parent_pid,
+                parent_start, grant_deadline)) return -1;
+        uint8_t request[SOURCE_C28_REQUEST_BYTES] = {0};
+        union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int) * 16)]; } control = {0};
+        struct iovec iov = {.iov_base = request, .iov_len = sizeof(request)};
+        struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+            .msg_control = control.bytes, .msg_controllen = sizeof(control.bytes)};
+        ssize_t received_bytes = recvmsg(transfer, &message, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
+        if (received_bytes < 0 && errno == EINTR) continue;
+        if (received_bytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        struct source_c28_received_credentials credentials;
+        if (source_c28_parse_received(received_bytes, &message, request,
+                &credentials)) return -1;
+        uint64_t deadline = source_get_le64(request + 24);
+        uint64_t sequence = source_get_le64(request + 16);
+        uint16_t operation = source_get_le16(request + 10);
+        int request_error = source_c28_validate_request(request, bundle,
+            &credentials, parent_pidfd, parent_pid, parent_start, next_sequence,
+            grant_deadline, now_ns());
+        if (!request_error && sequence == next_sequence) ++next_sequence;
+        int action_error = request_error;
+        uint32_t phase = 0, received = 0, accepted = 0;
+        uint64_t lease = 0, listener_cookie = 0;
+        struct ker_socket_group_cutover_status state = {0};
+        if (!action_error && operation == SOURCE_C28_PARK) {
+            if (cutover >= 0) action_error = EALREADY;
+            else {
+                if (group < 0) {
+                    do {
+                        group = ker_socket_client_owner_group_control(client, plan);
+                        if (group >= 0 || (errno != EAGAIN && errno != EINTR)) break;
+                        if (now_ns() >= deadline) { action_error = ETIMEDOUT; break; }
+                        if (!source_parent_live(parent_pidfd, parent_pid, parent_start)) {
+                            action_error = ESRCH; break;
+                        }
+                        struct timespec pause = {.tv_nsec = 1000000};
+                        (void)nanosleep(&pause, NULL);
+                    } while (now_ns() < deadline);
+                    if (!action_error && group < 0 && now_ns() >= deadline)
+                        action_error = ETIMEDOUT;
+                    if (!action_error && group < 0) action_error = errno ? errno : EIO;
+                }
+                if (!action_error && now_ns() >= deadline) action_error = ETIMEDOUT;
+                if (!action_error && now_ns() >= deadline) action_error = ETIMEDOUT;
+            }
+            if (!action_error) {
+                park_deadline = deadline;
+                do {
+                    cutover = ker_socket_client_owner_group_cutover_begin(client, plan);
+                    if (cutover >= 0 || (errno != EAGAIN && errno != EINTR)) break;
+                    if (now_ns() >= park_deadline) { action_error = ETIMEDOUT; break; }
+                    if (!source_parent_live(parent_pidfd, parent_pid, parent_start)) {
+                        action_error = ESRCH; break;
+                    }
+                    struct timespec pause = {.tv_nsec = 1000000};
+                    (void)nanosleep(&pause, NULL);
+                } while (now_ns() < park_deadline);
+                if (!action_error && cutover < 0 && now_ns() >= park_deadline)
+                    action_error = ETIMEDOUT;
+                if (!action_error && cutover < 0) action_error = errno ? errno : EIO;
+                if (!action_error && source_c28_wait_phase(client, cutover,
+                        KER_SOCKET_GROUP_CUTOVER_PREPARED, parent_pidfd, parent_pid,
+                        parent_start, park_deadline, &state)) action_error = errno ? errno : EIO;
+                if (!action_error && census < 0) {
+                    do {
+                        census = ker_socket_client_member_census_create(client, group, 1);
+                        if (census >= 0 || (errno != EAGAIN && errno != EINTR)) break;
+                        if (now_ns() >= park_deadline) { action_error = ETIMEDOUT; break; }
+                        if (!source_parent_live(parent_pidfd, parent_pid, parent_start)) {
+                            action_error = ESRCH; break;
+                        }
+                        struct timespec pause = {.tv_nsec = 1000000};
+                        (void)nanosleep(&pause, NULL);
+                    } while (now_ns() < park_deadline);
+                    if (!action_error && census < 0 && now_ns() >= park_deadline)
+                        action_error = ETIMEDOUT;
+                    if (!action_error && census < 0) action_error = errno ? errno : EIO;
+                }
+                if (cutover >= 0) {
+                    phase = state.phase; lease = state.lease;
+                    received = state.received_packets; accepted = state.accepted_packets;
+                    park_lease = lease;
+                    park_received = received;
+                    park_accepted = accepted;
+                    if (!action_error && (!park_lease || park_received != park_accepted))
+                        action_error = EPROTO;
+                }
+            }
+        } else if (!action_error && operation == SOURCE_C28_COMMIT) {
+            if (cutover < 0 || !park_deadline || deadline != park_deadline || committed ||
+                    !park_lease || park_received != park_accepted)
+                action_error = EINVAL;
+            else {
+                int result;
+                do {
+                    result = ker_socket_client_owner_group_cutover_commit_before(
+                        client, cutover, park_deadline);
+                    if (!result || errno != EBUSY) break;
+                    struct timespec pause = {.tv_nsec = 100000};
+                    (void)nanosleep(&pause, NULL);
+                } while (now_ns() < park_deadline);
+                if (result) action_error = errno ? errno : EIO;
+            }
+            if (!action_error && source_c28_wait_phase(client, cutover,
+                    KER_SOCKET_GROUP_CUTOVER_COMMITTED, parent_pidfd, parent_pid,
+                    parent_start, park_deadline, &state)) action_error = errno ? errno : EIO;
+            if (!action_error) {
+                struct ker_socket_member_census_snapshot snapshot;
+                if (now_ns() >= park_deadline ||
+                        ker_socket_client_member_census_snapshot(client, census, &snapshot))
+                    action_error = errno ? errno : ETIMEDOUT;
+                else if (!snapshot.listener_cookie ||
+                        snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] != 1)
+                    action_error = EPROTO;
+                else { committed = 1; listener_cookie = snapshot.listener_cookie; }
+                if (!action_error && (state.lease != park_lease ||
+                        state.received_packets != park_received ||
+                        state.accepted_packets != park_accepted)) action_error = EPROTO;
+                phase = state.phase; lease = state.lease;
+                received = state.received_packets; accepted = state.accepted_packets;
+            }
+        } else if (!action_error && operation == SOURCE_C28_ABORT) {
+            if (cutover < 0 || !park_deadline || deadline != park_deadline || committed)
+                action_error = EINVAL;
+            else if (ker_socket_client_owner_group_cutover_abort(client, cutover))
+                action_error = errno ? errno : EIO;
+            else if (source_c28_wait_phase(client, cutover,
+                    KER_SOCKET_GROUP_CUTOVER_ABORTED, parent_pidfd, parent_pid,
+                    parent_start, park_deadline, &state)) action_error = errno ? errno : EIO;
+            phase = state.phase; lease = state.lease;
+            received = state.received_packets; accepted = state.accepted_packets;
+        } else if (!action_error && operation == SOURCE_C28_CURRENT_CENSUS) {
+            struct ker_socket_member_census_snapshot snapshot;
+            if (census < 0) action_error = EAGAIN;
+            else if (ker_socket_client_member_census_snapshot(client, census, &snapshot))
+                action_error = errno ? errno : EIO;
+            else { listener_cookie = snapshot.listener_cookie;
+                phase = cutover >= 0 ? state.phase : 0; }
+        } else if (!action_error && operation == SOURCE_C28_RETIRE_INITIAL_LISTENER) {
+            if (!committed || retired) action_error = EAGAIN;
+            else if (ker_socket_client_owner_group_retire_initial_listener(client, plan))
+                action_error = errno ? errno : EIO;
+            else retired = 1;
+        }
+        if (!source_parent_live(parent_pidfd, parent_pid, parent_start) && !action_error)
+            action_error = ESRCH;
+        if (now_ns() >= deadline && !action_error) action_error = ETIMEDOUT;
+        if (source_c28_reply(transfer, request, action_error, phase, lease,
+                listener_cookie, received, accepted, parent_pidfd, parent_pid,
+                parent_start, deadline)) {
+            /* A timed-out caller owns an unknown outcome; preserve all C28
+             * capabilities and wait for an explicit later cleanup command. */
+            if (errno != ETIMEDOUT) return -1;
+            continue;
+        }
+        if (!action_error && operation == SOURCE_C28_CLOSE) return 0;
+    }
+}
+
+static int parse_hex16(const char *text, uint8_t out[16])
+{
+    if (!text || strlen(text) != 32) return -1;
+    for (size_t i = 0; i < 16; ++i) {
+        char pair[3] = {text[i * 2], text[i * 2 + 1], '\0'};
+        for (unsigned octet = 0; octet < 2; ++octet)
+            if (!((pair[octet] >= '0' && pair[octet] <= '9') ||
+                  (pair[octet] >= 'a' && pair[octet] <= 'f'))) return -1;
+        char *end = NULL;
+        errno = 0;
+        unsigned long value = strtoul(pair, &end, 16);
+        if (errno || end != pair + 2 || value > UINT8_MAX) return -1;
+        out[i] = (uint8_t)value;
+    }
+    return 0;
+}
+
+static int parse_decimal_u64(const char *text, uint64_t *value)
+{
+    if (!text || !*text || (text[0] == '0' && text[1])) return -1;
+    for (const char *p = text; *p; ++p) if (*p < '0' || *p > '9') return -1;
+    char *end = NULL;
+    errno = 0;
+    unsigned long long parsed = strtoull(text, &end, 10);
+    if (errno || !end || *end || !parsed) return -1;
+    *value = (uint64_t)parsed;
+    return 0;
+}
+
+static int nonzero16(const uint8_t value[16])
+{
+    uint8_t combined = 0;
+    for (size_t i = 0; i < 16; ++i) combined |= value[i];
+    return combined != 0;
+}
+
+static int pidfd_matches(int pidfd, pid_t pid)
+{
+    char path[64], line[128];
+    if (snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", pidfd) <= 0) return 0;
+    FILE *stream = fopen(path, "re");
+    if (!stream) return 0;
+    int matches = 0;
+    while (fgets(line, sizeof(line), stream)) {
+        long value;
+        if (sscanf(line, "Pid:\t%ld", &value) == 1) {
+            matches = value == pid;
+            break;
+        }
+    }
+    if (fclose(stream)) return 0;
+    return matches;
+}
+
+static int source_shell_provider(int argc, char **argv)
+{
+    /* broker, transfer-fd, mode, address, port, backlog, source nonce/epoch,
+     * C34 readiness nonce/epoch, expected parent PID */
+    CHECK(argc == 15);
+    char *end = NULL;
+    long transfer = strtol(argv[2], &end, 10);
+    CHECK(argv[2][0] && !*end && transfer >= 0 && transfer <= INT32_MAX);
+    CHECK(!strcmp(argv[3], "--source-shell"));
+    struct in_addr address;
+    CHECK(inet_pton(AF_INET, argv[4], &address) == 1);
+    uint64_t port, backlog, source_epoch, broker_epoch, expected_parent;
+    uint64_t expected_parent_start, grant_deadline_ns, parent_pidfd_value;
+    CHECK(!parse_decimal_u64(argv[5], &port) && port <= UINT16_MAX);
+    CHECK(!parse_decimal_u64(argv[6], &backlog) && backlog <= 65535);
+    CHECK(!parse_decimal_u64(argv[8], &source_epoch));
+    CHECK(!parse_decimal_u64(argv[10], &broker_epoch));
+    CHECK(!parse_decimal_u64(argv[11], &expected_parent) && expected_parent <= INT32_MAX);
+    CHECK(!parse_decimal_u64(argv[12], &expected_parent_start));
+    CHECK(!parse_decimal_u64(argv[13], &grant_deadline_ns));
+    CHECK(!parse_decimal_u64(argv[14], &parent_pidfd_value) && parent_pidfd_value <= INT32_MAX);
+    uint8_t source_nonce[16], broker_nonce[16];
+    CHECK(!parse_hex16(argv[7], source_nonce) && nonzero16(source_nonce));
+    CHECK(!parse_hex16(argv[9], broker_nonce) && nonzero16(broker_nonce));
+    uint64_t initial_now = now_ns();
+    CHECK(grant_deadline_ns && initial_now && initial_now < grant_deadline_ns);
+    /* This C22 helper is narrowly for the actual pinned rt01 listener. */
+    CHECK(address.s_addr == htonl(INADDR_ANY) && port == 80 && backlog == 511);
+    struct ucred peer = {0};
+    socklen_t peer_bytes = sizeof(peer);
+    CHECK(!getsockopt((int)transfer, SOL_SOCKET, SO_PEERCRED, &peer, &peer_bytes));
+    CHECK(peer_bytes == sizeof(peer) && peer.pid == (pid_t)expected_parent &&
+        peer.uid == getuid() && peer.gid == getgid());
+    CHECK(pidfd_matches((int)parent_pidfd_value, peer.pid));
+    struct pollfd parent_liveness = {.fd = (int)parent_pidfd_value,
+        .events = POLLIN | POLLHUP | POLLERR | POLLNVAL};
+    CHECK(poll(&parent_liveness, 1, 0) == 0);
+    char proc_path[64], proc_stat[4096];
+    CHECK(snprintf(proc_path, sizeof(proc_path), "/proc/%llu/stat",
+        (unsigned long long)expected_parent) > 0);
+    FILE *proc = fopen(proc_path, "re");
+    CHECK(proc != NULL);
+    size_t proc_bytes = fread(proc_stat, 1, sizeof(proc_stat) - 1, proc);
+    int proc_error = ferror(proc);
+    CHECK(fclose(proc) == 0 && !proc_error && proc_bytes > 0);
+    proc_stat[proc_bytes] = '\0';
+    char *close_paren = strrchr(proc_stat, ')');
+    CHECK(close_paren != NULL);
+    char *field = close_paren + 2;
+    for (unsigned index = 0; index < 19; ++index) {
+        field = strchr(field, ' ');
+        CHECK(field != NULL);
+        while (*field == ' ') ++field;
+    }
+    char *start_end = NULL;
+    errno = 0;
+    unsigned long long parent_start = strtoull(field, &start_end, 10);
+    CHECK(!errno && start_end != field && parent_start == expected_parent_start);
+
+    struct ker_socket_client client;
+    bool client_open = false;
+    int plan = -1;
+    int group = -1, census = -1;
+    int slots[2] = {-1, -1};
+    int watch = -1;
+    const char *failure_stage = NULL;
+    int failure_error = 0;
+#define SOURCE_FAIL(stage, error) do { \
+    failure_stage = (stage); failure_error = (error); errno = failure_error; goto failed; \
+} while (0)
+    if (ker_socket_client_open(&client, argv[1])) {
+        int error = errno;
+        (void)dprintf(STDERR_FILENO, "SOURCE_C22_BROKER_CONNECT_ERRNO=%d\n", error);
+        errno = error;
+        return 1;
+    }
+    client_open = true;
+    if (now_ns() >= grant_deadline_ns)
+        SOURCE_FAIL("post_connect_deadline", ETIMEDOUT);
+    if (poll(&parent_liveness, 1, 0) != 0)
+        SOURCE_FAIL("post_connect_parent_liveness", ESRCH);
+    struct sockaddr_in tuple = {.sin_family = AF_INET,
+        .sin_port = htons((uint16_t)port), .sin_addr = address};
+    uint64_t before_plan = now_ns();
+    if (!before_plan)
+        SOURCE_FAIL("pre_plan_clock", errno ? errno : EIO);
+    if (before_plan >= grant_deadline_ns)
+        SOURCE_FAIL("pre_plan_deadline", ETIMEDOUT);
+    if (poll(&parent_liveness, 1, 0) != 0)
+        SOURCE_FAIL("pre_plan_parent_liveness", ESRCH);
+    plan = ker_socket_client_owner_group_staged_plan(&client, &tuple,
+        (int)backlog, KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_READ);
+    if (plan < 0) {
+        int error = errno ? errno : EIO;
+        (void)dprintf(STDERR_FILENO, "SOURCE_C22_PLAN_ERRNO=%d\n", error);
+        SOURCE_FAIL("plan_create", error);
+    }
+    if (now_ns() >= grant_deadline_ns)
+        SOURCE_FAIL("post_plan_deadline", ETIMEDOUT);
+    if (poll(&parent_liveness, 1, 0) != 0)
+        SOURCE_FAIL("post_plan_parent_liveness", ESRCH);
+    slots[0] = ker_socket_client_owner_group_slot(&client, plan, 0);
+    if (slots[0] < 0) SOURCE_FAIL("slot0_create", errno ? errno : EIO);
+    if (now_ns() >= grant_deadline_ns) SOURCE_FAIL("slot0_deadline", ETIMEDOUT);
+    if (poll(&parent_liveness, 1, 0) != 0) SOURCE_FAIL("slot0_parent_liveness", ESRCH);
+    slots[1] = ker_socket_client_owner_group_slot(&client, plan, 1);
+    if (slots[1] < 0) SOURCE_FAIL("slot1_create", errno ? errno : EIO);
+    if (now_ns() >= grant_deadline_ns) SOURCE_FAIL("slot1_deadline", ETIMEDOUT);
+    if (poll(&parent_liveness, 1, 0) != 0) SOURCE_FAIL("slot1_parent_liveness", ESRCH);
+    /* The API/server grant a read-only watch; DESCRIBE below checks kind and
+     * status flags only, not the broker's opaque logical-rights field. */
+    watch = ker_socket_client_owner_generation_watch_create(&client, plan);
+    if (watch < 0) SOURCE_FAIL("watch_create", errno ? errno : EIO);
+    if (now_ns() >= grant_deadline_ns) SOURCE_FAIL("watch_deadline", ETIMEDOUT);
+    if (poll(&parent_liveness, 1, 0) != 0) SOURCE_FAIL("watch_parent_liveness", ESRCH);
+    for (unsigned i = 0; i < 2; ++i) {
+        struct stat info;
+        int status_flags = fcntl(slots[i], F_GETFL);
+        int descriptor_flags = fcntl(slots[i], F_GETFD);
+        if (fstat(slots[i], &info)) SOURCE_FAIL(i ? "slot1_fstat" : "slot0_fstat", errno);
+        if (!S_ISFIFO(info.st_mode)) SOURCE_FAIL(i ? "slot1_type" : "slot0_type", EPROTO);
+        if (status_flags < 0) SOURCE_FAIL(i ? "slot1_getfl" : "slot0_getfl", errno);
+        if ((status_flags & O_ACCMODE) != O_WRONLY)
+            SOURCE_FAIL(i ? "slot1_access_mode" : "slot0_access_mode", EPROTO);
+        if (!(status_flags & O_NONBLOCK))
+            SOURCE_FAIL(i ? "slot1_nonblock" : "slot0_nonblock", EPROTO);
+        if (descriptor_flags < 0) SOURCE_FAIL(i ? "slot1_getfd" : "slot0_getfd", errno);
+        if (!(descriptor_flags & FD_CLOEXEC))
+            SOURCE_FAIL(i ? "slot1_cloexec" : "slot0_cloexec", EPROTO);
+    }
+    enum ker_socket_broker_kind kind = 0;
+    int described_status_flags = -1;
+    struct stat watch_info;
+    int watch_status_flags = fcntl(watch, F_GETFL);
+    int watch_descriptor_flags = fcntl(watch, F_GETFD);
+    if (ker_socket_client_describe(&client, watch, &kind, &described_status_flags))
+        SOURCE_FAIL("watch_describe", errno ? errno : EIO);
+    if (kind != KER_SOCKET_BROKER_FF_OWNER_GENERATION_WATCH)
+        SOURCE_FAIL("watch_kind", EPROTO);
+    /* DESCRIBE reports host status flags, not opaque capability rights. */
+    if (described_status_flags != 0) SOURCE_FAIL("watch_describe_status_flags", EPROTO);
+    if (fstat(watch, &watch_info)) SOURCE_FAIL("watch_fstat", errno);
+    if (!S_ISFIFO(watch_info.st_mode)) SOURCE_FAIL("watch_type", EPROTO);
+    if (watch_info.st_uid != getuid()) SOURCE_FAIL("watch_owner", EPERM);
+    if (watch_status_flags < 0) SOURCE_FAIL("watch_getfl", errno);
+    if ((watch_status_flags & O_ACCMODE) != O_WRONLY)
+        SOURCE_FAIL("watch_access_mode", EPROTO);
+    if (!(watch_status_flags & O_NONBLOCK)) SOURCE_FAIL("watch_nonblock", EPROTO);
+    if (watch_descriptor_flags < 0) SOURCE_FAIL("watch_getfd", errno);
+    if (!(watch_descriptor_flags & FD_CLOEXEC)) SOURCE_FAIL("watch_cloexec", EPROTO);
+
+    struct source_provider_record record = {0};
+    memcpy(record.magic, SOURCE_PROVIDER_MAGIC, sizeof(record.magic));
+    record.version = SOURCE_PROVIDER_VERSION;
+    record.bytes = sizeof(record);
+    record.source_epoch = source_epoch;
+    record.broker_epoch = broker_epoch;
+    memcpy(record.source_nonce, source_nonce, sizeof(source_nonce));
+    memcpy(record.broker_nonce, broker_nonce, sizeof(broker_nonce));
+    record.address_ipv4 = ntohl(address.s_addr);
+    record.port = (uint32_t)port;
+    record.backlog = (uint32_t)backlog;
+    struct stat slot_info[2];
+    if (fstat(slots[0], &slot_info[0])) SOURCE_FAIL("slot0_identity", errno);
+    if (fstat(slots[1], &slot_info[1])) SOURCE_FAIL("slot1_identity", errno);
+    record.slot0_device = (uint64_t)slot_info[0].st_dev;
+    record.slot0_inode = (uint64_t)slot_info[0].st_ino;
+    record.slot1_device = (uint64_t)slot_info[1].st_dev;
+    record.slot1_inode = (uint64_t)slot_info[1].st_ino;
+    int descriptors[3] = {slots[0], slots[1], watch};
+    union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(descriptors))]; } control = {0};
+    struct iovec vector = {.iov_base = &record, .iov_len = sizeof(record)};
+    struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1,
+        .msg_control = control.bytes, .msg_controllen = sizeof(control.bytes)};
+    struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    header->cmsg_len = CMSG_LEN(sizeof(descriptors));
+    memcpy(CMSG_DATA(header), descriptors, sizeof(descriptors));
+    for (;;) {
+        uint64_t current_now = now_ns();
+        if (!current_now) SOURCE_FAIL("transfer_clock", errno ? errno : EIO);
+        if (current_now >= grant_deadline_ns) SOURCE_FAIL("transfer_deadline", ETIMEDOUT);
+        if (poll(&parent_liveness, 1, 0) != 0)
+            SOURCE_FAIL("transfer_parent_liveness", ESRCH);
+        ssize_t sent = sendmsg((int)transfer, &message, MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (sent == (ssize_t)sizeof(record)) break;
+        if (sent >= 0) SOURCE_FAIL("transfer_short_send", EIO);
+        if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+            SOURCE_FAIL("transfer_sendmsg", errno);
+        struct timespec now;
+        if (clock_gettime(CLOCK_MONOTONIC, &now)) SOURCE_FAIL("transfer_clock_gettime", errno);
+        uint64_t current = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;
+        int timeout = current >= grant_deadline_ns ? 0 :
+            (int)((grant_deadline_ns - current + UINT64_C(999999)) / UINT64_C(1000000));
+        struct pollfd waits[2] = {{.fd=(int)transfer, .events=POLLOUT}, parent_liveness};
+        int ready = poll(waits, 2, timeout);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready < 0) SOURCE_FAIL("transfer_poll", errno);
+        if (ready == 0) SOURCE_FAIL("transfer_deadline", ETIMEDOUT);
+        if (waits[1].revents) SOURCE_FAIL("transfer_parent_liveness", ESRCH);
+        if (waits[0].revents & (POLLERR | POLLHUP | POLLNVAL))
+            SOURCE_FAIL("transfer_peer", EPIPE);
+    }
+
+    if (source_c28_command_loop((int)transfer, &client, plan, group, census,
+            &record, (int)parent_pidfd_value, peer.pid, expected_parent_start,
+            grant_deadline_ns))
+        SOURCE_FAIL("command_loop", errno ? errno : EIO);
+    close(census); census = -1;
+    close(group); group = -1;
+    close(watch);
+    close(slots[0]); close(slots[1]); close(plan); close((int)transfer);
+    ker_socket_client_close(&client);
+    return 0;
+failed:
+    (void)dprintf(STDERR_FILENO, "SOURCE_C22_FAILURE_STAGE=%s ERRNO=%d\n",
+        failure_stage ? failure_stage : "unknown", failure_error);
+    if (watch >= 0) close(watch);
+    if (census >= 0) close(census);
+    if (group >= 0) close(group);
+    for (unsigned i = 0; i < 2; ++i) if (slots[i] >= 0) close(slots[i]);
+    if (plan >= 0) close(plan);
+    close((int)transfer);
+    if (client_open) ker_socket_client_close(&client);
+#undef SOURCE_FAIL
+    return 1;
+}
 
 static uint64_t now_ns(void)
 {
@@ -61,6 +806,8 @@ int main(int argc, char **argv)
 {
     int generation_watch = argc == 4 &&
         !strcmp(argv[3], "--generation-watch-preclaim");
+    if (argc == 15 && !strcmp(argv[3], "--source-shell"))
+        return source_shell_provider(argc, argv);
     CHECK(argc == 3 || generation_watch);
     char *end;
     long transfer = strtol(argv[2], &end, 10);
