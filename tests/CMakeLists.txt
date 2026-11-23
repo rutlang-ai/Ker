@@ -83,6 +83,9 @@ if(KER_WITH_DPDK)
     target_link_libraries(ker-fstack-rss-table-test PRIVATE ker-example-rss-table "${ker_controller_ring_pmd}")
     set_target_properties(ker-fstack-rss-table-test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
     add_test(NAME fstack-rss-table-no-config COMMAND ker-fstack-rss-table-test)
+    add_test(NAME fstack-rss-table-candidate-window COMMAND ker-fstack-rss-table-test candidate-window)
+    set_tests_properties(fstack-rss-table-candidate-window PROPERTIES
+        ENVIRONMENT "LD_LIBRARY_PATH=$<JOIN:${DPDK_LIBRARY_DIRS},:>:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-rss-table-consumer COMMAND ker-rss-table-router)
     add_test(NAME fstack-rss-table-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-rss-table-import.py")
     include("${PROJECT_SOURCE_DIR}/cmake/RSSTableSourceTests.cmake")
@@ -1394,7 +1397,6 @@ if(KER_WITH_DPDK)
     target_compile_options(ker-fstack-reload-slot-public-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME fstack-reload-slot-window COMMAND ker-fstack-reload-slot-window-test window)
     add_test(NAME fstack-reload-slot-exhausted COMMAND ker-fstack-reload-slot-window-test exhausted)
-    set_tests_properties(fstack-reload-slot-window fstack-reload-slot-exhausted PROPERTIES TIMEOUT 15 LABELS fstack)
     add_executable(ker-fstack-reload-slot-runtime-test fstack-reload-slot-runtime.c)
     target_compile_definitions(ker-fstack-reload-slot-runtime-test PRIVATE ${ker_reload_private_definitions})
     target_include_directories(ker-fstack-reload-slot-runtime-test PRIVATE ${ker_reload_private_includes})
@@ -1408,7 +1410,8 @@ if(KER_WITH_DPDK)
             --unit-app "$<TARGET_FILE:ker-fstack-reload-slot-window-test>" --pmd-root "${ker_ipc_pmd_root}")
     set_tests_properties(fstack-reload-slot-window-multiprocess PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "fstack;multiprocess")
     add_test(NAME fstack-reload-live-slot COMMAND ker-fstack-reload-live-slot-test)
-    set_tests_properties(fstack-reload-live-slot PROPERTIES TIMEOUT 15 LABELS fstack
+    set_tests_properties(fstack-reload-live-slot fstack-reload-slot-window fstack-reload-slot-exhausted
+        PROPERTIES TIMEOUT 15 LABELS fstack
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-reload-live-slot-multiprocess
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-live-slot.py"

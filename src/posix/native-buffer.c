@@ -331,11 +331,23 @@ struct ker_native_option_guard {
     struct ker_native_option_guard *next;
     uint64_t cookie;
     unsigned users;
-    pthread_mutex_t mutex;
+    pthread_rwlock_t lock;
 };
 static pthread_mutex_t guards_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct ker_native_option_guard *guards;
-int ker_native_buffer_option_begin(int native, struct ker_native_option_guard **token)
+static void option_guard_put(struct ker_native_option_guard *guard)
+{
+    pthread_mutex_lock(&guards_lock);
+    if (!--guard->users) {
+        struct ker_native_option_guard **slot = &guards;
+        while (*slot != guard) slot = &(*slot)->next;
+        *slot = guard->next;
+        pthread_rwlock_destroy(&guard->lock);
+        free(guard);
+    }
+    pthread_mutex_unlock(&guards_lock);
+}
+static int option_lease_begin(int native, struct ker_native_option_guard **token, bool exclusive)
 {
     *token = NULL;
     if (!ker_native_ready()) return -ENETDOWN;
@@ -351,36 +363,33 @@ int ker_native_buffer_option_begin(int native, struct ker_native_option_guard **
         guard = malloc(sizeof(*guard));
         if (!guard) { pthread_mutex_unlock(&guards_lock); return -ENOMEM; }
         *guard = (struct ker_native_option_guard){.cookie = cookie, .next = guards};
-        int error = pthread_mutex_init(&guard->mutex, NULL);
+        int error = pthread_rwlock_init(&guard->lock, NULL);
         if (error) { free(guard); pthread_mutex_unlock(&guards_lock); return -error; }
         guards = guard;
     }
     guard->users++;
     pthread_mutex_unlock(&guards_lock);
-    pthread_mutex_lock(&guard->mutex);
+    int error = exclusive ? pthread_rwlock_wrlock(&guard->lock) : pthread_rwlock_rdlock(&guard->lock);
+    if (error) { option_guard_put(guard); return -error; }
     *token = guard;
     return 0;
+}
+int ker_native_buffer_option_begin(int native, struct ker_native_option_guard **token)
+{
+    return option_lease_begin(native, token, true);
 }
 void ker_native_buffer_send_end(struct ker_native_option_guard *token)
 {
     if (!token) return;
-    pthread_mutex_unlock(&token->mutex);
-    pthread_mutex_lock(&guards_lock);
-    if (!--token->users) {
-        struct ker_native_option_guard **slot = &guards;
-        while (*slot != token) slot = &(*slot)->next;
-        *slot = token->next;
-        pthread_mutex_destroy(&token->mutex);
-        free(token);
-    }
-    pthread_mutex_unlock(&guards_lock);
+    (void)pthread_rwlock_unlock(&token->lock);
+    option_guard_put(token);
 }
 int ker_native_buffer_send_begin(int native, const struct iovec *iov, size_t count, int flags,
     struct ker_native_option_guard **token)
 {
     *token = NULL;
     if (!(flags & MSG_ZEROCOPY)) return 0;
-    int error = ker_native_buffer_option_begin(native, token);
+    int error = option_lease_begin(native, token, false);
     if (error) return error;
     int enabled = zerocopy_enabled(native);
     if (enabled < 0) error = enabled;
