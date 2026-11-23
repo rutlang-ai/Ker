@@ -31,12 +31,14 @@ typedef ssize_t (*host_splice_fn)(int, loff_t *, int, loff_t *, size_t, unsigned
 typedef ssize_t (*host_tee_fn)(int, int, size_t, unsigned);
 typedef ssize_t (*host_vmsplice_fn)(int, const struct iovec *, size_t, unsigned);
 static pthread_once_t host_transfer_symbols_once = PTHREAD_ONCE_INIT;
+static __typeof__(&copy_file_range) host_copy_file_range;
 static host_splice_fn host_splice;
 static host_tee_fn host_tee;
 static host_vmsplice_fn host_vmsplice;
 
 static void resolve_host_transfer_symbols(void)
 {
+    host_copy_file_range = dlsym(RTLD_NEXT, "copy_file_range");
     host_splice = (host_splice_fn)dlsym(RTLD_NEXT, "splice");
     host_tee = (host_tee_fn)dlsym(RTLD_NEXT, "tee");
     host_vmsplice = (host_vmsplice_fn)dlsym(RTLD_NEXT, "vmsplice");
@@ -172,7 +174,11 @@ ssize_t copy_file_range(int in, off64_t *in_offset, int out, off64_t *out_offset
     struct ker_fd *input, *output;
     int owner = transfer_owner(in, out, &input, &output);
     if (owner < 0) return -1;
-    if (!owner) return syscall(SYS_copy_file_range, in, in_offset, out, out_offset, count, flags);
+    if (!owner) {
+        if (ensure_host_transfer_symbols() < 0) return -1;
+        if (!host_copy_file_range) { errno = ENOSYS; return -1; }
+        return host_copy_file_range(in, in_offset, out, out_offset, count, flags);
+    }
     lkl_loff_t input_position, output_position;
     if (in_offset && copy_from_user(&input_position, in_offset, sizeof(input_position)) < 0)
         return finish_transfer(input, output, -EFAULT);
