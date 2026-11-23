@@ -51,7 +51,11 @@ static int ker_reload_test_cas_u64(uint64_t *pointer, uint64_t *expected,
         uint64_t *: ker_reload_test_cas_u64)(pointer, expected, desired, weak, success, failure)
 #endif
 #include "ff_reload.c"
+/* The imported slot retry re-reads the owner and stamp after every sleep. */
+static int directory_slot_sleep(const struct timespec *, struct timespec *);
+#define nanosleep directory_slot_sleep
 #include "ff_reload_gendir.c"
+#undef nanosleep
 #ifdef KER_RELOAD_TESTING
 #undef __atomic_compare_exchange_n
 #endif
@@ -148,10 +152,10 @@ int ker_reload_poll(ker_reload_poll_fn poll, void *argument)
          * admission transaction. The ACTIVE lease protects the callback
          * after releasing this gate, and exclusion also covers implicit
          * reclaim when the directory has no owner. */
-        admission_fd = directory_registration_lock(LOCK_EX);
+        admission_fd = directory_lock(DIRECTORY_ADMISSION_LOCK);
         if (admission_fd < 0) return admission_fd;
         if (ff_reload_gendir_user_add(ff_reload_epoch(), ff_reload_gen())) {
-            directory_registration_unlock(admission_fd);
+            directory_unlock(admission_fd);
             return -ENOSPC;
         }
     }
@@ -160,13 +164,13 @@ int ker_reload_poll(ker_reload_poll_fn poll, void *argument)
     ff_reload_heartbeat_tick();
     if (directory_no_hw_mode()) {
         ff_reload_handover_ack();
-        if (admission_fd >= 0) directory_registration_unlock(admission_fd);
+        if (admission_fd >= 0) directory_unlock(admission_fd);
         return 0;
     }
     /* ACTIVE is published and ownership checked before leaving the gate.
      * Reclaim now refuses while this callback lease is ACTIVE, but other
      * sibling workers remain free to enter their own polling passes. */
-    if (admission_fd >= 0) directory_registration_unlock(admission_fd);
+    if (admission_fd >= 0) directory_unlock(admission_fd);
     polling = 1;
     int result = poll(argument);
     polling = 0;
@@ -199,10 +203,10 @@ int ker_reload_rx_allowed(void)
     return !directory_no_hw_mode();
 #else
     if (!g_dir) return !directory_no_hw_mode();
-    int admission_fd = directory_registration_lock(LOCK_EX);
+    int admission_fd = directory_lock(DIRECTORY_ADMISSION_LOCK);
     if (admission_fd < 0) return 0;
     int allowed = !directory_no_hw_mode();
-    directory_registration_unlock(admission_fd);
+    directory_unlock(admission_fd);
     return allowed;
 #endif
 }
