@@ -1330,7 +1330,7 @@ class HandoffControlPathTests(unittest.TestCase):
         functions = [node for node in tree.body
             if isinstance(node, ast.FunctionDef) and node.name in names]
         self.assertEqual({node.name for node in functions}, names)
-        namespace = {'os': os, 'select': select, 'time': time, 'Path': Path,
+        namespace = {'os': os, 'selectors': selectors, 'time': time, 'Path': Path,
             'json': json, '_active_handoff_evidence': None,
             'require': lambda value, message: None if value else (_ for _ in ()).throw(RuntimeError(message))}
         exec(compile(ast.Module(body=functions, type_ignores=[]), str(PROFILE_SOURCE), 'exec'), namespace)

@@ -10,14 +10,38 @@ static uint64_t directory_monotonic_ms(void)
     return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
 }
 
-/* Serialize directory lifecycle decisions across EAL processes. This stable
- * runtime-directory inode is separate from DPDK's memzone/config lock files. */
-static int directory_registration_lock(int operation)
+/* Attach holds the registration lock from parent-PID lookup through slot
+ * publication. The admission lock orders each slot decision with poll/reclaim. */
+#define DIRECTORY_REGISTRATION_LOCK "ker-reload-gendir-attach.lock"
+/* Keep the existing poll/reclaim inode for workers from an earlier build. */
+#define DIRECTORY_ADMISSION_LOCK "ker-reload-gendir-register.lock"
+static int attach_admission_fd = -1;
+
+static int directory_lock_fd(int fd)
+{
+    uint64_t start = directory_monotonic_ms();
+    if (!start) return -EIO;
+    for (;;) {
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) return 0;
+        int error = errno;
+        if (error != EINTR && error != EWOULDBLOCK && error != EAGAIN) {
+            return -error;
+        }
+        uint64_t now = directory_monotonic_ms();
+        if (!now || now - start >= 10000u) {
+            return now ? -ETIMEDOUT : -EIO;
+        }
+        struct timespec delay = {.tv_sec = 0, .tv_nsec = 2000000};
+        (void)nanosleep(&delay, NULL);
+    }
+}
+
+static int directory_lock(const char *name)
 {
     const char *runtime_dir = rte_eal_get_runtime_dir();
     if (!runtime_dir || !*runtime_dir) return -ENODEV;
     char path[PATH_MAX];
-    int length = snprintf(path, sizeof(path), "%s/ker-reload-gendir-register.lock", runtime_dir);
+    int length = snprintf(path, sizeof(path), "%s/%s", runtime_dir, name);
     if (length < 0 || (size_t)length >= sizeof(path)) return -ENAMETOOLONG;
     int fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0660);
     if (fd < 0) return -errno;
@@ -32,26 +56,30 @@ static int directory_registration_lock(int operation)
         return -EINVAL;
     }
 
-    uint64_t start = directory_monotonic_ms();
-    if (!start) { close(fd); return -EIO; }
-    for (;;) {
-        if (flock(fd, operation | LOCK_NB) == 0) return fd;
-        int error = errno;
-        if (error != EINTR && error != EWOULDBLOCK && error != EAGAIN) {
-            close(fd);
-            return -error;
-        }
-        uint64_t now = directory_monotonic_ms();
-        if (!now || now - start >= 10000u) {
-            close(fd);
-            return now ? -ETIMEDOUT : -EIO;
-        }
-        struct timespec delay = {.tv_sec = 0, .tv_nsec = 2000000};
-        (void)nanosleep(&delay, NULL);
+    int result = directory_lock_fd(fd);
+    if (result < 0) {
+        close(fd);
+        return result;
     }
+    return fd;
 }
 
-static void directory_registration_unlock(int fd)
+static int directory_slot_sleep(const struct timespec *request, struct timespec *remaining)
+{
+    if (attach_admission_fd < 0) return nanosleep(request, remaining);
+    /* Keep competing attachments serialized while existing workers refresh
+     * their liveness. Reacquire before slot_acquire checks staleness again. */
+    if (flock(attach_admission_fd, LOCK_UN) < 0)
+        rte_exit(EXIT_FAILURE, "generation directory: cannot yield admission lock\n");
+    int result = nanosleep(request, remaining);
+    int sleep_errno = errno;
+    if (directory_lock_fd(attach_admission_fd) < 0)
+        rte_exit(EXIT_FAILURE, "generation directory: cannot reacquire admission lock\n");
+    errno = sleep_errno;
+    return result;
+}
+
+static void directory_unlock(int fd)
 {
     (void)flock(fd, LOCK_UN);
     (void)close(fd);
@@ -156,29 +184,37 @@ int ker_reload_directory_attach(void)
      * establish a configured EAL. The caller still owns successful init and
      * must never call this after EAL cleanup. */
     if (!rte_lcore_count() || (role != RTE_PROC_PRIMARY && role != RTE_PROC_SECONDARY)) return -ENODEV;
-    int registration_fd = directory_registration_lock(LOCK_EX);
+    int registration_fd = directory_lock(DIRECTORY_REGISTRATION_LOCK);
     if (registration_fd < 0) return registration_fd;
     if (directory_log_type < 0) {
         directory_log_type = rte_log_register("ker.reload.directory");
         if (directory_log_type < 0) {
-            directory_registration_unlock(registration_fd);
+            directory_unlock(registration_fd);
             return -ENOMEM;
         }
     }
+    attach_admission_fd = directory_lock(DIRECTORY_ADMISSION_LOCK);
+    if (attach_admission_fd < 0) {
+        directory_unlock(registration_fd);
+        return attach_admission_fd;
+    }
     ff_reload_gendir_attach(); /* Required attach retains original fatal errors. */
     directory_retiring = 0;
+    int result = 0;
     if (role == RTE_PROC_SECONDARY) {
         /* Track even a worker that has not polled yet. Otherwise another
          * departing orphan could retire the epoch beneath this borrower. */
         if (ff_reload_gendir_user_add(ff_reload_epoch(), ff_reload_gen())) {
             (void)ker_reload_directory_detach();
-            directory_registration_unlock(registration_fd);
-            return -ENOSPC;
+            result = -ENOSPC;
+        } else {
+            ff_reload_gendir_user_stop(ff_reload_epoch(), ff_reload_gen());
         }
-        ff_reload_gendir_user_stop(ff_reload_epoch(), ff_reload_gen());
     }
-    directory_registration_unlock(registration_fd);
-    return 0;
+    directory_unlock(attach_admission_fd);
+    attach_admission_fd = -1;
+    directory_unlock(registration_fd);
+    return result;
 }
 
 int ker_reload_directory_detach(void)
@@ -315,8 +351,8 @@ int ker_reload_directory_reclaim(void)
     if (result) return result;
     if (directory_retiring) return -ESHUTDOWN;
 #ifndef KER_RELOAD_TESTING_NO_RECLAIM_GATE
-    int registration_fd = directory_registration_lock(LOCK_EX);
-    if (registration_fd < 0) return registration_fd;
+    int admission_fd = directory_lock(DIRECTORY_ADMISSION_LOCK);
+    if (admission_fd < 0) return admission_fd;
 #endif
     result = ff_reload_gendir_rx_reclaim(ff_reload_epoch(), (uint32_t)ff_reload_gen());
     if (result == FF_RELOAD_HANDOVER_OK) {
@@ -325,7 +361,7 @@ int ker_reload_directory_reclaim(void)
         ff_reload_rx_stopped_set(0);
     }
 #ifndef KER_RELOAD_TESTING_NO_RECLAIM_GATE
-    directory_registration_unlock(registration_fd);
+    directory_unlock(admission_fd);
 #endif
     return result;
 }
