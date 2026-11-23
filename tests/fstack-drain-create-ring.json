@@ -1,0 +1,5 @@
+{
+  "source_file": "third_party/fstack-pools/ff_dpdk_if.c",
+  "source_sha256": "6d8800e5ab069a4ede742ec1ec75dfa8fc08ef05999a7528dda8c95d519e3cbe",
+  "helper": "create_ring"
+}

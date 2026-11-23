@@ -258,6 +258,11 @@ int ker_reload_runtime_view(struct ker_reload_runtime *view)
         .heartbeat_stalls = g_reload_state ? __atomic_load_n(&g_reload_state->heartbeat_stalls, __ATOMIC_SEQ_CST) : 0};
     return 0;
 }
+int ker_reload_kni_owner_matches(void)
+{
+    if (!borrowed || !ff_reload_state_attached()) return -ENOTCONN;
+    return ff_reload_kni_owner_match();
+}
 int ker_reload_round_begin(uint32_t *epoch, uint32_t *target_generation)
 {
     if (polling) return -EBUSY;

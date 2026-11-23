@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 334 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 2 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 27 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 362 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 0 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 1 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为334 scenario-adapted、2 partial、27 blocked，共29项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为362 scenario-adapted、0 partial、1 blocked，共1项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -55,9 +55,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下面的 issue 表与当前机器清单同步；后续各批次记录保留其历史计数，当前总数以上表为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共99项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：29项行为未完成
-（2 partial + 27 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共71项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：1项行为未完成
+（0 partial + 1 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -68,11 +68,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
-| Design generation-aware reload, IPC and drain ownership | 4 | adaptation-needed | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
-| Define a supported host exception bridge and KNI policy adaptation | 6 | adaptation-needed | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
-| Qualify RSS steering and queue-aware source-port contracts | 14 | adaptation-needed | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
-| Resolve device/run lifecycle and upstream fault-injection contracts | 2 | contract-review | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
-| Resolve unmapped host memory, time, environment and kqueue helpers | 3 | contract-review | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
+| Design generation-aware reload, IPC and drain ownership | 1 | adaptation-needed | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
 | Resolve FreeBSD thread context and join-result assertions | 3 | architecture-specific | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | architecture-specific | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
 | Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | harness-only | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
@@ -125,26 +121,26 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 
 | 上游入口 | 总数 | 场景适配 | 部分覆盖 | 阻塞 | 架构特有 | 工具自测 |
 |---|---:|---:|---:|---:|---:|---:|
-| [integration/test_ff_dpdk_if_integration.c](../tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c) | 20 | 14 | 6 | 0 | 0 | 0 |
-| [integration/test_ff_gendir_mp_integration.c](../tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
+| [integration/test_ff_dpdk_if_integration.c](../tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c) | 20 | 20 | 0 | 0 | 0 | 0 |
+| [integration/test_ff_gendir_mp_integration.c](../tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c) | 7 | 7 | 0 | 0 | 0 | 0 |
 | [integration/test_ff_kni_integration.c](../tests/upstream/fstack/tests/integration/test_ff_kni_integration.c) | 8 | 8 | 0 | 0 | 0 | 0 |
-| [integration/test_ff_reload_integration.c](../tests/upstream/fstack/tests/integration/test_ff_reload_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
+| [integration/test_ff_reload_integration.c](../tests/upstream/fstack/tests/integration/test_ff_reload_integration.c) | 7 | 7 | 0 | 0 | 0 | 0 |
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 1 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 32 | 9 | 55 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 96 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 6 | 2 | 59 | 0 | 0 |
-| [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 15 | 0 | 10 | 0 | 0 |
+| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 67 | 0 | 0 | 0 | 0 |
+| [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 25 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 26 | 0 | 8 | 0 | 0 |
-| [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 19 | 1 | 5 | 0 | 0 |
-| [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 5 | 1 | 0 | 0 | 0 |
-| [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 34 | 0 | 0 | 0 | 0 |
+| [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 25 | 0 | 0 | 0 | 0 |
+| [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 6 | 0 | 0 | 0 | 0 |
+| [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 12 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 0 | 0 | 3 | 0 |
-| [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 4 | 0 | 7 | 2 | 0 |
+| [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 11 | 0 | 0 | 2 | 0 |
 | [unit/test_hello.c](../tests/upstream/fstack/tests/unit/test_hello.c) | 2 | 0 | 0 | 0 | 0 | 2 |
 | [unit/test_reload_harness.py](../tests/upstream/fstack/tests/unit/test_reload_harness.py) | 53 | 0 | 0 | 0 | 0 | 53 |
 
@@ -1562,8 +1558,7 @@ F-Stack缓存getter、NULL分离输出参数ABI及fatal刷新错误场景继续�
 
 ## RX-15 resident 孤儿 ring 回收安全
 
-`test_rx15_primary_purges_orphaned_rings` 从blocked推进为partial，继续留在
-issue #218；完整适配仍为208项，13项partial、142项blocked，共155项行为未完成。
+`test_rx15_primary_purges_orphaned_rings` 在早期 resident-only 检查点从blocked推进为partial；当时完整适配为208项、13项partial、142项blocked。随后，未修改的原版 RX-15 测试通过独立单队列 primary EAL fixture 完整适配；该 resident 组件范围仍不能替代原版源码合同，当前状态见本清单顶部及末尾说明。
 三个独立CTest `native-fstack-session-orphan-live`、`-identity`、`-reap` 使用
 生产generation-ring adapter、真实原版DPDK EAL/ring/mempool及真实子进程pidfd。
 所有adapter调用由primary执行，子进程仅提供实际存活/死亡证据，不是secondary
@@ -2336,5 +2331,165 @@ not kernel allocation or hardware RSS. Catalog334/2/27.
 ## Additional50-case PR series completed
 
 The new [50-case index](fstack-migration-pr-series-393-442.md) excludes earlier
-batches and binds one original case to each PR. Current334/2/27;29 behavioral
-cases remain incomplete. No merge was performed.
+batches and binds one original case to each PR. At completion of that series,
+the catalog was334/2/27 with29 behavioral cases unfinished. Later qualifications
+below update the current totals.
+
+## Host readiness duplicate ADD contract
+
+`test_ff_host_kqueue_ctl_add_idempotent` is now scenario-adapted by the complete unchanged source function and four unchanged namespaced host-helper excerpts. They call Ker’s active POSIX epoll/socket boundary, so original Linux owns registration, readiness and TCP behavior. A real and independently installed TCP/UDP caller consumes the remapped tags. Injecting an actual MOD error makes the source’s updated-tag assertion fail. No FreeBSD kevent ABI, filter flags or host/native descriptor coexistence is inferred. See [scope and reproduction](fstack-host-readiness.md). Current catalog:335 scenario-adapted,2 partial,26 blocked;28 behavioral contracts remain unfinished.
+
+## Caller fatal mapping policy
+
+`test_ff_mmap_failure_exits` now executes the complete unchanged source test against the unchanged namespaced non-page-array helper. Debug/NDEBUG processes exit exactly1; a return-only control exits3. Ordinary Ker mmap errors still return to the caller. Real and installed TCP/UDP examples use the mapping for payload buffers and verify reclamation. See [scope and checks](fstack-host-mmap-fatal.md). Current catalog:336 scenario-adapted,2 partial,25 blocked;27 behavioral contracts remain unfinished.
+
+## Caller interval planning
+
+`test_ut_nr_17_hardclock_interval` now runs its complete original assertions against the unchanged interval function. The TCP/UDP readiness caller uses that function for its actual polling delay at100/1000Hz; independent installation, measured waits, invalid-rate rejection and a round-down mutation qualify consumption and the original ceiling assertion. This covers the pure source formula, not FreeBSD hardclock or Linux protocol timers. See [scope and reproduction](fstack-caller-clock.md). All source cases previously tracked in [#229](https://github.com/rutlang-ai/Ker/issues/229) now have individual adaptations. Current catalog:337 scenario-adapted,2 partial,24 blocked;26 behavioral contracts remain unfinished. The per-file overview above is refreshed from this catalog, including earlier completed migrations.
+
+## Owned-frame failure and disposal
+
+The complete original `test_ff_dpdk_if_send_null_ctx_with_mbuf` and `test_ff_dpdk_if_send_copydata_fail` assertions now execute the unchanged complete owned sender through a caller-only original-DPDK memory adapter. Real short input triggers a copy failure, with exact cleanup, later-segment rollback, same-sender PMD recovery, unique pool-object conservation and two mutation controls. Normal and independently installed callers send exact64/4096/9014-byte frames through original net_ring. Ker original-Linux borrowed iovecs remain borrowed; no FreeBSD mbuf ABI, protocol implementation, parked generation or offload support is inferred. See [scope and reproduction](fstack-owned-send.md). These complete the two remaining source cases tracked in [#223](https://github.com/rutlang-ai/Ker/issues/223). Current catalog:339 scenario-adapted,1 partial,23 blocked;24 behavioral contracts remain unfinished.
+
+## Reload caller boot state
+
+The complete original `test_it_a09_boot_state` function now qualifies attached/owner0 state, the allowed gate, four actual named drain rings, a real activated original PMD and live TX callback with zero initialization traffic. The real and independently installed callers consume all four rings through the existing reload/TX API, with exact bytes/pointers, park acknowledgement/release/claim, PMD TX2/RX3 and pool511 restoration. Five close/recreate cycles and two startup mutations guard lifecycle and counter wiring. This is isolated same-process caller composition, not FreeBSD veth, authenticated resident generations, cross-process epoch banks or full reload. See [scope and reproduction](fstack-reload-boot.md). Current catalog:340 scenario-adapted,1 partial,22 blocked;23 behavioral contracts remain unfinished.
+
+## KNI named allocation failures
+
+The complete original `test_p1_kni_stats_oom` and `test_p1_kni_slot_oom` assertions qualify exact named table/slot failures in an ordinary EAL primary. Separate processes verify actual exit1 and SIGABRT. The TAP/kernel-vhost caller also exercises the pending generation-1 owner gate and actual activation; the owner/nonowner source contracts are recorded below. Short TX has a separate bounded net_ring qualification, and the full-ring KNI case now has its own source-fixture PMD drain qualification. See [allocation scope](fstack-kni-allocation.md) and [owner scope](fstack-kni-ownership.md). Current catalog:346 scenario-adapted,1 partial,16 blocked;17 behavioral contracts remain unfinished.
+
+
+## KNI owner activation and nonowner
+
+The complete unchanged original `test_p1_future_kni_owner` and
+`test_p1_kni_nonowner` source bodies run with their retained `p1_cold_*`
+helpers. Their EAL-process-type wrapper is confined to that source fixture;
+the fixture binds a valid original reload block through `ker::reload`, and the
+owner predicate delegates to the pinned `ff_reload_kni_owner_match`. It checks
+future-owner stats allocation before activation, no hotplug, both named ring
+lookups, preactivation no-TX, original activation, exact three-packet TX and
+pool restoration. The actual primary TAP/virtio-user caller independently
+binds selected generation1 against active generation0, holds one exact packet
+in the original KNI ring, proves no host TX until the original reload
+begin/complete transition, then exchanges exact frames through original
+PMDs. The original primary-slim path counts the host-to-wire packet once when
+enqueued and once when transmitted, so `tx_packets=2` represents one wire
+frame. A generation mismatch and proc-id mismatch are denied and then restored;
+an owner-gate bypass control observes the queued packet escape early. The
+independently installed caller also passes. This is same-process caller
+integration, not EAL-secondary, cross-master directory, FreeBSD KNI ABI or
+complete graceful-reload qualification. See [scope and reproduction](fstack-kni-ownership.md).
+
+
+## KNI short TX
+
+The complete unchanged `test_p1_future_kni_short_tx` assertion runs with its
+original helper and limit1 callback, requiring one accepted packet, two drops
+and full pool recovery. A real original net_ring PMD sink with capacity1 then
+runs the unchanged `ff_kni_inject_process`: three distinct payload mbufs enter
+the inject ring, the PMD accepts the first pointer/FIFO payload, the original
+function frees the other two, and counters increase by exactly1/2. Dequeuing
+and freeing the accepted packet restores the pool; a fresh packet retry is
+accepted and reclaimed with no extra drops. This covers bounded caller TX
+backpressure, not protocol behavior or the separate full RX-ring source case.
+See [scope and reproduction](fstack-kni-short-tx.md).
+
+
+## KNI full RX ring
+
+The unchanged `test_p1_future_kni_full_ring` fills the original capacity-15 RX
+ring, rejects/frees one further mbuf and requires exactly one drop. The fixture
+seeds and records distinct payloads/pointers before that source overflow, then
+checks every retained object remains in FIFO order. Original `ff_kni_process`
+drains one at a time to a real capacity-one `net_ring` PMD. After freeing one
+slot, enqueue resumes behind the retained suffix; every pointer and payload is
+verified and the pool returns to full capacity. This is source-fixture queue
+ownership and software-PMD evidence, not genuine secondary or full-reload
+coverage. See [scope and reproduction](fstack-kni-full-ring.md).
+
+
+### RSS disabled reverse-adjustment source cases
+
+The complete unchanged IPv4 and IPv6 `thash_adjust=0` source assertions now run in
+two profiles: original BSS state with RETA size zero, and real primary DPDK thash
+contexts built with adjustment enabled before the unchanged source assertions set
+the flag to zero. The original `ff_rss_thash_ctx_init` assertion
+is also retained verbatim; with `FF_RSS_DIAG` off its body only returns zero and
+does not build or report a usable context. The source import audit hashes the
+pinned implementation and checks the complete assertion bodies and shared
+helpers.
+
+A caller-only primary example separately demonstrates advisory tuple selection
+for synthetic reply records. It verifies every accepted candidate with an
+independent Toeplitz calculation from the published key and RETA, then routes by
+the original software own-queue predicate through real `net_ring` devices. With
+adjustment disabled it keeps both fallback records byte-for-byte unchanged and
+routes them through that same predicate. The observed run accepted 200 of 200
+candidates for each address family; the contract requires only successful
+candidates to verify, not a 200/200 rate. This is not Linux socket allocation,
+TCP port scanning, a secondary-process context test, or physical RSS queue
+landing. See [scope and reproduction](fstack-rss-adjust-disabled.md).
+
+
+### RSS guard and range source cases
+
+Six unchanged NULL/degraded/single-queue/range source contracts now run in the
+original BSS profile. Separate ready-context checks prove that the source
+helper is actually ready and adjustment is enabled before the single-queue and
+inverted/sub-RETA guards are exercised. Declines preserve caller output; valid
+IPv4/IPv6 synthetic reply records then route by the original software predicate
+through real `net_ring`, with the independent published-key oracle. This adds no
+Linux socket allocator or TCP source-port behavior. See [scope and
+reproduction](fstack-rss-adjust-guards.md). At this guard-tranche checkpoint the
+catalog was359 scenario-adapted,1 partial,3 blocked; four behavioral contracts
+remained unfinished.
+
+
+### RSS ready recheck source cases
+
+The four complete unchanged recheck source functions and their literal100-loop
+constant now execute in the BSS/unready source profile. A separate primary
+ready-context fixture enables adjustment and observes the original helper's
+actual own-queue call boundary through exact upstream counting wrappers: zero
+calls with recheck off and64 per64 accepted calls with recheck on for IPv4 and
+IPv6. Every candidate is independently verified using the published key and
+RETA, then checked by the original predicate. The real net_ring caller exercises
+both modes and exact packet recovery. This adds no timing claim or Linux socket
+allocation path. See [scope and reproduction](fstack-rss-adjust-recheck.md). At
+this recheck-tranche checkpoint the catalog was359 scenario-adapted,1 partial,
+3 blocked; four behavioral contracts remained unfinished.
+
+
+### Foreign-epoch TX drain source case
+
+The complete unchanged `test_p1_drain_foreign_epoch_tx` helper and assertion
+body now execute against the exact pinned original drain-ring implementation
+and reload/generation-directory runtime in a real primary EAL. Its mode-3
+assertions retain epoch1/gen0 TX while epoch2/gen0 owns RX. A bounded
+same-process caller proves the original owner predicate blocks TX before the
+handoff, then passes the exact retained mbuf through the original TX drain to
+queue1 of a real two-queue `net_ring` PMD after epoch2/gen0 becomes owner. The
+source teardown restores the 64-object pool. This does not qualify a real
+secondary, coexisting-master admission or the secondary-only F-Stack main loop;
+the Ker resident bank still admits one identity per generation. See [scope and
+reproduction](fstack-drain-foreign-epoch.md). At the foreign-epoch checkpoint the combined catalog was361 scenario-adapted,1 partial,1 blocked; two behavioral contracts remained unfinished.
+
+
+### RX-15 orphan-purge source case
+
+The complete unchanged `test_rx15_primary_purges_orphaned_rings` body and its
+helpers now run against the pinned original drain-ring and reload-directory
+implementation in a real, one-queue primary EAL. The fixture uses the actual
+named rings, a real child that is forked and reaped, the original no-directory
+and live-user paths, selective RX reclamation with TX retention, an externally
+held purge lock, the bounded reset timeout, dead-marker retirement, fresh
+unregistered traffic and whole-slot reset. The source assertions restore all
+64 mbufs; the fixture then frees the pool and exits EAL. Per the original
+implementation, pointer arrays and named rings live until EAL/process teardown.
+The source test's PID-1 live-user stand-in remains explicit; this does not claim
+secondary EAL visibility or authenticated resident admission. The separate
+foreign-epoch caller test exercises the original drain TX path through a real
+`net_ring` PMD. See [source scope and reproduction](fstack-drain-rx15.md). Current catalog:
+362 scenario-adapted,0 partial,1 blocked; the graceful-reload shell entrypoint
+remains incomplete.
