@@ -116,8 +116,61 @@
     },
     "transport-receive": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
-      "source_case": ["test_ff_dpdk_if_send_udp_csum", "test_ff_dpdk_if_send_tcp_csum"],
+      "source_case": [
+        "test_ff_dpdk_if_send_udp_csum",
+        "test_ff_dpdk_if_send_tcp_csum"
+      ],
       "adaptation": "Ker-specific worker RX integration extension motivated by upstream UDP/TCP TX checksum-offload cases; neither upstream case tests ingress. A registered ETH_P_IP handler validates and synchronously exposes existing immutable UDP/TCP packet views, consumes its skb reference on every path, and fails closed when protocol fanout shares the skb descriptor reference. This is not socket delivery, routing, fragment reassembly, TCP state or NIC receive support."
+    },
+    "udp-create": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_udp_csum",
+      "adaptation": "Ker-specific software packet-construction and receive-roundtrip extension motivated by the upstream UDP TX checksum-offload case, which is not an explicit-address UDP constructor or ingress scenario. Ker builds a fixed Ethernet/IPv4/UDP packet with Linux software checksum primitives, copies it through the existing export and segmented ingress adapters, then validates it in the worker-scoped transport receiver. No routing, address policy, socket, automatic TX offload or NIC transmission is claimed."
+    },
+    "udp-neighbor-create": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_udp_csum",
+      "adaptation": "Ker-specific neighbor-backed packet-construction extension motivated by the pinned UDP TX checksum case. The upstream case does not perform neighbor selection or ARP resolution. Ker uses one configured local address/device and an existing permanent neighbor entry, releases the lookup reference before allocating the packet, then validates software checksum and worker RX copy/retry behavior. No unresolved queue, ARP resolution, FIB, route, socket or NIC transmission is claimed."
+    },
+    "tx-copy-export-retry": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_udp_csum",
+      "adaptation": "Ker-specific worker TX copy/retry extension motivated by the pinned UDP checksum TX case. A bounded owner-worker FIFO retains each original skb until a sink accepts its checksum-completed or ordinary private mbuf copy; failures retry the pending head and cancellation returns ownership. The sink is an application copy consumer, not an ethdev/NIC, and no hardware offload or F-Stack TX path is claimed."
+    },
+    "tcp-create": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_tcp_csum",
+      "adaptation": "Ker-specific explicit-address TCP/IPv4 packet-construction and worker receive-roundtrip extension motivated by the pinned TCP TX checksum-offload case, which is not a constructor or receive test. Ker writes fixed Ethernet/IPv4/TCP headers and software checksums; an application sink accepts a copy, then a real segmented chain is classified and validated by the existing TCP packet-view receiver. No socket, TCP state machine, route, NIC or hardware offload is claimed."
+    },
+    "tcp-options-create": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_tcp_csum",
+      "adaptation": "Ker-specific extension of the pinned TCP TX checksum case: constructs fixed IPv4 headers with copied opaque TCP options and validates the software checksum through the worker receive path. The upstream case does not test option construction or interpretation. Options are not parsed, and this adds no TCP state, routing, socket, NIC or hardware offload support."
+    },
+    "tcp-neighbor-create": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_tcp_csum",
+      "adaptation": "Ker-specific extension of the pinned TCP TX checksum case: derives the source IPv4/MAC from one configured address/device and the destination MAC from an existing NUD_PERMANENT neighbor, releases the lookup reference before allocation, then validates software checksums through TX retry and segmented worker RX. The upstream case does not test neighbor selection or ARP resolution. No unresolved queue, FIB, routing, source fallback, TCP state, socket or NIC transmission is claimed."
+    },
+    "fstack-chain-export": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_multiseg",
+      "adaptation": "Ker-specific positive linear-skb-to-DPDK-chain copy extension motivated by the pinned multisegment TX case. Ker copies an existing supported linear UDP/TCP packet into independently owned direct mbufs, then validates the chain through its copy/classify worker RX path after releasing the source skb. The upstream case exercises F-Stack TX; this does not claim F-Stack/NIC transmission, Linux nonlinear skb support, or offload."
+    },
+    "tx-chain-export": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_multiseg",
+      "adaptation": "Ker-specific worker TX copy extension motivated by the pinned multisegment TX case. Opt-in chain mode exports a supported linear skb into a direct DPDK chain and gives the whole chain to an application sink only on acceptance; a rejected copy is freed while the original FIFO skb remains pending for retry. This is not native F-Stack/NIC TX, Linux nonlinear skb support, or hardware offload. Chain mode accepts CHECKSUM_NONE only; the existing legacy exporter retains its separate software CHECKSUM_PARTIAL path."
+    },
+    "fstack-chain-software-checksum": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": ["test_ff_dpdk_if_send_udp_csum", "test_ff_dpdk_if_send_tcp_csum"],
+      "adaptation": "Ker-specific software-completion extension motivated by the pinned IPv4 UDP/TCP checksum TX cases: completes a linear CHECKSUM_PARTIAL skb with the existing Linux checksum semantics, copies it into direct DPDK segments (including a checksum field split across segment boundaries), then validates it through native Ethernet classification and the actual worker transport receiver. The upstream cases exercise TX checksum offload; this does not claim NIC or hardware offload, nonlinear Linux skb support, sockets, or TCP state."
+    },
+    "tx-chain-software-checksum": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": ["test_ff_dpdk_if_send_udp_csum", "test_ff_dpdk_if_send_tcp_csum"],
+      "adaptation": "Ker-specific worker TX extension motivated by pinned UDP/TCP TX checksum cases. An explicit exporter mode admits CHECKSUM_NONE and supported Internet CHECKSUM_PARTIAL packets, completes partial checksums in a private direct-chain copy, and preserves the original skb on sink rejection for retry. Tests verify checksum bytes through the actual worker receive path. The upstream cases exercise offload; this does not claim NIC/hardware offload, nonlinear Linux skb support, sockets, or TCP state."
     }
   }
 }
