@@ -11,12 +11,25 @@ struct skb_envelope {
     struct sk_buff skb;
     struct ker_skb_context *owner;
     struct rte_mbuf *backing;
+    uint64_t identity;
     const void *queue;
     unsigned int queued_charge;
 };
 static struct skb_envelope *envelope(struct sk_buff *skb)
 {
     return container_of(skb, struct skb_envelope, skb);
+}
+uint64_t ker_skb_identity(const struct sk_buff *skb)
+{
+    if (!skb) return 0;
+    const struct skb_envelope *desc = container_of(skb, struct skb_envelope, skb);
+    return desc->identity;
+}
+static int assign_identity(struct skb_envelope *desc)
+{
+    if (desc->owner->next_identity == UINT64_MAX) return -EOVERFLOW;
+    desc->identity = ++desc->owner->next_identity;
+    return 0;
 }
 static bool owner_active(struct ker_skb_context *ctx)
 {
@@ -45,6 +58,13 @@ size_t ker_skb_shared_info_size(void)
 static unsigned int backing_size(const struct rte_mbuf *packet)
 {
     return RTE_ALIGN_FLOOR((unsigned int)packet->buf_len, SMP_CACHE_BYTES);
+}
+static bool allocation_fits(unsigned int size, unsigned int payload_capacity,
+    unsigned int headroom)
+{
+    size_t shared_info = ker_skb_shared_info_size();
+    return size > shared_info && headroom <= size - shared_info &&
+        payload_capacity <= size - shared_info - headroom;
 }
 static int rx_metadata_supported(const struct rte_mbuf *packet)
 {
@@ -75,7 +95,13 @@ static int packet_geometry(const struct rte_mbuf *packet, unsigned int *size)
         return -ENOSPC;
     return 0;
 }
-static int mbuf_chain_geometry(const struct rte_mbuf *head, uint32_t *length)
+enum mbuf_copy_profile {
+    MBUF_COPY_UNIQUE,
+    MBUF_COPY_IMMUTABLE_BORROWED,
+    MBUF_COPY_IMMUTABLE_EXTERNAL
+};
+static int mbuf_chain_geometry(const struct rte_mbuf *head, uint32_t *length,
+    enum mbuf_copy_profile profile)
 {
     if (!head || !length)
         return -EINVAL;
@@ -91,10 +117,34 @@ static int mbuf_chain_geometry(const struct rte_mbuf *head, uint32_t *length)
             return -EINVAL;
         if (i == 0 && segment->nb_segs != count)
             return -EINVAL;
-        if (!segment->buf_addr || RTE_MBUF_HAS_EXTBUF(segment) || !RTE_MBUF_DIRECT(segment))
+        if (!segment->buf_addr)
             return -ENOTSUP;
-        if (rte_mbuf_refcnt_read(segment) != 1)
-            return -EBUSY;
+        if (RTE_MBUF_HAS_EXTBUF(segment)) {
+            if (profile != MBUF_COPY_IMMUTABLE_EXTERNAL ||
+                (segment->ol_flags & RTE_MBUF_F_INDIRECT))
+                return -ENOTSUP;
+            if (!rte_mbuf_refcnt_read(segment) || !segment->shinfo ||
+                !segment->shinfo->free_cb ||
+                !rte_mbuf_ext_refcnt_read(segment->shinfo))
+                return -EINVAL;
+        } else if (RTE_MBUF_DIRECT(segment)) {
+            if (profile == MBUF_COPY_UNIQUE && rte_mbuf_refcnt_read(segment) != 1)
+                return -EBUSY;
+            if (profile != MBUF_COPY_UNIQUE && !rte_mbuf_refcnt_read(segment))
+                return -EINVAL;
+        } else {
+            if (profile == MBUF_COPY_UNIQUE || !RTE_MBUF_CLONED(segment) ||
+                !rte_mbuf_refcnt_read(segment))
+                return -ENOTSUP;
+            struct rte_mbuf *parent = rte_mbuf_from_indirect(
+                (struct rte_mbuf *)segment);
+            if (!parent || !RTE_MBUF_DIRECT(parent) ||
+                RTE_MBUF_HAS_EXTBUF(parent) || !rte_mbuf_refcnt_read(parent) ||
+                segment->buf_addr != parent->buf_addr ||
+                segment->buf_len != parent->buf_len ||
+                (uint64_t)segment->data_off + segment->data_len > parent->buf_len)
+                return -EINVAL;
+        }
         if ((uint64_t)segment->data_off + segment->data_len > segment->buf_len)
             return -EINVAL;
         total += segment->data_len;
@@ -154,6 +204,8 @@ int ker_skb_from_mbuf(struct ker_skb_context *ctx, struct rte_mbuf *packet, stru
     if (!desc)
         return -ENOMEM;
     desc->owner = ctx;
+    error = assign_identity(desc);
+    if (error) { kmem_cache_free(ctx->descriptors, desc); return error; }
     finalize(desc, packet, size);
     skb_reserve(&desc->skb, packet->data_off);
     skb_put(&desc->skb, packet->data_len);
@@ -161,15 +213,16 @@ int ker_skb_from_mbuf(struct ker_skb_context *ctx, struct rte_mbuf *packet, stru
     *result = &desc->skb;
     return 0;
 }
-int ker_skb_copy_from_mbuf_chain(struct ker_skb_context *ctx,
-    const struct rte_mbuf *chain, unsigned int headroom, struct sk_buff **result)
+static int copy_from_mbuf_chain_profile(struct ker_skb_context *ctx,
+    const struct rte_mbuf *chain, unsigned int headroom, struct sk_buff **result,
+    enum mbuf_copy_profile profile)
 {
     uint32_t length;
     if (!result)
         return -EINVAL;
     if (!owner_active(ctx))
         return -EXDEV;
-    int error = mbuf_chain_geometry(chain, &length);
+    int error = mbuf_chain_geometry(chain, &length, profile);
     if (error)
         return error;
     if ((uint64_t)headroom + length > UINT_MAX)
@@ -194,6 +247,24 @@ int ker_skb_copy_from_mbuf_chain(struct ker_skb_context *ctx,
     *result = skb;
     return 0;
 }
+int ker_skb_copy_from_mbuf_chain(struct ker_skb_context *ctx,
+    const struct rte_mbuf *chain, unsigned int headroom, struct sk_buff **result)
+{
+    return copy_from_mbuf_chain_profile(ctx, chain, headroom, result,
+        MBUF_COPY_UNIQUE);
+}
+int ker_skb_copy_from_mbuf_chain_borrowed(struct ker_skb_context *ctx,
+    const struct rte_mbuf *chain, unsigned int headroom, struct sk_buff **result)
+{
+    return copy_from_mbuf_chain_profile(ctx, chain, headroom, result,
+        MBUF_COPY_IMMUTABLE_BORROWED);
+}
+int ker_skb_copy_from_mbuf_chain_external(struct ker_skb_context *ctx,
+    const struct rte_mbuf *chain, unsigned int headroom, struct sk_buff **result)
+{
+    return copy_from_mbuf_chain_profile(ctx, chain, headroom, result,
+        MBUF_COPY_IMMUTABLE_EXTERNAL);
+}
 int ker_skb_alloc(struct ker_skb_context *ctx, unsigned int payload_capacity,
     unsigned int headroom, struct sk_buff **result)
 {
@@ -201,12 +272,17 @@ int ker_skb_alloc(struct ker_skb_context *ctx, unsigned int payload_capacity,
         return -EINVAL;
     if (!owner_active(ctx))
         return -EXDEV;
+    /* Pool geometry is fixed. Reject impossible requests before allocation so
+     * RX cannot mistake a permanent copy limit for retryable pool pressure. */
+    unsigned int pool_size = RTE_ALIGN_FLOOR(
+        (unsigned int)rte_pktmbuf_data_room_size(ctx->packets->mbufs), SMP_CACHE_BYTES);
+    if (!allocation_fits(pool_size, payload_capacity, headroom))
+        return -ENOSPC;
     struct rte_mbuf *packet = ker_packet_alloc(ctx->packets);
     if (!packet)
         return -ENOMEM;
     unsigned int size = backing_size(packet);
-    if (size <= ker_skb_shared_info_size() || headroom > size - ker_skb_shared_info_size() ||
-        payload_capacity > size - ker_skb_shared_info_size() - headroom) {
+    if (!allocation_fits(size, payload_capacity, headroom)) {
         ker_packet_free(packet);
         return -ENOSPC;
     }
@@ -269,6 +345,8 @@ int ker_skb_clone(struct sk_buff *skb, struct sk_buff **result)
     if (!dst)
         return -ENOMEM;
     dst->owner = src->owner;
+    error = assign_identity(dst);
+    if (error) { kmem_cache_free(src->owner->descriptors, dst); return error; }
     dst->backing = src->backing;
     *result = ker_linux_skb_clone_into(&dst->skb, skb);
     ++src->owner->live;
@@ -646,6 +724,8 @@ int ker_skb_native_queue_clone(struct sk_buff *skb, const void *queue, struct sk
     struct skb_envelope *dst = kmem_cache_zalloc(src->owner->descriptors, GFP_ATOMIC);
     if (!dst) return -ENOMEM;
     dst->owner = src->owner; dst->backing = src->backing;
+    int error = assign_identity(dst);
+    if (error) { kmem_cache_free(src->owner->descriptors, dst); return error; }
     *result = ker_linux_skb_clone_into(&dst->skb, skb);
     ++src->owner->live;
     return 0;

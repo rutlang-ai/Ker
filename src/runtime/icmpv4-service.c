@@ -323,12 +323,8 @@ static int event_receive(struct ker_icmpv4_service *s, struct sk_buff *skb,
       __be32 local, peer;
       memcpy(&local, ev.quote.header + 12, 4);
       memcpy(&peer, ev.quote.header + 16, 4);
-      __be32 monitored;
-      memcpy(&monitored, s->monitor->entry->primary_key, 4);
-      /* ICMP errors may be sent by an intermediate gateway. Accept only
-       * quotations for this host's locally originated monitored flow. */
       if (!ev.quote.flow_available ||
-          ker_ipv4_address_is_local(a, local) != 1 || peer != monitored) {
+          ker_ipv4_address_is_local(a, local) != 1) {
         inc(&s->suppressed);
         return 1;
       }
@@ -338,6 +334,26 @@ static int event_receive(struct ker_icmpv4_service *s, struct sk_buff *skb,
     }
   } else {
     inc(&s->malformed);
+    return 1;
+  }
+  if (s->control_observer) {
+    int observed = s->control_observer(&ev, s->control_observer_arg);
+    if (observed < 0)
+      return observed;
+    if (observed > 1)
+      return -EPROTO;
+    if (observed == 1) {
+      inc(&s->events_delivered);
+      return 1;
+    }
+  }
+  __be32 peer, monitored;
+  memcpy(&peer, ev.quote.header + 16, sizeof(peer));
+  memcpy(&monitored, s->monitor->entry->primary_key, sizeof(monitored));
+  /* ICMP errors may be sent by an intermediate gateway. The legacy observer
+   * handles only quotations for this service's configured monitored peer. */
+  if (peer != monitored) {
+    inc(&s->suppressed);
     return 1;
   }
   if (!s->config.event) {
@@ -486,11 +502,10 @@ int ker_icmpv4_service_disable(struct ker_icmpv4_service *s) {
   struct ker_neighbor_monitor *m = s->monitor;
   if (rte_lcore_id() != r->handler.runtime->lcore)
     return -EXDEV;
-  if (r->udp_endpoint_table)
-    return -EBUSY;
   if (r->icmpv4_service != s || !m->echo_service_refs)
     return -EINVAL;
-  if (s->busy || r->handler.runtime->dispatching || m->busy ||
+  if (s->busy || s->control_observer || s->control_observer_arg ||
+      r->handler.runtime->dispatching || m->busy ||
       m->timer.runtime->polling || m->timer.running || m->timer.scoping ||
       m->resolution_tx->polling)
     return -EBUSY;
@@ -499,6 +514,53 @@ int ker_icmpv4_service_disable(struct ker_icmpv4_service *s) {
   r->unsupported_protocol_receive = NULL;
   --m->echo_service_refs;
   *s = (struct ker_icmpv4_service){0};
+  return 0;
+}
+
+static int observer_lifecycle_check(struct ker_icmpv4_service *s) {
+  int error = monitor_valid(s);
+  if (error)
+    return error;
+  if (rte_lcore_id() != s->receiver->handler.runtime->lcore)
+    return -EXDEV;
+  if (s->busy || s->receiver->handler.runtime->dispatching ||
+      s->monitor->busy || s->monitor->timer.runtime->polling ||
+      s->monitor->timer.running || s->monitor->timer.scoping ||
+      s->monitor->resolution_tx->polling)
+    return -EBUSY;
+  return 0;
+}
+
+int ker_icmpv4_service_control_observer_attach(
+    struct ker_icmpv4_service *s, ker_icmpv4_control_observer_fn observer,
+    void *arg) {
+  if (!observer)
+    return -EINVAL;
+  int error = observer_lifecycle_check(s);
+  if (error)
+    return error;
+  if (s->control_observer || s->control_observer_arg)
+    return -EALREADY;
+  s->busy = true;
+  s->control_observer = observer;
+  s->control_observer_arg = arg;
+  s->busy = false;
+  return 0;
+}
+
+int ker_icmpv4_service_control_observer_detach(
+    struct ker_icmpv4_service *s, ker_icmpv4_control_observer_fn observer,
+    void *arg) {
+  int error = observer_lifecycle_check(s);
+  if (error)
+    return error;
+  if (!observer || s->control_observer != observer ||
+      s->control_observer_arg != arg)
+    return -ENOENT;
+  s->busy = true;
+  s->control_observer = NULL;
+  s->control_observer_arg = NULL;
+  s->busy = false;
   return 0;
 }
 
@@ -601,13 +663,6 @@ static int emit_error_internal(struct ker_icmpv4_service *s,
     return -EHOSTUNREACH;
   }
   uint32_t path_mtu = s->receiver->handler.device->native->mtu;
-  if (s->monitor->output_mtu) {
-    e = s->monitor->output_mtu(s->monitor->output_mtu_ctx, &path_mtu);
-    if (e) {
-      s->last_error = e;
-      return e;
-    }
-  }
   if (!path_mtu) {
     inc(&s->malformed);
     return -EINVAL;

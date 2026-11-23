@@ -47,6 +47,12 @@ if(KER_WITH_DPDK)
         ker_port_headers ker_linux_port ker_dpdk_port PkgConfig::DPDK Threads::Threads)
     add_test(NAME flow-ip-options COMMAND ker-flow-ip-options-test)
     set_tests_properties(flow-ip-options PROPERTIES TIMEOUT 30)
+    add_executable(ker-flow-icmpv4-test flow-icmpv4.c)
+    target_compile_definitions(ker-flow-icmpv4-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-flow-icmpv4-test PRIVATE
+        ker_port_headers ker_linux_port ker_dpdk_port PkgConfig::DPDK Threads::Threads)
+    add_test(NAME flow-icmpv4 COMMAND ker-flow-icmpv4-test)
+    set_tests_properties(flow-icmpv4 PROPERTIES TIMEOUT 30)
     add_executable(ker-flow-buckets-test flow-buckets.c)
     target_compile_definitions(ker-flow-buckets-test PRIVATE _GNU_SOURCE)
     target_link_libraries(ker-flow-buckets-test PRIVATE
@@ -156,6 +162,125 @@ if(KER_WITH_DPDK)
         ker_tx_export_port Threads::Threads)
     add_test(NAME tx-export-chain COMMAND ker-tx-export-chain-test)
     set_tests_properties(tx-export-chain PROPERTIES TIMEOUT 30)
+    add_executable(ker-ethdev-tx-test ethdev-tx.c)
+    file(GLOB KER_NET_RING_PMD_CANDIDATES
+        "${KER_DPDK_PKGCONFIG_DIR}/../dpdk/pmds-*/librte_net_ring.so")
+    if(NOT KER_NET_RING_PMD_CANDIDATES)
+        message(FATAL_ERROR "ethdev-tx requires the pinned DPDK net_ring PMD; build with KER_DPDK_DRIVERS=mempool/ring,net/ring")
+    endif()
+    list(GET KER_NET_RING_PMD_CANDIDATES 0 KER_NET_RING_PMD)
+    target_include_directories(ker-ethdev-tx-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/third_party/dpdk/drivers/net/ring")
+    target_compile_definitions(ker-ethdev-tx-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-ethdev-tx-test PRIVATE ker_ethdev_tx_port ker_skb_headers
+        ker_neighbor_headers ker_linux_port ker_dpdk_port ker_skb_port ker_address_port ker_neighbor_port
+        ker_udp_create_port ker_tcp_create_port ker_tx_export_port
+        "${KER_NET_RING_PMD}" PkgConfig::DPDK Threads::Threads)
+    add_test(NAME ethdev-tx COMMAND ker-ethdev-tx-test)
+    string(JOIN ":" KER_ETHDEV_TEST_LIBRARY_PATH ${DPDK_LIBRARY_DIRS})
+    set_tests_properties(ethdev-tx PROPERTIES TIMEOUT 30
+        ENVIRONMENT "LD_LIBRARY_PATH=${KER_ETHDEV_TEST_LIBRARY_PATH}:$ENV{LD_LIBRARY_PATH}")
+    add_executable(ker-ethdev-rx-test ethdev-rx.c)
+    target_include_directories(ker-ethdev-rx-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/third_party/dpdk/drivers/net/ring")
+    target_compile_definitions(ker-ethdev-rx-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-ethdev-rx-test PRIVATE "${KER_NET_RING_PMD}"
+        ker_linux_port ker_skb_port ker_dpdk_port)
+    target_link_libraries(ker-ethdev-rx-test PRIVATE ker_ethdev_rx_port ker_receive_port
+        ker_receive_headers ker_eth_headers ker_skb_headers ker_neighbor_headers
+        ker_rx_ring_port ker_tx_ring_port ker_eth_port ker_neighbor_port ker_address_port
+        PkgConfig::DPDK Threads::Threads)
+    add_test(NAME ethdev-rx COMMAND ker-ethdev-rx-test)
+    set_tests_properties(ethdev-rx PROPERTIES TIMEOUT 30
+        ENVIRONMENT "LD_LIBRARY_PATH=${KER_ETHDEV_TEST_LIBRARY_PATH}:$ENV{LD_LIBRARY_PATH}")
+    add_executable(ker-ethdev-rx-metadata-test ethdev-rx-metadata.c)
+    target_include_directories(ker-ethdev-rx-metadata-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/third_party/dpdk/drivers/net/ring")
+    target_compile_definitions(ker-ethdev-rx-metadata-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-ethdev-rx-metadata-test PRIVATE "${KER_NET_RING_PMD}"
+        ker_ethdev_rx_port ker_transport_receive_port ker_receive_port ker_receive_headers
+        ker_eth_headers ker_skb_headers ker_icmpv4_view_port ker_ipv4_view_port ker_udp_view_port
+        ker_tcp_view_port ker_icmp_echo_view_port ker_eth_port ker_linux_port
+        ker_dpdk_port ker_skb_port PkgConfig::DPDK Threads::Threads)
+    add_test(NAME ethdev-rx-metadata COMMAND ker-ethdev-rx-metadata-test)
+    set_tests_properties(ethdev-rx-metadata PROPERTIES TIMEOUT 30
+        ENVIRONMENT "LD_LIBRARY_PATH=${KER_ETHDEV_TEST_LIBRARY_PATH}:$ENV{LD_LIBRARY_PATH}")
+    add_executable(ker-ethdev-external-lifetime-test ethdev-external-lifetime.c)
+    target_include_directories(ker-ethdev-external-lifetime-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/third_party/dpdk/drivers/net/ring")
+    target_compile_definitions(ker-ethdev-external-lifetime-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-ethdev-external-lifetime-test PRIVATE "${KER_NET_RING_PMD}"
+        ker_ethdev_rx_port ker_receive_port ker_receive_headers ker_eth_headers ker_skb_headers
+        ker_eth_port ker_address_port ker_linux_port ker_dpdk_port ker_skb_port
+        PkgConfig::DPDK Threads::Threads)
+    add_test(NAME ethdev-external-lifetime COMMAND ker-ethdev-external-lifetime-test)
+    set_tests_properties(ethdev-external-lifetime PROPERTIES TIMEOUT 30
+        ENVIRONMENT "LD_LIBRARY_PATH=${KER_ETHDEV_TEST_LIBRARY_PATH}:$ENV{LD_LIBRARY_PATH}")
+    add_executable(ker-ethdev-rx-capacity-test ethdev-rx-capacity.c)
+    target_include_directories(ker-ethdev-rx-capacity-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/third_party/dpdk/drivers/net/ring")
+    target_compile_definitions(ker-ethdev-rx-capacity-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-ethdev-rx-capacity-test PRIVATE "${KER_NET_RING_PMD}"
+        ker_ethdev_rx_port ker_receive_port ker_receive_headers ker_eth_headers ker_skb_headers
+        ker_eth_port ker_address_port ker_linux_port ker_dpdk_port ker_skb_port
+        PkgConfig::DPDK Threads::Threads)
+    add_test(NAME ethdev-rx-capacity COMMAND ker-ethdev-rx-capacity-test)
+    set_tests_properties(ethdev-rx-capacity PROPERTIES TIMEOUT 30
+        ENVIRONMENT "LD_LIBRARY_PATH=${KER_ETHDEV_TEST_LIBRARY_PATH}:$ENV{LD_LIBRARY_PATH}")
+    add_executable(ker-ethdev-rx-fanout-test ethdev-rx-fanout.c)
+    target_include_directories(ker-ethdev-rx-fanout-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/third_party/dpdk/drivers/net/ring")
+    target_compile_definitions(ker-ethdev-rx-fanout-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-ethdev-rx-fanout-test PRIVATE "${KER_NET_RING_PMD}"
+        ker_ethdev_rx_port ker_receive_port ker_receive_headers ker_eth_headers ker_skb_headers
+        ker_eth_port ker_address_port ker_linux_port ker_dpdk_port ker_skb_port
+        PkgConfig::DPDK Threads::Threads)
+    add_test(NAME ethdev-rx-fanout COMMAND ker-ethdev-rx-fanout-test)
+    set_tests_properties(ethdev-rx-fanout PROPERTIES TIMEOUT 30
+        ENVIRONMENT "LD_LIBRARY_PATH=${KER_ETHDEV_TEST_LIBRARY_PATH}:$ENV{LD_LIBRARY_PATH}")
+    add_executable(ker-ethdev-rebind-test ethdev-rebind.c)
+    target_include_directories(ker-ethdev-rebind-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/third_party/dpdk/drivers/net/ring")
+    target_compile_definitions(ker-ethdev-rebind-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-ethdev-rebind-test PRIVATE "${KER_NET_RING_PMD}"
+        ker_ethdev_rx_port ker_receive_port ker_receive_headers ker_eth_headers ker_skb_headers
+        ker_eth_port ker_address_port ker_linux_port ker_dpdk_port ker_skb_port
+        PkgConfig::DPDK Threads::Threads)
+    add_test(NAME ethdev-rebind COMMAND ker-ethdev-rebind-test)
+    set_tests_properties(ethdev-rebind PROPERTIES TIMEOUT 30
+        ENVIRONMENT "LD_LIBRARY_PATH=${KER_ETHDEV_TEST_LIBRARY_PATH}:$ENV{LD_LIBRARY_PATH}")
+    add_executable(ker-ethdev-duplex-test ethdev-duplex.c)
+    target_include_directories(ker-ethdev-duplex-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/third_party/dpdk/drivers/net/ring")
+    target_compile_definitions(ker-ethdev-duplex-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-ethdev-duplex-test PRIVATE "${KER_NET_RING_PMD}"
+        ker_ethdev_tx_port ker_ethdev_rx_port ker_skb_headers ker_neighbor_headers
+        ker_receive_headers ker_eth_headers ker_linux_port ker_skb_port ker_dpdk_port
+        ker_eth_port ker_receive_port ker_neighbor_port ker_address_port
+        ker_ipv4_view_port ker_udp_view_port ker_tcp_view_port ker_icmpv4_view_port
+        ker_icmp_echo_view_port ker_transport_receive_port ker_udp_create_port
+        ker_tcp_create_port ker_tx_export_port ker_timer_list_port
+        PkgConfig::DPDK Threads::Threads)
+    add_test(NAME ethdev-duplex COMMAND ker-ethdev-duplex-test)
+    set_tests_properties(ethdev-duplex PROPERTIES TIMEOUT 30
+        ENVIRONMENT "LD_LIBRARY_PATH=${KER_ETHDEV_TEST_LIBRARY_PATH}:$ENV{LD_LIBRARY_PATH}")
+    add_executable(ker-ethdev-multiqueue-test ethdev-multiqueue.c)
+    target_include_directories(ker-ethdev-multiqueue-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/third_party/dpdk/drivers/net/ring")
+    target_compile_definitions(ker-ethdev-multiqueue-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-ethdev-multiqueue-test PRIVATE "${KER_NET_RING_PMD}"
+        ker_ethdev_tx_port ker_ethdev_rx_port ker_skb_headers ker_neighbor_headers
+        ker_receive_headers ker_eth_headers ker_linux_port ker_skb_port ker_dpdk_port
+        ker_eth_port ker_receive_port ker_neighbor_port ker_address_port
+        ker_ipv4_view_port ker_udp_view_port ker_tcp_view_port ker_icmpv4_view_port
+        ker_icmp_echo_view_port ker_transport_receive_port ker_udp_create_port
+        ker_tcp_create_port ker_tx_export_port ker_timer_list_port
+        PkgConfig::DPDK Threads::Threads)
+    add_test(NAME ethdev-multiqueue COMMAND ker-ethdev-multiqueue-test)
+    set_tests_properties(ethdev-multiqueue PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77
+        ENVIRONMENT "LD_LIBRARY_PATH=${KER_ETHDEV_TEST_LIBRARY_PATH}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME ethdev-ethernet-abi-boundary COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ethernet-abi-boundary.py" "${PROJECT_SOURCE_DIR}")
     add_executable(ker-tx-ring-test tx-ring.c)
     target_include_directories(ker-tx-ring-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
     target_compile_definitions(ker-tx-ring-test PRIVATE _GNU_SOURCE)
@@ -360,20 +485,6 @@ if(KER_WITH_DPDK)
     add_test(NAME address-import COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/address-import.py" "${PROJECT_SOURCE_DIR}"
         "${CMAKE_C_COMPILER}" "${KER_LINUX_INCLUDE}" "${KER_SKB_IMPORT}" "${KER_ETH_IMPORT}" ${DPDK_INCLUDE_DIRS})
-    add_executable(ker-icmpv4-pmtu-test icmpv4-pmtu.c)
-    target_include_directories(ker-icmpv4-pmtu-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
-    target_compile_definitions(ker-icmpv4-pmtu-test PRIVATE _GNU_SOURCE)
-    target_link_libraries(ker-icmpv4-pmtu-test PRIVATE ker_icmpv4_pmtu_port ker_icmpv4_service_port
-        ker_icmpv4_create_port ker_transport_receive_port ker_receive_port ker_icmpv4_view_port
-        ker_udp_view_port ker_tcp_view_port ker_icmp_echo_view_port
-        ker_receive_headers ker_eth_headers ker_ipv4_view_port ker_neighbor_timer_headers
-        ker_neighbor_timer_port ker_timer_list_port
-        ker_neighbor_port ker_neighbor_update_headers ker_neighbor_update_port
-        ker_neighbor_event_send_headers ker_neighbor_event_send_port ker_address_port ker_arp_headers
-        ker_arp_port ker_arp_probe_port ker_eth_port ker_linux_port ker_dpdk_port ker_skb_port
-        ker_udp_create_port ker_udp_configured_create_port ker_tx_export_port Threads::Threads)
-    add_test(NAME icmpv4-pmtu COMMAND ker-icmpv4-pmtu-test)
-    set_tests_properties(icmpv4-pmtu PROPERTIES TIMEOUT 30)
     add_executable(ker-neighbor-timer-test neighbor-timer.c)
     target_include_directories(ker-neighbor-timer-test PRIVATE "${KER_ARP_PROBE_IMPORT}" "${KER_NEIGH_UPDATE_IMPORT}" "${KER_NEIGH_EVENT_SEND_IMPORT}")
     target_compile_definitions(ker-neighbor-timer-test PRIVATE _GNU_SOURCE)
@@ -487,7 +598,7 @@ if(KER_WITH_DPDK)
         ker_arp_responder_port ker_address_headers ker_address_port ker_neighbor_headers ker_neighbor_port
         ker_neighbor_timer_headers ker_neighbor_timer_port ker_neighbor_update_headers ker_neighbor_update_port
         ker_neighbor_event_send_port ker_timer_list_port ker_arp_neighbor_feedback_port ker_arp_probe_port
-        ker_arp_port ker_receive_headers ker_receive_port ker_transport_receive_port ker_icmpv4_service_port ker_udp_endpoint_port
+        ker_arp_port ker_receive_headers ker_receive_port ker_transport_receive_port ker_icmpv4_service_port
         ker_icmpv4_create_port ker_eth_headers ker_eth_port ker_rx_ring_port ker_tx_export_port ker_tx_ring_port
         ker_ipv4_view_port ker_udp_view_port ker_tcp_view_port ker_icmpv4_view_port ker_icmp_echo_view_port
         ker_udp_configured_create_port ker_tcp_configured_create_port ker_udp_create_port ker_tcp_create_port
@@ -553,6 +664,21 @@ if(KER_WITH_DPDK)
     set_tests_properties(skb PROPERTIES TIMEOUT 30)
     set_tests_properties(dpdk-memory PROPERTIES TIMEOUT 30)
     list(JOIN DPDK_LIBRARY_DIRS ":" ker_dpdk_library_path)
-    set_tests_properties(icmpv4-service icmpv4-pmtu checksum timer refcount dpdk-memory skb worker flow flow-buckets flow-chain flow-ip-options fstack-flow-receive fstack-flow-owner-receive fstack-flow-concurrent-receive flow-matrix flow-multicore ethernet fstack-ipv4-ingress-validation fstack-udp-ingress-validation fstack-udp-minimal-boundaries fstack-tcp-ingress-validation ipv4-fields transport-receive icmp-echo icmp-echo-configured-create fstack-chain-export fstack-chain-checksum udp-create udp-configured-create tcp-configured-create udp-ip-options udp-neighbor-create tcp-create tcp-ip-options tcp-neighbor-create tcp-options napi receive arp arp-configured arp-ring arp-responder fstack-icmp-echo-service arp-concurrent-ring configured-ring ipv4-address neighbor-timer neighbor arp-receive fstack-arp-chain-feedback skb-queue timer-list arp-probe-import neighbor-update-import tx-export tx-export-chain tx-ring rx-ring flow-ring cross-worker-ring fstack-concurrent-ring ${ker_fstack_tests} PROPERTIES
+    set_tests_properties(icmpv4-service checksum timer refcount dpdk-memory skb worker flow flow-buckets flow-chain flow-ip-options flow-icmpv4 fstack-flow-receive fstack-flow-owner-receive fstack-flow-concurrent-receive flow-matrix flow-multicore ethernet fstack-ipv4-ingress-validation fstack-udp-ingress-validation fstack-udp-minimal-boundaries fstack-tcp-ingress-validation ipv4-fields transport-receive icmp-echo icmp-echo-configured-create fstack-chain-export fstack-chain-checksum udp-create udp-configured-create tcp-configured-create udp-ip-options udp-neighbor-create tcp-create tcp-ip-options tcp-neighbor-create tcp-options napi receive arp arp-configured arp-ring arp-responder fstack-icmp-echo-service arp-concurrent-ring configured-ring ipv4-address neighbor-timer neighbor arp-receive fstack-arp-chain-feedback skb-queue timer-list arp-probe-import neighbor-update-import tx-export tx-export-chain tx-ring rx-ring flow-ring cross-worker-ring fstack-concurrent-ring ${ker_fstack_tests} PROPERTIES
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_dpdk_library_path}:$ENV{LD_LIBRARY_PATH}")
+endif()
+
+if(KER_WITH_DPDK)
+    add_executable(ker-tcp-control-test tcp-control.c)
+    target_include_directories(ker-tcp-control-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_compile_definitions(ker-tcp-control-test PRIVATE _GNU_SOURCE)
+    target_link_libraries(ker-tcp-control-test PRIVATE ker_skb_headers ker_eth_headers ker_neighbor_headers ker_timer_list_port ker_linux_port ker_dpdk_port ker_address_port ker_neighbor_port ker_skb_port ker_tx_export_port ker_tcp_create_port ker_tcp_view_port ker_udp_view_port ker_ipv4_view_port ker_icmpv4_view_port ker_icmp_echo_view_port ker_transport_receive_port ker_receive_port ker_receive_headers ker_eth_port Threads::Threads)
+    target_link_libraries(ker-tcp-control-test PRIVATE ker_tcp_mss_port)
+    add_test(NAME tcp-control COMMAND ker-tcp-control-test)
+    set_tests_properties(tcp-control PROPERTIES TIMEOUT 30
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_dpdk_library_path}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME tcp-mss-import COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tcp-mss-import.py" "${KER_LINUX_DIR}"
+        "${KER_TCP_MSS_MANIFEST}" "${KER_TCP_MSS_IMPORT}"
+        "${PROJECT_SOURCE_DIR}/tools/import-linux-tcp-mss.py")
 endif()
