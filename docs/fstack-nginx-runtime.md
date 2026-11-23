@@ -29,16 +29,19 @@ binary hash differ from the validated artifact. This opt-in adds separate
 two-worker positive and unsupported-listener-option negative CTests.
 
 To reproduce the linked Nginx build, first configure Ker with the matching
-native Linux manifest and DPDK installation, then build the runtime target. Put
-the unchanged imported FF headers and resulting DSO in an `FF_PATH` prefix as
-shown; `PKG_CONFIG_PATH` must point to the same DPDK installation used by Ker.
+native Linux manifest and DPDK installation. Build the runtime library and the
+launcher artifacts included in its install component. Put the unchanged imported
+FF headers and resulting DSO in an `FF_PATH` prefix as shown. Set
+`DPDK_PKGCONFIG` to the directory containing the matching `libdpdk.pc`.
 
 ```sh
 cmake -S "$KER_SOURCE" -B "$KER_BUILD" \
   -DKER_WITH_NATIVE_TCP=ON \
+  -DKER_DPDK_PKGCONFIG_DIR="$DPDK_PKGCONFIG" \
   -DKER_NATIVE_LINUX_BUILD="$KER_NATIVE_LINUX_BUILD" \
   -DKER_BUILD_FSTACK_NGINX_RUNTIME=ON
-cmake --build "$KER_BUILD" --target ker-fstack-nginx-runtime
+cmake --build "$KER_BUILD" --target \
+  ker-fstack-nginx-runtime ker-posix ker-io-worker ker-app
 cmake --install "$KER_BUILD" --component fstack-nginx-runtime --prefix "$KER_INSTALL"
 
 mkdir -p "$FF_PREFIX/lib"
