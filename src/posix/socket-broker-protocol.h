@@ -1,10 +1,11 @@
 #ifndef KER_SOCKET_BROKER_PROTOCOL_H
 #define KER_SOCKET_BROKER_PROTOCOL_H
 #include <ker/socket-broker.h>
+#include <netinet/in.h>
 #include <stdint.h>
 
 #define KER_SB_MAGIC UINT32_C(0x4b534252)
-#define KER_SB_VERSION 1
+#define KER_SB_VERSION 2
 #define KER_SB_MAX_PACKET (KER_SOCKET_BROKER_IO_MAX + 512)
 #define KER_SB_MAX_RIGHTS 2
 #define KER_SB_CLIENTS 32
@@ -20,7 +21,14 @@ enum ker_sb_operation {
     KER_SB_GETSOCKNAME, KER_SB_GETPEERNAME, KER_SB_SETSOCKOPT,
     KER_SB_GETSOCKOPT, KER_SB_EPOLL_CREATE1, KER_SB_EPOLL_CTL,
     KER_SB_EPOLL_WAIT, KER_SB_DESCRIBE, KER_SB_DUP, KER_SB_GETFL,
-    KER_SB_SETFL, KER_SB_FIONBIO, KER_SB_FIONREAD, KER_SB_SEND, KER_SB_RECV
+    KER_SB_SETFL, KER_SB_FIONBIO, KER_SB_FIONREAD, KER_SB_SEND, KER_SB_RECV,
+    KER_SB_REUSEPORT_GROUP_CREATE, KER_SB_REUSEPORT_GROUP_MEMBER,
+    KER_SB_REUSEPORT_GROUP_SELECT,
+    KER_SB_TCP_OBSERVER_CREATE = 32,
+    KER_SB_TCP_OBSERVER_SNAPSHOT = 33,
+    KER_SB_MEMBER_CENSUS_CREATE = 40,
+    KER_SB_MEMBER_CENSUS_SNAPSHOT = 41,
+    KER_SB_MEMBER_PAYLOAD_SNAPSHOT = 42
 };
 
 struct ker_sb_header {
@@ -43,6 +51,26 @@ struct ker_sb_epoll_ctl { int32_t operation; uint32_t has_event; struct epoll_ev
 struct ker_sb_epoll_wait { int32_t maxevents; } __attribute__((packed));
 struct ker_sb_describe { int32_t kind, flags; } __attribute__((packed));
 struct ker_sb_io { int32_t flags; uint32_t length; } __attribute__((packed));
+struct ker_sb_reuseport_group_create { unsigned char address[sizeof(struct sockaddr_in)]; int32_t backlog; } __attribute__((packed));
+struct ker_sb_reuseport_group_member { uint32_t index; } __attribute__((packed));
+struct ker_sb_tcp_observer_snapshot {
+    uint64_t cookie;
+    uint32_t receive_queue;
+    uint32_t send_queue;
+    uint8_t state;
+    uint8_t present;
+    uint8_t reserved[2];
+} __attribute__((packed));
+struct ker_sb_member_census_create { uint32_t index; } __attribute__((packed));
+struct ker_sb_member_census_snapshot {
+    uint64_t total;
+    uint64_t state_counts[KER_SOCKET_BROKER_TCP_STATES];
+    uint64_t listener_cookie;
+} __attribute__((packed));
+struct ker_sb_member_payload_snapshot {
+    uint64_t payload_bytes;
+    uint64_t sampled_sockets;
+} __attribute__((packed));
 #define KER_SB_MAX_REQUEST (KER_SOCKET_BROKER_IO_MAX + sizeof(struct ker_sb_io))
 
 #endif

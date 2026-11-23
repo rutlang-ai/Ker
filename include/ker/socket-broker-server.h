@@ -19,8 +19,9 @@ enum ker_socket_broker_rights {
 };
 
 /* Creates a same-UID host AF_UNIX SOCK_SEQPACKET listener. No native Linux
- * socket is created by this call. The caller should place the path in a
- * directory inaccessible to untrusted users. */
+ * socket is created by this call. One ker-posix runtime permits one live
+ * broker server; a concurrent create fails with errno=EBUSY. The caller
+ * should place the path in a directory inaccessible to untrusted users. */
 struct ker_socket_broker_server *ker_socket_broker_server_create(const char *path);
 /* Adopt a descriptor returned by this process's ker-posix socket/epoll APIs.
  * On success ownership of native_fd transfers to the server; the caller must
@@ -36,6 +37,11 @@ struct ker_socket_broker_server *ker_socket_broker_server_create(const char *pat
  * The returned descriptor is an opaque host pipe write-end reference. */
 int ker_socket_broker_server_adopt(struct ker_socket_broker_server *server,
     int native_fd, enum ker_socket_broker_kind kind, uint32_t rights);
+/* Pre-run factory for a broker-owned, fixed two-listener IPv4 TCP reuseport
+ * group. The returned capability has exactly rights; the RPC constructor
+ * issues CONTROL. address must contain a nonzero IPv4 port. */
+int ker_socket_broker_server_reuseport_group_create(struct ker_socket_broker_server *server,
+    const struct sockaddr_in *address, int backlog, uint32_t rights);
 /* Runs ker_posix_run on the current broker thread. With stop_when_empty, adopt
  * at least one object before starting the loop. The callback stops and
  * finalizes original Linux when stop_when_empty is true and all capabilities

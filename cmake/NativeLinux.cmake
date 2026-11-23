@@ -40,7 +40,9 @@ endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c src/posix/posix-interface.c src/posix/posix-statvfs.c src/posix/posix-process.c
     src/posix/posix-stdio.c
-    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c)
+    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c
+    src/posix/member-census-diag.c src/posix/member-census-diag-parse.c
+    src/posix/tcp-payload-snapshot.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 add_library(ker::posix ALIAS ker-posix)
@@ -162,13 +164,125 @@ set(KER_NO_FF_NGINX_BINARY "" CACHE FILEPATH
     "Pinned no-FF nginx executable for the native socket-preload lifecycle prerequisite")
 set(KER_FSTACK_NGINX_BINARY "" CACHE FILEPATH
     "Pinned --with-ff_module nginx executable for the bounded Ker runtime profile")
+set(KER_FSTACK_NGINX_SOURCE_ROOT "" CACHE PATH
+    "Pinned F-Stack source checkout used to build the FF-enabled nginx executable")
+set(KER_FSTACK_NGINX_BUILD_DIR "" CACHE PATH
+    "Generated objs directory for the pinned FF-enabled nginx build")
 
-add_library(ker-socket-broker-server STATIC src/posix/socket-broker-server.c)
+if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
+    if(NOT KER_BUILD_FSTACK_NGINX_RUNTIME OR NOT KER_FSTACK_NGINX_BINARY OR
+       NOT KER_FSTACK_NGINX_SOURCE_ROOT OR NOT KER_FSTACK_NGINX_BUILD_DIR)
+        message(FATAL_ERROR
+            "The multiworker shim requires the FF runtime, nginx binary, source root, and generated build dir")
+    endif()
+    if(NOT EXISTS "${KER_FSTACK_NGINX_BINARY}" OR
+       NOT EXISTS "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core/ngx_connection.h" OR
+       NOT EXISTS "${KER_FSTACK_NGINX_BUILD_DIR}/ngx_auto_config.h" OR
+       NOT EXISTS "${KER_FSTACK_NGINX_BUILD_DIR}/ngx_auto_headers.h")
+        message(FATAL_ERROR "Pinned F-Stack nginx source/build inputs are incomplete")
+    endif()
+    execute_process(COMMAND git -C "${KER_FSTACK_NGINX_SOURCE_ROOT}" rev-parse HEAD
+        OUTPUT_VARIABLE ker_fstack_nginx_source_revision OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE ker_fstack_nginx_git_result)
+    if(NOT ker_fstack_nginx_git_result EQUAL 0 OR
+       NOT ker_fstack_nginx_source_revision STREQUAL "646a641cfff77f4815e1e29829a09e1ed15a2999")
+        message(FATAL_ERROR "Multiworker shim requires pinned F-Stack source 646a641cfff77f4815e1e29829a09e1ed15a2999")
+    endif()
+    execute_process(COMMAND git -C "${KER_FSTACK_NGINX_SOURCE_ROOT}" status --porcelain
+            --untracked-files=all -- app/nginx-1.28.0/src
+        OUTPUT_VARIABLE ker_fstack_nginx_source_status
+        OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE ker_fstack_nginx_status_result)
+    execute_process(COMMAND git -C "${KER_FSTACK_NGINX_SOURCE_ROOT}" ls-files
+            app/nginx-1.28.0/src
+        OUTPUT_VARIABLE ker_fstack_nginx_tracked_source_files
+        OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE ker_fstack_nginx_lsfiles_result)
+    if(NOT ker_fstack_nginx_status_result EQUAL 0 OR
+       NOT ker_fstack_nginx_lsfiles_result EQUAL 0 OR
+       NOT ker_fstack_nginx_source_status STREQUAL "")
+        message(FATAL_ERROR "Pinned F-Stack Nginx source tree is modified or not auditable")
+    endif()
+    file(GLOB_RECURSE ker_fstack_nginx_source_headers LIST_DIRECTORIES false
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/*.h")
+    string(REPLACE "\n" ";" ker_fstack_nginx_tracked_source_files
+        "${ker_fstack_nginx_tracked_source_files}")
+    foreach(ker_fstack_nginx_header IN LISTS ker_fstack_nginx_source_headers)
+        file(RELATIVE_PATH ker_fstack_nginx_header_relative
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}" "${ker_fstack_nginx_header}")
+        list(FIND ker_fstack_nginx_tracked_source_files
+            "${ker_fstack_nginx_header_relative}" ker_fstack_nginx_header_index)
+        if(ker_fstack_nginx_header_index EQUAL -1)
+            message(FATAL_ERROR
+                "Untracked Nginx header could shadow the pinned shim ABI: ${ker_fstack_nginx_header}")
+        endif()
+    endforeach()
+    set(ker_fstack_nginx_pinned_files
+        "${KER_FSTACK_NGINX_BINARY}|d8910d7ad11e9ae93766abbf01a01f19bedbfaac4e077839c66bd938999b9f7d"
+        "${KER_FSTACK_NGINX_BUILD_DIR}/ngx_auto_config.h|4ed89a3d32aaf18365fdafdc3e2ea1a5185d1c3e0b99e8835c3083022f2d9e04"
+        "${KER_FSTACK_NGINX_BUILD_DIR}/ngx_auto_headers.h|59a24934cb2249013c5014394a2f752cf46fb6c43bc48e6fa8b23f3212ee804d"
+        "${KER_FSTACK_NGINX_BUILD_DIR}/ngx_modules.c|817dea55302110810c0cd9927761485f40d47f266e7eadf88f3ff7d8305d8d0e"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core/ngx_connection.h|1b355239b59baedfb18b04bc53fda582593875c0ba2fde14079e0b514a1bb967"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core/ngx_connection.c|9bef06290160f0ef3ab6c3385d1e4feaa2cb7ab5436e5041581d81112521e35d"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core/ngx_cycle.h|2615d23fde0c936b2d6f6bdc4e91b54f8d4d564a4256012dc05d7a27ec7087ec"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core/ngx_module.h|d52332fc318da910ffdf032da4a4af19818a23041fb05cfc3258c3ae9987fa96"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/ngx_event.c|15618af40f54a289f4d2ae6e9d17a8163c225ec16181ab48eb02949b43866475"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules/ngx_ff_module.c|d33fd03ea7a9626130a6029a03505dce54f9ee74d863f3d648f31903a0307f14"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c|7abda2aa4f58ee3dfced545e19935587cce22198899b08a970b531d209cdaf27")
+    foreach(ker_fstack_nginx_file IN LISTS ker_fstack_nginx_pinned_files)
+        string(REPLACE "|" ";" ker_fstack_nginx_parts "${ker_fstack_nginx_file}")
+        list(GET ker_fstack_nginx_parts 0 ker_fstack_nginx_path)
+        list(GET ker_fstack_nginx_parts 1 ker_fstack_nginx_expected_hash)
+        file(SHA256 "${ker_fstack_nginx_path}" ker_fstack_nginx_actual_hash)
+        if(NOT ker_fstack_nginx_actual_hash STREQUAL ker_fstack_nginx_expected_hash)
+            message(FATAL_ERROR "Pinned F-Stack nginx input hash mismatch: ${ker_fstack_nginx_path}")
+        endif()
+    endforeach()
+
+    add_library(ker-fstack-nginx-worker-shim SHARED src/posix/fstack-nginx-multiworker-shim.c)
+    target_include_directories(ker-fstack-nginx-worker-shim PRIVATE
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/os/unix"
+        "${KER_FSTACK_NGINX_BUILD_DIR}"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
+    target_compile_features(ker-fstack-nginx-worker-shim PRIVATE c_std_11)
+    target_compile_options(ker-fstack-nginx-worker-shim PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(ker-fstack-nginx-worker-shim PRIVATE
+        KER_FSTACK_NGINX_EXPECTED_BUILD_ID="0806707a980bac49a4874ecd4f0aa2419d5b9da2")
+    target_link_options(ker-fstack-nginx-worker-shim PRIVATE -Wl,--no-undefined)
+    target_link_libraries(ker-fstack-nginx-worker-shim PRIVATE ${CMAKE_DL_LIBS})
+    file(SHA256 "${KER_FSTACK_NGINX_BINARY}" ker_fstack_nginx_binary_sha256)
+    configure_file(cmake/fstack-nginx-worker-shim-manifest.json.in
+        "${PROJECT_BINARY_DIR}/fstack-nginx-worker-shim-manifest.json" @ONLY)
+    install(TARGETS ker-fstack-nginx-worker-shim
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT fstack-nginx-runtime)
+    install(FILES "${PROJECT_BINARY_DIR}/fstack-nginx-worker-shim-manifest.json"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-nginx-runtime
+        RENAME nginx-worker-shim-build.json COMPONENT fstack-nginx-runtime)
+    if(BUILD_TESTING)
+        add_executable(ker-fstack-nginx-worker-shim-abi-test
+            tests/posix/fstack-nginx-worker-shim-abi-test.c)
+        target_compile_features(ker-fstack-nginx-worker-shim-abi-test PRIVATE c_std_11)
+        target_compile_options(ker-fstack-nginx-worker-shim-abi-test PRIVATE
+            -Wall -Wextra -Werror)
+        target_link_libraries(ker-fstack-nginx-worker-shim-abi-test PRIVATE ${CMAKE_DL_LIBS})
+        add_test(NAME fstack-nginx-worker-shim-build-id-boundary
+            COMMAND "${CMAKE_COMMAND}" -E env
+                "LD_PRELOAD=$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                "$<TARGET_FILE:ker-fstack-nginx-worker-shim-abi-test>")
+        set_tests_properties(fstack-nginx-worker-shim-build-id-boundary PROPERTIES
+            TIMEOUT 10 LABELS "fstack;nginx;abi;failure-boundary")
+    endif()
+endif()
+
+add_library(ker-socket-broker-server STATIC
+    src/posix/socket-broker-server.c src/posix/tcp-observer-diag-parse.c)
 set_target_properties(ker-socket-broker-server PROPERTIES EXPORT_NAME socket-broker-server)
 target_include_directories(ker-socket-broker-server PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-    PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_include_directories(ker-socket-broker-server PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
 target_compile_features(ker-socket-broker-server PUBLIC c_std_11)
 target_compile_options(ker-socket-broker-server PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(ker-socket-broker-server PRIVATE ker-posix)
@@ -194,6 +308,56 @@ target_include_directories(ker-io-session PRIVATE "${PROJECT_SOURCE_DIR}/third_p
 target_compile_features(ker-io-session PRIVATE c_std_11)
 target_compile_options(ker-io-session PRIVATE -Wall -Wextra -Werror)
 if(BUILD_TESTING)
+    add_test(NAME native-linux-builder-wiring
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/unit/test_native_linux_builder_wiring.py")
+    set_tests_properties(native-linux-builder-wiring PROPERTIES
+        LABELS "native-linux;build-provenance")
+    add_executable(ker-tcp-payload-accounting-test
+        tests/posix/tcp-payload-accounting.c)
+    target_include_directories(ker-tcp-payload-accounting-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix/lkl-overlay/arch/lkl/include"
+        "${PROJECT_SOURCE_DIR}/src/posix/lkl-overlay/arch/lkl/include/uapi")
+    target_compile_features(ker-tcp-payload-accounting-test PRIVATE c_std_11)
+    target_compile_options(ker-tcp-payload-accounting-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME tcp-payload-accounting-intervals
+        COMMAND "$<TARGET_FILE:ker-tcp-payload-accounting-test>")
+    set_tests_properties(tcp-payload-accounting-intervals PROPERTIES
+        LABELS "native-tcp;payload-snapshot;accounting")
+    add_executable(ker-tcp-observer-diag-parser-test
+        tests/posix/tcp-observer-diag-parser.c src/posix/tcp-observer-diag-parse.c)
+    target_include_directories(ker-tcp-observer-diag-parser-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_compile_options(ker-tcp-observer-diag-parser-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME tcp-observer-diag-parser-validation
+        COMMAND "$<TARGET_FILE:ker-tcp-observer-diag-parser-test>")
+    set_tests_properties(tcp-observer-diag-parser-validation PROPERTIES
+        LABELS "native-tcp;socket-broker;diag-parser")
+    add_executable(ker-member-census-diag-parser-test
+        tests/posix/member-census-diag-parser.c src/posix/member-census-diag-parse.c)
+    target_include_directories(ker-member-census-diag-parser-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_compile_features(ker-member-census-diag-parser-test PRIVATE c_std_11)
+    target_compile_options(ker-member-census-diag-parser-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME member-census-diag-parser-validation
+        COMMAND "$<TARGET_FILE:ker-member-census-diag-parser-test>")
+    set_tests_properties(member-census-diag-parser-validation PROPERTIES
+        LABELS "native-tcp;socket-broker;diag-parser;census")
+    add_executable(ker-tcp-observer-diag-layout-test
+        tests/posix/tcp-observer-diag-layout.c)
+    target_include_directories(ker-tcp-observer-diag-layout-test SYSTEM PRIVATE
+        "${ker_native_source}/include/uapi" "${ker_native_source}/include"
+        "${ker_native_kernel}/arch/lkl/include/generated/uapi"
+        "${ker_native_source}/arch/lkl/include/uapi" "${ker_native_source}/arch/lkl/include")
+    target_compile_definitions(ker-tcp-observer-diag-layout-test PRIVATE __KERNEL__)
+    target_include_directories(ker-tcp-observer-diag-layout-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_compile_options(ker-tcp-observer-diag-layout-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME tcp-observer-diag-pinned-layout
+        COMMAND "$<TARGET_FILE:ker-tcp-observer-diag-layout-test>")
+    set_tests_properties(tcp-observer-diag-pinned-layout PROPERTIES
+        LABELS "native-tcp;socket-broker;diag-layout")
+
     # Resolve fixture EAL drivers from the configured DPDK installation rather
     # than assuming a developer prefix or PMD ABI-versioned filename.
     get_filename_component(ker_session_pkgconfig_dir "${KER_DPDK_PKGCONFIG_DIR}" REALPATH)
@@ -291,7 +455,7 @@ if(KER_WITH_NATIVE_BOND)
     endif()
 endif()
 install(TARGETS ker-posix EXPORT kerTargets
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT fstack-nginx-runtime)
 install(TARGETS ker-socket-client ker-socket-broker-server EXPORT kerTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(TARGETS ker-socket-preload EXPORT kerTargets
@@ -313,11 +477,13 @@ install(FILES third_party/fstack-flow-map/LICENSE third_party/fstack-flow-map/UP
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-flow-map)
 install(TARGETS ker-io-worker ker-app
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    COMPONENT fstack-nginx-runtime)
 file(RELATIVE_PATH KER_POSIX_LIB_FROM_BIN
     "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}" "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
 configure_file(tools/ker-run.py "${PROJECT_BINARY_DIR}/ker-run" @ONLY)
-install(PROGRAMS "${PROJECT_BINARY_DIR}/ker-run" DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(PROGRAMS "${PROJECT_BINARY_DIR}/ker-run" DESTINATION ${CMAKE_INSTALL_BINDIR}
+    COMPONENT fstack-nginx-runtime)
 install(FILES "${ker_native_manifest}"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux RENAME build.json)
 install(FILES config/native-launcher.example.ini DESTINATION ${CMAKE_INSTALL_DATADIR}/ker)
@@ -341,6 +507,88 @@ if(BUILD_TESTING)
     target_include_directories(ker-socket-broker-client-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_link_libraries(ker-socket-broker-client-test PRIVATE ker-socket-client)
     target_compile_options(ker-socket-broker-client-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-reuseport-group-fixture
+        tests/posix/socket-broker-reuseport-group-broker.c)
+    target_link_libraries(ker-socket-broker-reuseport-group-fixture PRIVATE ker-socket-broker-server)
+    add_dependencies(ker-socket-broker-reuseport-group-fixture ker-app ker-io-worker)
+    target_compile_options(ker-socket-broker-reuseport-group-fixture PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-reuseport-group-client
+        tests/posix/socket-broker-reuseport-group-client.c)
+    target_link_libraries(ker-socket-broker-reuseport-group-client PRIVATE ker-socket-client)
+    target_compile_options(ker-socket-broker-reuseport-group-client PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-member-census-client
+        tests/posix/socket-broker-member-census-client.c)
+    target_link_libraries(ker-socket-broker-member-census-client PRIVATE ker-socket-client)
+    target_compile_options(ker-socket-broker-member-census-client PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-member-census-runtime-test tests/posix/member-census-runtime-test.c)
+    target_include_directories(ker-member-census-runtime-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_compile_features(ker-member-census-runtime-test PRIVATE c_std_11)
+    target_compile_options(ker-member-census-runtime-test PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(ker-member-census-runtime-test PRIVATE
+        KER_MEMBER_CENSUS_TEST_RUNTIME=1)
+    get_target_property(ker_posix_sources ker-posix SOURCES)
+    get_target_property(ker_posix_definitions ker-posix COMPILE_DEFINITIONS)
+    get_target_property(ker_posix_options ker-posix COMPILE_OPTIONS)
+    get_target_property(ker_posix_include_directories ker-posix INCLUDE_DIRECTORIES)
+    if(NOT ker_posix_definitions OR ker_posix_definitions MATCHES "-NOTFOUND$")
+        set(ker_posix_definitions)
+    endif()
+    if(NOT ker_posix_options OR ker_posix_options MATCHES "-NOTFOUND$")
+        set(ker_posix_options)
+    endif()
+    if(NOT ker_posix_include_directories OR ker_posix_include_directories MATCHES "-NOTFOUND$")
+        set(ker_posix_include_directories)
+    endif()
+    add_library(ker-posix-member-census-test-runtime SHARED
+        ${ker_posix_sources} tests/posix/member-census-test-credentials.c)
+    target_include_directories(ker-posix-member-census-test-runtime PRIVATE
+        ${ker_posix_include_directories})
+    target_include_directories(ker-posix-member-census-test-runtime SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_compile_definitions(ker-posix-member-census-test-runtime PRIVATE
+        ${ker_posix_definitions} KER_MEMBER_CENSUS_TEST_RUNTIME=1)
+    target_compile_features(ker-posix-member-census-test-runtime PRIVATE c_std_11)
+    target_compile_options(ker-posix-member-census-test-runtime PRIVATE
+        ${ker_posix_options} -Wall -Wextra -Werror)
+    file(READ "${PROJECT_SOURCE_DIR}/src/posix/exports.map" ker_posix_test_export_map)
+    string(REPLACE "local: *;"
+        "ker_member_census_test_clear_net_admin; ker_member_census_test_restore_capabilities; ker_member_census_test_runtime_map_counts; ker_native_tcp_payload_snapshot_test_limit; local: *;"
+        ker_posix_test_export_map "${ker_posix_test_export_map}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/member-census-test-exports.map"
+        "${ker_posix_test_export_map}")
+    target_link_options(ker-posix-member-census-test-runtime PRIVATE -Wl,--no-undefined
+        "-Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/member-census-test-exports.map")
+    set_property(TARGET ker-posix-member-census-test-runtime APPEND PROPERTY LINK_DEPENDS
+        "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
+    target_link_libraries(ker-posix-member-census-test-runtime PRIVATE
+        "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_link_libraries(ker-member-census-runtime-test PRIVATE ker-posix-member-census-test-runtime)
+    add_executable(ker-socket-broker-inherited-group-client
+        tests/posix/socket-broker-inherited-group-client.c)
+    target_link_libraries(ker-socket-broker-inherited-group-client PRIVATE ker-socket-client)
+    target_compile_options(ker-socket-broker-inherited-group-client PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-generation-fixture
+        tests/posix/socket-broker-generation-broker.c)
+    target_link_libraries(ker-socket-broker-generation-fixture PRIVATE ker-socket-broker-server)
+    add_dependencies(ker-socket-broker-generation-fixture ker-app ker-io-worker)
+    target_compile_options(ker-socket-broker-generation-fixture PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-generation-worker
+        tests/posix/socket-broker-generation-worker.c)
+    target_link_libraries(ker-socket-broker-generation-worker PRIVATE ker-socket-client)
+    target_compile_options(ker-socket-broker-generation-worker PRIVATE -Wall -Wextra -Werror)
+    add_library(ker-socket-broker-generation-controller SHARED
+        tests/posix/socket-broker-generation-controller.c)
+    set_target_properties(ker-socket-broker-generation-controller PROPERTIES
+        POSITION_INDEPENDENT_CODE ON)
+    target_link_libraries(ker-socket-broker-generation-controller PRIVATE ker-socket-client)
+    target_compile_options(ker-socket-broker-generation-controller PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-tcp-observer-client-test tests/posix/tcp-observer-client.c)
+    target_include_directories(ker-tcp-observer-client-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_definitions(ker-tcp-observer-client-test PRIVATE
+        KER_TCP_OBSERVER_PRIVATE_TEST=1)
+    target_link_libraries(ker-tcp-observer-client-test PRIVATE ker-socket-client)
+    target_compile_options(ker-tcp-observer-client-test PRIVATE -Wall -Wextra -Werror)
     add_executable(ker-socket-broker-preload-client-test
         tests/posix/socket-broker-preload-client.c)
     target_compile_features(ker-socket-broker-preload-client-test PRIVATE c_std_11)
@@ -378,9 +626,23 @@ if(BUILD_TESTING)
         TIMEOUT 10 LABELS "native-tcp;socket-broker;preload;loader")
     add_executable(ker-fstack-socket-bridge-client-test
         tests/posix/fstack-socket-bridge-client.c)
-    target_link_libraries(ker-fstack-socket-bridge-client-test PRIVATE ker::fstack-socket-bridge)
+    target_link_libraries(ker-fstack-socket-bridge-client-test PRIVATE
+        ker::fstack-socket-bridge ker-socket-client ${CMAKE_DL_LIBS})
     target_compile_options(ker-fstack-socket-bridge-client-test PRIVATE -Wall -Wextra -Werror)
     target_link_options(ker-fstack-socket-bridge-client-test PRIVATE -Wl,--export-dynamic)
+    if(KER_BUILD_FSTACK_NGINX_RUNTIME)
+        add_executable(ker-fstack-nginx-runtime-socket-client-test
+            tests/posix/fstack-socket-bridge-client.c)
+        target_include_directories(ker-fstack-nginx-runtime-socket-client-test PRIVATE
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
+        target_link_libraries(ker-fstack-nginx-runtime-socket-client-test PRIVATE
+            ker-fstack-nginx-runtime ker-socket-client ${CMAKE_DL_LIBS})
+        target_compile_options(ker-fstack-nginx-runtime-socket-client-test PRIVATE
+            -Wall -Wextra -Werror)
+        target_link_options(ker-fstack-nginx-runtime-socket-client-test PRIVATE
+            -Wl,--export-dynamic)
+    endif()
     add_test(NAME native-socket-broker-fork-exec
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
@@ -390,6 +652,70 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-socket-broker-fork-exec PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker")
+    add_test(NAME native-socket-broker-reuseport-group
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --group-broker "$<TARGET_FILE:ker-socket-broker-reuseport-group-fixture>"
+            --reuseport-group-client "$<TARGET_FILE:ker-socket-broker-reuseport-group-client>"
+            --inherited-group-probe "$<TARGET_FILE:ker-socket-broker-inherited-group-client>"
+            --preload-library "$<TARGET_FILE:ker-socket-preload>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-socket-broker-reuseport-group PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;reuseport;cbpf")
+    add_test(NAME native-socket-broker-reuseport-failure-propagation
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/test_native_socket_broker_failure_propagation.py")
+    set_tests_properties(native-socket-broker-reuseport-failure-propagation PROPERTIES
+        TIMEOUT 10 LABELS "native-tcp;fstack;socket-broker;reuseport;failure-propagation"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_test(NAME native-socket-broker-member-census
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --group-broker "$<TARGET_FILE:ker-socket-broker-reuseport-group-fixture>"
+            --member-census-client "$<TARGET_FILE:ker-socket-broker-member-census-client>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-socket-broker-member-census PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;reuseport;census")
+    add_test(NAME native-member-census-runtime
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --member-census-runtime-test "$<TARGET_FILE:ker-member-census-runtime-test>"
+            --member-census-test-library "$<TARGET_FILE:ker-posix-member-census-test-runtime>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-member-census-runtime PROPERTIES
+        TIMEOUT 120 LABELS "native-tcp;fstack;member-census;runtime")
+    add_test(NAME native-socket-broker-generation-handoff
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --generation-broker "$<TARGET_FILE:ker-socket-broker-generation-fixture>"
+            --generation-worker "$<TARGET_FILE:ker-socket-broker-generation-worker>"
+            --generation-controller "$<TARGET_FILE:ker-socket-broker-generation-controller>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-socket-broker-generation-handoff PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;reuseport;generation-handoff")
+    add_test(NAME native-tcp-socket-observer
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --observer-client "$<TARGET_FILE:ker-tcp-observer-client-test>"
+            --preload-library "$<TARGET_FILE:ker-socket-preload>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-tcp-socket-observer PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;tcp-observer")
     add_test(NAME native-socket-broker-posix-preload
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
@@ -412,6 +738,36 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-fstack-socket-leaf-bridge PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;fstack-abi")
+    if(KER_BUILD_FSTACK_NGINX_RUNTIME)
+        add_test(NAME native-fstack-nginx-runtime-drain-count
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                --fstack-client "$<TARGET_FILE:ker-fstack-nginx-runtime-socket-client-test>"
+                --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}")
+        set_tests_properties(native-fstack-nginx-runtime-drain-count PROPERTIES
+            TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;fstack-nginx-runtime")
+    endif()
+    add_test(NAME native-fstack-socket-drain-count-failure
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/fstack-socket-drain-count-failure.py"
+            --client "$<TARGET_FILE:ker-fstack-socket-bridge-client-test>")
+    set_tests_properties(native-fstack-socket-drain-count-failure PROPERTIES
+        TIMEOUT 10 LABELS "fstack;socket-broker;fstack-abi;failure-boundary")
+    add_test(NAME native-fstack-socket-drain-count-broker-death
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --fstack-drain-failure-client "$<TARGET_FILE:ker-fstack-socket-bridge-client-test>"
+            --preload-library "$<TARGET_FILE:ker-socket-preload>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-fstack-socket-drain-count-broker-death PROPERTIES
+        TIMEOUT 60 LABELS "fstack;socket-broker;fstack-abi;failure-boundary")
     if(KER_NO_FF_NGINX_BINARY)
         if(NOT EXISTS "${KER_NO_FF_NGINX_BINARY}")
             message(FATAL_ERROR "KER_NO_FF_NGINX_BINARY does not exist")
@@ -444,6 +800,36 @@ if(BUILD_TESTING)
                 --dpdk-plugin-dir "${ker_session_pmd_dir}")
         set_tests_properties(native-nginx-fstack-runtime-lifecycle PROPERTIES
             TIMEOUT 420 LABELS "native-tcp;fstack;socket-broker;nginx;runtime-profile")
+        if(TARGET ker-fstack-nginx-worker-shim)
+            add_test(NAME native-nginx-fstack-runtime-multiworker-lifecycle
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                    --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                    --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                    --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                    --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --fstack-worker-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-workers 2
+                    --nginx-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}")
+            set_tests_properties(native-nginx-fstack-runtime-multiworker-lifecycle PROPERTIES
+                TIMEOUT 420 LABELS "native-tcp;fstack;socket-broker;nginx;multiworker;runtime-profile")
+            add_test(NAME native-nginx-fstack-runtime-rejects-listener-options
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                    --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                    --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                    --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                    --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --fstack-worker-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-workers 2 --nginx-test-unsupported-option
+                    --nginx-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}")
+            set_tests_properties(native-nginx-fstack-runtime-rejects-listener-options PROPERTIES
+                TIMEOUT 60 LABELS "native-tcp;fstack;socket-broker;nginx;failure-boundary")
+        endif()
     endif()
 
     add_executable(ker-session-peer-drain-retry-test tests/posix/session-peer-drain-retry.c)
