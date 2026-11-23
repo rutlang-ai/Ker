@@ -5,8 +5,9 @@
 struct kmem_cache;
 /* One worker/device permanent IPv4 neighbor table. Stable zero-initialized
  * storage, a configured IPv4 address and fixed descriptor pool. Optional
- * neighbor-timer monitors pin selected entries; no automatic resolution,
- * GC, unresolved packet queues, proxy or output service. */
+ * neighbor-timer monitors pin selected entries. Native unresolved queues and
+ * output require an explicit bounded per-monitor resolver binding; no unknown
+ * neighbor creation, FIB, GC, or proxy service is exposed. */
 struct ker_neighbor_table {
     struct neigh_table *native;
     struct ker_ipv4_address *address;
@@ -24,6 +25,7 @@ int ker_neighbor_table_init(struct ker_neighbor_table *table, struct ker_ipv4_ad
 struct ker_neighbor_config {
     unsigned int retrans_ticks, reachable_ticks, delay_ticks;
     unsigned int ucast_probes, mcast_probes, mcast_reprobes;
+    unsigned int queue_bytes; /* zero disables the native unresolved queue */
 };
 int ker_neighbor_configure(struct ker_neighbor_table *, const struct ker_neighbor_config *);
 /* Requires zero entries and no extra parameter references. */
@@ -31,6 +33,8 @@ int ker_neighbor_table_cleanup(struct ker_neighbor_table *table);
 /* Immutable NUD_PERMANENT entry. Duplicate keys fail, no replacement/learning.
  * limit exhaustion is ENOSPC; fixed DPDK pool/budget failure is ENOMEM. */
 int ker_neighbor_add(struct ker_neighbor_table *table, __be32 ip, const unsigned char mac[6]);
+/* Internal adapter primitive: insert an explicit IPv4 key in genuine NUD_NONE. */
+int ker_neighbor_add_unresolved(struct ker_neighbor_table *table, __be32 ip);
 int ker_neighbor_remove(struct ker_neighbor_table *table, __be32 ip);
 /* Original lookup/clone grants one reference. Failure leaves output unchanged.
  * Every acquired reference must be released; removal refuses live references. */
