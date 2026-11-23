@@ -517,6 +517,7 @@ if(BUILD_TESTING)
     target_include_directories(ker-fd-map-test SYSTEM PRIVATE
         "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
     target_link_libraries(ker-fd-map-test PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_link_options(ker-fd-map-test PRIVATE -Wl,--wrap=pthread_mutex_lock)
     target_compile_options(ker-fd-map-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-fd-map COMMAND ker-fd-map-test)
     set_tests_properties(native-fstack-fd-map PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
