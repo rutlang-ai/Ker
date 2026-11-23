@@ -3,6 +3,8 @@
 import argparse
 import array
 import errno
+import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -34,6 +36,186 @@ def recv_exact_tcp(connection, length):
             raise RuntimeError(f'TCP peer closed after {len(result)} of {length} bytes')
         result.extend(chunk)
     return bytes(result)
+
+
+def run_nginx_candidate(args, rpc_path, stop_path, stats, root, broker, environment):
+    """Real pinned Nginx consumes only the delegated candidate capability."""
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    helper = nginx = held = None
+    slot = -1
+    evidence = {'status': 'RUNNING', 'events': []}
+    def record(event):
+        evidence['events'].append({'event': event, 'monotonic_ns': time.monotonic_ns()})
+    try:
+        helper = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path),
+            str(child.fileno()), '4108', '0', '--staged-admission-initial'],
+            pass_fds=(child.fileno(),), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        child.close()
+        parent.settimeout(10)
+        message, ancillary, flags, _ = parent.recvmsg(1, socket.CMSG_SPACE(16))
+        caps = []
+        for level, kind, data in ancillary:
+            if level != socket.SOL_SOCKET or kind != socket.SCM_RIGHTS:
+                raise RuntimeError('unexpected candidate ancillary data')
+            values = array.array('i'); values.frombytes(data)
+            caps.extend(values)
+        require(message == b'C' and not flags and len(caps) == 1,
+            f'candidate delegation failed: {message!r}, {flags}, {caps!r}')
+        slot = caps[0]
+        wait_line(helper, 'C20_STAGED_INITIAL_READY', 10)
+
+        def command(value, marker):
+            helper.stdin.write((value + '\n').encode()); helper.stdin.flush()
+            return wait_line(helper, marker, 10)
+
+        helper.stdin.write(b'INITIAL\n'); helper.stdin.flush()
+        held = socket.create_connection(('198.18.0.2', 4108), timeout=5)
+        held.settimeout(5); held.sendall(b'INIT-000')
+        require(recv_exact_tcp(held, 8) == b'INIT-ACK', 'initial TCP exchange failed')
+        wait_line(helper, 'C20_STAGED_INITIAL_ECHO', 5)
+        record('OLD_TCP_READY')
+        prefix = root / 'nginx'; (prefix / 'logs').mkdir(parents=True)
+        (prefix / 'html').mkdir(); body = b'ker-nginx-candidate\n'
+        (prefix / 'html/index.html').write_bytes(body)
+        ini = prefix / 'fstack.ini'
+        ini.write_text(f'[ker_socket_broker]\nversion=1\npath={rpc_path}\n\n[dpdk]\ngraceful_reload=0\n')
+        config = prefix / 'nginx.conf'
+        config.write_text(f'''load_module {args.nginx_candidate_module};
+daemon off; master_process on; worker_processes 1; user root;
+fstack_conf "fstack.ini"; timer_resolution 1ms;
+pid {prefix}/logs/nginx.pid; error_log {prefix}/logs/error.log notice;
+env LD_PRELOAD; env KER_SOCKET_BROKER_PATH; env KER_FSTACK_NGINX_INI;
+env KER_FSTACK_RUNTIME_TRACE;
+events {{ worker_connections 128; use epoll; }}
+http {{ access_log off; sendfile off; keepalive_timeout 0;
+server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index index.html; }} }}
+''')
+        trace = root / 'nginx.trace'
+        env = environment | {'LD_PRELOAD': ':'.join(map(str, [args.nginx_candidate_shim,
+            args.nginx_candidate_runtime, args.preload])), 'KER_FSTACK_NGINX_INI': str(ini),
+            'KER_FSTACK_RUNTIME_TRACE': str(trace), 'KER_NGINX_CANDIDATE_SLOT_FD': str(slot)}
+        # A live ordinary fd is not a delegated slot capability. It must fail
+        # at broker claim before socket creation and leave slot 1 unpublished.
+        bad_fd = os.open('/dev/null', os.O_RDONLY)
+        try:
+            bad_trace = root / 'nginx-invalid-cap.trace'
+            nginx = subprocess.Popen([str(args.nginx_candidate_binary), '-p', str(prefix) + '/',
+                '-c', str(config)], pass_fds=(bad_fd,), env=env | {
+                    'KER_NGINX_CANDIDATE_SLOT_FD': str(bad_fd),
+                    'KER_FSTACK_RUNTIME_TRACE': str(bad_trace)},
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            nginx.communicate(timeout=20)
+            text = bad_trace.read_text() if bad_trace.exists() else ''
+            require(nginx.returncode != 0 and 'C22_WORKER_PREPARE_FAILED' in text and
+                'name=ff_socket ' not in text, f'invalid capability was not rejected before socket activity: {text!r}')
+            command('EARLYPUBLISH', 'C20_STAGED_EARLY_CANDIDATE_EAGAIN')
+            record('INVALID_CAP_REJECTED_WITHOUT_PUBLICATION')
+        finally:
+            os.close(bad_fd)
+        nginx = subprocess.Popen([str(args.nginx_candidate_binary), '-p', str(prefix) + '/',
+            '-c', str(config)], pass_fds=(slot,), env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            trace_text = trace.read_text() if trace.exists() else ''
+            if ('NGINX_CANDIDATE_TASK_READY' in trace_text and
+                    re.search(r'name=ff_listen .*result=0\b', trace_text)): break
+            if nginx.poll() is not None:
+                raise RuntimeError(f'candidate Nginx exited: {nginx.communicate()!r}; '
+                    f'log={(prefix / "logs/error.log").read_text()!r}; '
+                    f'trace={trace.read_text() if trace.exists() else "missing"!r}')
+            time.sleep(.01)
+        else:
+            raise RuntimeError('candidate task did not become READY: ' +
+                (trace.read_text() if trace.exists() else 'no trace') + '\n' +
+                (prefix / 'logs/error.log').read_text())
+        command('CENSUS_READY', 'C20_STAGED_CANDIDATE_LISTEN_CENSUS')
+        registered = wait_line(broker, 'C20_STAGED REGISTERED', 5)
+        listening = wait_line(broker, 'C20_STAGED LISTEN', 5)
+        registration = re.search(r'fd=(\d+) mark=(\d+)', registered)
+        publication = re.search(r'fd=(\d+) mark=(\d+)', listening)
+        require(registration and publication and registration.groups() == publication.groups(),
+            f'admission did not register the exact listener before listen: {registered!r}, {listening!r}')
+        evidence['listener_registration'] = [registered, listening]
+        record('CANDIDATE_REGISTERED_BEFORE_LISTEN')
+        helper.stdin.write(b'PREFLIP\n'); helper.stdin.flush()
+        with socket.create_connection(('198.18.0.2', 4108), timeout=5) as peer:
+            peer.settimeout(5); peer.sendall(b'PRE-FLIP')
+            require(recv_exact_tcp(peer, 8) == b'OLD-ACK!', 'candidate stole selector-zero traffic')
+        wait_line(helper, 'C20_STAGED_PREFLIP_ECHO', 5)
+        command('FLIP', 'C20_STAGED_SELECTOR1')
+        record('SELECTOR_ONE')
+        with socket.create_connection(('198.18.0.2', 4108), timeout=5) as peer:
+            peer.settimeout(5)
+            peer.sendall(b'GET / HTTP/1.1\r\nHost: ker.test\r\nConnection: close\r\n\r\n')
+            response = bytearray()
+            while True:
+                data = peer.recv(4096)
+                if not data: break
+                response.extend(data)
+            header, separator, received = bytes(response).partition(b'\r\n\r\n')
+            require(separator and b' 200 ' in header.split(b'\r\n', 1)[0] and received == body,
+                f'candidate HTTP did not pass through original Linux: {bytes(response)!r}')
+        record('CANDIDATE_HTTP')
+        require('private candidate admission: allowed=1 created=1' in
+            (prefix / 'logs/error.log').read_text(),
+            'candidate HTTP did not exercise original flow-map admission')
+        helper.stdin.write(b'OLD\n'); helper.stdin.flush(); held.sendall(b'HELD-OLD')
+        require(recv_exact_tcp(held, 8) == b'OLD-ACK!', 'old established TCP flow did not survive selection')
+        wait_line(helper, 'C20_STAGED_OLD_STREAM_ECHO', 5)
+        record('OLD_TCP_SURVIVED')
+        nginx.send_signal(signal.SIGQUIT)
+        output, errors = nginx.communicate(timeout=20)
+        require(nginx.returncode == 0, f'Nginx candidate cleanup failed: {errors!r}')
+        command('CHECK_CLOSED', 'C25_LAST_ALIAS_CLOSED_LISTEN0')
+        record('CANDIDATE_LISTENER_CLOSED')
+        command('FLIP0', 'C25_SELECTOR0_RESTORED')
+        held.close(); held = None
+        helper.stdin.write(b'STOP\n'); helper.stdin.flush()
+        _, errors = helper.communicate(timeout=10)
+        require(helper.returncode == 0, f'initial owner cleanup failed: {errors!r}')
+        os.close(slot); slot = -1
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+            stop.sendto(b'STOP', str(stop_path))
+        _, errors = broker.communicate(timeout=35)
+        report = json.loads(stats.read_text())
+        require(broker.returncode == 0 and report.get('outstanding') == 0,
+            f'candidate broker cleanup failed: {errors!r}, {report!r}')
+        record('BROKER_SETTLED')
+        evidence.update(status='PASS', stats=report, trace=trace.read_text(),
+            nginx_error_log=(prefix / 'logs/error.log').read_text(),
+            invalid_cap_trace=bad_trace.read_text())
+        evidence['artifacts'] = {name: {'path': str(path.resolve()),
+            'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+            for name, path in [('nginx', args.nginx_candidate_binary),
+                ('module', args.nginx_candidate_module), ('shim', args.nginx_candidate_shim),
+                ('runtime', args.nginx_candidate_runtime), ('preload', args.preload),
+                ('library', args.library), ('worker', args.worker)]}
+        print('NGINX_CANDIDATE_ADMISSION_PASS invalid_cap_rejected=true old_tcp_survived=true http=true outstanding=0')
+        return 0
+    except BaseException as error:
+        evidence.update(status='FAIL', error=repr(error))
+        raise
+    finally:
+        if held is not None: held.close()
+        if slot >= 0: os.close(slot)
+        parent.close(); child.close()
+        for process in (nginx, helper):
+            if process is not None and process.poll() is None:
+                if process is nginx: os.killpg(process.pid, signal.SIGKILL)
+                else: process.kill()
+                process.communicate()
+        if broker.poll() is None:
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+                    stop.sendto(b'STOP', str(stop_path))
+                broker.communicate(timeout=35)
+            except (OSError, subprocess.TimeoutExpired):
+                broker.kill()
+        if args.nginx_candidate_evidence:
+            args.nginx_candidate_evidence.parent.mkdir(parents=True, exist_ok=True)
+            args.nginx_candidate_evidence.write_text(json.dumps(evidence, indent=2) + '\n')
 
 
 def run_c20_staged_admission(args, rpc_path, stop_path, stats, root,
@@ -753,6 +935,18 @@ def inside(args):
                 'LD_PRELOAD': str(args.preload),
                 'RUNTIME_DIRECTORY': str(root), 'TMPDIR': str(root),
             }
+            if args.window_handoff_only:
+                path = Path(__file__).with_name('admission-window-handoff.py')
+                spec = importlib.util.spec_from_file_location('admission_window_handoff', path)
+                profile = importlib.util.module_from_spec(spec); spec.loader.exec_module(profile)
+                return profile.run(args, stop_path, stats, broker, app_env, wait_line)
+            if args.nginx_candidate_binary:
+                if args.nginx_overlap_controller:
+                    path = Path(__file__).with_name('nginx-overlap-profile.py')
+                    spec = importlib.util.spec_from_file_location('nginx_overlap_profile', path)
+                    profile = importlib.util.module_from_spec(spec); spec.loader.exec_module(profile)
+                    return profile.run(args, rpc_path, stop_path, stats, root, broker, app_env, wait_line)
+                return run_nginx_candidate(args, rpc_path, stop_path, stats, root, broker, app_env)
             if args.cutover_lifetime_only:
                 app_env.update({
                     'KER_C28_TEST_START_GATE': str(controller_start_gate),
@@ -1553,6 +1747,21 @@ def main():
     parser.add_argument('--client', type=Path, required=True)
     parser.add_argument('--progress-client', type=Path, required=True)
     parser.add_argument('--reuseport-group-client', type=Path)
+    for name in ('binary', 'runtime', 'shim', 'module'):
+        parser.add_argument('--nginx-candidate-' + name, type=Path)
+    parser.add_argument('--nginx-candidate-evidence', type=Path)
+    parser.add_argument('--nginx-overlap-controller', type=Path)
+    parser.add_argument('--nginx-overlap-source-streams', action='store_true')
+    parser.add_argument('--nginx-overlap-source-lc', action='store_true')
+    parser.add_argument('--nginx-overlap-abort', action='store_true')
+    parser.add_argument('--nginx-overlap-successor', action='store_true')
+    parser.add_argument('--nginx-overlap-retry', action='store_true')
+    parser.add_argument('--nginx-overlap-abandon', action='store_true')
+    parser.add_argument('--nginx-overlap-recover-dead', action='store_true')
+    parser.add_argument('--nginx-overlap-history-rejection', action='store_true')
+    parser.add_argument('--nginx-overlap-owner-death', choices=('before-begin', 'prepared'))
+    parser.add_argument('--nginx-overlap-alias-module', type=Path)
+    parser.add_argument('--nginx-overlap-alias-regression', action='store_true')
     parser.add_argument('--staged-admission-only', action='store_true')
     parser.add_argument('--candidate-activation-only', action='store_true')
     parser.add_argument('--cutover-coordinator', action='store_true')
@@ -1569,9 +1778,48 @@ def main():
     parser.add_argument('--finalized-timeout-only', action='store_true')
     parser.add_argument('--cancel-unsent-timeout-only', action='store_true')
     parser.add_argument('--window-cycles-only', action='store_true')
+    parser.add_argument('--window-handoff-only', action='store_true')
+    parser.add_argument('--window-handoff-stop-live', action='store_true')
     parser.add_argument('--window-cancel-only', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
+    candidate_inputs = [getattr(args, 'nginx_candidate_' + name)
+        for name in ('binary', 'runtime', 'shim', 'module')]
+    if any(candidate_inputs) and (not all(candidate_inputs) or
+            not (args.reuseport_group_client or args.nginx_overlap_controller)):
+        parser.error('candidate Nginx requires its runtime, shim, module and group client')
+    if args.nginx_overlap_controller and not all(candidate_inputs):
+        parser.error('overlap profile requires all pinned Nginx artifacts')
+    if args.nginx_overlap_source_lc and (not args.nginx_overlap_controller or
+            args.nginx_overlap_source_streams or args.nginx_overlap_alias_regression):
+        parser.error('source LC requires the ordinary overlap profile without a stream/alias probe')
+    if args.nginx_overlap_history_rejection and args.nginx_overlap_owner_death != 'before-begin':
+        parser.error('history rejection requires before-begin owner death')
+    if args.nginx_overlap_recover_dead and not args.nginx_overlap_abandon:
+        parser.error('dead recovery requires the abandon/retry profile')
+    if args.nginx_overlap_abandon and (not args.nginx_overlap_retry or not args.nginx_overlap_alias_module or
+            args.nginx_overlap_source_lc or args.nginx_overlap_owner_death):
+        parser.error('abandon requires a retry profile without source LC or owner death')
+    if args.nginx_overlap_owner_death and (not args.nginx_overlap_controller or
+            args.nginx_overlap_abort or args.nginx_overlap_retry or args.nginx_overlap_successor or
+            args.nginx_overlap_source_lc or args.nginx_overlap_source_streams or args.nginx_overlap_alias_regression):
+        parser.error('owner death requires a plain pinned Nginx overlap profile')
+    if args.nginx_overlap_successor and (not args.nginx_overlap_controller or
+            args.nginx_overlap_abort or args.nginx_overlap_source_streams or args.nginx_overlap_source_lc):
+        parser.error('--nginx-overlap-successor requires the plain commit overlap profile')
+    if args.nginx_overlap_retry and (not args.nginx_overlap_controller or not args.nginx_overlap_abort or
+            args.nginx_overlap_successor or args.nginx_overlap_source_streams):
+        parser.error('--nginx-overlap-retry requires an abort overlap profile without source streams')
+    if args.nginx_overlap_abort and (not args.nginx_overlap_controller or
+            (args.nginx_overlap_alias_regression and not args.nginx_overlap_retry)):
+        parser.error('abort requires the ordinary overlapping Nginx profile')
+    if args.nginx_overlap_source_streams and (not args.nginx_overlap_controller or args.nginx_overlap_alias_regression):
+        parser.error('source streams require the ordinary overlapping Nginx profile')
+    if args.nginx_overlap_alias_regression and (
+            not args.nginx_overlap_controller or not args.nginx_overlap_alias_module):
+        parser.error('initial alias regression requires the overlap controller and test module')
+    if args.nginx_candidate_evidence and not args.nginx_candidate_binary:
+        parser.error('candidate evidence requires the candidate Nginx profile')
     if args.inside:
         return inside(args)
     if args.staged_admission_only and not args.reuseport_group_client:
@@ -1592,6 +1840,35 @@ def main():
         command += ['--' + name.replace('_', '-'), str(getattr(args, name).resolve())]
     if args.reuseport_group_client:
         command += ['--reuseport-group-client', str(args.reuseport_group_client.resolve())]
+    if args.nginx_candidate_binary:
+        for name in ('binary', 'runtime', 'shim', 'module'):
+            command += ['--nginx-candidate-' + name, str(getattr(args, 'nginx_candidate_' + name).resolve())]
+        if args.nginx_candidate_evidence:
+            command += ['--nginx-candidate-evidence', str(args.nginx_candidate_evidence.resolve())]
+        if args.nginx_overlap_controller:
+            command += ['--nginx-overlap-controller', str(args.nginx_overlap_controller.resolve())]
+        if args.nginx_overlap_alias_module:
+            command += ['--nginx-overlap-alias-module', str(args.nginx_overlap_alias_module.resolve())]
+        if args.nginx_overlap_source_lc:
+            command += ['--nginx-overlap-source-lc']
+        if args.nginx_overlap_source_streams:
+            command += ['--nginx-overlap-source-streams']
+        if args.nginx_overlap_abort:
+            command += ['--nginx-overlap-abort']
+        if args.nginx_overlap_successor:
+            command += ['--nginx-overlap-successor']
+        if args.nginx_overlap_retry:
+            command += ['--nginx-overlap-retry']
+        if args.nginx_overlap_abandon:
+            command += ['--nginx-overlap-abandon']
+        if args.nginx_overlap_recover_dead:
+            command += ['--nginx-overlap-recover-dead']
+        if args.nginx_overlap_history_rejection:
+            command += ['--nginx-overlap-history-rejection']
+        if args.nginx_overlap_owner_death:
+            command += ['--nginx-overlap-owner-death', args.nginx_overlap_owner_death]
+        if args.nginx_overlap_alias_regression:
+            command.append('--nginx-overlap-alias-regression')
     if args.staged_admission_only:
         command.append('--staged-admission-only')
     if args.candidate_activation_only:
@@ -1622,6 +1899,12 @@ def main():
         command.append('--finalized-timeout-only')
     if args.cancel_unsent_timeout_only:
         command.append('--cancel-unsent-timeout-only')
+    if args.window_handoff_stop_live and not args.window_handoff_only:
+        parser.error('--window-handoff-stop-live requires --window-handoff-only')
+    if args.window_handoff_stop_live:
+        command.append('--window-handoff-stop-live')
+    if args.window_handoff_only:
+        command.append('--window-handoff-only')
     if args.window_cycles_only:
         command.append('--window-cycles-only')
     if args.window_cancel_only:

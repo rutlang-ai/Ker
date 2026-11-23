@@ -313,3 +313,626 @@ shim; the installed `nginx-owner-activation-build.json` records that boundary.
 Run `ctest -R 'native-nginx-fstack-owner-activation|fstack-nginx-worker-shim-build-id-boundary'`
 for the positive TAP cycle, unsupported-profile matrix, and wrong-main-build-ID
 guard.
+
+An explicit private `KER_NGINX_CANDIDATE_SLOT_FD` profile now binds a delegated
+slot-1 listener to a real Nginx worker and the existing broker admission
+channel. It retains `graceful_reload=0`, uses a separately namespaced original
+flow map for that private admission window, and gives Nginx no coordinator
+plan or selector authority. Run `native-nginx-candidate-admission-tap` for the
+invalid-capability boundary, candidate HTTP after selection, surviving old
+SDK TCP stream and cleanup qualification. This is a one-shot candidate leaf;
+candidate HUP, respawn, USR2 and the complete generation FSM remain outside
+the profile. See [qualification details](fstack-graceful-reload-gap.md#real-nginx-candidate-admission-leaf).
+
+
+### Two real Nginx owners and a committed cutover
+
+`native-nginx-overlapping-owner-cutover-tap` replaces the old SDK actor with
+another unchanged pinned Nginx executable. A test-only coordinator reserves
+one staged group and delegates slot zero through `KER_NGINX_INITIAL_SLOT_FD`
+and slot one through `KER_NGINX_CANDIDATE_SLOT_FD`. Each Nginx master forks one
+broker-authenticated worker; neither receives the plan or selector authority.
+Both use the existing restricted IPv4/reuseport, `graceful_reload=0` profile.
+Delegated initial and candidate masters reject HUP and worker respawn; this
+one-shot overlap profile does not change the existing serial-cycle path.
+
+The coordinator begins the existing broker cutover, waits for PREPARED, and
+observes a real host SYN retained before requesting commit. The original Linux
+stack accepts that connection on the new Nginx after COMMITTED. A previously
+established keepalive connection still returns the old Nginx body. Response
+length, MD5 and requested EOF are checked by the unchanged upstream
+`reload_probes/http_probe.py` response helper; this is not the complete shell
+matrix or its stream-duration oracle.
+
+After graceful exit and pidfd-confirmed death of the old worker, the new typed
+`ker_socket_client_owner_group_retire_initial_listener` operation releases only
+the initial listener pin. It requires a CONTROL plan, a settled committed
+cutover to member one, no remaining initial application listener aliases,
+exact owner identities and validated original-Linux listener cookies/marks.
+Premature calls return EAGAIN; a slot capability is rejected, and successful
+retirement is idempotent. Linux compacts the surviving reuseport member to
+physical index zero, and the adapter reattaches the existing native selector
+accordingly. A selector-attachment failure marks the group failed and poisons
+the remaining listener instead of reporting success. Accepted TCP sockets and
+protocol state remain under original Linux ownership; listener retirement does
+not certify that all accepted sockets have drained.
+
+The test requires old LISTEN=0 before fresh new-owner HTTP, then new LISTEN=0
+and broker outstanding=0 at shutdown. The build directory's
+`nginx-overlap-evidence.json` records both Nginx logs, runtime traces and events.
+The full same-master F-Stack generation FSM, repeated overlap,
+failure/rollback matrix and shell cleanup contract remain unqualified.
+A separate original twelve-stream qualification is described below. Migration inventory remains 362 scenario-adapted,0 partial,1
+blocked (`test_graceful_reload.sh::entrypoint`).
+
+### Original twelve-stream probe across real Nginx overlap
+
+`native-nginx-overlap-source-streams-tap` adds the unchanged imported
+`m4_stream.py`/`http_probe.py` process and `reload_checks.py` stream oracle to
+the two-real-Nginx profile. Both static roots contain the original shell's
+8 MiB zero payload. The host client uses twelve streams, 16384-byte chunks,
+0.1-second gaps, a five-second socket timeout, a three-second stall threshold
+and a 120-second duration. It completes the wave in flight at that duration,
+within the original 300-second probe budget. The only network adaptation is
+the existing TAP destination and port 4108. No FF runtime is preloaded into
+the host probe.
+
+Before handoff, the profile preserves the source shell's three-second delay
+and additionally requires the old member's original-Linux census to contain
+at least thirteen ESTABLISHED sockets: twelve probe streams and the separately
+held keepalive connection. It verifies that census again before asking old
+Nginx to quit. The existing cutover retains a real SYN and commits it to the
+new Nginx while every probe worker's first response remains in flight. Old
+Nginx handles SIGQUIT through its original graceful shutdown path while those
+responses drain; the probe must still be alive after the authenticated old
+worker exits. Old LISTEN=0 and a fresh new-owner HTTP response are required
+before the profile waits for the remaining source waves.
+
+Success requires the unchanged probe exit status and stream-summary oracle,
+exact 8 MiB bodies, all twelve worker IDs spanning cutover in flight, and later
+waves from every worker completing after old-owner exit. Each completed
+response must retain MD5 and clean EOF; the source stall threshold is not
+relaxed. The JSON evidence records the actual probe command, source SHA-256
+values, complete stream output, monotonic transition events, both Nginx logs
+and broker cleanup counters. Run the long case separately from the quick
+checks; CTest allows 360 seconds for startup, the bounded source probe and
+cleanup:
+
+```sh
+ctest --test-dir <build> -R '^native-nginx-overlap-source-streams-tap$' --output-on-failure
+```
+
+This qualifies the original traffic probe over an explicit two-master broker
+cutover. It does not run the source shell's same-master HUP/USR2 generation FSM,
+its transition-log assertions, repeated reloads or fault matrix. The source
+`rt02`/`rt23` cases and the complete shell entrypoint therefore remain blocked;
+the migration inventory remains 362 scenario-adapted, 0 partial, 1 blocked.
+
+
+The recorded Debug run completed 36 responses (288 MiB) across three waves in
+about 155.5 seconds. All 36 MD5 and EOF counters passed, the source reported zero
+stalls and zero worker errors, and old Nginx drained for 47.917 seconds after
+SIGQUIT. The original-Linux broker reported outstanding=0 and worker_exit_code=0
+at final cleanup. A separate negative control changed only one byte of the new
+Nginx's payload; the unchanged source probe rejected the resulting responses.
+
+### Queued-SYN abort with real Nginx owners
+
+`native-nginx-overlap-abort-tap` exercises the other decision of the existing
+C28 transaction with both unchanged pinned Nginx callers. It waits for a real
+SYN to be retained in PREPARED, proves the host connection has not completed,
+requests ABORT and waits for ABORTED. The ingress freeze precedes socket and
+flow-map admission; the retained SYN must be replayed to the old selector.
+The queued connection must return the old Nginx's distinct body with the
+unchanged original HTTP helper's length, MD5 and EOF checks. This path does
+not expect the candidate's flow map to admit the frozen SYN.
+
+The candidate then quits through original Nginx SIGQUIT handling. Its exact
+worker pidfd must report death and its mark-scoped LISTEN census must reach
+zero. The old worker must remain alive, its established keepalive must still
+return the old body, and fresh HTTP must still reach that same old service.
+Premature initial-listener retirement remains rejected after abort and after
+candidate exit. At final shutdown the controller releases its plan/slot/group
+and terminal transaction handles; the independent old census must then show
+LISTEN=0 before broker shutdown and outstanding=0.
+
+`native-nginx-overlap-abort-source-streams-tap` adds the same unchanged
+12-stream, 8 MiB, 120-second source probe and original summary oracle used by
+the commit qualification. Every source worker must have a response in flight
+across PREPARED and must complete later waves after the candidate has exited.
+The probe must still be alive after candidate retirement. All old-owner HTTP
+checks, twelve-worker census, exact bodies, MD5/EOF, stall limits and final
+cleanup remain required. It uses the production activation module; the alias
+regression module is not involved. JSON evidence records outcome=abort and the
+candidate retirement separately from old-owner shutdown.
+
+Run the quick abort boundary or the full long-stream qualification separately:
+
+```sh
+ctest --test-dir <build> -R '^native-nginx-overlap-abort-tap$' --output-on-failure
+ctest --test-dir <build> -R '^native-nginx-overlap-abort-source-streams-tap$' --output-on-failure
+```
+
+This is one explicit abort before the selector changes. It does not qualify
+rollback after a committed handover, retrying this single-attempt group, the
+same-master generation FSM, fault-injection builds or the original shell
+matrix. Those remain open, and the source inventory stays at 362
+scenario-adapted, 0 partial, 1 blocked.
+
+
+The recorded abort/source run completed 36 correct responses (288 MiB), with
+all 12 workers active and complete, zero integrity failures, zero stalls and
+zero worker errors; broker outstanding was zero. A wrong-decision negative
+control replaced only the coordinator's ABORT request with COMMIT. The queued
+HTTP response then came from the candidate, and the unchanged response helper
+rejected its digest because the abort profile requires the old owner's body.
+The mutation was restored before the normal regression suite.
+
+
+### Admission channel interruptions
+
+A real commit/source-stream regression exposed an additional runtime fault:
+the candidate worker aborted when its owner pump returned -EINTR. This caused
+all twelve second-wave clients to fail after the first wave had completed.
+The failed trace is retained separately from successful qualification.
+
+The Ker admission channel now treats EINTR from nonblocking sendmsg/recvmsg
+before any record transfer as retryable -EAGAIN. The caller yields to its next
+bounded step, preserving the original command ID, pending response and
+deadline. No record is resent after successful transfer, authentication still
+runs on received records, and other errors retain their existing fail-closed
+handling. Nginx signal handling, timers and all upstream sources are unchanged.
+
+The initial `admission-channel-eintr` qualification injected EINTR at eleven
+syscall sites in the exact channel source, including empty receive, command send, request receive,
+result/PREPARED response send, controller receive, FINALIZE receive and
+cancellation reply. Uninterrupted operations use real credential-checked
+SOCK_SEQPACKET I/O. Its callbacks count effects rather
+than implementing protocol behavior: two admits and one revoke occur exactly
+once, and repeated interruptions yield once per step. The test fails at its
+first owner receive without the fix. The existing original flow-map ownership
+and original-LKL admission tests retain the independent runtime semantics
+coverage.
+
+
+With the channel fix, all eight focused native checks passed, including both
+complete commit/source and abort/source runs. Each long profile completed 36
+responses with zero integrity failures, stalls and worker errors, and both
+brokers ended with outstanding=0. The deterministic channel test also passed
+GCC and Clang with C11, -Wall -Wextra -Werror; the existing original-map channel
+and original-LKL admission checks passed unchanged.
+
+### Original keepalive probe through commit and abort
+
+`native-nginx-overlap-source-lc-tap` and
+`native-nginx-overlap-abort-source-lc-tap` run the unchanged imported
+`m4_lc.py`/`http_probe.py` with the source harness's performance-form defaults:
+12 persistent connections, 180 seconds, 0.1-second persistent request interval,
+0.5-second fresh-request interval and a two-second socket timeout. The TAP
+address/port adaptation remains 198.18.0.2:4108. The Nginx profile also retains
+the original shell's keepalive_timeout=300 and keepalive_requests=100000; the
+normal request cap must not create unrelated closures during this run.
+
+Handoff waits for an actual `LC_PROGRESS` line with elapsed>=3 seconds,
+n>=200 and no failures, then checks the old member's mark-scoped ESTABLISHED
+population. The separate queued-SYN transaction and distinct old/new HTTP body
+checks remain active. The probe must stay alive after old-worker retirement
+(commit) or candidate retirement (abort), and later source progress must prove
+requests continued after that event. All 13 source workers, including the fresh
+request worker, must finish and report activity without worker errors.
+
+The original `reload_runtime.sh` explicitly uses `reload_checks.py`'s `perf`
+LC criterion after successful handover: old keepalive connections may each
+close once, so the strict probe can exit 1 while the unchanged summary oracle
+passes. This fixture preserves that distinction and records both the actual
+exit code and oracle mode. Fresh failures always fail; failure/reconnect
+counts above 12, malformed/duplicate summaries, worker failures and abnormal
+process exits are rejected. The abort profile uses the stricter original LC
+oracle and requires exit 0 with zero failures and reconnects. The six pure
+`native-nginx-source-lc-oracle` controls guard this boundary.
+
+JSON evidence includes the original probe command/source hashes, complete
+output, the actual anchor and post-retirement progress lines, Nginx logs,
+broker output and cleanup statistics. Broker output is drained during the
+whole run so a full diagnostic pipe cannot block admission progress.
+
+This qualifies the original LC traffic/oracle over explicit two-master broker
+decisions. It does not run the original same-master generation FSM, rt31 CPU
+sampling or performance comparison, repeated rounds, or the full shell matrix.
+The migration entry remains blocked.
+
+### Bounded admission notification bursts
+
+The LC probe exposed an actual capacity boundary: the admission NFQUEUE was
+configured for a single queued packet, causing concurrent SYNACK notifications
+to be dropped while one admission transaction was active. The host adapter now
+uses a bounded 64-packet NFQUEUE backlog and retains up to 64 complete kernel
+notifications in a FIFO while matching an exact verdict ACK. Merely enlarging
+the kernel queue is insufficient: the former single deferred-notification slot
+also rejected a burst arriving ahead of the ACK.
+
+Map commands still execute one at a time on the authenticated owner thread;
+original Linux remains the TCP and packet authority. Sender/framing and verdict
+ACK checks are unchanged, deferred notifications keep their first-receipt
+250ms deadlines, and overflow is explicit ENOBUFS. No fail-open policy, source
+probe timeout or original TCP timer is relaxed. Retirement/disarm remains
+blocked until both the active packet and every deferred notification settle.
+The original-LKL admission smoke now runs six real 12-client bursts, verifies
+all 72 admissions and byte payloads, and exercises FIFO reuse. The old capacity
+and the enlarged-queue/single-slot variant both fail that regression.
+
+### Interrupted identity validation after receive
+
+A longer LC run exposed an interruption after recvmsg had already consumed a
+record, inside pidfd/process-image validation. The channel now retains that
+credential-checked record and retries identity validation on a later step;
+it does not read its successor or execute a map callback until validation
+succeeds. Peer death and permanent identity/framing errors remain fatal.
+Original command IDs and deadlines are retained.
+
+The extended deterministic channel test injects 18 interruptions across I/O
+and identity checks. It proves exactly two admits and one revoke, rejects a
+request that expires while identity validation is pending, and rejects a
+cached record after the actual authenticated peer exits. The earlier
+pre-transfer EINTR handling remains in place. The original flow-map and
+LKL channel tests provide independent semantics coverage.
+
+The recorded LC commit and abort runs each recorded 21588 persistent request
+attempts and 360 fresh requests with all 13 workers active and complete. Commit observed
+the permitted 12 old-connection closures/reconnects and strict probe exit 1;
+abort observed zero failures/reconnects and exit 0. Both had fresh_fail=0,
+worker_errors=0 and final broker outstanding=0. The source anchor was the
+actual `LC_PROGRESS elapsed=3.0 n=360 fail=0` line. The six oracle controls,
+twelve related native regressions (including the original long-stream probe,
+identity rejection, cancellation/quarantine and retirement cycles), and three
+channel/LKL checks passed. Earlier failed runs remain separately archived.
+
+### Admission queue handoff between live owners
+
+A retired admission window previously retained the process-wide task singleton.
+Consequently, a second owner could not attach until the retired owner exited,
+even after its original flow map and kernel queue were safely closed. This was
+an additional blocker for a subsequent Nginx generation on the same broker.
+
+The adaptation layer now tracks up to 64 attached tasks independently of the
+single fixed NFQUEUE reservation. Retirement relinquishes the reservation only
+after disabling the kernel gate, draining notifications, closing the queue and
+receiving the authenticated owner's map-close acknowledgment. The retired task
+keeps its original channel, pidfd and listener reference until exit or stop.
+A new task or a rearming retired task must exclusively reserve the queue;
+`EBUSY` leaves the retired task's epoch, lease and closed map unchanged. Failed
+or quarantined tasks retain their reservation until terminal release. Releasing
+one retired task cannot release another task's reservation.
+
+Runtime shutdown pins a snapshot of all tasks, stops and joins each worker and
+puts every listener reference before native finalization. It does not hold the
+registry mutex while joining: retirement completion also needs that mutex.
+Repeated/concurrent shutdown waits for the first shutdown to complete. New
+attachments are rejected once shutdown begins.
+
+`native-c17-admission-window-handoff` uses three real FF processes, their pinned
+original flow maps and one original-Linux TAP broker. It exchanges four strictly
+increasing leases, verifies busy start/rearm rejection, echoes nine TCP payloads
+through active and retired listeners, and checks per-owner map accounting. It
+also releases retired owners while another owner remains active, then proves the
+active reservation is still exclusive. The unmodified task singleton fails when
+the second owner attaches after the first retirement.
+
+`native-c17-admission-handoff-stop-live` stops both owners while one is retired
+and the other is active, shuts down the broker and checks that both listener
+references are put exactly once before native finalization. Both tests require
+zero outstanding broker I/O state. TCP behavior and imported upstream sources
+are unchanged.
+
+This is a prerequisite for repeated overlapping Nginx handoffs. The staged
+owner-group plan still permits one cutover attempt; adopting its surviving
+listener into a successor plan and the full same-master HUP/USR2 generation FSM
+remain outstanding. The migration inventory remains 362 scenario-adapted,
+0 partial and 1 blocked (`test_graceful_reload.sh::entrypoint`).
+
+### Successor plans for repeated explicit owner overlap
+
+`ker_socket_client_owner_group_successor_plan()` creates a fresh staged plan
+from a successfully committed predecessor. It requires the old initial listener
+to have been retired and the completed cutover capability closed. The broker
+checks the survivor's exact authenticated pid/start time/mark and original-Linux
+listener identity, retires its admission window asynchronously and returns
+`EAGAIN` until the authenticated map-close acknowledgment arrives. It then seals
+that retired window: actor-side REARM returns `EOPNOTSUPP`, preventing the old
+owner from reclaiming the fixed queue after the next generation starts.
+
+The new initial member duplicates the surviving Linux listener's open file
+description and preserves its SO_COOKIE. No socket is rebound and no logical
+role in the predecessor is rewritten. Only new candidate slot 1 can be
+delegated. A predecessor can issue one successor (`EALREADY` on duplication),
+and an aborted cutover cannot issue a successor (`EOPNOTSUPP`). The successor
+retains an internal host reference to its predecessor capability until initial
+retirement or plan cleanup, allowing coordinator copies to close. Allocation
+failures do not publish a successor or seal the retired window.
+
+Retirement now checks physical listener cookies across all broker socket
+objects and internal group/task descriptors. An adopted initial listener's
+application aliases still belong to its predecessor's logical candidate slot;
+checking only the new plan's slot 0 would miss them. The broker also waits for
+the confirmed-dead owner's admission task to release its extra `ker_fd` pin
+before closing the new plan's final listener pin and changing the reuseport
+selector. Accepted TCP sockets have distinct cookies and do not certify or
+block listener retirement as if they were listener aliases.
+
+`native-nginx-successor-owner-cutover-tap` runs three real Nginx master/worker
+pairs on one authoritative Linux broker and the same listen tuple. Two actual
+queued SYNs cross two separate committed ingress freezes. Both predecessors'
+keepalive connections continue across their respective commits. The adopted
+cookie is checked against the predecessor census; old capabilities cannot
+restart a cutover or change the new selector. The coordinator closes its old
+plan/slot copies, the second old listener is retired and fresh HTTP reaches the
+third owner. Both candidates record admission through their original flow maps.
+
+`native-nginx-successor-alias-retirement-tap` additionally retains an alias of
+the second owner's listener in the coordinator. It waits for that owner's task
+pin to be released after process exit, repeatedly verifies `EAGAIN` while the
+alias remains held, then closes it and verifies successful retirement and third
+owner HTTP. The test-only activation module also attempts actor REARM after
+succession and confirms permanent rejection. Both cases require zero outstanding
+broker I/O state. Replacing the physical-cookie guard with the former logical
+slot guard fails the alias case; removing the retired seal fails the REARM case.
+The original initial-member alias regression and the related C16/C17/C28 and
+real Nginx commit/abort regressions continue to pass.
+
+Each plan still has one cutover attempt. This qualification chains plans through
+an explicit coordinator; production same-master HUP/USR2 orchestration, the full
+generation FSM and its fault matrix remain outstanding. The migration inventory
+remains 362 scenario-adapted, 0 partial and 1 blocked
+(`test_graceful_reload.sh::entrypoint`).
+
+### Retry plans after a confirmed candidate abort
+
+`ker_socket_client_owner_group_retry_plan()` supplies the planned-abort recovery
+boundary needed before wiring same-master reload orchestration. A predecessor
+must have a confirmed ABORTED cutover, selector 0, no ingress controller and no
+live cutover capability. Its initial owner and published candidate must still
+have their exact authenticated pid/start time/mark and Linux listener identities.
+Failed/quarantined cutovers, committed predecessors and a candidate that exited
+before cooperative retirement cannot authorize this recovery.
+
+The call asynchronously retires the rejected candidate's admission window and
+returns `EAGAIN` until the authenticated map-close acknowledgment. It then seals
+that window against REARM and creates one fresh staged plan that duplicates the
+still-serving initial listener, preserving its SO_COOKIE and owner identity.
+The predecessor's broker initial pin is transferred to the fresh plan, not left
+behind as another physical listener reference. Existing application aliases keep
+their original group/role metadata. A transferred predecessor pin is explicitly
+distinct from a listener retired after owner exit; stale operations cannot treat
+it as a fresh initial member. Successor and retry creation share the one-child
+limit, so they cannot fork a predecessor into competing plans.
+
+The returned plan can be inspected while the rejected candidate is alive, but
+candidate slot 1 is withheld with `EAGAIN`. The caller stops that candidate and
+retries delegation. Delegation verifies its exact pidfd has confirmed exit,
+releases the old admission task's extra `ker_fd` reference and checks every
+physical listener-cookie alias/internal pin before allowing a replacement.
+Thus the replacement occupies Linux reuseport index 1, rather than accidentally
+creating a third physical listener behind an externally retained old alias.
+Accepted sockets are not counted as listener aliases. Initial listener traffic
+continues through original Linux while the candidate is being retired and the
+new slot remains unavailable.
+
+`native-nginx-abort-retry-cutover-tap` runs three real Nginx master/worker pairs
+on the same broker/listen tuple: abort with a queued SYN, create a retry plan,
+stop the rejected owner, then commit another queued SYN to the replacement.
+The unchanged original HTTP oracle verifies old keepalive across both decisions,
+initial-listener cookie continuity, fresh HTTP before commit and replacement
+HTTP after initial-owner retirement. Old capabilities cannot select the new
+candidate; the new candidate records original flow-map admission. Premature,
+wrong-kind, duplicate, committed and noncooperative-death recovery attempts are
+checked by the controller or the existing abort regression.
+
+`native-nginx-abort-retry-alias-tap` retains a rejected listener alias externally.
+It verifies slot delegation remains blocked both before owner exit and, after
+the task pin has been released, while that alias is still held. Closing the alias
+allows replacement startup and successful commit. The test-only module also
+confirms the rejected actor cannot reopen its sealed admission window. Both
+profiles require final broker outstanding I/O to be zero.
+
+The related 19 native C16/C17/C28/Nginx regressions pass. Three negative controls
+fail as expected: bypassing the rejected-owner barrier delegates too early;
+removing the physical-cookie check permits an externally retained alias; and
+retaining the predecessor's old initial pin prevents final listener retirement.
+All protections were restored before final validation.
+
+This is explicit coordinator recovery from an acknowledged abort. Same-master
+HUP/USR2 orchestration and the complete generation FSM/fault matrix remain
+outstanding; no imported upstream source is modified. Migration inventory stays
+at 362 scenario-adapted, 0 partial and 1 blocked
+(`test_graceful_reload.sh::entrypoint`).
+
+### Original rt24 traffic probe across abort and retry
+
+`native-nginx-abort-retry-source-lc-tap` runs the unchanged `m4_lc.py` and
+`http_probe.py` used by the source shell's `case_rt24`: 12 persistent connections,
+0.1-second interval, 30-second duration, a fresh connection every 0.5 seconds
+and a two-second timeout. The source shell's `launch_probe ... 240` is its outer
+command budget, not the probe duration. The native profile substitutes only its
+own server address/listen port. The probe, HTTP helper, original summary checker
+and source shell are hashed before and after the run.
+
+The first native cutover aborts after an actual queued SYN. An observed source
+`LC_PROGRESS` line establishes the original three-second startup anchor. Before
+replacement startup, another source progress line must lie at least five seconds
+after the confirmed abort, show increasing request count and have no failures
+anywhere in the aborted-round interval. A native census confirms all 12 source
+connections and the independent held connection still belong to the original
+owner. The rejected candidate exits, a fresh retry candidate starts and another
+queued SYN crosses a committed cutover. Old keepalive is checked before old-owner
+shutdown; source request progress must continue after its exit and listener
+retirement.
+
+The original `reload_checks.py` perf LC oracle judges the final summary, matching
+`case_rt24`'s allowance of one old-connection closure/reconnect per connection
+and zero fresh failures even when the strict probe exits 1. A pure abort retains
+its stronger zero-failure/exit-0 requirement. The native profile additionally
+measures old-owner exit plus listener retirement against 15000ms; this is not
+presented as the original FSM's T3 drain receipt.
+
+Recorded evidence: `LC_PROGRESS elapsed=3.0 n=360 fail=0` at startup and
+`LC_PROGRESS elapsed=9.0 n=1080 fail=0` after the abort interval. The complete
+30-second run recorded 3600 persistent request attempts, 12 closures/reconnects,
+60 fresh requests, `fresh_fail=0`, all 13 workers active/done and zero worker
+errors. Strict probe exit 1 is accepted by the unchanged original perf checker.
+Old-owner exit/listener retirement took about 15ms and final broker outstanding
+I/O was zero. The phase/oracle controls reject stale progress, no request growth,
+failures during the aborted interval, excess final closures, fresh failures,
+missing workers and abnormal process exits.
+
+This qualifies the original rt24 traffic probe over explicit broker abort/retry
+coordination. It does not run source `FF_FAULT=flip_fail_once`, send the two HUPs
+to one master, or manufacture original FSM completion/drain logs. Those source
+case assertions and production HUP/USR2 orchestration remain outstanding; the
+full shell entrypoint stays blocked and the migration inventory is unchanged.
+
+### Authenticated worker event-loop READY
+
+The explicit owner-overlap profiles now wait for a host Unix seqpacket READY
+record emitted from the pinned worker's `ff_run`, after owner-loop entry and its
+first successful owner pump. Listener/admission trace lines remain diagnostic
+checks; they no longer authorize the controller to advance. This covers initial,
+candidate, successor and abort/retry workers without modifying upstream Nginx.
+
+The caller optionally passes `KER_NGINX_OWNER_READY_FD` (a connected host
+`AF_UNIX/SOCK_SEQPACKET` endpoint, also retained by Nginx's `env` directive).
+The module authenticates the master parent's PID/UID/GID using `SO_PEERCRED`
+and obtains `SO_PEERPIDFD`. A forked worker binds its report only after the
+broker-authenticated slot claim. The fixed 64-byte, same-host native-endian
+version-1 record contains role, slot pipe device/inode, worker PID/start ticks
+and endpoint `SO_COOKIE`; reserved fields must be zero. The test coordinator
+checks kernel `SCM_CREDENTIALS`, the exact delegated slot and socket cookie,
+`/proc` start ticks and the expected worker's live pidfd before accepting it.
+Unexpected ancillary data, rights, truncation, stale identities and exited
+workers fail closed. Received rights are closed, including on truncated frames.
+
+The sender rechecks endpoint/pidfd identity, detects coordinator death or
+endpoint closure, and retries nonblocking queue pressure only until a five-second
+monotonic deadline. Successful send is idempotent and closes the worker's
+transport copies; descendants cannot reuse its bound report. Identity-guarded
+cleanup preserves unrelated descriptors that reused those fd numbers. The master
+retains its own endpoint copy until exit; the endpoint is close-on-exec, so this
+contract does not claim USR2 inheritance. With no optional fd, existing runtime
+and serial-cycle profiles retain their behavior.
+
+`native-nginx-worker-ready-transport` exercises the production sender across
+master/worker forks, credential rejection, slot binding, descendant rejection,
+idempotent delivery, fd reuse, queue pressure/deadline and disconnected peer.
+Receiver checks cover every wire identity field, credential/frame rejection,
+actual truncated rights without leaks and a dead worker. The real overlap profile
+also has a validation mutation: suppressing the runtime notification leaves its
+listener trace intact but fails with `worker loop READY timed out`.
+
+This is a cooperative pinned-caller report of loop entry, not isolation from
+same-process code, a future health guarantee, or an original shared-FSM READY
+transition. Broker cutover still independently validates owner capabilities.
+Same-master original HUP/USR2 FSM integration and the complete source shell
+entrypoint remain outstanding; inventory stays **362 scenario-adapted, 0 partial,
+1 blocked**.
+
+### READY does not survive candidate worker death
+
+Two real pinned-Nginx profiles now kill the authenticated READY candidate worker
+with `pidfd_send_signal(SIGKILL)`, while its master is confirmed stopped. This
+separates broker liveness checks from Nginx reaping and respawn. Both masters
+remain the original processes; after the observation the candidate master resumes,
+reaps its worker and refuses delegated-slot respawn before any new worker forks.
+The shim/module does not silently reuse the dead worker's authority.
+
+- `native-nginx-ready-owner-death-before-begin-tap`: the dead candidate cannot
+  begin a cutover or obtain a retry plan. No ingress lease was armed; both a new
+  HTTP request and the held keepalive still reach the unchanged initial owner.
+- `native-nginx-ready-owner-death-prepared-tap`: a real SYN is observed in q88
+  before killing the candidate. Broker polling must reach **QUARANTINED** with a
+  negative error, at least one received packet and zero accepted/replayed packets.
+  A COMMIT request after the death proof must never become COMMITTED: request
+  acknowledgement alone is not completion. Subsequent COMMIT and ABORT reject the terminal state with `EALREADY`; retry rejects it
+  with `ECANCELED`. The queued client and another fresh client time out, while
+  the preexisting old-owner keepalive still works. Kernel quarantine retains the
+  fail-closed ingress gate; it is not an abort receipt or restored fresh service.
+
+Both profiles require the worker's pidfd death proof, no replacement children,
+clean Nginx master shutdown, kernel-confirmed quarantine where applicable and
+broker `outstanding=0`. READY credentials establish only past loop entry; the
+broker's independent owner/capability validation remains necessary at cutover.
+The test injects a real process death, not a forged READY/FSM status or upstream
+`FF_FAULT` implementation. This expands native fault qualification without
+claiming an original shell case or increasing migration counts. Recovery from a
+quarantined cutover, the original same-master HUP/USR2 FSM and the full source
+entrypoint remain outstanding (362 scenario-adapted, 0 partial, 1 blocked).
+
+### Abandon an unready candidate before ingress freeze
+
+`ker_socket_client_owner_group_abandon_plan()` explicitly cancels a live,
+published candidate before BEGIN and adopts the unchanged initial Linux listener
+into one fresh staged plan. `EAGAIN` means its admission map-close ACK is pending;
+success permanently seals that window against REARM. New slot 1 remains blocked
+until the rejected worker's pidfd confirms death and all physical listener aliases
+and task pins disappear. Listener cookie, existing old connections and the native
+initial-owner registration are preserved. Old capabilities cannot start a cutover
+or select the abandoned candidate after adoption.
+
+The operation requires CONTROL on the exact plan, both published live owners,
+matching identities and native listener cookies, selector zero, and no ingress
+controller or generation watch. Started cutovers reject it with `EOPNOTSUPP`;
+quarantine remains `ECANCELED`. The normal acknowledged-abort retry API keeps its
+original contract. No synthetic ABORTED state, ingress lease or FSM receipt is
+created. Dead candidates use the separate recovery contract below; failed ingress transactions remain unsupported.
+
+`native-nginx-abandon-retry-cutover-tap` and its `-alias-tap` companion suppress
+only the test module's candidate READY notification. The original Nginx worker
+and its event loop remain live; the caller's one-second READY budget expires,
+then the caller abandons the plan. Both profiles prove the same initial listener
+cookie, old fresh HTTP/keepalive, refusal to delegate while the unready owner is
+alive, and a successful retry with a real queued SYN. The alias profile also
+proves permanent REARM refusal and blocks a new slot after owner death until an
+external listener alias closes. After retry commit the old owner retires and new
+HTTP succeeds. Suppression exists only in the test module, not the installed
+activation module. Upstream sources are unchanged.
+
+This supplies pre-BEGIN caller recovery for a missing READY notification. It does
+not implement original `FF_FAULT=ready_never`, the original master's timeout/FSM,
+or quarantined-ingress recovery. Inventory remains 362 scenario-adapted, 0 partial,
+1 blocked until the complete source shell contract is implemented.
+
+### Recover a dead, never-selected candidate before BEGIN
+
+`ker_socket_client_owner_group_recover_dead_plan()` recovers a published
+candidate's confirmed death before any cutover starts. It requires the exact
+candidate pidfd death, closure of all candidate listener aliases/pins, confirmed
+admission task release/join and no remaining broker socket or group pin carrying
+that owner's identity. A retained publication cookie and claim generation prevent
+death cleanup from erasing the physical-listener correlation. The original
+owner must still be alive with the same validated initial listener.
+
+Task release normally leaves a fail-closed admission gate behind. After these
+proofs, recovery disables only the exact stale mark/lease using the existing
+kernel compare-and-clear ioctl. A stale lease cannot clear another window. If the gate was already retired or
+replaced, `ESTALE` rejects recovery rather than guessing the global state.
+The lease snapshot is captured only from a final task window before release.
+The joined task has closed q87's netlink consumer, which flushes its pending skbs;
+no old listener or marked socket remains able to generate a later SYNACK.
+This path requires the serialized LKL profile. It does not alter Linux protocol
+code, acknowledge a dead actor's map-close message, or disable an ingress freeze.
+
+Success adopts the unchanged initial listener into one fresh plan and transfers
+only its old broker pin. New slot 1 can be delegated immediately because old
+candidate death and complete closure are already proven. Duplicate recovery is
+`EALREADY`; live candidates/retained aliases return `EAGAIN`. Watched plans,
+started cutovers and any history of selecting the candidate reject recovery,
+even if the selector returned to zero. Quarantine stays `ECANCELED`.
+
+`native-nginx-dead-recovery-cutover-tap` and `-alias-tap` start a real READY
+candidate and kill its worker via pidfd before BEGIN. They prove refusal while
+alive and, in the alias profile, after death while an external alias remains.
+Both preserve old fresh HTTP/keepalive and the listener cookie, create a new
+candidate, commit a real queued SYN and retire the original owner. The separate
+`-history-tap` profile selects candidate 1 then restores initial 0 before death;
+recovery must still return `EOPNOTSUPP`. Existing prepared-death tests require
+quarantine and refuse the new API. This extends native recovery prerequisites,
+not the original same-master HUP/USR2 FSM or an original shell fault case.
+Inventory remains 362 scenario-adapted, 0 partial, 1 blocked.

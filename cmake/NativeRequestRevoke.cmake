@@ -1,5 +1,10 @@
 # Included after the native POSIX targets are defined by NativeLinux.cmake.
 if(BUILD_TESTING)
+    add_executable(ker-admission-channel-eintr-test tests/posix/admission-channel-eintr.c)
+    target_link_libraries(ker-admission-channel-eintr-test PRIVATE Threads::Threads)
+    target_compile_options(ker-admission-channel-eintr-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME admission-channel-eintr COMMAND ker-admission-channel-eintr-test)
+    set_tests_properties(admission-channel-eintr PROPERTIES TIMEOUT 10 LABELS "admission;signals")
     add_executable(ker-tcp-request-revoke-abi-test
         "${PROJECT_SOURCE_DIR}/tests/posix/tcp-request-revoke-abi.c")
     target_include_directories(ker-tcp-request-revoke-abi-test PRIVATE
@@ -201,6 +206,437 @@ if(BUILD_TESTING)
         set_tests_properties(native-c25-candidate-unbound-activation-tap PROPERTIES
             TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;wire;reuseport"
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+        if(TARGET ker-fstack-nginx-owner-activation AND
+           TARGET ker-fstack-nginx-worker-shim AND KER_FSTACK_NGINX_BINARY)
+            add_executable(ker-nginx-owner-ready-test
+                tests/posix/nginx-owner-ready-test.c src/posix/nginx-owner-ready.c)
+            target_include_directories(ker-nginx-owner-ready-test PRIVATE src/posix)
+            target_compile_options(ker-nginx-owner-ready-test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+            add_test(NAME native-nginx-worker-ready-transport
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/nginx-owner-ready-test.py"
+                    "$<TARGET_FILE:ker-nginx-owner-ready-test>")
+            set_tests_properties(native-nginx-worker-ready-transport PROPERTIES
+                TIMEOUT 30 LABELS "nginx;host;ready" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-candidate-admission-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --reuseport-group-client "$<TARGET_FILE:ker-socket-broker-reuseport-group-client>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-candidate-evidence.json")
+            set_tests_properties(native-nginx-candidate-admission-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-source-lc-oracle
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/nginx-source-lc-oracle.py")
+            set_tests_properties(native-nginx-source-lc-oracle PROPERTIES
+                TIMEOUT 10 LABELS "nginx;source-reload" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_executable(ker-nginx-owner-group-controller tests/posix/nginx-owner-group-controller.c)
+            target_link_libraries(ker-nginx-owner-group-controller PRIVATE ker-socket-client)
+            target_compile_options(ker-nginx-owner-group-controller PRIVATE -Wall -Wextra -Werror)
+            add_test(NAME native-nginx-overlapping-owner-cutover-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-overlap-evidence.json")
+            set_tests_properties(native-nginx-overlapping-owner-cutover-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            foreach(death_phase IN ITEMS before-begin prepared)
+                add_test(NAME native-nginx-ready-owner-death-${death_phase}-tap
+                    COMMAND "${Python3_EXECUTABLE}"
+                        "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                        --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                        --library "$<TARGET_FILE:ker-posix>"
+                        --worker "$<TARGET_FILE:ker-io-worker>"
+                        --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                        --preload "$<TARGET_FILE:ker-socket-preload>"
+                        --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                        --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                        --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                        --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                        --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                        --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                        --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                        --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                        --nginx-overlap-owner-death "${death_phase}"
+                        --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-ready-owner-death-${death_phase}-evidence.json")
+                set_tests_properties(native-nginx-ready-owner-death-${death_phase}-tap PROPERTIES
+                    TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover;failure-boundary"
+                    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            endforeach()
+                add_test(NAME native-nginx-dead-recovery-history-tap
+                    COMMAND "${Python3_EXECUTABLE}"
+                        "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                        --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                        --library "$<TARGET_FILE:ker-posix>"
+                        --worker "$<TARGET_FILE:ker-io-worker>"
+                        --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                        --preload "$<TARGET_FILE:ker-socket-preload>"
+                        --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                        --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                        --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                        --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                        --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                        --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                        --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                        --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                        --nginx-overlap-owner-death before-begin --nginx-overlap-history-rejection
+                        --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-dead-recovery-history-evidence.json")
+                set_tests_properties(native-nginx-dead-recovery-history-tap PROPERTIES
+                    TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover;failure-boundary"
+                    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-abort-retry-source-lc-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-overlap-abort --nginx-overlap-retry --nginx-overlap-source-lc
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-abort-retry-source-lc-evidence.json")
+            set_tests_properties(native-nginx-abort-retry-source-lc-tap PROPERTIES
+                TIMEOUT 300 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-abort-retry-cutover-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-overlap-abort --nginx-overlap-retry
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-abort-retry-evidence.json")
+            set_tests_properties(native-nginx-abort-retry-cutover-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-abandon-retry-cutover-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-overlap-alias-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation-alias-test>"
+                    --nginx-overlap-abort --nginx-overlap-retry --nginx-overlap-abandon
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-abandon-retry-evidence.json")
+            set_tests_properties(native-nginx-abandon-retry-cutover-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-dead-recovery-cutover-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-overlap-alias-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation-alias-test>"
+                    --nginx-overlap-abort --nginx-overlap-retry --nginx-overlap-abandon --nginx-overlap-recover-dead
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-dead-recovery-evidence.json")
+            set_tests_properties(native-nginx-dead-recovery-cutover-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-abort-retry-alias-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-overlap-alias-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation-alias-test>"
+                    --nginx-overlap-alias-regression
+                    --nginx-overlap-abort --nginx-overlap-retry
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-abort-retry-alias-evidence.json")
+            set_tests_properties(native-nginx-abort-retry-alias-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-abandon-retry-alias-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-overlap-alias-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation-alias-test>"
+                    --nginx-overlap-alias-regression
+                    --nginx-overlap-abort --nginx-overlap-retry --nginx-overlap-abandon
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-abandon-retry-alias-evidence.json")
+            set_tests_properties(native-nginx-abandon-retry-alias-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-dead-recovery-alias-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-overlap-alias-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation-alias-test>"
+                    --nginx-overlap-alias-regression
+                    --nginx-overlap-abort --nginx-overlap-retry --nginx-overlap-abandon --nginx-overlap-recover-dead
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-dead-recovery-alias-evidence.json")
+            set_tests_properties(native-nginx-dead-recovery-alias-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-successor-owner-cutover-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-overlap-successor
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-successor-evidence.json")
+            set_tests_properties(native-nginx-successor-owner-cutover-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-successor-alias-retirement-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-overlap-alias-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation-alias-test>"
+                    --nginx-overlap-alias-regression
+                    --nginx-overlap-successor
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-successor-alias-evidence.json")
+            set_tests_properties(native-nginx-successor-alias-retirement-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-overlap-source-streams-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-source-streams
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-overlap-source-streams-evidence.json")
+            set_tests_properties(native-nginx-overlap-source-streams-tap PROPERTIES
+                TIMEOUT 360 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover;source-reload"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-overlap-source-lc-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-source-lc
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-overlap-source-lc-evidence.json")
+            set_tests_properties(native-nginx-overlap-source-lc-tap PROPERTIES
+                TIMEOUT 300 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover;source-reload"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-overlap-abort-source-lc-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-abort
+                    --nginx-overlap-source-lc
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-overlap-abort-source-lc-evidence.json")
+            set_tests_properties(native-nginx-overlap-abort-source-lc-tap PROPERTIES
+                TIMEOUT 300 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover;source-reload"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-overlap-abort-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-abort
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-overlap-abort-evidence.json")
+            set_tests_properties(native-nginx-overlap-abort-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-overlap-abort-source-streams-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-abort
+                    --nginx-overlap-source-streams
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-overlap-abort-source-streams-evidence.json")
+            set_tests_properties(native-nginx-overlap-abort-source-streams-tap PROPERTIES
+                TIMEOUT 360 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover;source-reload"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-initial-member-alias-retirement-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-overlap-alias-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation-alias-test>"
+                    --nginx-overlap-alias-regression
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-overlap-alias-evidence.json")
+            set_tests_properties(native-nginx-initial-member-alias-retirement-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover;alias-regression"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+        endif()
 
         add_test(NAME native-c28-broker-owned-cutover-tap
             COMMAND "${Python3_EXECUTABLE}"
@@ -400,6 +836,38 @@ if(BUILD_TESTING)
                 --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
                 --window-cycles-only)
         set_tests_properties(native-c17-admission-window-cycles PROPERTIES
+            TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;window-cycles"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
+        add_test(NAME native-c17-admission-window-handoff
+            COMMAND "${Python3_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker>"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                --preload "$<TARGET_FILE:ker-socket-preload>"
+                --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                --window-handoff-only)
+        set_tests_properties(native-c17-admission-window-handoff PROPERTIES
+            TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;window-cycles"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
+        add_test(NAME native-c17-admission-handoff-stop-live
+            COMMAND "${Python3_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker>"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                --preload "$<TARGET_FILE:ker-socket-preload>"
+                --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                --window-handoff-only --window-handoff-stop-live)
+        set_tests_properties(native-c17-admission-handoff-stop-live PROPERTIES
             TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;window-cycles"
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 

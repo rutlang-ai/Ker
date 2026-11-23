@@ -1364,16 +1364,31 @@ def _run_session_impl(args, api):
         finally:
             connection.close()
         expected_key = 1 + (successor['slot'] * 2 + successor['generation']) * 4 + successor['process']
-        if (successor['generation'] != 1 or
-                successor['slot'] != metrics['attached']['slot'] or successor['epoch'] != metrics['attached']['epoch'] or
-                successor['pid'] != metrics['handoff_peer_attached']['pid'] or successor['pid'] == worker.pid or
-                successor['queue_owner_key'] != expected_key or successor['exception_endpoint_owner_key'] != expected_key or
-                not successor['exception_endpoint_fd'] or geometry['exception_endpoint_owner_key'] != expected_key or
-                metrics['exception_endpoint_name'] not in successor_tun_interfaces or
-                observed['token'] != expected_key or observed['generation'] != 1 or
-                observed['slot'] != metrics['attached']['slot'] or observed['epoch'] != metrics['attached']['epoch'] or
-                app.poll() is not None or worker.poll() is not None or peer_worker.poll() is not None):
-            raise RuntimeError('resident did not grant the same-session successor while old app/worker remained live')
+        handoff_checks = dict(
+            successor_generation=successor['generation'] == 1,
+            successor_slot=successor['slot'] == metrics['attached']['slot'],
+            successor_epoch=successor['epoch'] == metrics['attached']['epoch'],
+            successor_pid=successor['pid'] == metrics['handoff_peer_attached']['pid'] and
+                successor['pid'] != worker.pid,
+            successor_queue_owner=successor['queue_owner_key'] == expected_key,
+            successor_exception_owner=successor['exception_endpoint_owner_key'] == expected_key,
+            successor_exception_fd=successor['exception_endpoint_fd'],
+            geometry_exception_owner=geometry['exception_endpoint_owner_key'] == expected_key,
+            successor_exception_interface=metrics['exception_endpoint_name'] in successor_tun_interfaces,
+            resident_owner=observed['token'] == expected_key,
+            resident_generation=observed['generation'] == 1,
+            resident_slot=observed['slot'] == metrics['attached']['slot'],
+            resident_epoch=observed['epoch'] == metrics['attached']['epoch'],
+            app_live=app.poll() is None,
+            parked_worker_live=worker.poll() is None,
+            successor_worker_live=peer_worker.poll() is None)
+        if not all(handoff_checks.values()):
+            raise RuntimeError('resident did not grant the same-session successor while old app/worker remained live: ' +
+                json.dumps(dict(checks=handoff_checks, expected_key=expected_key,
+                    endpoint_name=metrics['exception_endpoint_name'],
+                    successor=successor, geometry=geometry, successor_tun_interfaces=successor_tun_interfaces,
+                    resident=observed, process_returncodes=dict(app=app.poll(),
+                        parked_worker=worker.poll(), successor_worker=peer_worker.poll())), sort_keys=True))
         metrics['handoff'] = dict(stage='committed', app_pid=app.pid, old_worker_pid=worker.pid,
             peer_worker_pid=peer_worker.pid, old_owner_key=metrics['grant']['queue_owner_key'],
             new_owner_key=expected_key, old_exception_fd=old_exception_fd,

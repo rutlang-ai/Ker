@@ -233,6 +233,8 @@ static int child_worker(struct fixture *fixture)
         if (receive_packet(fixture->worker_fd, bytes, sizeof(bytes), &length, getppid(), false)) return 29;
         if (length != sizeof(struct ker_rx_decision_header) + sizeof(struct ker_rx_decision_result)) return 30;
         if (sendmsg(fixture->worker_fd, &send_message, MSG_NOSIGNAL) != data_header.message_bytes) return 31;
+        /* Keep the pidfd live until the parent verifies replay rejection. */
+        if (read(fixture->settle_pipe[0], &release, 1) != 1) return 42;
     }
     if (strcmp(fixture->mode, "positive") && strcmp(fixture->mode, "drop") &&
         strcmp(fixture->mode, "bad-action") && strcmp(fixture->mode, "wrong-thread") &&
@@ -393,9 +395,10 @@ static int run_case(const char *mode)
             CHECK(callback.calls == 1);
             CHECK(wait_fd(consumer_fd) == 0);
             CHECK(ker_rx_decision_consumer_pump() == -EPROTO);
-            kill(fixture.worker_pid, SIGKILL);
+            CHECK(write(fixture.settle_pipe[1], "x", 1) == 1);
             int status;
             CHECK(waitpid(fixture.worker_pid, &status, 0) == fixture.worker_pid);
+            CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
             close(fixture.worker_pidfd);
             close(fixture.supervisor_pidfd);
             close(fixture.settle_pipe[1]);

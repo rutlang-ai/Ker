@@ -39,6 +39,27 @@ int ker_socket_broker_server_reuseport_group_create(struct ker_socket_broker_ser
  * and request sessions have closed. */
 int ker_socket_broker_server_run(struct ker_socket_broker_server *server,
     int stop_when_empty);
+/* Opt-in private-supervisor readiness profile. Attach one pre-created
+ * AF_UNIX SOCK_SEQPACKET control endpoint before run; control_fd is borrowed
+ * and duplicated, and the peer must be this process's supervisor. The adapter
+ * pins that parent identity and emits one
+ * authenticated-by-kernel READY record from the first broker pump only after
+ * bootstrap_complete_empty succeeds. For this profile the initial capability
+ * set must be empty. server_run(server, 0) then remains available for RPC
+ * until an authenticated one-shot STOP arrives. STOP_ACK confirms acceptance
+ * only; normal run return and checked destroy are still required for cleanup.
+ * These functions do not enable Nginx graceful reload or grant packet I/O. */
+int ker_socket_broker_server_readiness_attach(
+    struct ker_socket_broker_server *server, int control_fd,
+    const uint8_t run_nonce[16], uint64_t worker_epoch,
+    const uint8_t expected_worker_profile_sha256[32],
+    uint64_t expected_supervisor_start_ticks);
+int ker_socket_broker_server_bootstrap_complete_empty(
+    struct ker_socket_broker_server *server);
+#ifdef KER_SOCKET_BROKER_READINESS_TESTING
+int ker_socket_broker_server_readiness_test_parent_error(
+    const struct ker_socket_broker_server *server);
+#endif
 void ker_socket_broker_server_destroy(struct ker_socket_broker_server *server);
 /* Error-reporting teardown variant. If a fail-closed ingress quarantine
  * cannot be confirmed, returns -1/errno and retains the server and its pinned

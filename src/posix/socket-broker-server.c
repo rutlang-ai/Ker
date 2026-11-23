@@ -30,7 +30,9 @@
 #include "member-census-runtime.h"
 #include "ff-owner-admission-control.h"
 #include "ff-admission-task.h"
+#include "ff-admission-queue.h"
 #include "ff-ingress-controller.h"
+#include "socket-broker-readiness-wire.h"
 
 #ifndef SO_PEERPIDFD
 #define SO_PEERPIDFD 77
@@ -75,12 +77,20 @@ struct sb_group {
     bool member_present[2];
     uint8_t selected_member;
     bool cutover_started;
+    bool successor_issued;
+    bool candidate_was_selected;
+    bool dead_candidate_gate_released;
+    uint64_t candidate_published_cookie; /* Retained after death poisoning. */
+    uint64_t candidate_published_claim;
+    bool predecessor_pinned;
+    int predecessor_cap_fd;
     bool cutover_orphaned;
     int cutover_object_slot;
     struct sb_group_cutover cutover;
     enum { SB_MEMBER_ACTIVATION_NONE, SB_MEMBER_ACTIVATION_UNBOUND,
         SB_MEMBER_ACTIVATION_BOUND, SB_MEMBER_ACTIVATION_PUBLISHED,
-        SB_MEMBER_ACTIVATION_FAILED } activation_state[2];
+        SB_MEMBER_ACTIVATION_FAILED, SB_MEMBER_ACTIVATION_RETIRED,
+        SB_MEMBER_ACTIVATION_TRANSFERRED } activation_state[2];
     unsigned activation_caps[2];
     enum { SB_STAGED_NONE, SB_STAGED_INITIAL_RESERVED,
         SB_STAGED_INITIAL_PUBLISHED, SB_STAGED_CANDIDATE_BUILDING,
@@ -101,6 +111,13 @@ struct sb_group {
     int backlog;
     uint32_t group_rights;
     size_t handles;
+    size_t watch_refs;
+    bool metadata_only;
+    uint64_t retry_candidate_token;
+    pid_t retry_candidate_pid;
+    uint64_t retry_candidate_start_time;
+    uint32_t retry_candidate_mark;
+    uint64_t retry_candidate_cookie;
 };
 struct sb_object {
     bool live;
@@ -125,6 +142,7 @@ struct sb_object {
     uint64_t group_incarnation;
     uint64_t group_claim_generation;
     bool owner_group_activation;
+    int generation_watch_slot;
 };
 struct sb_owner {
     bool live;
@@ -155,6 +173,7 @@ struct sb_owner {
     int admission_listener_native_fd;
     uint64_t admission_registration_id;
     uint64_t admission_deadline_ns;
+    uint64_t released_admission_lease;
     char admission_directory[80];
     char admission_path[KER_SOCKET_BROKER_PATH_MAX + 1];
     dev_t admission_directory_dev;
@@ -172,6 +191,32 @@ struct sb_client {
 };
 
 #define KER_SB_CENSUS_JOBS 4
+#define KER_SB_GENERATION_WATCHES 16
+enum generation_watch_state {
+    GENERATION_WATCH_PLAN_BOUND = 1,
+    GENERATION_WATCH_CLAIMED = 2,
+    GENERATION_WATCH_PUBLISHED = 3,
+    GENERATION_WATCH_VERIFY_CENSUS = 4,
+    GENERATION_WATCH_VERIFY_PAYLOAD = 5,
+    GENERATION_WATCH_OLD_RETIRED = 6
+};
+struct sb_generation_watch {
+    bool live;
+    uint32_t state;
+    int group_slot;
+    uint64_t group_incarnation;
+    pid_t owner_pid;
+    int owner_pidfd;
+    uint64_t owner_start_time;
+    uint64_t owner_token;
+    uint64_t claim_generation;
+    uint32_t mark;
+    uint16_t local_port;
+    uint64_t listener_cookie;
+    uint64_t verify_ticket;
+    uint64_t verify_sequence;
+    uint64_t runtime_epoch;
+};
 struct sb_census_job {
     bool live;
     bool payload;
@@ -201,13 +246,52 @@ struct ker_socket_broker_server {
     uint64_t next_group_incarnation;
     struct sb_client clients[KER_SB_CLIENTS];
     struct sb_census_job census_jobs[KER_SB_CENSUS_JOBS];
+    struct sb_generation_watch generation_watches[KER_SB_GENERATION_WATCHES];
+    int readiness_verify_watch_slot;
+    uint64_t readiness_verify_sequence;
+    uint64_t readiness_last_verify_sequence;
+    uint64_t readiness_verify_deadline_ns;
+    int readiness_fd;
+    int readiness_supervisor_pidfd;
+#ifdef KER_SOCKET_BROKER_READINESS_TESTING
+    int readiness_parent_error;
+#endif
+#ifdef KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING
+    int readiness_test_verify_fd;
+    bool readiness_test_verify_announced;
+#endif
+    pid_t readiness_supervisor_pid;
+    uid_t readiness_supervisor_uid;
+    gid_t readiness_supervisor_gid;
+    uint64_t readiness_supervisor_start_ticks;
+    uint64_t readiness_broker_start_ticks;
+    uint64_t readiness_epoch;
+    uint8_t readiness_nonce[16];
+    uint8_t readiness_worker_profile[32];
+    bool readiness_attached;
+    bool readiness_bootstrap_complete;
+    bool readiness_sent;
+    bool readiness_stop_requested;
 };
 
 static void owner_group_activation_poison(struct ker_socket_broker_server *server,
     struct sb_group *group, struct sb_object *activation);
+static void generation_watch_close(struct ker_socket_broker_server *server,
+    struct sb_object *object);
+static int generation_watch_capture_claim(struct ker_socket_broker_server *server,
+    int group_slot, struct sb_group *group, unsigned index, struct sb_owner *owner);
+static void generation_watch_capture_publication(struct ker_socket_broker_server *server,
+    int group_slot, struct sb_group *group);
 static void advance_group_cutovers(struct ker_socket_broker_server *server);
 static bool group_cutover_terminal(uint32_t phase);
+static int owner_group_retry_candidate_closed(struct ker_socket_broker_server *server,
+    struct sb_group *group);
 static void group_cutover_quarantine(struct sb_group *group, int result);
+static int process_start_time(pid_t pid, uint64_t *start_time);
+static struct sb_object *lookup_cap(struct ker_socket_broker_server *server, int fd);
+static int readiness_verify_finish(struct ker_socket_broker_server *server, int status);
+static int readiness_receive_control(struct ker_socket_broker_server *server);
+static int generation_watch_progress(struct ker_socket_broker_server *server);
 
 static int host_close(int fd)
 {
@@ -251,7 +335,18 @@ static void owner_admission_task_trace(const char *event, int status)
 static int owner_admission_task_release(struct sb_owner *owner)
 {
     if (!owner || !owner->admission_task) return -EINVAL;
-    int status = ker_posix_ff_admission_task_release(owner->admission_task);
+    uint32_t window;
+    uint64_t lease = 0, epoch;
+    int error;
+    int snapshot = ker_posix_ff_admission_task_poll_window(owner->admission_task,
+        &window, &lease, &epoch, &error);
+    if (snapshot) return snapshot;
+    /* A retiring/rearming task can still change its lease. Snapshot only a
+     * final window; release itself confirms terminal state and joins it. */
+    int status = (window == KER_FF_ADMISSION_TASK_QUARANTINED ||
+        window == KER_FF_ADMISSION_TASK_TERMINAL) ?
+        ker_posix_ff_admission_task_release(owner->admission_task) : -EBUSY;
+    if (!status) owner->released_admission_lease = lease;
 #ifdef KER_C16_ADMISSION_TEST_TRACE
     if (status == -EBUSY && !owner->admission_release_busy_logged) {
         owner_admission_task_trace("deferred", status);
@@ -387,6 +482,12 @@ static uint32_t required_right(uint16_t operation)
     case KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT:
     case KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT:
     case KER_SB_FF_OWNER_GROUP_CUTOVER_POLL:
+    case KER_SB_FF_OWNER_GENERATION_WATCH_CREATE:
+    case KER_SB_FF_OWNER_GROUP_RETIRE_INITIAL_LISTENER:
+    case KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN:
+    case KER_SB_FF_OWNER_GROUP_RECOVER_DEAD_PLAN:
+    case KER_SB_FF_OWNER_GROUP_ABANDON_PLAN:
+    case KER_SB_FF_OWNER_GROUP_RETRY_PLAN:
         return KER_SOCKET_BROKER_CONTROL;
     case KER_SB_FF_OWNER_GROUP_CLAIM:
     case KER_SB_FF_OWNER_GROUP_MEMBER:
@@ -412,6 +513,8 @@ static void close_client(struct ker_socket_broker_server *server, struct sb_clie
 static void close_object(struct ker_socket_broker_server *server, struct sb_object *object)
 {
     if (!object->live) return;
+    if (object->kind == KER_SOCKET_BROKER_FF_OWNER_GENERATION_WATCH)
+        generation_watch_close(server, object);
     bool activation_role_has_alias = false;
     if (object->owner_group_activation && object->group_slot >= 0 &&
         object->group_index <= 1) {
@@ -501,12 +604,26 @@ static void close_object(struct ker_socket_broker_server *server, struct sb_obje
             }
             if (group->base_fd[0] >= 0) (void)close(group->base_fd[0]);
             if (group->base_fd[1] >= 0) (void)close(group->base_fd[1]);
-            *group = (struct sb_group){.base_fd = {-1, -1},
-                .activation_task_fd = {-1, -1}, .cutover_object_slot = -1};
+            if (group->predecessor_pinned) {
+                (void)host_close(group->predecessor_cap_fd);
+                group->predecessor_pinned = false;
+            }
+            if (group->watch_refs) {
+                /* A watch pins metadata only. Listener and task descriptors
+                 * have already been closed above and are never retained by it. */
+                group->base_fd[0] = group->base_fd[1] = -1;
+                group->activation_task_fd[0] = group->activation_task_fd[1] = -1;
+                group->metadata_only = true;
+                group->handles = 0;
+            } else {
+                *group = (struct sb_group){.base_fd = {-1, -1},
+                    .activation_task_fd = {-1, -1}, .cutover_object_slot = -1};
+            }
         }
     }
     (void)host_close(object->capability_read_fd);
-    *object = (struct sb_object){.capability_read_fd = -1, .native_fd = -1, .group_slot = -1};
+    *object = (struct sb_object){.capability_read_fd = -1, .native_fd = -1,
+        .group_slot = -1, .generation_watch_slot = -1};
 }
 
 static size_t object_count(const struct ker_socket_broker_server *server)
@@ -520,6 +637,488 @@ static size_t client_count(const struct ker_socket_broker_server *server)
     size_t result = 0;
     for (size_t i = 0; i < KER_SB_CLIENTS; ++i) result += server->clients[i].fd >= 0;
     return result;
+}
+
+static const uint8_t empty_manifest_sha256[32] =
+    KER_BROKER_EMPTY_MANIFEST_SHA256_BYTES;
+
+static void wire_put16(uint8_t *record, size_t offset, uint16_t value)
+{
+    record[offset] = (uint8_t)value;
+    record[offset + 1] = (uint8_t)(value >> 8);
+}
+
+static void wire_put32(uint8_t *record, size_t offset, uint32_t value)
+{
+    for (unsigned i = 0; i < 4; ++i) record[offset + i] = (uint8_t)(value >> (8 * i));
+}
+
+static void wire_put64(uint8_t *record, size_t offset, uint64_t value)
+{
+    for (unsigned i = 0; i < 8; ++i) record[offset + i] = (uint8_t)(value >> (8 * i));
+}
+
+static uint16_t wire_get16(const uint8_t *record, size_t offset)
+{
+    return (uint16_t)record[offset] | (uint16_t)((uint16_t)record[offset + 1] << 8);
+}
+
+static uint32_t wire_get32(const uint8_t *record, size_t offset)
+{
+    uint32_t result = 0;
+    for (unsigned i = 0; i < 4; ++i) result |= (uint32_t)record[offset + i] << (8 * i);
+    return result;
+}
+
+static uint64_t wire_get64(const uint8_t *record, size_t offset)
+{
+    uint64_t result = 0;
+    for (unsigned i = 0; i < 8; ++i) result |= (uint64_t)record[offset + i] << (8 * i);
+    return result;
+}
+
+static int readiness_supervisor_alive(struct ker_socket_broker_server *server)
+{
+    struct pollfd parent = {.fd = server->readiness_supervisor_pidfd, .events = POLLIN};
+    int ready = (int)syscall(SYS_poll, &parent, 1, 0);
+    if (ready < 0) return -errno;
+    if (ready && (parent.revents & POLLNVAL)) return -EBADF;
+    if (ready && (parent.revents & POLLERR)) return -EIO;
+    if (ready && (parent.revents & (POLLIN | POLLHUP))) return -ESRCH;
+    uint64_t current_start = 0;
+    if (process_start_time(server->readiness_supervisor_pid, &current_start))
+        return -errno;
+    return current_start == server->readiness_supervisor_start_ticks ? 0 : -ESTALE;
+}
+
+static void readiness_header(uint8_t *record, uint16_t type, uint32_t size)
+{
+    wire_put32(record, KER_BROKER_WIRE_MAGIC_OFFSET, KER_BROKER_READY_MAGIC);
+    wire_put16(record, KER_BROKER_WIRE_VERSION_OFFSET, KER_BROKER_READY_VERSION);
+    wire_put16(record, KER_BROKER_WIRE_TYPE_OFFSET, type);
+    wire_put32(record, KER_BROKER_WIRE_SIZE_OFFSET, size);
+    wire_put32(record, KER_BROKER_WIRE_RESERVED_OFFSET, 0);
+}
+
+static int readiness_verify_recheck(struct ker_socket_broker_server *server,
+    const struct sb_generation_watch *watch)
+{
+    if (!watch || !watch->live || watch->state < GENERATION_WATCH_PUBLISHED ||
+        watch->group_slot < 0 || watch->group_slot >= KER_SB_OBJECTS ||
+        watch->owner_pidfd < 0 || !watch->owner_pid || !watch->owner_start_time ||
+        !watch->owner_token || !watch->claim_generation || !watch->mark ||
+        !watch->local_port || !watch->listener_cookie ||
+        watch->runtime_epoch != server->readiness_epoch) return -ESTALE;
+    const struct sb_group *group = &server->groups[watch->group_slot];
+    if (!group->live || group->incarnation != watch->group_incarnation ||
+        group->member_owner_token[0] != watch->owner_token ||
+        group->member_owner_pid[0] != watch->owner_pid ||
+        group->member_owner_start_time[0] != watch->owner_start_time ||
+        group->claim_generation[0] != watch->claim_generation ||
+        group->member_mark[0] != watch->mark || group->port != watch->local_port ||
+        group->member_cookie[0] != watch->listener_cookie) return -ESTALE;
+    struct pollfd owner = {.fd = watch->owner_pidfd, .events = POLLIN};
+    int ready = (int)syscall(SYS_poll, &owner, 1, 0);
+    if (ready < 0) return -errno;
+    if (!ready) return -EBUSY;
+    if (owner.revents & POLLNVAL) return -EBADF;
+    if (owner.revents & POLLERR) return -EIO;
+    if (!(owner.revents & POLLIN)) return -EAGAIN;
+    return 0;
+}
+
+static int readiness_verify_send_result(struct ker_socket_broker_server *server,
+    struct sb_generation_watch *watch, uint64_t sequence, int status)
+{
+    uint8_t record[KER_BROKER_VERIFY_RETIRE_RESULT_BYTES] = {0};
+    readiness_header(record, KER_BROKER_VERIFY_RETIRE_RESULT_TYPE, sizeof(record));
+    wire_put32(record, KER_BROKER_VERIFY_STATUS_OFFSET,
+        status < 0 ? (uint32_t)-status : 0);
+    memcpy(record + KER_BROKER_WIRE_NONCE_OFFSET, server->readiness_nonce, 16);
+    wire_put64(record, KER_BROKER_WIRE_EPOCH_OFFSET, server->readiness_epoch);
+    wire_put64(record, KER_BROKER_VERIFY_SEQUENCE_OFFSET, sequence);
+    wire_put32(record, KER_BROKER_VERIFY_OWNER_PID_OFFSET,
+        watch && watch->owner_pid > 0 ? (uint32_t)watch->owner_pid : 0);
+    wire_put64(record, KER_BROKER_VERIFY_OWNER_START_OFFSET,
+        watch ? watch->owner_start_time : 0);
+    wire_put64(record, KER_BROKER_VERIFY_OWNER_TOKEN_OFFSET,
+        watch ? watch->owner_token : 0);
+    wire_put64(record, KER_BROKER_VERIFY_CLAIM_GENERATION_OFFSET,
+        watch ? watch->claim_generation : 0);
+    wire_put32(record, KER_BROKER_VERIFY_MARK_OFFSET, watch ? watch->mark : 0);
+    wire_put64(record, KER_BROKER_VERIFY_COOKIE_OFFSET,
+        watch ? watch->listener_cookie : 0);
+    memcpy(record + KER_BROKER_VERIFY_PROFILE_OFFSET,
+        server->readiness_worker_profile, 32);
+    wire_put32(record, KER_BROKER_VERIFY_STATE_OFFSET,
+        watch && watch->state == GENERATION_WATCH_OLD_RETIRED ?
+            KER_BROKER_VERIFY_OLD_RETIRED : 0);
+    ssize_t sent = syscall(SYS_sendto, server->readiness_fd, record, sizeof(record),
+        MSG_DONTWAIT | MSG_NOSIGNAL, NULL, 0);
+    return sent == (ssize_t)sizeof(record) ? 0 : -(sent < 0 ? errno : EIO);
+}
+
+static int readiness_send_ready(struct ker_socket_broker_server *server)
+{
+    if (!server->readiness_attached || server->readiness_sent) return 0;
+    if (!server->readiness_bootstrap_complete || object_count(server) != 0 ||
+        server->listener < 0) return -EPROTO;
+    uint8_t record[KER_BROKER_READY_RECORD_BYTES] = {0};
+    readiness_header(record, KER_BROKER_READY_TYPE, sizeof(record));
+    memcpy(record + KER_BROKER_WIRE_NONCE_OFFSET, server->readiness_nonce, 16);
+    wire_put64(record, KER_BROKER_WIRE_EPOCH_OFFSET, server->readiness_epoch);
+    memcpy(record + KER_BROKER_READY_PROFILE_OFFSET,
+        server->readiness_worker_profile, 32);
+    wire_put64(record, KER_BROKER_READY_START_TICKS_OFFSET,
+        server->readiness_broker_start_ticks);
+    wire_put32(record, KER_BROKER_READY_OBJECT_COUNT_OFFSET, 0);
+    memcpy(record + KER_BROKER_READY_MANIFEST_OFFSET, empty_manifest_sha256, 32);
+    ssize_t sent = syscall(SYS_sendto, server->readiness_fd, record, sizeof(record),
+        MSG_DONTWAIT | MSG_NOSIGNAL, NULL, 0);
+    if (sent != (ssize_t)sizeof(record)) return -(sent < 0 ? errno : EIO);
+    server->readiness_sent = true;
+    return 0;
+}
+
+/* Receive and close every installed SCM_RIGHTS descriptor before returning,
+ * including malformed, truncated, credential-mismatched and empty packets. */
+static int readiness_receive_stop(struct ker_socket_broker_server *server,
+    bool cancel_pending_verify)
+{
+    uint8_t record[KER_BROKER_STOP_RECORD_BYTES];
+    char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int) * 16)] = {0};
+    struct iovec iov = {.iov_base = record, .iov_len = sizeof(record)};
+    struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control)};
+    ssize_t received = syscall(SYS_recvmsg, server->readiness_fd, &message,
+        MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_TRUNC);
+    if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
+    int error = received < 0 ? errno : 0;
+    struct ucred credentials = {0};
+    bool have_credentials = false;
+    bool unexpected_control = false;
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message); cmsg;
+         cmsg = CMSG_NXTHDR(&message, cmsg)) {
+        if (cmsg->cmsg_level != SOL_SOCKET) { unexpected_control = true; continue; }
+        if (cmsg->cmsg_type == SCM_RIGHTS) {
+            if (cmsg->cmsg_len < CMSG_LEN(0)) { unexpected_control = true; continue; }
+            size_t bytes = cmsg->cmsg_len - CMSG_LEN(0);
+            if (bytes % sizeof(int)) unexpected_control = true;
+            size_t count = bytes / sizeof(int);
+            const int *fds = (const int *)CMSG_DATA(cmsg);
+            for (size_t i = 0; i < count; ++i) (void)host_close(fds[i]);
+            unexpected_control = true;
+        } else if (cmsg->cmsg_type == SCM_CREDENTIALS) {
+            if (have_credentials || cmsg->cmsg_len != CMSG_LEN(sizeof(credentials))) {
+                unexpected_control = true;
+                continue;
+            }
+            memcpy(&credentials, CMSG_DATA(cmsg), sizeof(credentials));
+            have_credentials = true;
+        } else {
+            unexpected_control = true;
+        }
+    }
+    if (error) return -error;
+    if (received != (ssize_t)sizeof(record) ||
+        (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) || unexpected_control ||
+        !have_credentials) return -EPROTO;
+    struct pollfd parent = {.fd = server->readiness_supervisor_pidfd, .events = POLLIN};
+    int ready = (int)syscall(SYS_poll, &parent, 1, 0);
+    if (ready < 0) return -errno;
+    if (ready && (parent.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) return -ESRCH;
+    uint64_t current_start = 0;
+    if (credentials.pid != server->readiness_supervisor_pid ||
+        credentials.uid != server->readiness_supervisor_uid ||
+        credentials.gid != server->readiness_supervisor_gid ||
+        process_start_time(credentials.pid, &current_start) ||
+        current_start != server->readiness_supervisor_start_ticks) return -EACCES;
+    if (wire_get32(record, 0) != KER_BROKER_READY_MAGIC ||
+        wire_get16(record, 4) != KER_BROKER_READY_VERSION ||
+        wire_get16(record, 6) != KER_BROKER_STOP_TYPE ||
+        wire_get32(record, 8) != sizeof(record) || wire_get32(record, 12) != 0 ||
+        memcmp(record + KER_BROKER_WIRE_NONCE_OFFSET, server->readiness_nonce, 16) ||
+        wire_get64(record, KER_BROKER_WIRE_EPOCH_OFFSET) != server->readiness_epoch ||
+        memcmp(record + KER_BROKER_STOP_MANIFEST_OFFSET, empty_manifest_sha256, 32) ||
+        wire_get32(record, KER_BROKER_STOP_PID_OFFSET) != (uint32_t)server->readiness_supervisor_pid ||
+        wire_get32(record, KER_BROKER_STOP_UID_OFFSET) != (uint32_t)server->readiness_supervisor_uid ||
+        wire_get32(record, KER_BROKER_STOP_GID_OFFSET) != (uint32_t)server->readiness_supervisor_gid ||
+        wire_get32(record, KER_BROKER_STOP_RESERVED2_OFFSET) != 0 ||
+        wire_get64(record, KER_BROKER_STOP_START_TICKS_OFFSET) != server->readiness_supervisor_start_ticks ||
+        wire_get64(record, KER_BROKER_STOP_ID_OFFSET) != KER_BROKER_READY_STOP_ID)
+        return -EPROTO;
+    if (server->readiness_stop_requested) return -EALREADY;
+    if (cancel_pending_verify) {
+        int cancel_status = readiness_verify_finish(server, -ECANCELED);
+        if (cancel_status) return cancel_status;
+    }
+    record[6] = (uint8_t)KER_BROKER_STOP_ACK_TYPE;
+    record[7] = (uint8_t)(KER_BROKER_STOP_ACK_TYPE >> 8);
+    ssize_t sent = syscall(SYS_sendto, server->readiness_fd, record, sizeof(record),
+        MSG_DONTWAIT | MSG_NOSIGNAL, NULL, 0);
+    if (sent != (ssize_t)sizeof(record)) return -(sent < 0 ? errno : EIO);
+    server->readiness_stop_requested = true;
+    return 1;
+}
+
+static uint64_t readiness_monotonic_ns(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) return 0;
+    return (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+}
+
+static int readiness_credentials_check(struct ker_socket_broker_server *server,
+    const struct ucred *credentials)
+{
+    if (!server || !credentials || credentials->pid != server->readiness_supervisor_pid ||
+        credentials->uid != server->readiness_supervisor_uid ||
+        credentials->gid != server->readiness_supervisor_gid) return -EACCES;
+    uint64_t current_start = 0;
+    if (process_start_time(credentials->pid, &current_start) ||
+        current_start != server->readiness_supervisor_start_ticks) return -EACCES;
+    return readiness_supervisor_alive(server);
+}
+
+static int readiness_verify_finish(struct ker_socket_broker_server *server, int status)
+{
+    int slot = server->readiness_verify_watch_slot;
+    if (slot < 0 || slot >= KER_SB_GENERATION_WATCHES) return -EINVAL;
+    struct sb_generation_watch *watch = &server->generation_watches[slot];
+    if (!watch->live) status = -ESTALE;
+    if (watch->live &&
+        (watch->state == GENERATION_WATCH_VERIFY_CENSUS ||
+         watch->state == GENERATION_WATCH_VERIFY_PAYLOAD))
+        (void)ker_member_census_query_cancel(watch->verify_ticket);
+    if (watch->live && status &&
+        (watch->state == GENERATION_WATCH_VERIFY_CENSUS ||
+         watch->state == GENERATION_WATCH_VERIFY_PAYLOAD))
+        watch->state = GENERATION_WATCH_PUBLISHED;
+    int sent = readiness_verify_send_result(server, watch,
+        server->readiness_verify_sequence, status);
+    server->readiness_verify_watch_slot = -1;
+    server->readiness_verify_deadline_ns = 0;
+    return sent;
+}
+
+static int readiness_verify_begin(struct ker_socket_broker_server *server,
+    const uint8_t record[KER_BROKER_VERIFY_RETIRE_REQUEST_BYTES],
+    const struct ucred *credentials, int watch_fd)
+{
+    if (!server->readiness_sent || server->readiness_stop_requested ||
+        server->readiness_verify_watch_slot >= 0) return -EBUSY;
+    if (readiness_credentials_check(server, credentials)) return -EACCES;
+    uint64_t sequence = wire_get64(record, KER_BROKER_VERIFY_SEQUENCE_OFFSET);
+    if (!sequence || server->readiness_last_verify_sequence == UINT64_MAX ||
+        sequence != server->readiness_last_verify_sequence + 1) return -EPROTO;
+    if (wire_get32(record, 0) != KER_BROKER_READY_MAGIC ||
+        wire_get16(record, 4) != KER_BROKER_READY_VERSION ||
+        wire_get16(record, 6) != KER_BROKER_VERIFY_RETIRE_TYPE ||
+        wire_get32(record, 8) != KER_BROKER_VERIFY_RETIRE_REQUEST_BYTES ||
+        wire_get32(record, 12) != 0 ||
+        memcmp(record + KER_BROKER_WIRE_NONCE_OFFSET, server->readiness_nonce, 16) ||
+        wire_get64(record, KER_BROKER_WIRE_EPOCH_OFFSET) != server->readiness_epoch)
+        return -EPROTO;
+    for (size_t i = KER_BROKER_VERIFY_RESERVED_OFFSET;
+         i < KER_BROKER_VERIFY_RETIRE_REQUEST_BYTES; ++i)
+        if (record[i]) return -EPROTO;
+    struct sb_object *object = lookup_cap(server, watch_fd);
+    if (!object || object->kind != KER_SOCKET_BROKER_FF_OWNER_GENERATION_WATCH ||
+        object->rights != KER_SOCKET_BROKER_READ || object->native_fd >= 0 ||
+        object->generation_watch_slot < 0 ||
+        object->generation_watch_slot >= KER_SB_GENERATION_WATCHES) return -EACCES;
+    struct sb_generation_watch *watch =
+        &server->generation_watches[object->generation_watch_slot];
+    if (!watch->live || watch->runtime_epoch != server->readiness_epoch) return -ESTALE;
+    server->readiness_last_verify_sequence = sequence;
+    watch->verify_sequence = sequence;
+    server->readiness_verify_watch_slot = object->generation_watch_slot;
+    server->readiness_verify_sequence = sequence;
+    if (watch->state == GENERATION_WATCH_OLD_RETIRED)
+        return readiness_verify_finish(server, 0);
+    if (watch->state != GENERATION_WATCH_PUBLISHED)
+        return readiness_verify_finish(server, -EAGAIN);
+    int status = readiness_verify_recheck(server, watch);
+    if (status) return readiness_verify_finish(server, status);
+    struct ker_member_census_identity identity = {.mark = watch->mark,
+        .local_port = watch->local_port, .listener_cookie = watch->listener_cookie,
+        .expect_no_listener = false};
+    uint64_t ticket = 0;
+    status = ker_member_census_query_submit(&identity, &ticket);
+    if (status) return readiness_verify_finish(server, status);
+    uint64_t now = readiness_monotonic_ns();
+    if (!now) {
+        (void)ker_member_census_query_cancel(ticket);
+        return readiness_verify_finish(server, -EIO);
+    }
+    watch->verify_ticket = ticket;
+    watch->state = GENERATION_WATCH_VERIFY_CENSUS;
+    server->readiness_verify_deadline_ns = now + UINT64_C(5000000000);
+    return 0;
+}
+
+static int readiness_receive_verify(struct ker_socket_broker_server *server)
+{
+    uint8_t record[KER_BROKER_VERIFY_RETIRE_REQUEST_BYTES] = {0};
+    char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int) * 16)] = {0};
+    struct iovec iov = {.iov_base = record, .iov_len = sizeof(record)};
+    struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control)};
+    ssize_t received = syscall(SYS_recvmsg, server->readiness_fd, &message,
+        MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_TRUNC);
+    if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
+    int error = received < 0 ? errno : 0;
+    struct ucred credentials = {0};
+    bool have_credentials = false, bad_control = false;
+    int rights[16]; size_t rights_count = 0;
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message); cmsg;
+         cmsg = CMSG_NXTHDR(&message, cmsg)) {
+        if (cmsg->cmsg_level != SOL_SOCKET) { bad_control = true; continue; }
+        if (cmsg->cmsg_type == SCM_RIGHTS) {
+            if (cmsg->cmsg_len < CMSG_LEN(0)) { bad_control = true; continue; }
+            size_t bytes = cmsg->cmsg_len - CMSG_LEN(0);
+            if (bytes % sizeof(int)) bad_control = true;
+            size_t count = bytes / sizeof(int);
+            const int *installed = (const int *)CMSG_DATA(cmsg);
+            for (size_t i = 0; i < count; ++i) {
+                if (rights_count < sizeof(rights) / sizeof(rights[0]))
+                    rights[rights_count++] = installed[i];
+                else { (void)host_close(installed[i]); bad_control = true; }
+            }
+        } else if (cmsg->cmsg_type == SCM_CREDENTIALS) {
+            if (have_credentials || cmsg->cmsg_len != CMSG_LEN(sizeof(credentials))) {
+                bad_control = true; continue;
+            }
+            memcpy(&credentials, CMSG_DATA(cmsg), sizeof(credentials));
+            have_credentials = true;
+        } else bad_control = true;
+    }
+    if (error) {
+        for (size_t i = 0; i < rights_count; ++i) (void)host_close(rights[i]);
+        return -error;
+    }
+    if (received != (ssize_t)sizeof(record) ||
+        (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) || bad_control ||
+        !have_credentials || rights_count != 1) {
+        for (size_t i = 0; i < rights_count; ++i) (void)host_close(rights[i]);
+        return -EPROTO;
+    }
+    int watch_fd = rights[0];
+    int status = readiness_verify_begin(server, record, &credentials, watch_fd);
+    /* The capability slot and watch metadata own async verification state.
+     * Keeping this received alias open would mask the owner's final close. */
+    (void)host_close(watch_fd);
+    return status;
+}
+
+static int readiness_discard_control_packet(struct ker_socket_broker_server *server)
+{
+    uint8_t packet[KER_BROKER_STOP_RECORD_BYTES];
+    char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int) * 16)] = {0};
+    struct iovec iov = {.iov_base = packet, .iov_len = sizeof(packet)};
+    struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control)};
+    ssize_t received = syscall(SYS_recvmsg, server->readiness_fd, &message,
+        MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_TRUNC);
+    if (received < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
+        return -errno;
+    }
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message); cmsg;
+         cmsg = CMSG_NXTHDR(&message, cmsg)) {
+        if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
+            cmsg->cmsg_len < CMSG_LEN(0)) continue;
+        size_t bytes = cmsg->cmsg_len - CMSG_LEN(0);
+        const int *fds = (const int *)CMSG_DATA(cmsg);
+        for (size_t i = 0; i < bytes / sizeof(int); ++i) (void)host_close(fds[i]);
+    }
+    return -EPROTO;
+}
+
+static int readiness_receive_control(struct ker_socket_broker_server *server)
+{
+    uint8_t header[8] = {0};
+    ssize_t peeked = syscall(SYS_recvfrom, server->readiness_fd, header,
+        sizeof(header), MSG_DONTWAIT | MSG_PEEK, NULL, NULL);
+    if (peeked < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
+    if (peeked < 0) return -errno;
+    if (peeked < (ssize_t)sizeof(header))
+        return readiness_discard_control_packet(server);
+    uint16_t type = wire_get16(header, 6);
+    if (server->readiness_verify_watch_slot >= 0) {
+        if (type != KER_BROKER_STOP_TYPE) return 0;
+        return readiness_receive_stop(server, true);
+    }
+    if (type == KER_BROKER_STOP_TYPE) return readiness_receive_stop(server, false);
+    if (type == KER_BROKER_VERIFY_RETIRE_TYPE) return readiness_receive_verify(server);
+    return readiness_discard_control_packet(server);
+}
+
+static int generation_watch_progress(struct ker_socket_broker_server *server)
+{
+    int slot = server->readiness_verify_watch_slot;
+    if (slot < 0) return 0;
+    if (slot >= KER_SB_GENERATION_WATCHES) return -EPROTO;
+    struct sb_generation_watch *watch = &server->generation_watches[slot];
+    uint64_t now = readiness_monotonic_ns();
+    if (!now || now >= server->readiness_verify_deadline_ns)
+        return readiness_verify_finish(server, -ETIMEDOUT);
+    int status = readiness_verify_recheck(server, watch);
+    if (status) return readiness_verify_finish(server, status);
+    if (watch->state == GENERATION_WATCH_VERIFY_CENSUS) {
+#ifdef KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING
+        if (server->readiness_test_verify_fd >= 0) {
+            if (!server->readiness_test_verify_announced) {
+                char ready = 'P';
+                ssize_t sent = syscall(SYS_sendto, server->readiness_test_verify_fd,
+                    &ready, sizeof(ready), MSG_DONTWAIT | MSG_NOSIGNAL, NULL, 0);
+                if (sent != (ssize_t)sizeof(ready))
+                    return readiness_verify_finish(server, -(sent < 0 ? errno : EIO));
+                server->readiness_test_verify_announced = true;
+            }
+            char release = 0;
+            ssize_t received = syscall(SYS_recvfrom, server->readiness_test_verify_fd,
+                &release, sizeof(release), MSG_DONTWAIT, NULL, NULL);
+            if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+                return 0;
+            if (received != (ssize_t)sizeof(release) || release != 'R')
+                return readiness_verify_finish(server, -EPROTO);
+            (void)host_close(server->readiness_test_verify_fd);
+            server->readiness_test_verify_fd = -1;
+        }
+#endif
+        struct ker_socket_member_census_snapshot snapshot = {0};
+        int query_status = 0;
+        int ready = ker_member_census_query_poll(watch->verify_ticket,
+            &query_status, &snapshot);
+        if (!ready) return 0;
+        if (ready < 0 || query_status)
+            return readiness_verify_finish(server, ready < 0 ? -errno : query_status);
+        if (snapshot.listener_cookie != watch->listener_cookie ||
+            snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN])
+            return readiness_verify_finish(server, -EBUSY);
+        uint64_t ticket = 0;
+        status = ker_member_payload_query_submit(watch->mark, &ticket);
+        if (status) return readiness_verify_finish(server, status);
+        watch->verify_ticket = ticket;
+        watch->state = GENERATION_WATCH_VERIFY_PAYLOAD;
+        return 0;
+    }
+    if (watch->state == GENERATION_WATCH_VERIFY_PAYLOAD) {
+        struct ker_socket_member_payload_snapshot snapshot = {0};
+        int query_status = 0;
+        int ready = ker_member_payload_query_poll(watch->verify_ticket,
+            &query_status, &snapshot);
+        if (!ready) return 0;
+        if (ready < 0 || query_status)
+            return readiness_verify_finish(server, ready < 0 ? -errno : query_status);
+        if (snapshot.payload_bytes) return readiness_verify_finish(server, -EBUSY);
+        status = readiness_verify_recheck(server, watch);
+        if (status) return readiness_verify_finish(server, status);
+        watch->state = GENERATION_WATCH_OLD_RETIRED;
+        return readiness_verify_finish(server, 0);
+    }
+    return -EPROTO;
 }
 
 static bool admission_tasks_stopping(struct ker_socket_broker_server *server)
@@ -572,9 +1171,120 @@ static int make_capability(struct ker_socket_broker_server *server, int native_f
     }
     server->objects[slot] = (struct sb_object){.live = true, .kind = kind,
         .rights = rights, .capability_dev = identity.st_dev, .capability_ino = identity.st_ino,
-        .capability_read_fd = pair[0], .native_fd = native_fd, .group_slot = -1};
+        .capability_read_fd = pair[0], .native_fd = native_fd, .group_slot = -1,
+        .generation_watch_slot = -1};
     if (slot_out) *slot_out = slot;
     return pair[1];
+}
+
+static void generation_watch_close(struct ker_socket_broker_server *server,
+    struct sb_object *object)
+{
+    if (!object || object->generation_watch_slot < 0 ||
+        object->generation_watch_slot >= KER_SB_GENERATION_WATCHES) return;
+    struct sb_generation_watch *watch =
+        &server->generation_watches[object->generation_watch_slot];
+    if (!watch->live) return;
+    if (server->readiness_verify_watch_slot == object->generation_watch_slot)
+        (void)readiness_verify_finish(server, -ECANCELED);
+    (void)host_close(watch->owner_pidfd);
+    if (watch->group_slot >= 0 && watch->group_slot < KER_SB_OBJECTS) {
+        struct sb_group *group = &server->groups[watch->group_slot];
+        if (group->live && group->incarnation == watch->group_incarnation &&
+            group->watch_refs) {
+            group->watch_refs--;
+            if (!group->watch_refs && !group->handles && group->metadata_only)
+                *group = (struct sb_group){.base_fd = {-1, -1},
+                    .activation_task_fd = {-1, -1}, .cutover_object_slot = -1};
+        }
+    }
+    *watch = (struct sb_generation_watch){.owner_pidfd = -1, .group_slot = -1};
+}
+
+static int generation_watch_create(struct ker_socket_broker_server *server,
+    int plan_fd, int *watch_fd)
+{
+    struct sb_object *plan = lookup_cap(server, plan_fd);
+    if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+        plan->group_slot < 0 || !(plan->rights & KER_SOCKET_BROKER_CONTROL))
+        return -ENOTSOCK;
+    struct sb_group *group = &server->groups[plan->group_slot];
+    if (!group->live || group->incarnation != plan->group_incarnation ||
+        !group->owner_aware || group->metadata_only) return -ESTALE;
+    if (group->cutover.controller || group->watch_refs) return -EBUSY;
+    if (group->failed) return -ECANCELED;
+    size_t index = KER_SB_GENERATION_WATCHES;
+    for (size_t i = 0; i < KER_SB_GENERATION_WATCHES; ++i)
+        if (!server->generation_watches[i].live) { index = i; break; }
+    if (index == KER_SB_GENERATION_WATCHES) return -EMFILE;
+    int capability = make_capability(server, -1,
+        KER_SOCKET_BROKER_FF_OWNER_GENERATION_WATCH,
+        KER_SOCKET_BROKER_READ, NULL);
+    if (capability < 0) return -errno;
+    struct sb_object *object = lookup_cap(server, capability);
+    if (!object) { (void)host_close(capability); return -EIO; }
+    struct sb_generation_watch *watch = &server->generation_watches[index];
+    *watch = (struct sb_generation_watch){.live = true,
+        .state = GENERATION_WATCH_PLAN_BOUND, .group_slot = plan->group_slot,
+        .group_incarnation = group->incarnation, .owner_pidfd = -1,
+        .runtime_epoch = server->readiness_epoch};
+    object->generation_watch_slot = (int)index;
+    group->watch_refs++;
+    if (group->member_owner_token[0]) {
+        struct sb_owner *owner = owner_by_token(server, group->member_owner_token[0]);
+        int status = owner ? generation_watch_capture_claim(server,
+            plan->group_slot, group, 0, owner) : -ESTALE;
+        if (status) {
+            generation_watch_close(server, object);
+            (void)host_close(capability);
+            return status;
+        }
+    }
+    if (group->member_present[0] && group->member_cookie[0])
+        generation_watch_capture_publication(server, plan->group_slot, group);
+    *watch_fd = capability;
+    return 0;
+}
+
+static int generation_watch_capture_claim(struct ker_socket_broker_server *server,
+    int group_slot, struct sb_group *group, unsigned index, struct sb_owner *owner)
+{
+    if (index != 0) return 0;
+    for (size_t i = 0; i < KER_SB_GENERATION_WATCHES; ++i) {
+        struct sb_generation_watch *watch = &server->generation_watches[i];
+        if (!watch->live || watch->group_slot != group_slot ||
+            watch->group_incarnation != group->incarnation) continue;
+        if (watch->state != GENERATION_WATCH_PLAN_BOUND || watch->owner_pidfd >= 0)
+            return -EALREADY;
+        int owner_pidfd = (int)syscall(SYS_fcntl, owner->pidfd, F_DUPFD_CLOEXEC, 0);
+        if (owner_pidfd < 0) return -errno;
+        watch->owner_pid = owner->pid;
+        watch->owner_pidfd = owner_pidfd;
+        watch->owner_start_time = owner->start_time;
+        watch->owner_token = owner->token;
+        watch->claim_generation = group->claim_generation[0];
+        watch->mark = owner->mark;
+        watch->local_port = group->port;
+        watch->state = GENERATION_WATCH_CLAIMED;
+    }
+    return 0;
+}
+
+static void generation_watch_capture_publication(struct ker_socket_broker_server *server,
+    int group_slot, struct sb_group *group)
+{
+    if (!group->member_present[0] || !group->member_cookie[0]) return;
+    for (size_t i = 0; i < KER_SB_GENERATION_WATCHES; ++i) {
+        struct sb_generation_watch *watch = &server->generation_watches[i];
+        if (!watch->live || watch->group_slot != group_slot ||
+            watch->group_incarnation != group->incarnation) continue;
+        if (watch->state != GENERATION_WATCH_CLAIMED ||
+            watch->owner_token != group->member_owner_token[0] ||
+            watch->claim_generation != group->claim_generation[0] ||
+            watch->mark != group->member_mark[0]) continue;
+        watch->listener_cookie = group->member_cookie[0];
+        watch->state = GENERATION_WATCH_PUBLISHED;
+    }
 }
 
 static int group_handle(struct ker_socket_broker_server *server, int group_slot,
@@ -635,6 +1345,7 @@ static int group_set_selector(struct sb_group *group, unsigned index)
     if (!group || index > 1 || group->base_fd[0] < 0) return -EINVAL;
     if (reuseport_filter(group->base_fd[0], index)) return -errno;
     group->selected_member = (uint8_t)index;
+    if (index == 1) group->candidate_was_selected = true;
     return 0;
 }
 
@@ -683,6 +1394,132 @@ static int process_start_time(pid_t pid, uint64_t *start_time)
     *start_time = (uint64_t)value;
     return 0;
 }
+
+int ker_socket_broker_server_readiness_attach(
+    struct ker_socket_broker_server *server, int control_fd,
+    const uint8_t run_nonce[16], uint64_t worker_epoch,
+    const uint8_t expected_worker_profile_sha256[32],
+    uint64_t expected_supervisor_start_ticks)
+{
+    bool nonce_nonzero = false, profile_nonzero = false;
+    if (run_nonce)
+        for (size_t i = 0; i < 16; ++i) nonce_nonzero |= run_nonce[i] != 0;
+    if (expected_worker_profile_sha256)
+        for (size_t i = 0; i < 32; ++i)
+            profile_nonzero |= expected_worker_profile_sha256[i] != 0;
+    if (!server || control_fd < 0 || !run_nonce || !expected_worker_profile_sha256 ||
+        !nonce_nonzero || !profile_nonzero || !worker_epoch ||
+        !expected_supervisor_start_ticks || server->running ||
+        server->readiness_attached) return fail(EINVAL);
+    int domain = 0, type = 0;
+    socklen_t option_length = sizeof(type);
+    if (syscall(SYS_getsockopt, control_fd, SOL_SOCKET, SO_DOMAIN,
+            &domain, &option_length)) return -1;
+    if (option_length != sizeof(domain) || domain != AF_UNIX) return fail(EPROTOTYPE);
+    option_length = sizeof(type);
+    if (syscall(SYS_getsockopt, control_fd, SOL_SOCKET, SO_TYPE,
+            &type, &option_length)) return -1;
+    if (option_length != sizeof(type) || type != SOCK_SEQPACKET) return fail(EPROTOTYPE);
+    struct ucred peer = {0};
+    option_length = sizeof(peer);
+    if (syscall(SYS_getsockopt, control_fd, SOL_SOCKET, SO_PEERCRED,
+            &peer, &option_length)) return -1;
+    if (option_length != sizeof(peer) || peer.pid <= 0 || peer.pid != getppid())
+        return fail(EACCES);
+    uint64_t parent_start = 0, broker_start = 0;
+    if (process_start_time(peer.pid, &parent_start)) return -1;
+    if (parent_start != expected_supervisor_start_ticks) return fail(ESTALE);
+    if (process_start_time(getpid(), &broker_start)) return -1;
+#ifndef SYS_pidfd_open
+#define SYS_pidfd_open 434
+#endif
+    int parent_pidfd = (int)syscall(SYS_pidfd_open, peer.pid, 0);
+    if (parent_pidfd < 0) return -1;
+    uint64_t rechecked_start = 0;
+    if (process_start_time(peer.pid, &rechecked_start)) {
+        int error = errno;
+        (void)host_close(parent_pidfd);
+        return fail(error);
+    }
+    if (rechecked_start != parent_start) {
+        (void)host_close(parent_pidfd);
+        return fail(ESTALE);
+    }
+    struct pollfd parent = {.fd = parent_pidfd, .events = POLLIN};
+    int parent_ready = (int)syscall(SYS_poll, &parent, 1, 0);
+    if (parent_ready < 0 || (parent_ready &&
+        (parent.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)))) {
+        int error = parent_ready < 0 ? errno : ESRCH;
+        (void)host_close(parent_pidfd);
+        return fail(error);
+    }
+    int private_fd = (int)syscall(SYS_fcntl, control_fd, F_DUPFD_CLOEXEC, 0);
+    if (private_fd < 0) { int error = errno; (void)host_close(parent_pidfd); return fail(error); }
+    int pass_credentials = 1;
+    if (syscall(SYS_setsockopt, private_fd, SOL_SOCKET, SO_PASSCRED,
+            &pass_credentials, sizeof(pass_credentials))) {
+        int error = errno;
+        (void)host_close(private_fd);
+        (void)host_close(parent_pidfd);
+        return fail(error);
+    }
+    server->readiness_fd = private_fd;
+    server->readiness_supervisor_pidfd = parent_pidfd;
+    server->readiness_supervisor_pid = peer.pid;
+    server->readiness_supervisor_uid = peer.uid;
+    server->readiness_supervisor_gid = peer.gid;
+    server->readiness_supervisor_start_ticks = parent_start;
+    server->readiness_broker_start_ticks = broker_start;
+    server->readiness_epoch = worker_epoch;
+    memcpy(server->readiness_nonce, run_nonce, sizeof(server->readiness_nonce));
+    memcpy(server->readiness_worker_profile, expected_worker_profile_sha256,
+        sizeof(server->readiness_worker_profile));
+    server->readiness_attached = true;
+    return 0;
+}
+
+int ker_socket_broker_server_bootstrap_complete_empty(
+    struct ker_socket_broker_server *server)
+{
+    if (!server || !server->readiness_attached || server->running ||
+        server->readiness_bootstrap_complete || server->listener < 0)
+        return fail(EINVAL);
+    if (object_count(server) != 0) return fail(EBUSY);
+    struct stat identity;
+    if (fstat(server->listener, &identity)) return -1;
+    server->readiness_bootstrap_complete = true;
+    return 0;
+}
+
+#ifdef KER_SOCKET_BROKER_READINESS_TESTING
+int ker_socket_broker_server_readiness_test_parent_error(
+    const struct ker_socket_broker_server *server)
+{
+    if (!server || !server->readiness_attached) return EINVAL;
+    return server->readiness_parent_error;
+}
+#endif
+
+#ifdef KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING
+int ker_socket_broker_server_readiness_test_set_verify_barrier(
+    struct ker_socket_broker_server *server, int control_fd)
+{
+    if (!server || !server->readiness_attached || server->running || control_fd < 0 ||
+        server->readiness_test_verify_fd >= 0) return fail(EINVAL);
+    int type = 0;
+    socklen_t type_length = sizeof(type);
+    int domain = 0;
+    socklen_t domain_length = sizeof(domain);
+    if (syscall(SYS_getsockopt, control_fd, SOL_SOCKET, SO_TYPE, &type, &type_length) ||
+        syscall(SYS_getsockopt, control_fd, SOL_SOCKET, SO_DOMAIN, &domain, &domain_length))
+        return -1;
+    if (type != SOCK_SEQPACKET || domain != AF_UNIX) return fail(EOPNOTSUPP);
+    int owned = (int)syscall(SYS_fcntl, control_fd, F_DUPFD_CLOEXEC, 0);
+    if (owned < 0) return -1;
+    server->readiness_test_verify_fd = owned;
+    return 0;
+}
+#endif
 
 static int client_identity(struct sb_client *client, uint64_t *start_time)
 {
@@ -1262,14 +2099,15 @@ static int socket_cookie(int fd, uint64_t *cookie)
 static bool group_port_reserved(const struct ker_socket_broker_server *server, uint16_t port)
 {
     for (size_t i = 0; i < KER_SB_OBJECTS; ++i)
-        if (server->groups[i].live && server->groups[i].port == port) return true;
+        if (server->groups[i].live && !server->groups[i].metadata_only &&
+            server->groups[i].port == port) return true;
     return false;
 }
 
 static bool any_live_group(const struct ker_socket_broker_server *server)
 {
     for (size_t i = 0; i < KER_SB_OBJECTS; ++i)
-        if (server->groups[i].live) return true;
+        if (server->groups[i].live && !server->groups[i].metadata_only) return true;
     return false;
 }
 
@@ -1404,7 +2242,7 @@ static int owner_group_plan_create(struct ker_socket_broker_server *server,
     if (server->next_group_incarnation == UINT64_MAX) return -EOVERFLOW;
     uint64_t incarnation = ++server->next_group_incarnation;
     server->groups[slot] = (struct sb_group){.live = true, .owner_aware = true,
-        .staged_owner_group = staged,
+        .staged_owner_group = staged, .cutover_object_slot = -1,
         .staged_state = staged ? SB_STAGED_INITIAL_RESERVED : SB_STAGED_NONE,
         .port = port, .base_fd = {-1, -1}, .activation_task_fd = {-1, -1},
         .incarnation = incarnation,
@@ -1432,6 +2270,10 @@ static int owner_group_delegate_slot(struct ker_socket_broker_server *server,
         plan->group_incarnation != group->incarnation) return -ESTALE;
     if (group->failed || group->staged_state == SB_STAGED_CANDIDATE_FAILED)
         return -ECANCELED;
+    if (index == 1 && group->retry_candidate_token) {
+        int status = owner_group_retry_candidate_closed(server, group);
+        if (status) return status;
+    }
     if ((group->staged_owner_group && index == 0 &&
             group->staged_state != SB_STAGED_INITIAL_RESERVED) ||
         (!group->staged_owner_group && group->materialized) ||
@@ -1484,6 +2326,9 @@ static int owner_group_claim_slot(struct ker_socket_broker_server *server,
          (group->member_owner_pid[other] == owner->pid &&
           group->member_owner_start_time[other] == owner->start_time)))
         return -EEXIST;
+    status = generation_watch_capture_claim(server, claim->group_slot,
+        group, index, owner);
+    if (status) return status;
     group->member_owner_token[index] = owner->token;
     group->member_owner_pid[index] = owner->pid;
     group->member_owner_start_time[index] = owner->start_time;
@@ -1601,6 +2446,7 @@ static int owner_group_materialize(struct ker_socket_broker_server *server,
     }
     group->materialized = true;
     group->member_present[0] = group->member_present[1] = true;
+    generation_watch_capture_publication(server, plan->group_slot, group);
     *group_capability = capability;
     return 0;
 fail:
@@ -1763,6 +2609,7 @@ static int owner_group_staged_member_publish(struct ker_socket_broker_server *se
         }
         group->base_fd[0] = fd;
         group->member_present[0] = true;
+        generation_watch_capture_publication(server, plan->group_slot, group);
         int capability = group_handle(server, plan->group_slot, -1,
             KER_SOCKET_BROKER_REUSEPORT_GROUP, group->group_rights, 0);
         if (capability < 0) {
@@ -2298,6 +3145,8 @@ static int group_cutover_create(struct ker_socket_broker_server *server,
     struct sb_group *group = &server->groups[plan->group_slot];
     if (!group->live || !group->staged_owner_group ||
         plan->group_incarnation != group->incarnation) return -ESTALE;
+    if (group->watch_refs) return -EOPNOTSUPP;
+    if (group->successor_issued && !group->cutover_started) return -EOPNOTSUPP;
     if (group->cutover_started) return -EALREADY;
     if (group->selected_member != 0 || group->staged_state != SB_STAGED_BOTH_PUBLISHED)
         return -EAGAIN;
@@ -2684,6 +3533,8 @@ static int owner_group_candidate_listen(struct ker_socket_broker_server *server,
     }
     group->base_fd[1] = group_fd;
     group->member_cookie[1] = cookie;
+    group->candidate_published_cookie = cookie;
+    group->candidate_published_claim = group->claim_generation[1];
     group->member_present[1] = true;
     group->activation_state[1] = SB_MEMBER_ACTIVATION_PUBLISHED;
     group->staged_state = SB_STAGED_BOTH_PUBLISHED;
@@ -2721,6 +3572,373 @@ static int owner_group_control_create(struct ker_socket_broker_server *server,
     if (capability < 0) return -errno;
     *group_capability = capability;
     return 0;
+}
+
+/* Accepted sockets have different cookies. Only listener OFD aliases/pins
+ * prevent Linux from removing a physical reuseport member. */
+static int listener_pins_closed(struct ker_socket_broker_server *server,
+    uint64_t listener_cookie, const struct sb_group *exclude)
+{
+    if (!listener_cookie) return -ESTALE;
+    /* Adopted initial aliases still belong to the predecessor's logical slot
+     * 1. Check the physical listener cookie across all plans and all internal
+     * pins, rather than treating a logical group index as socket identity. */
+    for (size_t i = 0; i < KER_SB_OBJECTS; ++i) {
+        const struct sb_object *alias = &server->objects[i];
+        uint64_t cookie = 0;
+        if (alias->live && alias->kind == KER_SOCKET_BROKER_SOCKET &&
+            alias->native_fd >= 0) {
+            if (socket_cookie(alias->native_fd, &cookie)) return -errno;
+            if (cookie == listener_cookie) return -EAGAIN;
+        }
+        const struct sb_group *other = &server->groups[i];
+        if (!other->live) continue;
+        for (unsigned index = 0; index < 2; ++index) {
+            if (other->base_fd[index] >= 0 && !(other == exclude && !index)) {
+                if (socket_cookie(other->base_fd[index], &cookie)) return -errno;
+                if (cookie == listener_cookie) return -EAGAIN;
+            }
+            if (other->activation_task_fd[index] >= 0) {
+                if (socket_cookie(other->activation_task_fd[index], &cookie)) return -errno;
+                if (cookie == listener_cookie) return -EAGAIN;
+            }
+        }
+    }
+    return 0;
+}
+
+static int owner_group_retry_candidate_closed(struct ker_socket_broker_server *server,
+    struct sb_group *group)
+{
+    struct sb_owner *owner = owner_by_token(server, group->retry_candidate_token);
+    if (!owner || owner->pid != group->retry_candidate_pid ||
+        owner->start_time != group->retry_candidate_start_time ||
+        owner->mark != group->retry_candidate_mark) return -ESTALE;
+    int status = owner_identity_alive(owner);
+    if (!status) return -EAGAIN;
+    if (status != -ESRCH) return status;
+    status = owner_pidfd_confirmed_dead(owner);
+    if (status != 1) return status < 0 ? status : -EAGAIN;
+    if (owner->admission_task) {
+        (void)ker_posix_ff_admission_task_request_stop(owner->admission_task);
+        status = owner_admission_task_release(owner);
+        if (status) return status == -EBUSY ? -EAGAIN : status;
+        owner->admission_listener_native_fd = -1;
+    }
+    status = listener_pins_closed(server, group->retry_candidate_cookie, NULL);
+    if (status) return status;
+    group->retry_candidate_token = 0;
+    return 0;
+}
+
+static int owner_group_retire_initial_listener(
+    struct ker_socket_broker_server *server, struct sb_object *plan)
+{
+    if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+        plan->group_slot < 0 || !(plan->rights & KER_SOCKET_BROKER_CONTROL))
+        return -ENOTSOCK;
+    struct sb_group *group = &server->groups[plan->group_slot];
+    if (!group->live || !group->owner_aware || !group->staged_owner_group ||
+        group->incarnation != plan->group_incarnation) return -ESTALE;
+    if (group->failed) return -ECANCELED;
+    if (group->activation_state[0] == SB_MEMBER_ACTIVATION_RETIRED) return 0;
+    if (group->activation_state[0] == SB_MEMBER_ACTIVATION_TRANSFERRED) return -ESTALE;
+    int pins = listener_pins_closed(server, group->member_cookie[0], group);
+    if (pins) return pins;
+    if (!group->cutover_started || group->selected_member != 1 ||
+        group->cutover.phase != KER_SOCKET_GROUP_CUTOVER_COMMITTED ||
+        group->cutover.controller || group->activation_caps[0] ||
+        group->activation_task_fd[0] >= 0) return -EAGAIN;
+    if (group->activation_state[0] != SB_MEMBER_ACTIVATION_PUBLISHED ||
+        !group->member_present[0] || group->base_fd[0] < 0) return -ESTALE;
+    struct sb_owner *owner = owner_by_token(server, group->member_owner_token[0]);
+    if (!owner || owner->pid != group->member_owner_pid[0] ||
+        owner->start_time != group->member_owner_start_time[0] ||
+        owner->mark != group->member_mark[0]) return -ESTALE;
+    int status = owner_identity_alive(owner);
+    if (!status) return -EAGAIN;
+    if (status != -ESRCH) return status;
+    status = owner_pidfd_confirmed_dead(owner);
+    if (status != 1) return status < 0 ? status : -EAGAIN;
+    /* A predecessor task retains an extra ker_fd reference even after its
+     * group's descriptors close. Confirm release before Linux can compact the
+     * reuseport array. The pidfd above prevents stopping a live application. */
+    if (owner->admission_task) {
+        (void)ker_posix_ff_admission_task_request_stop(owner->admission_task);
+        status = owner_admission_task_release(owner);
+        if (status) return status == -EBUSY ? -EAGAIN : status;
+        owner->admission_listener_native_fd = -1;
+    }
+    owner = owner_by_token(server, group->member_owner_token[1]);
+    if (!owner || owner->pid != group->member_owner_pid[1] ||
+        owner->start_time != group->member_owner_start_time[1] ||
+        owner->mark != group->member_mark[1]) return -ESTALE;
+    status = owner_identity_alive(owner);
+    if (status) return status;
+    status = owner_group_staged_initial_listener_validate(group);
+    if (status) return status;
+    status = group_cutover_candidate_listener_validate(group);
+    if (status) return status;
+    /* Linux moves the surviving reuseport member into physical index zero.
+     * Accepted TCP sockets remain owned by the original Linux stack. */
+    (void)close(group->base_fd[0]);
+    group->base_fd[0] = -1;
+    group->member_present[0] = false;
+    group->member_cookie[0] = group->activation_cookie[0] = 0;
+    group->activation_state[0] = SB_MEMBER_ACTIVATION_RETIRED;
+    if (group->predecessor_pinned) {
+        (void)host_close(group->predecessor_cap_fd);
+        group->predecessor_pinned = false;
+    }
+    if (reuseport_filter(group->base_fd[1], 0)) {
+        status = -errno;
+        struct sb_object candidate = {.group_index = 1, .native_fd = -1};
+        group->failed = true;
+        owner_group_activation_poison(server, group, &candidate);
+        return status;
+    }
+    return 0;
+}
+
+static int owner_group_adopt_plan(struct ker_socket_broker_server *server,
+    struct sb_group *parent, int plan_cap, unsigned index, struct sb_owner *owner,
+    struct sb_owner *sealed_owner, bool retry, bool dead_recovery, int *capability_out)
+{
+    int status;
+    size_t slot = KER_SB_OBJECTS;
+    for (size_t i = 0; i < KER_SB_OBJECTS; ++i)
+        if (!server->groups[i].live) { slot = i; break; }
+    if (slot == KER_SB_OBJECTS) return -EMFILE;
+    if (server->next_group_incarnation == UINT64_MAX) return -EOVERFLOW;
+    int native_fd = fcntl(parent->base_fd[index], F_DUPFD_CLOEXEC, 0);
+    if (native_fd < 0) return -errno;
+    int pin = (int)syscall(SYS_fcntl, plan_cap, F_DUPFD_CLOEXEC, 0);
+    if (pin < 0) { status = -errno; (void)close(native_fd); return status; }
+    server->groups[slot] = (struct sb_group){.live = true, .owner_aware = true,
+        .staged_owner_group = true, .materialized = true,
+        .staged_state = SB_STAGED_INITIAL_PUBLISHED,
+        .activation_state = {SB_MEMBER_ACTIVATION_PUBLISHED, SB_MEMBER_ACTIVATION_NONE},
+        .member_present = {true, false}, .slot_issued = {true, false},
+        .base_fd = {native_fd, -1}, .activation_task_fd = {-1, -1},
+        .incarnation = ++server->next_group_incarnation,
+        .claim_generation = {parent->claim_generation[index], 1},
+        .member_owner_token = {owner->token, 0}, .member_owner_pid = {owner->pid, 0},
+        .member_owner_start_time = {owner->start_time, 0},
+        .member_mark = {owner->mark, 0},
+        .member_cookie = {parent->member_cookie[index], 0},
+        .activation_cookie = {parent->member_cookie[index], 0},
+        .address = parent->address, .port = parent->port, .backlog = parent->backlog,
+        .group_rights = parent->group_rights, .cutover_object_slot = -1,
+        .predecessor_pinned = true, .predecessor_cap_fd = pin};
+    int capability = group_handle(server, (int)slot, -1,
+        KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN, KER_SOCKET_BROKER_CONTROL, 0);
+    if (capability < 0) {
+        status = -errno;
+        (void)host_close(pin); (void)close(native_fd);
+        server->groups[slot] = (struct sb_group){.base_fd = {-1, -1},
+            .activation_task_fd = {-1, -1}, .cutover_object_slot = -1};
+        return status;
+    }
+    status = dead_recovery ? 0 :
+        ker_posix_ff_admission_task_seal_retired(sealed_owner->admission_task);
+    if (status) {
+        struct sb_object *created = lookup_cap(server, capability);
+        if (created) close_object(server, created);
+        (void)host_close(capability);
+        return status;
+    }
+    if (retry) {
+        struct sb_group *child = &server->groups[slot];
+        if (!dead_recovery) {
+            child->retry_candidate_token = sealed_owner->token;
+            child->retry_candidate_pid = sealed_owner->pid;
+            child->retry_candidate_start_time = sealed_owner->start_time;
+            child->retry_candidate_mark = sealed_owner->mark;
+            child->retry_candidate_cookie = parent->member_cookie[1];
+        }
+        /* Transfer only the broker's initial pin. Application aliases retain
+         * their immutable old role and are still checked by physical cookie. */
+        (void)close(parent->base_fd[0]);
+        parent->base_fd[0] = -1;
+        parent->member_present[0] = false;
+        parent->activation_state[0] = SB_MEMBER_ACTIVATION_TRANSFERRED;
+    }
+    parent->successor_issued = true;
+    *capability_out = capability;
+    return 0;
+}
+
+static int owner_group_successor_plan(struct ker_socket_broker_server *server,
+    int plan_cap, int *capability_out)
+{
+    struct sb_object *plan = lookup_cap(server, plan_cap);
+    if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+        plan->group_slot < 0 || !(plan->rights & KER_SOCKET_BROKER_CONTROL))
+        return -ENOTSOCK;
+    struct sb_group *parent = &server->groups[plan->group_slot];
+    if (!parent->live || !parent->owner_aware || !parent->staged_owner_group ||
+        parent->incarnation != plan->group_incarnation) return -ESTALE;
+    if (parent->successor_issued) return -EALREADY;
+    if (parent->failed) return -ECANCELED;
+    if (parent->cutover_started && group_cutover_terminal(parent->cutover.phase) &&
+        parent->cutover.phase != KER_SOCKET_GROUP_CUTOVER_COMMITTED)
+        return -EOPNOTSUPP;
+    if (!parent->cutover_started || parent->selected_member != 1 ||
+        parent->cutover.phase != KER_SOCKET_GROUP_CUTOVER_COMMITTED ||
+        parent->cutover.controller || parent->cutover_object_slot >= 0 ||
+        parent->activation_state[0] != SB_MEMBER_ACTIVATION_RETIRED ||
+        parent->member_present[0] || parent->base_fd[0] >= 0)
+        return -EAGAIN;
+    struct sb_owner *owner = owner_by_token(server, parent->member_owner_token[1]);
+    if (!owner || owner->pid != parent->member_owner_pid[1] ||
+        owner->start_time != parent->member_owner_start_time[1] ||
+        owner->mark != parent->member_mark[1] || !owner->admission_task ||
+        owner->admission_failed) return -ESTALE;
+    int status = owner_identity_alive(owner);
+    if (status) return status;
+    if (parent->activation_state[1] != SB_MEMBER_ACTIVATION_PUBLISHED ||
+        !parent->member_present[1] || parent->base_fd[1] < 0) return -ESTALE;
+    status = group_cutover_candidate_listener_validate(parent);
+    if (status) return status;
+    uint64_t lease = 0;
+    int state = ker_posix_ff_admission_task_poll(owner->admission_task, &lease);
+    if (state == KER_FF_ADMISSION_TASK_READY) {
+        status = ker_posix_ff_admission_task_window_action(owner->admission_task,
+            KER_FF_ADMISSION_WINDOW_RETIRE, -1);
+        return status ? status : -EAGAIN;
+    }
+    if (state != KER_FF_ADMISSION_TASK_RETIRED)
+        return state < 0 ? state : -EAGAIN;
+    return owner_group_adopt_plan(server, parent, plan_cap, 1, owner,
+        owner, false, false, capability_out);
+}
+
+static int owner_group_retry_plan(struct ker_socket_broker_server *server,
+    int plan_cap, bool abandon, int *capability_out)
+{
+    struct sb_object *plan = lookup_cap(server, plan_cap);
+    if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+        plan->group_slot < 0 || !(plan->rights & KER_SOCKET_BROKER_CONTROL))
+        return -ENOTSOCK;
+    struct sb_group *parent = &server->groups[plan->group_slot];
+    if (!parent->live || !parent->owner_aware || !parent->staged_owner_group ||
+        parent->incarnation != plan->group_incarnation) return -ESTALE;
+    if (parent->successor_issued) return -EALREADY;
+    if (parent->failed) return -ECANCELED;
+    if (parent->staged_state == SB_STAGED_CANDIDATE_FAILED ||
+        parent->activation_state[1] == SB_MEMBER_ACTIVATION_FAILED)
+        return -EOPNOTSUPP;
+    if (abandon && (parent->cutover_started || parent->watch_refs)) return -EOPNOTSUPP;
+    if (parent->cutover_started && group_cutover_terminal(parent->cutover.phase) &&
+        parent->cutover.phase != KER_SOCKET_GROUP_CUTOVER_ABORTED)
+        return -EOPNOTSUPP;
+    if ((!abandon && (!parent->cutover_started ||
+         parent->cutover.phase != KER_SOCKET_GROUP_CUTOVER_ABORTED)) ||
+        parent->selected_member != 0 ||
+        parent->cutover.controller || parent->cutover_object_slot >= 0 ||
+        parent->activation_state[0] != SB_MEMBER_ACTIVATION_PUBLISHED ||
+        !parent->member_present[0] || parent->base_fd[0] < 0 ||
+        parent->activation_state[1] != SB_MEMBER_ACTIVATION_PUBLISHED)
+        return -EAGAIN;
+    struct sb_owner *initial = owner_by_token(server, parent->member_owner_token[0]);
+    struct sb_owner *candidate = owner_by_token(server, parent->member_owner_token[1]);
+    if (!initial || initial->pid != parent->member_owner_pid[0] ||
+        initial->start_time != parent->member_owner_start_time[0] ||
+        initial->mark != parent->member_mark[0] ||
+        !candidate || candidate->pid != parent->member_owner_pid[1] ||
+        candidate->start_time != parent->member_owner_start_time[1] ||
+        candidate->mark != parent->member_mark[1] || !candidate->admission_task ||
+        candidate->admission_failed) return -ESTALE;
+    int status = owner_identity_alive(initial);
+    if (status) return status;
+    status = owner_identity_alive(candidate);
+    if (status) return status;
+    status = owner_group_staged_initial_listener_validate(parent);
+    if (status) return status;
+    status = group_cutover_candidate_listener_validate(parent);
+    if (status) return status;
+    uint64_t lease = 0;
+    int state = ker_posix_ff_admission_task_poll(candidate->admission_task, &lease);
+    if (state == KER_FF_ADMISSION_TASK_READY) {
+        status = ker_posix_ff_admission_task_window_action(candidate->admission_task,
+            KER_FF_ADMISSION_WINDOW_RETIRE, -1);
+        return status ? status : -EAGAIN;
+    }
+    if (state != KER_FF_ADMISSION_TASK_RETIRED)
+        return state < 0 ? state : -EAGAIN;
+    return owner_group_adopt_plan(server, parent, plan_cap, 0, initial,
+        candidate, true, false, capability_out);
+}
+
+/* No ingress transaction ever existed on this path. Remove only a dead,
+ * fully closed candidate; retain the exact initial Linux listener and owner. */
+static int owner_group_recover_dead_plan(struct ker_socket_broker_server *server,
+    int plan_cap, int *capability_out)
+{
+    struct sb_object *plan = lookup_cap(server, plan_cap);
+    if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+        plan->group_slot < 0 || !(plan->rights & KER_SOCKET_BROKER_CONTROL)) return -ENOTSOCK;
+    struct sb_group *parent = &server->groups[plan->group_slot];
+    if (!parent->live || !parent->staged_owner_group || !parent->owner_aware ||
+        parent->incarnation != plan->group_incarnation) return -ESTALE;
+    if (parent->successor_issued) return -EALREADY;
+    if (parent->failed) return -ECANCELED;
+    if (parent->cutover_started || parent->watch_refs || parent->candidate_was_selected) return -EOPNOTSUPP;
+    if (parent->selected_member || parent->cutover.controller ||
+        parent->cutover_object_slot >= 0 || !parent->candidate_published_cookie ||
+        parent->activation_state[0] != SB_MEMBER_ACTIVATION_PUBLISHED ||
+        !parent->member_present[0] || parent->base_fd[0] < 0) return -EAGAIN;
+    if (parent->candidate_published_claim != parent->claim_generation[1]) return -ESTALE;
+    struct sb_owner *initial = owner_by_token(server, parent->member_owner_token[0]);
+    struct sb_owner *candidate = owner_by_token(server, parent->member_owner_token[1]);
+    if (!initial || initial->pid != parent->member_owner_pid[0] ||
+        initial->start_time != parent->member_owner_start_time[0] ||
+        initial->mark != parent->member_mark[0] ||
+        !candidate || candidate->pid != parent->member_owner_pid[1] ||
+        candidate->start_time != parent->member_owner_start_time[1] ||
+        candidate->mark != parent->member_mark[1]) return -ESTALE;
+    int status = owner_identity_alive(initial);
+    if (status) return status;
+    status = owner_pidfd_confirmed_dead(candidate);
+    if (status != 1) return status < 0 ? status : -EAGAIN;
+    if (parent->activation_caps[1] || parent->base_fd[1] >= 0 ||
+        parent->activation_task_fd[1] >= 0 ||
+        parent->activation_state[1] != SB_MEMBER_ACTIVATION_FAILED ||
+        parent->staged_state != SB_STAGED_CANDIDATE_FAILED) return -EAGAIN;
+    if (candidate->admission_task) {
+        status = ker_posix_ff_admission_task_request_stop(candidate->admission_task);
+        if (status) return status;
+        status = owner_admission_task_release(candidate);
+        if (status) return status == -EBUSY ? -EAGAIN : status;
+        candidate->admission_listener_native_fd = -1;
+    }
+    status = listener_pins_closed(server, parent->candidate_published_cookie, NULL);
+    if (status) return status;
+    status = owner_group_staged_initial_listener_validate(parent);
+    if (status) return status;
+    status = owner_identity_alive(initial);
+    if (status) return status;
+    /* Joined task means q87's netlink consumer is closed and pending skbs
+     * flushed. No socket carrying this dead owner's mark may still emit a
+     * SYNACK when the exact stale mark/lease gate is disabled. */
+    for (size_t i = 0; i < KER_SB_OBJECTS; ++i) {
+        struct sb_object *object = &server->objects[i];
+        if (object->live && object->owner_token == candidate->token && object->native_fd >= 0)
+            return -EAGAIN;
+        struct sb_group *group = &server->groups[i];
+        if (!group->live) continue;
+        for (unsigned index = 0; index < 2; ++index)
+            if (group->member_owner_token[index] == candidate->token &&
+                (group->base_fd[index] >= 0 || group->activation_task_fd[index] >= 0)) return -EAGAIN;
+    }
+    if (!parent->dead_candidate_gate_released) {
+        status = ker_posix_ff_admission_release_dead_gate(candidate->mark,
+            candidate->released_admission_lease);
+        if (status) return status;
+        parent->dead_candidate_gate_released = true;
+    }
+    return owner_group_adopt_plan(server, parent, plan_cap, 0, initial,
+        candidate, true, true, capability_out);
 }
 
 static int owner_group_activation_bind(struct ker_socket_broker_server *server,
@@ -2869,6 +4087,7 @@ static int owner_group_activation_listen(struct ker_socket_broker_server *server
     group->materialized = true;
     group->activation_state[0] = SB_MEMBER_ACTIVATION_PUBLISHED;
     group->staged_state = SB_STAGED_INITIAL_PUBLISHED;
+    generation_watch_capture_publication(server, object->group_slot, group);
     return 0;
 }
 
@@ -3250,6 +4469,13 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             request->operation == KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT ||
             request->operation == KER_SB_FF_OWNER_GROUP_CUTOVER_POLL)
             expected_kind = KER_SOCKET_BROKER_FF_OWNER_CUTOVER;
+        else if (request->operation == KER_SB_FF_OWNER_GENERATION_WATCH_CREATE ||
+            request->operation == KER_SB_FF_OWNER_GROUP_RETIRE_INITIAL_LISTENER ||
+            request->operation == KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN ||
+            request->operation == KER_SB_FF_OWNER_GROUP_RETRY_PLAN ||
+            request->operation == KER_SB_FF_OWNER_GROUP_ABANDON_PLAN ||
+            request->operation == KER_SB_FF_OWNER_GROUP_RECOVER_DEAD_PLAN)
+            expected_kind = KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN;
         else if (request->operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT)
             expected_kind = KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN;
         else if (request->operation == KER_SB_TCP_OBSERVER_SNAPSHOT)
@@ -3380,6 +4606,27 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (status) return status;
         *passed_fd = capability; *result = 1; return 0;
     }
+    case KER_SB_FF_OWNER_GROUP_RECOVER_DEAD_PLAN:
+    case KER_SB_FF_OWNER_GROUP_ABANDON_PLAN:
+    case KER_SB_FF_OWNER_GROUP_RETRY_PLAN:
+    case KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN: {
+        if (input_length || fd_count != 1) return -EPROTO;
+        int capability = -1;
+        status = request->operation == KER_SB_FF_OWNER_GROUP_RECOVER_DEAD_PLAN ?
+            owner_group_recover_dead_plan(server, fds[0], &capability) :
+            request->operation != KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN ?
+            owner_group_retry_plan(server, fds[0],
+                request->operation == KER_SB_FF_OWNER_GROUP_ABANDON_PLAN, &capability) :
+            owner_group_successor_plan(server, fds[0], &capability);
+        if (status) return status;
+        *passed_fd = capability; *result = 1; return 0;
+    }
+    case KER_SB_FF_OWNER_GROUP_RETIRE_INITIAL_LISTENER: {
+        if (input_length || fd_count != 1) return -EPROTO;
+        status = owner_group_retire_initial_listener(server, lookup_cap(server, fds[0]));
+        if (status) return status;
+        *result = 0; return 0;
+    }
     case KER_SB_FF_OWNER_GROUP_CUTOVER_BEGIN: {
         if (input_length || fd_count != 1) return -EPROTO;
         int capability = -1;
@@ -3412,6 +4659,13 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             .accepted_packets = group->cutover.accepted_count};
         memcpy(output, &response, sizeof(response));
         *output_length = sizeof(response); *result = 0; return 0;
+    }
+    case KER_SB_FF_OWNER_GENERATION_WATCH_CREATE: {
+        if (input_length || fd_count != 1) return -EPROTO;
+        int capability = -1;
+        status = generation_watch_create(server, fds[0], &capability);
+        if (status) return status;
+        *passed_fd = capability; *result = 1; return 0;
     }
     case KER_SB_FF_OWNER_ADMISSION_PREPARE: {
         if (input_length || fd_count != 1) return -EPROTO;
@@ -3546,6 +4800,10 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         struct sb_group *group = &server->groups[object->group_slot];
         if (!group->live) return -EBADF;
         if (object->group_incarnation != group->incarnation) return -ESTALE;
+        if (group->successor_issued) {
+            if (args.index != group->selected_member) return -EOPNOTSUPP;
+            *result = 0; return 0;
+        }
         if (group->cutover_started) {
             if (!group_cutover_terminal(group->cutover.phase)) return -EBUSY;
             if (group->cutover.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED)
@@ -3603,7 +4861,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             object->kind != KER_SOCKET_BROKER_MEMBER_CENSUS &&
             object->kind != KER_SOCKET_BROKER_TCP_OBSERVER &&
             object->kind != KER_SOCKET_BROKER_FF_OWNER &&
-            object->kind != KER_SOCKET_BROKER_FF_OWNER_CUTOVER) {
+            object->kind != KER_SOCKET_BROKER_FF_OWNER_CUTOVER &&
+            object->kind != KER_SOCKET_BROKER_FF_OWNER_GENERATION_WATCH) {
             flags = fcntl(object->native_fd, F_GETFL);
             if (flags < 0) return -errno;
         }
@@ -4341,11 +5600,37 @@ static void reap_dead(struct ker_socket_broker_server *server)
 static int broker_pump(void *argument)
 {
     struct ker_socket_broker_server *server = argument;
-    int accepted = accept_clients(server);
+    if (server->readiness_attached) {
+        int status = readiness_supervisor_alive(server);
+        if (status) {
+            server->failure = -status;
+#ifdef KER_SOCKET_BROKER_READINESS_TESTING
+            server->readiness_parent_error = -status;
+#endif
+        }
+    }
+    if (server->readiness_attached && !server->failure && !server->readiness_sent) {
+        int status = readiness_send_ready(server);
+        if (status) server->failure = -status;
+    }
+    if (server->readiness_attached && !server->failure && server->readiness_sent &&
+        !server->readiness_stop_requested) {
+        int status = generation_watch_progress(server);
+        if (!status) status = readiness_receive_control(server);
+        if (status < 0 && status != -EAGAIN && status != -EWOULDBLOCK &&
+            status != -EINTR) server->failure = -status;
+    }
+    int accepted = 0;
+    if (!server->readiness_stop_requested && !server->failure)
+        accepted = accept_clients(server);
     if (accepted) server->failure = -accepted;
     for (size_t i = 0; i < KER_SB_CLIENTS; ++i) {
         struct sb_client *client = &server->clients[i];
         if (client->fd < 0) continue;
+        if (server->readiness_stop_requested || server->failure) {
+            close_client(server, client);
+            continue;
+        }
         struct pollfd pfd = {.fd = client->fd, .events = POLLIN | POLLHUP | POLLERR};
         if (syscall(SYS_poll, &pfd, 1, 0) <= 0) continue;
         if (pfd.revents & POLLIN) {
@@ -4358,7 +5643,8 @@ static int broker_pump(void *argument)
     pump_owner_admission_endpoints(server);
     advance_group_cutovers(server);
     finish_member_census_jobs(server);
-    bool should_stop = server->failure || (server->stop_when_empty &&
+    bool should_stop = server->failure || server->readiness_stop_requested ||
+        (server->stop_when_empty &&
         !object_count(server) && !client_count(server));
     if (should_stop && admission_tasks_stopping(server)) {
         struct timespec task_pause = {.tv_nsec = 1000000};
@@ -4383,6 +5669,16 @@ struct ker_socket_broker_server *ker_socket_broker_server_create(const char *pat
     struct ker_socket_broker_server *server = calloc(1, sizeof(*server));
     if (!server) return NULL;
     server->listener = -1;
+    server->readiness_fd = -1;
+    server->readiness_supervisor_pidfd = -1;
+    server->readiness_verify_watch_slot = -1;
+#ifdef KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING
+    server->readiness_test_verify_fd = -1;
+#endif
+    for (size_t i = 0; i < KER_SB_GENERATION_WATCHES; ++i) {
+        server->generation_watches[i].owner_pidfd = -1;
+        server->generation_watches[i].group_slot = -1;
+    }
     int lease_status = ker_member_census_server_claim(&server->runtime_lease);
     if (lease_status) {
         free(server);
@@ -4445,6 +5741,8 @@ int ker_socket_broker_server_run(struct ker_socket_broker_server *server, int st
 {
     if (!server || server->listener < 0 || server->running) return fail(EINVAL);
     if (stop_when_empty && !object_count(server)) return fail(EINVAL);
+    if (server->readiness_attached &&
+        (stop_when_empty || !server->readiness_bootstrap_complete)) return fail(EINVAL);
     server->running = true;
     server->stop_when_empty = !!stop_when_empty;
     int result = ker_posix_run(broker_pump, server);
@@ -4457,6 +5755,14 @@ int ker_socket_broker_server_run(struct ker_socket_broker_server *server, int st
 int ker_socket_broker_server_destroy_checked(struct ker_socket_broker_server *server)
 {
     if (!server) { errno = EINVAL; return -1; }
+    if (server->readiness_verify_watch_slot >= 0 &&
+        server->readiness_verify_watch_slot < KER_SB_GENERATION_WATCHES) {
+        struct sb_generation_watch *watch =
+            &server->generation_watches[server->readiness_verify_watch_slot];
+        if (watch->live && watch->verify_ticket)
+            (void)ker_member_census_query_cancel(watch->verify_ticket);
+        server->readiness_verify_watch_slot = -1;
+    }
     for (size_t i = 0; i < KER_SB_OBJECTS; ++i) {
         struct sb_group *group = &server->groups[i];
         if (group->live && group->cutover.controller) {
@@ -4486,6 +5792,11 @@ int ker_socket_broker_server_destroy_checked(struct ker_socket_broker_server *se
         }
         (void)host_close(server->owners[i].pidfd);
     }
+    (void)host_close(server->readiness_fd);
+    (void)host_close(server->readiness_supervisor_pidfd);
+#ifdef KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING
+    (void)host_close(server->readiness_test_verify_fd);
+#endif
     (void)host_close(server->listener);
     if (server->path_bound) {
         struct stat identity;

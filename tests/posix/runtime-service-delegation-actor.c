@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -147,12 +148,17 @@ static int marker(const char *name, const char *text)
 {
     const char *path = getenv(name);
     if (!path || !*path) { errno = EINVAL; return -1; }
-    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    char temporary[PATH_MAX];
+    int length = snprintf(temporary, sizeof(temporary), "%s.tmp.XXXXXX", path);
+    if (length < 0 || (size_t)length >= sizeof(temporary)) { errno = ENAMETOOLONG; return -1; }
+    int fd = mkostemp(temporary, O_CLOEXEC);
     if (fd < 0) return -1;
     int result = write_full(fd, text, strlen(text));
     if (!result && fsync(fd)) result = -1;
     int error = errno;
-    close(fd);
+    if (close(fd) && !result) { result = -1; error = errno; }
+    if (!result && link(temporary, path)) { result = -1; error = errno; }
+    if (unlink(temporary) && !result) { result = -1; error = errno; }
     errno = error;
     return result;
 }
@@ -196,11 +202,39 @@ static int delegated_main(uint32_t expected_role)
             while (syscall(SYS_nanosleep, &pause, &pause) && errno == EINTR) {}
             if (i == 499) { errno = ETIMEDOUT; fail("stage parent did not exit"); }
         }
+        const char *delay_text = getenv("KER_TEST_DELAY_FINAL_CLAIM_MS");
+        if (delay_text && *delay_text) {
+            char *end = NULL;
+            errno = 0;
+            unsigned long delay_ms = strtoul(delay_text, &end, 10);
+            if (errno || end == delay_text || *end || delay_ms > 15000) {
+                errno = EINVAL;
+                fail("final claim delay");
+            }
+            struct timespec delay = {
+                .tv_sec = (time_t)(delay_ms / 1000),
+                .tv_nsec = (long)(delay_ms % 1000) * 1000000L
+            };
+            while (syscall(SYS_nanosleep, &delay, &delay) && errno == EINTR) {}
+        }
     }
 
     struct ker_runtime_service_client client;
     ker_runtime_service_client_init(&client);
-    if (claim_grant(&client, &settings, &grant)) fail("delegated CLAIM");
+    if (claim_grant(&client, &settings, &grant)) {
+        int claim_error = errno;
+        if (expected_role == KER_RUNTIME_SERVICE_ROLE_SLIM_PRIMARY &&
+            getenv("KER_TEST_EXPECT_FINAL_CLAIM_FAILURE") && claim_error == ESTALE) {
+            char pid_text[32];
+            int count = snprintf(pid_text, sizeof(pid_text), "%ld", (long)getpid());
+            if (count <= 0 || (size_t)count >= sizeof(pid_text) ||
+                marker("KER_TEST_FINAL_CLAIM_FAILED", pid_text))
+                fail("expired grant marker");
+            return 0;
+        }
+        errno = claim_error;
+        fail("delegated CLAIM");
+    }
     if (ker_runtime_service_check(&client)) fail("delegated CHECK");
     if (expected_role == KER_RUNTIME_SERVICE_ROLE_SLIM_STAGE1) {
         char parent_pid[32];
@@ -223,6 +257,13 @@ static int delegated_main(uint32_t expected_role)
             execve("/proc/self/exe", args, environ);
             _exit(127);
         }
+        char child_pid_text[32];
+        int child_pid_length = snprintf(child_pid_text, sizeof(child_pid_text),
+            "%ld", (long)child);
+        if (child_pid_length <= 0 || (size_t)child_pid_length >= sizeof(child_pid_text) ||
+            (getenv("KER_TEST_PRIMARY_PID") &&
+                marker("KER_TEST_PRIMARY_PID", child_pid_text)))
+            fail("primary PID marker");
         close(stage_pipe[0]);
         int pidfd = (int)syscall(SYS_pidfd_open, child, 0);
         if (pidfd < 0) fail("primary pidfd");
@@ -246,7 +287,22 @@ static int delegated_main(uint32_t expected_role)
         marker("KER_TEST_FINAL_CLAIMED", pid_text)) fail("final claim marker");
     if (wait_for_release()) fail("final release wait");
     if (ker_runtime_service_check(&client)) fail("final CHECK");
-    if (ker_runtime_service_release(&client)) fail("final RELEASE");
+    if (getenv("KER_TEST_LOSE_FINAL_RELEASE_REPLY")) {
+        if (!ker_runtime_service_release(&client)) {
+            errno = EIO;
+            fail("lost final RELEASE response was not observed");
+        }
+        int first_error = errno;
+        if (first_error != EPROTO && first_error != ECONNRESET && first_error != EPIPE) {
+            errno = first_error;
+            fail("lost final RELEASE response error");
+        }
+        if (!ker_runtime_service_reconnect(&client) || errno != ESTALE)
+            fail("released lease CHECK after reconnect");
+        if (ker_runtime_service_release(&client)) fail("idempotent final RELEASE retry");
+    } else if (ker_runtime_service_release(&client)) {
+        fail("final RELEASE");
+    }
     ker_runtime_service_client_close(&client);
     if (getenv("KER_TEST_FINAL_RELEASED") &&
         marker("KER_TEST_FINAL_RELEASED", pid_text)) fail("final release marker");
@@ -282,6 +338,13 @@ static int spawn_stage1(void)
         execve("/proc/self/exe", args, environ);
         _exit(127);
     }
+    char child_pid_text[32];
+    int child_pid_length = snprintf(child_pid_text, sizeof(child_pid_text),
+        "%ld", (long)child);
+    if (child_pid_length <= 0 || (size_t)child_pid_length >= sizeof(child_pid_text) ||
+        (getenv("KER_TEST_STAGE1_PID") &&
+            marker("KER_TEST_STAGE1_PID", child_pid_text)))
+        fail("stage1 PID marker");
     close(pipefd[0]);
     int pidfd = (int)syscall(SYS_pidfd_open, child, 0);
     if (pidfd < 0) fail("stage pidfd");
