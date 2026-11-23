@@ -60,6 +60,13 @@ int ker_socket_broker_server_bootstrap_complete_empty(
 int ker_socket_broker_server_readiness_test_parent_error(
     const struct ker_socket_broker_server *server);
 #endif
+#ifdef KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING
+typedef int (*ker_socket_broker_test_run_hook)(void *context);
+int ker_socket_broker_server_run_with_test_hooks(
+    struct ker_socket_broker_server *server, int stop_when_empty,
+    ker_socket_broker_test_run_hook prepare,
+    ker_socket_broker_test_run_hook pump, void *context);
+#endif
 void ker_socket_broker_server_destroy(struct ker_socket_broker_server *server);
 /* Error-reporting teardown variant. If a fail-closed ingress quarantine
  * cannot be confirmed, returns -1/errno and retains the server and its pinned

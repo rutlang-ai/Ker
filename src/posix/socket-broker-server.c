@@ -272,6 +272,10 @@ struct ker_socket_broker_server {
     bool readiness_bootstrap_complete;
     bool readiness_sent;
     bool readiness_stop_requested;
+#ifdef KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING
+    int (*test_run_pump)(void *);
+    void *test_run_context;
+#endif
 };
 
 static void owner_group_activation_poison(struct ker_socket_broker_server *server,
@@ -323,11 +327,14 @@ static void owner_admission_endpoint_close(struct sb_owner *owner)
     owner->admission_directory[0] = '\0';
 }
 #ifdef KER_C16_ADMISSION_TEST_TRACE
-static void owner_admission_task_trace(const char *event, int status)
+static void owner_admission_task_trace(const struct sb_owner *owner,
+    const char *event, int status, uint64_t lease)
 {
-    char line[128];
+    char line[192];
     int length = snprintf(line, sizeof(line),
-        "C17_TASK_RELEASE %s status=%d\n", event, status);
+        "C17_TASK_RELEASE %s status=%d pid=%ld mark=%u lease=%llu\n",
+        event, status, (long)(owner ? owner->pid : 0),
+        owner ? owner->mark : 0, (unsigned long long)lease);
     if (length > 0 && (size_t)length < sizeof(line))
         (void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
 }
@@ -349,10 +356,10 @@ static int owner_admission_task_release(struct sb_owner *owner)
     if (!status) owner->released_admission_lease = lease;
 #ifdef KER_C16_ADMISSION_TEST_TRACE
     if (status == -EBUSY && !owner->admission_release_busy_logged) {
-        owner_admission_task_trace("deferred", status);
+        owner_admission_task_trace(owner, "deferred", status, lease);
         owner->admission_release_busy_logged = true;
     } else if (!status) {
-        owner_admission_task_trace("released", status);
+        owner_admission_task_trace(owner, "released", status, lease);
         owner->admission_release_busy_logged = false;
     }
 #endif
@@ -5643,6 +5650,12 @@ static int broker_pump(void *argument)
     pump_owner_admission_endpoints(server);
     advance_group_cutovers(server);
     finish_member_census_jobs(server);
+#ifdef KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING
+    if (server->test_run_pump) {
+        int hook_result = server->test_run_pump(server->test_run_context);
+        if (hook_result) server->failure = hook_result < 0 ? -hook_result : hook_result;
+    }
+#endif
     bool should_stop = server->failure || server->readiness_stop_requested ||
         (server->stop_when_empty &&
         !object_count(server) && !client_count(server));
@@ -5751,6 +5764,23 @@ int ker_socket_broker_server_run(struct ker_socket_broker_server *server, int st
     if (server->failure) return fail(server->failure);
     return 0;
 }
+
+#ifdef KER_SOCKET_BROKER_RX_OWNER_RELAY_TESTING
+int ker_socket_broker_server_run_with_test_hooks(
+    struct ker_socket_broker_server *server, int stop_when_empty,
+    ker_socket_broker_test_run_hook prepare,
+    ker_socket_broker_test_run_hook pump, void *context)
+{
+    if (!server || !prepare || !pump || server->test_run_pump) return fail(EINVAL);
+    server->test_run_pump = pump;
+    server->test_run_context = context;
+    int prepared = prepare(context);
+    int result = prepared ? prepared : ker_socket_broker_server_run(server, stop_when_empty);
+    server->test_run_pump = NULL;
+    server->test_run_context = NULL;
+    return result;
+}
+#endif
 
 int ker_socket_broker_server_destroy_checked(struct ker_socket_broker_server *server)
 {

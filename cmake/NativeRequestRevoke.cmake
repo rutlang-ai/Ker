@@ -42,7 +42,7 @@ if(BUILD_TESTING)
         "${PROJECT_SOURCE_DIR}/tests/posix/c15-admission-test-runtime.c"
         "${PROJECT_SOURCE_DIR}/src/posix/ff-admission-channel.c")
     target_compile_definitions(ker-posix-member-census-test-runtime PRIVATE
-        KER_C15_TEST_ACK_LOSS=1)
+        KER_C15_TEST_ACK_LOSS=1 KER_C15_DIAGNOSTIC_TRACE=1)
     target_include_directories(ker-posix-member-census-test-runtime PRIVATE
         "${PROJECT_SOURCE_DIR}/src/posix")
     file(READ "${CMAKE_CURRENT_BINARY_DIR}/member-census-test-exports.map"
@@ -73,7 +73,7 @@ if(BUILD_TESTING)
     target_compile_features(ker-c15-admission-map-owner PRIVATE c_std_11)
     target_compile_options(ker-c15-admission-map-owner PRIVATE -Wall -Wextra -Werror)
     target_compile_definitions(ker-c15-admission-map-owner PRIVATE
-        KER_C15_TEST_DELAY_PREPARED_REPLY=1)
+        KER_C15_TEST_DELAY_PREPARED_REPLY=1 KER_C15_DIAGNOSTIC_TRACE=1)
     target_link_libraries(ker-c15-admission-map-owner PRIVATE
         ker::ipc PkgConfig::DPDK "${ker_controller_ring_pmd}" Threads::Threads)
 
@@ -88,7 +88,7 @@ if(BUILD_TESTING)
             --owner "$<TARGET_FILE:ker-c15-admission-map-owner>")
     set_tests_properties(native-c15-admission-tap-smoke PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;admission;original-linux;tap;wire"
-        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;KER_C15_STAGE_TRACE=1")
 
     add_test(NAME native-c16-harness-wait-line-observer
         COMMAND "${Python3_EXECUTABLE}"
@@ -240,6 +240,10 @@ if(BUILD_TESTING)
             add_test(NAME native-nginx-source-lc-oracle
                 COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/nginx-source-lc-oracle.py")
             set_tests_properties(native-nginx-source-lc-oracle PROPERTIES
+                TIMEOUT 10 LABELS "nginx;source-reload" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-source-cps-oracle
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/nginx-source-cps-oracle.py")
+            set_tests_properties(native-nginx-source-cps-oracle PROPERTIES
                 TIMEOUT 10 LABELS "nginx;source-reload" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
             add_executable(ker-nginx-owner-group-controller tests/posix/nginx-owner-group-controller.c)
             target_link_libraries(ker-nginx-owner-group-controller PRIVATE ker-socket-client)
@@ -569,6 +573,49 @@ if(BUILD_TESTING)
                     --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
                     --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-overlap-abort-source-lc-evidence.json")
             set_tests_properties(native-nginx-overlap-abort-source-lc-tap PROPERTIES
+                TIMEOUT 300 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover;source-reload"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-overlap-source-cps-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-source-cps
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-overlap-source-cps-evidence.json")
+            set_tests_properties(native-nginx-overlap-source-cps-tap PROPERTIES
+                TIMEOUT 300 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover;source-reload"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-overlap-abort-source-cps-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-abort
+                    --nginx-overlap-source-cps
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-overlap-abort-source-cps-evidence.json")
+            set_tests_properties(native-nginx-overlap-abort-source-cps-tap PROPERTIES
                 TIMEOUT 300 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover;source-reload"
                 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
             add_test(NAME native-nginx-overlap-abort-tap

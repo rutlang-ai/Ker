@@ -124,13 +124,20 @@ def run_probe(args, eal, root, native):
     owner_prefix = root / 'c15-owner'
     owner_path = root / 'owner.sock'
     owner = None
+    trace_path = root / 'c15-stage-trace.log'
+    trace_enabled = os.environ.get('KER_C15_STAGE_TRACE') == '1'
     try:
         capture.bind(('kerhost', 0))
         capture.settimeout(.01)
         require(len(os.fsencode(owner_path)) < 108,
             f'private owner socket path exceeds AF_UNIX limit: {owner_path}')
+        owner_environment = os.environ.copy()
+        owner_environment.pop('KER_C15_STAGE_TRACE', None)
+        if trace_enabled:
+            owner_environment['KER_C15_STAGE_TRACE'] = str(trace_path)
         owner = subprocess.Popen([str(args.owner), str(owner_path), str(owner_prefix)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=owner_environment, text=True)
         wait_state(str(owner_prefix), 'OWNER_READY', owner)
         command = [sys.executable, str(args.launcher), '--library', str(args.library),
             '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
@@ -140,6 +147,9 @@ def run_probe(args, eal, root, native):
             'RUNTIME_DIRECTORY': str(root), 'KER_C15_ADMISSION_CONTROL': str(prefix),
             'KER_C15_OWNER_PATH': str(owner_path),
             'KER_C15_OWNER_PID': str(owner.pid)}
+        environment.pop('KER_C15_STAGE_TRACE', None)
+        if trace_enabled:
+            environment['KER_C15_STAGE_TRACE'] = str(trace_path)
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, text=True)
         wait_owner_identity(prefix, process, owner_prefix, owner)
@@ -280,6 +290,16 @@ def run_probe(args, eal, root, native):
         for peer in peers:
             peer.close()
         capture.close()
+        if trace_enabled and sys.exc_info()[0] is not None and trace_path.exists():
+            # Children are stopped above before the trace is copied to stderr,
+            # so diagnostics cannot backpressure the admission path.
+            try:
+                trace = trace_path.read_text()
+                print(f'C15_STAGE_TRACE_BEGIN path={trace_path}\n{trace}'
+                    'C15_STAGE_TRACE_END', file=sys.stderr, flush=True)
+            except OSError as error:
+                print(f'C15_STAGE_TRACE_UNAVAILABLE error={error!r}',
+                    file=sys.stderr, flush=True)
 
 
 def run_no_final_ack_probe(args, eal, root, native):

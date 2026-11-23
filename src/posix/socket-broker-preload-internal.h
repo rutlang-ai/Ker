@@ -35,6 +35,7 @@ void ker_sb_preload_trace_initial_listener(int owner_fd);
 bool ker_sb_preload_ff_owner_active_locked(void);
 int ker_sb_preload_ff_owner_capability_locked(void);
 bool ker_sb_preload_ff_owner_managed(void);
+bool ker_sb_preload_ff_owner_is_current(void);
 int ker_sb_preload_ff_owner_socket(int domain, int type, int protocol);
 int ker_sb_preload_ff_owner_payload(struct ker_socket_member_payload_snapshot *snapshot);
 int ker_sb_preload_ff_owner_requests(uint64_t *request_count);
@@ -69,6 +70,8 @@ void ker_sb_preload_ff_dispatch_end(void);
  * from its owning event-loop thread while that thread waits for readiness. */
 typedef int (*ker_sb_preload_owner_pump_fn)(void *context);
 int ker_sb_preload_owner_pump_register(ker_sb_preload_owner_pump_fn pump,
+    void *context);
+int ker_sb_preload_rx_relay_pump_register(ker_sb_preload_owner_pump_fn pump,
     void *context);
 void ker_sb_preload_owner_pump_unregister(void);
 int ker_sb_preload_owner_pump(void);

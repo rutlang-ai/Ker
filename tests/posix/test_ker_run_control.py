@@ -469,6 +469,8 @@ class KerRunControlTests(unittest.TestCase):
                 try:
                     instance.poll(lambda: None)
                 except PermissionError:
+                    instance.channel.close()
+                    os.close(instance.parent_pidfd)
                     os._exit(0)
                 os._exit(41)
             except BaseException:
@@ -479,10 +481,13 @@ class KerRunControlTests(unittest.TestCase):
             inner.close()
             try:
                 read_fd, write_fd = os.pipe()
-                record = wire.pack_verify(nonce, 31, 1)
-                _send_record(outer, record, read_fd)
-                os.close(read_fd)
-                os.close(write_fd)
+                try:
+                    record = wire.pack_verify(nonce, 31, 1)
+                    _send_record(outer, record, read_fd)
+                finally:
+                    os.close(read_fd)
+                    os.close(write_fd)
+                outer.close()
                 os._exit(0)
             except BaseException:
                 os._exit(43)
@@ -490,6 +495,7 @@ class KerRunControlTests(unittest.TestCase):
         _, child_status = os.waitpid(child, 0)
         outer.close()
         self.assertEqual(os.waitstatus_to_exitcode(sender_status), 0)
+        self.assertNotEqual(sender, child, 'request sender must be a relay sibling')
         self.assertEqual(os.waitstatus_to_exitcode(child_status), 0)
 
     def test_unknown_request_closes_attached_right_and_fails_closed(self):

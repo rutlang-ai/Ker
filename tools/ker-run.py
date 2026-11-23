@@ -16,6 +16,7 @@ import selectors
 import shlex
 import signal
 import shutil
+import struct
 import socket
 import subprocess
 import sys
@@ -28,6 +29,15 @@ import secrets
 # selector tests). Load its private codec by sibling path so neither the
 # caller's sys.path nor a cached module with the same public name can override it.
 _RX_DECISION_WIRE_PATH = Path(__file__).resolve().with_name('rx_decision_wire.py')
+_RX_OWNER_RELAY_HEADER = struct.Struct('=IHHQQ16sQQQQIIIIIHHHHIiHBB')
+_RX_OWNER_RELAY_MAGIC = 0x4b525852
+_RX_OWNER_RELAY_VERSION = 1
+_RX_OWNER_RELAY_APP_AUTH = 3
+_RX_OWNER_AUTH_RECORD = struct.Struct('=IHHIIIIIIQQQQQQ16s')
+_RX_OWNER_AUTH_MAGIC = 0x4b524f41
+_RX_OWNER_AUTH_VERSION = 1
+_RX_OWNER_AUTH_OWNER = 1
+_RX_OWNER_AUTH_ACK = 2
 _RX_DECISION_WIRE_SPEC = importlib.util.spec_from_file_location(
     '_ker_run_rx_decision_wire', _RX_DECISION_WIRE_PATH)
 if _RX_DECISION_WIRE_SPEC is None or _RX_DECISION_WIRE_SPEC.loader is None:
@@ -119,6 +129,112 @@ def rx_decision_identity(pid, pidfd):
         pidfd=pidfd)
 
 
+def rx_owner_relay_auth(endpoint, app, app_pidfd, supervisor_pidfd,
+                        companion, nonce, epoch):
+    owner_pid = companion.owner_pid
+    owner_tid = companion.owner_tid
+    owner_start = companion.owner_start
+    if (endpoint is None or app is None or app_pidfd < 0 or owner_pid <= 0 or
+            owner_tid <= 0 or owner_start <= 0 or not nonce or not epoch):
+        raise RuntimeError('incomplete authenticated RX owner relay identity')
+    app_start = process_start_ticks(app.pid)
+    supervisor_start = process_start_ticks(os.getpid())
+    payload = _RX_OWNER_RELAY_HEADER.pack(_RX_OWNER_RELAY_MAGIC,
+        _RX_OWNER_RELAY_VERSION, _RX_OWNER_RELAY_APP_AUTH, 0, 0, nonce, epoch,
+        app_start, owner_start, supervisor_start,
+        app.pid, owner_pid, owner_tid, os.getpid(), 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0)
+    rights = array.array('i', (app_pidfd, supervisor_pidfd))
+    sent = endpoint.sendmsg([payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
+        getattr(socket, 'MSG_NOSIGNAL', 0))
+    if sent != len(payload):
+        raise RuntimeError('short authenticated RX owner relay bootstrap send')
+
+
+def rx_owner_expected_auth(endpoint, app, app_pidfd, supervisor_pidfd,
+                           companion, nonce, epoch, supervisor_start):
+    if (endpoint is None or app is None or app_pidfd < 0 or supervisor_pidfd < 0 or
+            companion.owner_pidfd < 0 or companion.owner_pid <= 0 or
+            companion.owner_tid <= 0 or companion.owner_start <= 0 or
+            companion.owner_slot_device <= 0 or companion.owner_slot_inode <= 0 or
+            companion.owner_cookie <= 0):
+        raise RuntimeError('incomplete supervisor-authenticated Nginx owner READY')
+    app_start = process_start_ticks(app.pid)
+    if (nginx_companion._pidfd_pid(app_pidfd) != app.pid or
+            process_start_ticks(os.getpid()) != supervisor_start or
+            not nginx_companion.process_alive(app_pidfd) or
+            not nginx_companion.process_alive(supervisor_pidfd) or
+            not nginx_companion.process_alive(companion.owner_pidfd)):
+        raise ProcessLookupError('owner AUTH process identity is stale before send')
+    payload = _RX_OWNER_AUTH_RECORD.pack(_RX_OWNER_AUTH_MAGIC,
+        _RX_OWNER_AUTH_VERSION, _RX_OWNER_AUTH_OWNER,
+        _RX_OWNER_AUTH_RECORD.size, os.getpid(), companion.owner_pid,
+        companion.owner_tid, companion.owner_role, 0, epoch, supervisor_start,
+        companion.owner_start, companion.owner_slot_device,
+        companion.owner_slot_inode, companion.owner_cookie, nonce)
+    rights = array.array('i', (companion.owner_pidfd, supervisor_pidfd))
+    sent = endpoint.sendmsg([payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
+        getattr(socket, 'MSG_NOSIGNAL', 0))
+    if sent != len(payload):
+        raise RuntimeError('short supervisor-to-app owner AUTH send')
+    deadline = time.monotonic() + 5.0
+    selector = selectors.DefaultSelector()
+    try:
+        selector.register(endpoint, selectors.EVENT_READ)
+        if not selector.select(max(0, deadline - time.monotonic())):
+            raise TimeoutError('C31 app did not acknowledge authenticated owner READY')
+        packet, ancillary, flags, _address = endpoint.recvmsg(_RX_OWNER_AUTH_RECORD.size + 1,
+            socket.CMSG_SPACE(struct.calcsize('=3i')) + socket.CMSG_SPACE(4 * 4),
+            getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
+    finally:
+        selector.close()
+    credentials = None
+    unexpected_fds = []
+    ancillary_error = None
+    for level, kind, value in ancillary:
+        if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS:
+            if credentials is not None or len(value) != struct.calcsize('=3i'):
+                ancillary_error = ValueError('duplicate or malformed OWNER_AUTH ACK credentials')
+            else:
+                credentials = struct.unpack('=3i', value)
+        elif level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+            received = array.array('i')
+            if len(value) % received.itemsize:
+                ancillary_error = ValueError('malformed OWNER_AUTH ACK descriptor ancillary')
+            received.frombytes(value[:len(value) - len(value) % received.itemsize])
+            unexpected_fds.extend(received)
+            ancillary_error = ValueError('unexpected descriptors in OWNER_AUTH ACK')
+        else:
+            ancillary_error = ValueError('unexpected OWNER_AUTH ACK ancillary data')
+    try:
+        if ancillary_error is not None:
+            raise ancillary_error
+        if (len(packet) != _RX_OWNER_AUTH_RECORD.size or
+                flags & (getattr(socket, 'MSG_TRUNC', 0) | getattr(socket, 'MSG_CTRUNC', 0)) or
+                unexpected_fds or credentials != (app.pid, os.stat(f'/proc/{app.pid}').st_uid,
+                    os.stat(f'/proc/{app.pid}').st_gid)):
+            raise PermissionError('invalid C31 app owner AUTH acknowledgement credentials/shape')
+        ack = _RX_OWNER_AUTH_RECORD.unpack(packet)
+        expected = list(_RX_OWNER_AUTH_RECORD.unpack(payload))
+        expected[2] = _RX_OWNER_AUTH_ACK
+        if (tuple(expected) != ack or process_start_ticks(app.pid) != app_start or
+                nginx_companion._pidfd_pid(app_pidfd) != app.pid or
+                not nginx_companion.process_alive(app_pidfd) or
+                not nginx_companion.process_alive(supervisor_pidfd)):
+            raise PermissionError('C31 app owner AUTH acknowledgement identity mismatch')
+        if time.monotonic() >= deadline or not nginx_companion.process_alive(companion.owner_pidfd):
+            raise ProcessLookupError('authenticated Nginx owner died before C31 app acknowledgement')
+        print('KER_RX_OWNER_EXPECTED_AUTH ' + json.dumps({
+            'pid': companion.owner_pid, 'start_ticks': companion.owner_start,
+            'tid': companion.owner_tid, 'role': companion.owner_role,
+            'slot_device': companion.owner_slot_device,
+            'slot_inode': companion.owner_slot_inode, 'cookie': companion.owner_cookie,
+        }, sort_keys=True, separators=(',', ':')), flush=True)
+    finally:
+        for fd in unexpected_fds:
+            os.close(fd)
+
+
 def wait_startup_marker(fd, data, marker, timeout, description):
     """Read complete startup bytes until marker; preserve all bytes for later checks."""
     deadline = time.monotonic() + timeout
@@ -130,7 +246,7 @@ def wait_startup_marker(fd, data, marker, timeout, description):
                 raise RuntimeError(f'{description} startup timed out')
             chunk = os.read(fd, 4096)
             if not chunk:
-                raise RuntimeError(f'{description} exited before readiness marker')
+                raise RuntimeError(f'{description} exited before readiness marker; startup bytes={data!r}')
             data += chunk
     return data
 
@@ -152,7 +268,7 @@ def resolve_runtime_service_app_executable(command, search_path=None):
     try:
         executable = Path(candidate).resolve(strict=True)
     except (OSError, RuntimeError) as exc:
-        raise RuntimeError('runtime-service caller executable cannot be resolved') from exc
+        raise RuntimeError(f'runtime-service caller executable cannot be resolved: {candidate!r}: {exc}') from exc
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise RuntimeError('runtime-service caller must be an executable file')
     with executable.open('rb') as executable_stream:
@@ -173,14 +289,69 @@ def control_nginx_profile(args):
     fields = tuple(getattr(args, name, None) for name in
         ('control_nginx_binary', 'control_nginx_config', 'control_nginx_prefix'))
     supplied_env = getattr(args, 'control_nginx_env', None) or []
-    requested = any(value is not None for value in fields) or bool(supplied_env)
+    owner_ready_required = bool(getattr(args, 'control_nginx_owner_ready', False))
+    rx_owner_relay = bool(getattr(args, 'control_nginx_rx_relay', False))
+    owner_module = getattr(args, 'control_nginx_owner_module', None)
+    requested = (any(value is not None for value in fields) or bool(supplied_env) or
+        owner_ready_required or owner_module is not None or rx_owner_relay)
     if not requested:
         return None
-    if (not args.broker_readiness or not args.runtime_service or args.rx_decision or
+    if (not args.broker_readiness or not args.runtime_service or
+            (args.rx_decision != rx_owner_relay) or
+            (rx_owner_relay and not owner_ready_required) or
             any(value is None for value in fields)):
-        raise ValueError('control-only Nginx requires broker-readiness and a complete pinned profile')
+        raise ValueError('Nginx RX relay requires RX-decision, broker-readiness, owner READY and a complete pinned profile')
     allowed = {'LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
         'KER_FSTACK_NGINX_INI', 'KER_FSTACK_RUNTIME_TRACE'}
+    source_flowmap_test = any(
+        item.partition('=')[0] == 'KER_NGINX_SOURCE_FLOWMAP_TEST'
+        for item in supplied_env)
+    source_admission_relay = any(
+        item.partition('=')[0] == 'KER_NGINX_SOURCE_ADMISSION_RELAY'
+        for item in supplied_env)
+    if source_flowmap_test:
+        if (not rx_owner_relay or owner_module is None or
+                Path(owner_module).name !=
+                    'ker-fstack-nginx-owner-activation-alias-test.so'):
+            raise ValueError('source flow-map qualification requires the alias RX relay profile')
+        allowed.add('KER_NGINX_SOURCE_FLOWMAP_TEST')
+    if source_admission_relay:
+        slot_values = [item.partition('=')[2] for item in supplied_env
+            if item.partition('=')[0] == 'KER_NGINX_CANDIDATE_SLOT_FD']
+        transfer_text = os.environ.get('KER_NGINX_CANDIDATE_SLOT_TRANSFER_FD')
+        try:
+            slot_fd = int(slot_values[0], 10) if len(slot_values) == 1 else -1
+            transfer_fd = int(transfer_text, 10) if transfer_text is not None else -2
+        except ValueError:
+            slot_fd = transfer_fd = -3
+        if (not rx_owner_relay or owner_module is None or
+                Path(owner_module).name !=
+                    'ker-fstack-nginx-owner-activation-alias-test.so' or
+                source_flowmap_test or slot_fd < 3 or transfer_fd != slot_fd):
+            raise ValueError('source-map admission requires the authenticated C16 candidate capability and RX relay profile')
+        if next((item.partition('=')[2] for item in supplied_env
+                if item.partition('=')[0] == 'KER_NGINX_SOURCE_ADMISSION_RELAY'), None) != '1':
+            raise ValueError('source-map admission requires the explicit profile value 1')
+        try:
+            os.fstat(transfer_fd)
+        except OSError as error:
+            raise ValueError('candidate slot transfer endpoint is not an open descriptor') from error
+        allowed.update({'KER_NGINX_SOURCE_ADMISSION_RELAY',
+            'KER_NGINX_CANDIDATE_SLOT_FD'})
+        if any(item.partition('=')[0] ==
+                'KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US' for item in supplied_env):
+            if next((item.partition('=')[2] for item in supplied_env
+                    if item.partition('=')[0] ==
+                        'KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US'), None) != '350000':
+                raise ValueError('source-admission expiry control has an invalid bounded delay')
+            allowed.add('KER_NGINX_SOURCE_ADMISSION_TEST_DELAY_US')
+        if any(item.partition('=')[0] ==
+                'KER_C16_TEST_PUMP_FAIL_AFTER_STEP' for item in supplied_env):
+            if next((item.partition('=')[2] for item in supplied_env
+                    if item.partition('=')[0] ==
+                        'KER_C16_TEST_PUMP_FAIL_AFTER_STEP'), None) != '1':
+                raise ValueError('source-admission failure injection has an invalid value')
+            allowed.add('KER_C16_TEST_PUMP_FAIL_AFTER_STEP')
     env = {}
     for item in supplied_env:
         key, separator, value = item.partition('=')
@@ -196,14 +367,31 @@ def control_nginx_profile(args):
     preload_names = [Path(item).name for item in env['LD_PRELOAD'].split(':') if item]
     if (not any(name.startswith('libfstack.so') for name in preload_names) or
             not any(name.startswith('libker-socket-preload.so') for name in preload_names) or
-            any('nginx-worker-shim' in name for name in preload_names)):
+            (any('nginx-worker-shim' in name for name in preload_names) and
+             not owner_ready_required)):
         raise ValueError('control-only Nginx requires the pinned F-Stack socket preload profile')
+    if owner_ready_required:
+        shim_names = [name for name in preload_names
+            if name == 'libker-fstack-nginx-worker-shim.so']
+        if len(shim_names) != 1:
+            raise ValueError('owner READY requires exactly one pinned Nginx worker shim')
+        if owner_module is None:
+            raise ValueError('owner READY requires the C22 owner-activation module')
+        module = owner_module.resolve(strict=True)
+        if not module.is_file():
+            raise ValueError('owner READY activation module is not a regular file')
+        import hashlib
+        env['KER_NGINX_OWNER_MODULE_PATH'] = str(module)
+        env['KER_NGINX_OWNER_MODULE_SHA256'] = hashlib.sha256(
+            module.read_bytes()).hexdigest()
+    elif getattr(args, 'control_nginx_owner_module', None) is not None:
+        raise ValueError('owner activation module requires owner READY mode')
     binary, config, prefix = (value.resolve(strict=True) for value in fields)
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError('control-only Nginx binary is not an executable file')
     if not config.is_file() or not prefix.is_dir():
         raise ValueError('control-only Nginx config/prefix does not exist')
-    return binary, config, prefix, env
+    return binary, config, prefix, env, owner_ready_required
 
 
 # CMake substitutes the relative library path for the installed launcher.
@@ -710,6 +898,12 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     parser.add_argument('--control-nginx-config', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--control-nginx-prefix', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--control-nginx-env', action='append', help=argparse.SUPPRESS)
+    parser.add_argument('--control-nginx-owner-ready', action='store_true',
+        help=argparse.SUPPRESS)
+    parser.add_argument('--control-nginx-rx-relay', action='store_true',
+        help=argparse.SUPPRESS)
+    parser.add_argument('--control-nginx-owner-module', type=Path,
+        help=argparse.SUPPRESS)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     supplied = parser.parse_args(argv)
     values = dict(CONFIG_DEFAULTS)
@@ -1363,6 +1557,8 @@ def main():
         print(f'ker-run: IPC setup: {error}', file=sys.stderr)
         return 125
     decision_app = decision_io = None
+    owner_relay_app = owner_relay_owner = None
+    owner_auth_app = owner_auth_supervisor = None
     supervisor_pidfd = worker_pidfd = app_pidfd = -1
     runtime_actor_pidfd = -1
     runtime_service_server = None
@@ -1397,6 +1593,25 @@ def main():
             for descriptor in (control_read, control_write, startup_read, startup_write):
                 os.close(descriptor)
             print(f'ker-run: RX decision setup is unavailable: {error}', file=sys.stderr)
+            return 125
+    if getattr(args, 'control_nginx_rx_relay', False):
+        try:
+            if control_nginx is None or not args.rx_decision:
+                raise ValueError('owner RX relay requires the explicit C31 and C22 profile')
+            owner_relay_app, owner_relay_owner = socket.socketpair(
+                socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_NONBLOCK)
+            for endpoint in (owner_relay_app, owner_relay_owner):
+                endpoint.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            owner_auth_app, owner_auth_supervisor = socket.socketpair(
+                socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_NONBLOCK)
+            for endpoint in (owner_auth_app, owner_auth_supervisor):
+                endpoint.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        except (OSError, ValueError) as error:
+            for endpoint in (owner_relay_app, owner_relay_owner,
+                    owner_auth_app, owner_auth_supervisor):
+                if endpoint is not None:
+                    endpoint.close()
+            print(f'ker-run: RX owner relay setup is unavailable: {error}', file=sys.stderr)
             return 125
     worker_finished = run_finished = False
     pending_shutdown_signal = None
@@ -1540,7 +1755,9 @@ def main():
         info = worker_ready_record(ready)
         app_command = args.command
         if args.broker_readiness:
-            if not args.runtime_service or args.rx_decision:
+            if (not args.runtime_service or
+                    (args.rx_decision and not getattr(args,
+                        'control_nginx_rx_relay', False))):
                 raise ValueError('broker readiness requires the authenticated runtime-service actor profile')
         if args.rx_decision:
             worker_pidfd = os.pidfd_open(worker.pid, 0)
@@ -1571,7 +1788,23 @@ def main():
                 run_control.bind_runtime(broker_readiness_channel, worker,
                     worker_pidfd, worker_path, app_executable_hash)
         if control_nginx is not None:
-            nginx_companion_server = nginx_companion.NginxCompanion(*control_nginx)
+            nginx_companion_binary, nginx_companion_config, nginx_companion_prefix, \
+                nginx_companion_env, nginx_owner_ready_required = control_nginx
+            if owner_relay_owner is not None:
+                nginx_companion_env.update(
+                    KER_NGINX_RX_OWNER_RELAY_SUPERVISOR_PID=str(os.getpid()),
+                    KER_NGINX_RX_OWNER_RELAY_FD=str(owner_relay_owner.fileno()),
+                    KER_NGINX_RX_OWNER_RELAY_NONCE=decision_nonce.hex(),
+                    KER_NGINX_RX_OWNER_RELAY_EPOCH=str(decision_epoch))
+            nginx_companion_server = nginx_companion.NginxCompanion(
+                nginx_companion_binary, nginx_companion_config,
+                nginx_companion_prefix, nginx_companion_env,
+                owner_ready_required=nginx_owner_ready_required,
+                rx_owner_relay_fd=(owner_relay_owner.fileno()
+                    if owner_relay_owner is not None else None),
+                candidate_slot_transfer_fd=(int(os.environ['KER_NGINX_CANDIDATE_SLOT_TRANSFER_FD'])
+                    if nginx_companion_env.get('KER_NGINX_SOURCE_ADMISSION_RELAY') == '1'
+                    else None))
         for interface in args.interfaces:
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
@@ -1579,6 +1812,8 @@ def main():
         env = {key: value for key, value in os.environ.items()
             if not key.startswith(('LKL_', 'KER_PACKET_', 'KER_RUNTIME_SERVICE_',
                                    'KER_BROKER_', 'KER_RUN_CONTROL_'))}
+        env.pop('KER_NGINX_CANDIDATE_SLOT_TRANSFER_FD', None)
+        env.pop('KER_NGINX_CANDIDATE_SLOT_FD', None)
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
             KER_NATIVE_TX_FEATURES=str(info['tx_offload_features']), KER_RUN_FD=str(run_app.fileno()), KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
             KER_PACKET_CONTROL_FD=str(mtu_app.fileno()), KER_PACKET_MAX_MTU=str(args.max_mtu),
@@ -1587,6 +1822,14 @@ def main():
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
         if args.rx_decision:
             env['KER_RX_DECISION_FD'] = str(decision_app.fileno())
+        if owner_relay_app is not None:
+            env['KER_RX_OWNER_RELAY_FD'] = str(owner_relay_app.fileno())
+            env['KER_RX_OWNER_AUTH_FD'] = str(owner_auth_app.fileno())
+            env['KER_RX_OWNER_RELAY_SUPERVISOR_PID'] = str(os.getpid())
+            env['KER_RX_OWNER_RELAY_SUPERVISOR_START_TICKS'] = str(
+                process_start_ticks(os.getpid()))
+            env['KER_RX_OWNER_RELAY_NONCE'] = decision_nonce.hex()
+            env['KER_RX_OWNER_RELAY_EPOCH'] = str(decision_epoch)
         if runtime_service_server is not None:
             env.update(runtime_service_server.env)
         if broker_readiness_channel is not None:
@@ -1629,10 +1872,16 @@ def main():
             *(fd for extra in additional for fd in extra.app_fds())]
         if args.rx_decision:
             app_pass_fds.append(decision_app.fileno())
+        if owner_relay_app is not None:
+            app_pass_fds.append(owner_relay_app.fileno())
+            app_pass_fds.append(owner_auth_app.fileno())
         if broker_readiness_channel is not None:
             app_pass_fds.append(broker_readiness_channel.child_fd())
         app = subprocess.Popen([str(app_guard), *app_command], env=env,
             pass_fds=tuple(app_pass_fds))
+        if owner_auth_app is not None:
+            owner_auth_app.close()
+            owner_auth_app = None
         if broker_readiness_channel is not None:
             broker_readiness_channel.child_started(app,
                 runtime_service_server.app_executable_hash)
@@ -1667,9 +1916,12 @@ def main():
             if not startup_status.startswith(b'KER_NATIVE_READY\n'):
                 raise RuntimeError('application did not initialize the native Linux backend')
         if args.rx_decision:
-            startup_status = wait_startup_marker(startup_read, startup_status,
-                b'KER_RX_DECISION_READY\n', 20,
-                'RX decision consumer (handler/identity/worker handshake)')
+            try:
+                startup_status = wait_startup_marker(startup_read, startup_status,
+                    b'KER_RX_DECISION_READY\n', 20,
+                    'RX decision consumer (handler/identity/worker handshake)')
+            except RuntimeError as error:
+                raise RuntimeError(f'{error}; application poll status={app.poll()}') from error
         stopping_at = None
         while True:
             try:
@@ -1752,6 +2004,35 @@ def main():
                     if (broker_readiness_channel.poll_ready() and
                             nginx_companion_server is not None):
                         nginx_companion_server.start()
+                        if owner_auth_supervisor is not None:
+                            rx_owner_expected_auth(owner_auth_supervisor, app, app_pidfd,
+                                supervisor_pidfd, nginx_companion_server,
+                                decision_nonce, decision_epoch,
+                                process_start_ticks(os.getpid()))
+                            owner_auth_supervisor.close()
+                            owner_auth_supervisor = None
+                        if owner_relay_owner is not None:
+                            owner_relay_owner.close()
+                            owner_relay_owner = None
+                        if owner_relay_app is not None:
+                            rx_owner_relay_auth(owner_relay_app, app, app_pidfd,
+                                supervisor_pidfd,
+                                nginx_companion_server, decision_nonce, decision_epoch)
+                            owner_relay_app.close()
+                            owner_relay_app = None
+                        if nginx_companion_server.owner_ready_required:
+                            print('KER_NGINX_OWNER_READY ' + json.dumps({
+                                'pid': nginx_companion_server.owner_pid,
+                                'start_ticks': nginx_companion_server.owner_start,
+                                'tid': nginx_companion_server.owner_tid,
+                                'role': nginx_companion_server.owner_role,
+                                'slot_device': nginx_companion_server.owner_slot_device,
+                                'slot_inode': nginx_companion_server.owner_slot_inode,
+                                'cookie': nginx_companion_server.owner_cookie,
+                                'master_pid': nginx_companion_server.master_pid,
+                                'master_start_ticks': nginx_companion_server.master_start,
+                                'source': 'authenticated-C22-worker-READY'},
+                                sort_keys=True, separators=(',', ':')), flush=True)
                 if run_control is not None:
                     run_control.poll(request_relay_shutdown)
                     start_relay_shutdown()
@@ -1874,7 +2155,7 @@ def main():
                 app.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-    except (OSError, ValueError, RuntimeError) as error:
+    except (OSError, ValueError, RuntimeError, struct.error) as error:
         print(f'ker-run: {error}', file=sys.stderr)
         if broker_readiness_channel is not None:
             infrastructure_failure = True
@@ -1900,6 +2181,13 @@ def main():
             infrastructure_failure = True
         if nginx_companion_server is not None:
             nginx_companion_server.close()
+        for endpoint in (owner_relay_app, owner_relay_owner,
+                owner_auth_app, owner_auth_supervisor):
+            if endpoint is not None:
+                try:
+                    endpoint.close()
+                except OSError:
+                    pass
         if app and app.poll() is None:
             app.terminate()
             try:

@@ -57,6 +57,36 @@ class FakeBroker:
 
 
 class ReuseportFailurePropagationTests(unittest.TestCase):
+    def test_graceful_source_waits_for_backend_and_primary_stderr(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / 'runtime.trace'
+            primary = root / 'primary.stderr'
+            trace.write_text('stage=graceful_source_state_valid\n')
+            stages = iter((
+                ('stage=graceful_source_state_valid\nstage=graceful_backend_unbound dispatcher=0 packet_owner=0\n', None),
+                (None, b'graceful reload requires an authenticated generation packet-owner\n'),
+            ))
+            sleeps = []
+
+            def advance(_duration):
+                sleeps.append(_duration)
+                trace_text, primary_bytes = next(stages)
+                if trace_text is not None:
+                    trace.write_text(trace_text)
+                if primary_bytes is not None:
+                    primary.write_bytes(primary_bytes)
+
+            with patch.object(BROKER_TEST.time, 'sleep', side_effect=advance):
+                trace_text, primary_stderr = BROKER_TEST.wait_for_graceful_source_rejection_evidence(
+                    trace, primary, timeout=1, poll_interval=0.001)
+
+            self.assertEqual(len(sleeps), 2)
+            self.assertIn('stage=graceful_source_state_valid', trace_text)
+            self.assertIn('stage=graceful_backend_unbound dispatcher=0 packet_owner=0', trace_text)
+            self.assertIn(b'graceful reload requires an authenticated generation packet-owner',
+                primary_stderr)
+
     def test_late_assertion_survives_child_cleanup(self):
         client = FakeClient()
         read_failure = AssertionError('injected late client assertion')

@@ -208,12 +208,35 @@ This work does not advance the source-case inventory or qualify graceful reload.
 
 The private `ker-run --rx-decision` profile gives the trusted original-Linux
 application a bounded, authenticated decision for each retained Ethernet RX
-mbuf. The consumer may choose `LOCAL` (inject the unchanged frame once into
+mbuf. Private wire version 2 carries the complete flattened frame while
+retaining the original first-segment, offset, queue, and offload metadata. The
+callback receives a read-only full-frame view and a first-segment alias for the
+duration of the callback; a deferred callback must copy all bytes it needs.
+The consumer may choose `LOCAL` (inject the unchanged frame once into
 that application's original Linux instance) or `DROP`; it cannot provide
 replacement bytes, a target, or a file descriptor. Worker settlement waits
 until every decision lease is resolved. The implementation does not enable
 F-Stack dispatcher registration, PEER/RESPONSE actions, or a graceful-reload
 profile.
+
+The private callback may defer one lease only after copying any bytes it needs;
+the snapshot is valid only during the callback. The exact packet ID can then be
+completed once on the registered owner thread, before the original worker
+deadline, after fresh worker and supervisor pidfd/start-time checks. Pumping
+while a lease is pending does not read another packet or invoke the callback.
+Expiration or send failure leaves the packet unresolved, so a later `SETTLED`
+cannot claim that packet was handled. Callers must finish a pending lease and
+switch to their own bounded synchronous `LOCAL`/`DROP` policy before stopping
+their app loop; otherwise native shutdown cannot service another deferred
+callback. The physical TAP case exercises this caller-owned drain transition.
+The full-frame snapshot does not transfer mbuf ownership: the worker retains
+the original chained mbuf until the one result and uses that same object for
+the existing LOCAL/DROP ownership path. The supported producer cap remains
+MTU plus Ethernet and VLAN headers (9018 bytes at MTU 9000); the private wire
+frame ceiling is 9022 bytes, and both endpoints reject excess or non-exact
+payload lengths. This remains a private prerequisite: source callback
+integration, authenticated cross-generation `PEER` routing, and the original
+same-master graceful-reload matrix are still unsupported.
 
 The TAP qualification uses real original-Linux TCP: normal echo, an injected
 packet-channel EAGAIN followed by same-ID retry and one actual send, immediate
@@ -524,3 +547,15 @@ profiles and a selection-history rejection profile qualify this path; see
 This does not recover started/quarantined ingress transactions or candidates
 that had been selected, and it does not implement the original master FSM.
 The source shell entrypoint remains blocked; migration counts are unchanged.
+
+### Original rt30 short-connection traffic over commit and abort
+
+The unchanged original CPS probe now has separate real-Nginx commit and abort
+qualifications, preserving one thread, 180 seconds, the two-second timeout and
+the three-second/200-request progress anchor. The strict source summary and
+additional post-retirement progress evidence require uninterrupted successful
+new TCP connections through the explicit selector decision and owner teardown.
+See [scope and reproduction](fstack-nginx-runtime.md#original-cps-probe-across-explicit-commit-and-abort).
+This is the rt30 traffic prerequisite, not its same-master FSM, performance
+comparison, source drain/forward counter contract or complete shell case.
+The source entrypoint remains blocked and the migration counts do not change.

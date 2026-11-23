@@ -32,6 +32,33 @@ def validate_source_lc(checker, text, returncode, abort):
     return checker.summary('lc', text, '' if abort else 'perf')
 
 
+def cps_progress(text):
+    rows = list(re.finditer(r'^CPS_PROGRESS elapsed=([0-9.]+) n=(\d+) fail=(\d+)$',
+        text, re.MULTILINE))
+    previous_time, previous_count = -1, -1
+    for row in rows:
+        elapsed, count, failures = float(row[1]), int(row[2]), int(row[3])
+        require(elapsed > previous_time and count >= previous_count and failures == 0,
+            'CPS progress regressed or reported failed connections')
+        previous_time, previous_count = elapsed, count
+    return rows
+
+
+def validate_source_cps(checker, text, returncode, retired_at):
+    require(returncode == 0, f'original CPS probe exited unexpectedly: {returncode}')
+    fields = checker.summary('cps', text)
+    rows = cps_progress(text)
+    anchor = next((row for row in rows if float(row[1]) >= 3 and int(row[2]) >= 200), None)
+    require(anchor is not None and float(anchor[1]) < retired_at,
+        'CPS probe did not establish the source pre-cutover progress anchor')
+    baseline = next((row for row in rows if float(row[1]) > retired_at + 1), None)
+    later = next((row for row in rows if baseline is not None and
+        float(row[1]) > float(baseline[1]) and int(row[2]) > int(baseline[2])), None)
+    require(later is not None, 'CPS requests did not progress after owner retirement')
+    require(int(fields['n']) >= int(rows[-1][2]), 'CPS summary lost observed requests')
+    return fields, later[0]
+
+
 def retry_lc_progress(text, min_elapsed, previous_requests):
     rows = list(re.finditer(r'^LC_PROGRESS elapsed=([0-9.]+) n=(\d+) fail=(\d+)$', text, re.MULTILINE))
     require(all(int(row[3]) == 0 for row in rows), 'LC failure during the aborted-round interval')
@@ -55,9 +82,10 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     source_probe = None
     source_output = None
     source_started = None
-    source_key = 'source_lc' if args.nginx_overlap_source_lc else 'source_stream'
-    source_log_name = 'source-lc.log' if args.nginx_overlap_source_lc else 'source-stream.log'
-    source_budget = 240 if args.nginx_overlap_source_lc else 300
+    source_cps = args.nginx_overlap_source_cps
+    source_key = 'source_cps' if source_cps else 'source_lc' if args.nginx_overlap_source_lc else 'source_stream'
+    source_log_name = source_key.replace('_', '-') + '.log'
+    source_budget = 240 if args.nginx_overlap_source_lc or source_cps else 300
     source_rt24 = args.nginx_overlap_retry and args.nginx_overlap_source_lc
     lc_duration = '30' if source_rt24 else '180'
     census_command = 'ACTIVE0' if args.nginx_overlap_source_lc else 'STREAMS0'
@@ -355,11 +383,16 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             command('EARLY_RETRY'); command('WRONG_RETRY')
         held = socket.create_connection(('198.18.0.2', 4108), timeout=10)
         held.settimeout(10); http(held, old_body)
-        if args.nginx_overlap_source_streams or args.nginx_overlap_source_lc:
+        if args.nginx_overlap_source_streams or args.nginx_overlap_source_lc or source_cps:
             source_file = root / source_log_name
             source_output = source_file.open('w')
-            source_script = probe_file.with_name('m4_lc.py' if args.nginx_overlap_source_lc else 'm4_stream.py')
-            if args.nginx_overlap_source_lc:
+            source_script = probe_file.with_name('m4_cps.py' if source_cps else
+                'm4_lc.py' if args.nginx_overlap_source_lc else 'm4_stream.py')
+            if source_cps:
+                source_command = [sys.executable, str(source_script),
+                    '--server', '198.18.0.2', '--port', '4108', '--threads', '1',
+                    '--duration', '180', '--timeout', '2']
+            elif args.nginx_overlap_source_lc:
                 source_command = [sys.executable, str(source_script),
                     '--server', '198.18.0.2', '--port', '4108', '--conns', '12',
                     '--interval', '0.1', '--duration', lc_duration, '--fresh', '0.5', '--timeout', '2']
@@ -381,22 +414,23 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                     for path in (probe_file, source_script,
                         probe_file.parent.parent / 'reload_checks.py',
                         probe_file.parent.parent.parent / 'test_graceful_reload.sh')}}
-            if args.nginx_overlap_source_lc:
+            if source_cps or args.nginx_overlap_source_lc:
                 deadline = time.monotonic() + 60
                 while True:
-                    require(source_probe.poll() is None, 'LC probe exited before progress anchor')
-                    rows = list(re.finditer(r'^LC_PROGRESS elapsed=([0-9.]+) n=(\d+) fail=(\d+)$',
-                        source_file.read_text(), re.MULTILINE))
+                    require(source_probe.poll() is None, 'source probe exited before progress anchor')
+                    rows = cps_progress(source_file.read_text()) if source_cps else list(re.finditer(
+                        r'^LC_PROGRESS elapsed=([0-9.]+) n=(\d+) fail=(\d+)$', source_file.read_text(), re.MULTILINE))
                     anchor = next((row for row in rows if float(row[1]) >= 3 and int(row[2]) >= 200), None)
                     if anchor is not None:
-                        require(int(anchor[3]) == 0, 'LC failures before cutover')
+                        require(int(anchor[3]) == 0, 'source failures before cutover')
                         evidence[source_key]['anchor'] = anchor[0]
-                        record('ORIGINAL_LC_PROGRESS_ANCHOR', line=anchor[0])
+                        record('ORIGINAL_CPS_PROGRESS_ANCHOR' if source_cps else 'ORIGINAL_LC_PROGRESS_ANCHOR', line=anchor[0])
                         break
-                    require(time.monotonic() < deadline, 'LC source progress anchor timed out')
+                    require(time.monotonic() < deadline, 'source progress anchor timed out')
                     time.sleep(.01)
-                command(census_command)
-                record('LC_OLD_OWNER_CENSUS_CONFIRMED')
+                if not source_cps:
+                    command(census_command)
+                    record('LC_OLD_OWNER_CENSUS_CONFIRMED')
             else:
                 # Preserve the original shell's three-second pre-handoff interval,
                 # and additionally prove all twelve streams reached old Linux.
@@ -430,7 +464,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 with queued.result(timeout=10) as connection:
                     connection.settimeout(10); http(connection, old_body if args.nginx_overlap_abort else new_body, True)
         http(held, old_body); record('OLD_KEEPALIVE_SURVIVED')
-        if source_probe is not None:
+        if source_probe is not None and not source_cps:
             command(census_command)
         if args.nginx_overlap_retry:
             if args.nginx_overlap_recover_dead:
@@ -612,7 +646,16 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             checker_file = probe_file.parent.parent / 'reload_checks.py'
             check_spec = importlib.util.spec_from_file_location('nginx_overlap_source_checks', checker_file)
             checker = importlib.util.module_from_spec(check_spec); check_spec.loader.exec_module(checker)
-            if args.nginx_overlap_source_lc:
+            if source_cps:
+                retired_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']
+                    if e['event'] == ('NEW_NGINX_RETIRED' if args.nginx_overlap_abort else 'OLD_NGINX_RETIRED')) - source_started
+                fields, later = validate_source_cps(checker, text, source_probe.returncode, retired_at)
+                evidence[source_key].update(summary=fields, post_retirement_progress=later,
+                    source_case='rt30 traffic probe; explicit broker commit/abort',
+                    retired_at=retired_at)
+                record('ORIGINAL_CPS_ORACLE_PASS', requests=int(fields['n']),
+                    elapsed=time.monotonic() - source_started)
+            elif args.nginx_overlap_source_lc:
                 fields = validate_source_lc(checker, text, source_probe.returncode,
                     args.nginx_overlap_abort and not args.nginx_overlap_retry)
                 retired_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']

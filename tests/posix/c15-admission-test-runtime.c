@@ -70,6 +70,34 @@ static uint64_t monotonic_ns(void)
 	return (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;
 }
 
+#ifdef KER_C15_DIAGNOSTIC_TRACE
+static void c15_stage_trace(const char *event, unsigned int index,
+			    uint32_t packet_id, uint64_t command_id,
+			    uint64_t deadline_ns, int result)
+{
+	int saved_errno = errno;
+	const char *path = getenv("KER_C15_STAGE_TRACE");
+	if (!path || !*path) goto out;
+	uint64_t now_ns = monotonic_ns();
+	char line[256];
+	int length = snprintf(line, sizeof(line),
+		"time_ns=%llu pid=%ld event=%s index=%u packet_id=%u command_id=%llu deadline_ns=%llu remaining_ns=%lld result=%d\n",
+		(unsigned long long)now_ns, (long)syscall(SYS_getpid), event, index,
+		packet_id, (unsigned long long)command_id, (unsigned long long)deadline_ns,
+		(long long)(deadline_ns > now_ns ? deadline_ns - now_ns : 0), result);
+	if (length <= 0 || (size_t)length >= sizeof(line)) goto out;
+	long fd = syscall(SYS_openat, AT_FDCWD, path,
+		O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+	if (fd < 0) goto out;
+	(void)syscall(SYS_write, (int)fd, line, (size_t)length);
+	(void)syscall(SYS_close, (int)fd);
+out:
+	errno = saved_errno;
+}
+#else
+#define c15_stage_trace(event, index, packet_id, command_id, deadline_ns, result) ((void)0)
+#endif
+
 static int wait_command(const char *path, const char *expected, uint64_t deadline)
 {
 	for (;;) {
@@ -277,6 +305,8 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 		}
 		if (!got_packet || packet.mark != C15_MARK || !packet.lease || !packet.id ||
 		    packet.local_port != htons(8080)) { result = -EPROTO; goto out; }
+		c15_stage_trace("client-packet-received", index, packet.id,
+			0, packet.deadline_ns, result);
 		if (packet.lease != queue_lease) { result = -ESTALE; goto reject_packet; }
 		struct ker_ff_admission_ipv4_tuple tuple = {
 			.local = {.sin_family = AF_INET, .sin_port = packet.local_port,
@@ -298,6 +328,8 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 			const struct timespec pause = {.tv_nsec = 1000000};
 			(void)nanosleep(&pause, NULL);
 		}
+		c15_stage_trace("client-identity-ready", index, packet.id,
+			0, packet.deadline_ns, result);
 		char options_hex[81] = {0};
 		for (unsigned int i = 0; i < packet.tcp_options_length; ++i)
 			(void)snprintf(options_hex + 2 * i, sizeof(options_hex) - 2 * i,
@@ -307,6 +339,8 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 		    host_write_file(state_path, state)) { result = -EIO; goto out; }
 		failure_stage = "wait-admit";
 		result = wait_command(command_path, "ADMIT", packet.deadline_ns);
+		c15_stage_trace("client-admit-command", index, packet.id,
+			command_id + 1, packet.deadline_ns, result);
 		if (result) goto reject_packet;
 		request.lease = packet.lease;
 		request.command_id = ++command_id;
@@ -318,11 +352,17 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 		request.key.source_port = packet.remote_port;
 		request.key.destination_port = packet.local_port;
 		failure_stage = "owner-admit-send";
+		c15_stage_trace("client-before-admit-send", index, packet.id,
+			request.command_id, packet.deadline_ns, 0);
 		result = ker_ff_admission_channel_send_admit(channel, &request);
+		c15_stage_trace("client-after-admit-send", index, packet.id,
+			request.command_id, packet.deadline_ns, result);
 		if (result) goto reject_packet;
 		failure_stage = "owner-admit-result";
 		result = receive_channel(channel, KER_FF_ADMISSION_RESULT,
 			packet.deadline_ns, &response);
+		c15_stage_trace("client-after-admit-result", index, packet.id,
+			request.command_id, packet.deadline_ns, result);
 		int map_full = 0;
 		if (!result) {
 			if (!response.allowed && !response.created) map_full = 1;
@@ -349,6 +389,8 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 			int dropped = 0;
 			int drop_status = ker_ff_admission_queue_verdict(queue, packet.lease,
 				packet.deadline_ns, packet.id, 0, &dropped);
+			c15_stage_trace("client-reject-cleanup", index, packet.id,
+				request.command_id, packet.deadline_ns, admission_error);
 			ker_ff_admission_request_identity_close(identity);
 			identity = NULL;
 			if (stopped_owner_timeout && admission_error == -ETIMEDOUT &&

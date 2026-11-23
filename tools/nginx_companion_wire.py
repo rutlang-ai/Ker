@@ -13,6 +13,8 @@ RELOAD_RESULT = 5
 STOP = 6
 SETTLED = 7
 ERROR = 8
+OWNER_READY = 9
+MAX_RECORD_TYPE = OWNER_READY
 
 CLEANUP_SETTLED = 0
 CLEANUP_UNRESOLVED = 1
@@ -23,6 +25,7 @@ STARTED_BODY = struct.Struct('<IIIIQ32s32s')
 RELOAD_RESULT_BODY = struct.Struct('<iIQ32s')
 SETTLED_BODY = struct.Struct('<iIIIQ32s')
 ERROR_BODY = struct.Struct('<iIIIQ32s')
+OWNER_READY_BODY = struct.Struct('<IIIIIIQQQQ')
 MAX_SEQUENCE = 0xffffffffffffffff
 
 HELLO_BYTES = HEADER.size
@@ -33,6 +36,7 @@ RELOAD_RESULT_BYTES = HEADER.size + RELOAD_RESULT_BODY.size
 STOP_BYTES = HEADER.size
 SETTLED_BYTES = HEADER.size + SETTLED_BODY.size
 ERROR_BYTES = HEADER.size + ERROR_BODY.size
+OWNER_READY_BYTES = HEADER.size + OWNER_READY_BODY.size
 
 assert HEADER.size == 48
 assert START_BODY.size == 120 and START_BYTES == 168
@@ -40,10 +44,11 @@ assert STARTED_BODY.size == 88 and STARTED_BYTES == 136
 assert RELOAD_RESULT_BODY.size == 48 and RELOAD_RESULT_BYTES == 96
 assert SETTLED_BODY.size == 56 and SETTLED_BYTES == 104
 assert ERROR_BODY.size == 56 and ERROR_BYTES == 104
+assert OWNER_READY_BODY.size == 56 and OWNER_READY_BYTES == 104
 
 
 def pack_header(record_type, size, nonce, epoch, sequence):
-    if (record_type not in range(HELLO, ERROR + 1) or len(nonce) != 16 or
+    if (record_type not in range(HELLO, MAX_RECORD_TYPE + 1) or len(nonce) != 16 or
             nonce == b'\0' * 16 or not epoch or sequence < 0 or
             (record_type == HELLO) != (sequence == 0) or
             sequence > MAX_SEQUENCE or size < HEADER.size):
@@ -58,7 +63,7 @@ def unpack_header(packet):
     magic, version, record_type, size, reserved, nonce, epoch, sequence = \
         HEADER.unpack_from(packet)
     if (magic != MAGIC or version != VERSION or
-            record_type not in range(HELLO, ERROR + 1) or
+            record_type not in range(HELLO, MAX_RECORD_TYPE + 1) or
             reserved or size != len(packet) or nonce == b'\0' * 16 or
             not epoch or sequence > MAX_SEQUENCE or
             (record_type == HELLO) != (sequence == 0)):
@@ -118,6 +123,18 @@ def validate_error(fields):
         raise ValueError('ERROR requires a positive errno and nonzero phase')
     if unresolved_descendants and (not start_ticks or profile == bytes(32)):
         raise ValueError('unresolved descendants require a pinned master identity')
+
+
+def validate_owner_ready(fields, *, expected_uid, expected_gid,
+                         expected_role, expected_cookie=None):
+    (pid, uid, gid, role, owner_tid, reserved, start_ticks,
+     slot_device, slot_inode, endpoint_cookie) = fields
+    if (pid <= 0 or uid != expected_uid or gid != expected_gid or
+            role != expected_role or owner_tid <= 0 or reserved or
+            not start_ticks or not slot_device or not slot_inode or
+            not endpoint_cookie or
+            (expected_cookie is not None and endpoint_cookie != expected_cookie)):
+        raise ValueError('Nginx owner READY identity/slot mismatch')
 
 
 def profile_hash(binary_hash, config_hash, ini_hash, prefix, env):
