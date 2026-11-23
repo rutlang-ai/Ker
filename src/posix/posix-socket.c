@@ -429,7 +429,13 @@ int fcntl(int fd, int command, ...)
     }
     if (command == KER_F_DUPFD_QUERY) return ker_fd_same_file(fd, (int)argument);
     struct ker_fd *entry = ker_fd_get(fd);
-    if (!entry) return syscall(SYS_fcntl, fd, command, argument);
+    if (!entry) {
+        if (command != F_GETOWN) return syscall(SYS_fcntl, fd, command, argument);
+        /* A negative process group ID can overlap the raw syscall error range. */
+        struct f_owner_ex owner;
+        if (syscall(SYS_fcntl, fd, F_GETOWN_EX, &owner) < 0) return -1;
+        return owner.type == F_OWNER_PGRP ? -owner.pid : owner.pid;
+    }
     int value;
     if (command == F_GETFD || command == F_SETFD) {
         /* exec closes host reservations; the private kernel never execs. */
