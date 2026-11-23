@@ -61,6 +61,14 @@ def _send_record(sock, record, fd=None):
             raise AssertionError('short relay test record send')
 
 
+def _wait_for_request(channel):
+    poller = select.poll()
+    poller.register(channel, select.POLLIN)
+    events = poller.poll(2000)
+    if not events or not events[0][1] & select.POLLIN:
+        raise AssertionError('relay request did not arrive')
+
+
 class KerRunControlTests(unittest.TestCase):
     def test_startup_poll_is_nonblocking_and_rejects_early_request(self):
         outer, inner = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -457,10 +465,12 @@ class KerRunControlTests(unittest.TestCase):
                 instance = relay.KerRunControl(inner.detach(), nonce, 31)
                 instance.state = 'READY'
                 instance.readiness = _Readiness(b'C' * 16, 37, b'P' * 32)
-                instance.poll(lambda: None)
+                _wait_for_request(instance.channel)
+                try:
+                    instance.poll(lambda: None)
+                except PermissionError:
+                    os._exit(0)
                 os._exit(41)
-            except PermissionError:
-                os._exit(0)
             except BaseException:
                 os._exit(42)
         inner.close()
@@ -476,10 +486,10 @@ class KerRunControlTests(unittest.TestCase):
                 os._exit(0)
             except BaseException:
                 os._exit(43)
-        outer.close()
         _, sender_status = os.waitpid(sender, 0)
-        self.assertEqual(os.waitstatus_to_exitcode(sender_status), 0)
         _, child_status = os.waitpid(child, 0)
+        outer.close()
+        self.assertEqual(os.waitstatus_to_exitcode(sender_status), 0)
         self.assertEqual(os.waitstatus_to_exitcode(child_status), 0)
 
     def test_unknown_request_closes_attached_right_and_fails_closed(self):
@@ -493,10 +503,12 @@ class KerRunControlTests(unittest.TestCase):
                 instance = relay.KerRunControl(inner.detach(), nonce, 23)
                 instance.state = 'READY'
                 instance.readiness = _Readiness(b'B' * 16, 27, b'P' * 32)
-                instance.poll(lambda: None)
+                _wait_for_request(instance.channel)
+                try:
+                    instance.poll(lambda: None)
+                except (PermissionError, ValueError, ConnectionError):
+                    os._exit(0)
                 os._exit(31)
-            except (PermissionError, ValueError, ConnectionError):
-                os._exit(0)
             except BaseException:
                 os._exit(32)
         inner.close()
