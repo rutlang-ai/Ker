@@ -1217,8 +1217,8 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_valid_minimal_ini",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Ker minimal typed network/DPDK configuration loads with verified defaults and normalized lcore selection. Explicit promiscuous mode reaches a real PMD with readback, RX capture and original-Linux MAC/socket admission checks; omission preserves PMD state. The idle_sleep subset configures actual bounded worker ppoll waits, with timeout counters, native host TCP/UDP traffic and control shutdown validation; the existing Ker 1ms default is preserved. The channel subset translates into original DPDK EAL -n and verifies actual EAL readback alongside real native TCP/UDP traffic. The numa_on subset selects lcore-local or socket0 pool/queue allocation, with real worker policy and pool metadata checks plus native host TCP/UDP traffic. The pkt_tx_delay subset adds bounded Ethernet TX batching with first-packet deadlines, retained PMD suffix ownership, deterministic partial-acceptance tests, real timer flushes and queued stop/EOF delivery.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-config-lifecycle",
@@ -1243,9 +1243,12 @@
         {
           "ctest": "native-fstack-tx-delay",
           "provenance_case": "native-fstack-tx-delay"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_valid_minimal_ini",
+          "provenance_case": "fstack-config-source-test_ff_load_config_valid_minimal_ini"
         }
-      ],
-      "remaining": "F-Stack global configuration ABI/layout, defaults and periodic-TSC/multiprocess TX scheduling equivalence are not implemented; physical multi-node NUMA and NIC performance are not qualified."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_no_dpdk_section",
@@ -1334,15 +1337,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_unknown_section",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Unknown sections before or after valid settings fail with status2 before launch setup; a subsequent valid load succeeds with no leaked state.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-config-lifecycle",
           "provenance_case": "native-fstack-config-lifecycle"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_unknown_section",
+          "provenance_case": "fstack-config-source-test_ff_load_config_unknown_section"
         }
-      ],
-      "remaining": "F-Stack ignores unknown sections and continues; Ker deliberately rejects them. This validates a strict boundary, not equivalent permissive behavior."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_empty_ini",
@@ -1407,21 +1413,24 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_all_sections",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "All currently supported Ker schema families load together, preserving relative paths, typed scalars, sysctl settings and VLAN address lists.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-config-lifecycle",
           "provenance_case": "native-fstack-config-lifecycle"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_all_sections",
+          "provenance_case": "fstack-config-source-test_ff_load_config_all_sections"
         }
-      ],
-      "remaining": "F-Stack KNI, FreeBSD boot, bond, RSS, vdev, reload and other unsupported schema sections remain unimplemented; this is only the supported Ker subset."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Two actual DPDK/EAL workers now attach independent devices to the same original Linux instance. Both interfaces have their own IPv4/IPv6 primary and3/2 VIPs, native TCP source bindings, per-interface MTU controls and zero-buffer/process cleanup. Asymmetric UDP leaves the second interface with the first address and returns through the first, proving a shared kernel socket/route namespace. Bond configuration fields are separately covered by original mode4 LACP acceptance. Active RX/TX queue pairs are now configured through the original ethdev API, all RX queues are polled fairly and actual queue1 traffic is verified with an independent vhost/TAP backend. RSS control-plane types/key/RETA are verified through the original API on a null PMD; this is not hardware or flow landing evidence.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-multiport",
@@ -1454,9 +1463,12 @@
         {
           "ctest": "native-fstack-rss-control",
           "provenance_case": "native-fstack-rss-control"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_dpdk_full",
+          "provenance_case": "fstack-config-source-test_ff_load_config_dpdk_full"
         }
-      ],
-      "remaining": "Global4/per-port2 lcore scheduling, symmetric RSS/actual hashed flow landing, thash source-port adjustment, per-port80/443 RSS table contracts and exact F-Stack config structures remain unqualified. The new single-thread queue poller and independent backend queue1 injection do not implement those contracts. Native Linux still exclusively chooses automatic socket ports. RSS key/RETA control-plane readback alone does not complete any source RSS landing or thash case; issues224/220 remain open."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_lcore_mask_no_bits",
@@ -1481,9 +1493,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_portlist_nonint",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_portlist_nonint",
+          "provenance_case": "fstack-config-source-test_ff_load_config_portlist_nonint"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_bond_cfg_handler_no_nb_bond",
@@ -1520,23 +1537,38 @@
     {
       "id": "tests/unit/test_ff_config.c::test_rss_check_cfg_handler_no_port_no_vlan",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Section appears before port configuration; source only asserts rss_check_cfgs stays NULL and discards the loader result. No assertion of successful load or of a particular error code. Ker has no equivalent ordered RSS-table loader contract. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Retains the original fixture and assertion. A target-only postcheck verifies the production inspector rejects the unsafe plan before initializing upstream state, then invokes the namespaced upstream loader and wraps only its INI callback to prove rss_check.enable reached the original handler and returned 0 with rss_check_cfgs still NULL. Production preflight remains unchanged; this qualifies the original handler guard only, not Ker runtime configuration.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan",
+          "provenance_case": "fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rss_tbl_cfg_handler_bad_tuple",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Malformed three-token rule leaves nb_rss_tbl zero if the source RSS block exists; loader result is discarded. Generic unknown-section rejection does not prove rule-parser behavior. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple",
+          "provenance_case": "fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rss_check_thash_adjust_off_parses",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Valid source configuration succeeds with RSS enabled and thash_adjust=0. Ker has no corresponding source-port optimization toggle; rejecting the field is not this positive contract. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_rss_check_thash_adjust_off_parses",
+          "provenance_case": "fstack-config-source-test_rss_check_thash_adjust_off_parses"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_unload_config_zeroes_state",
@@ -1573,9 +1605,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_id_not_in_filter_returns_one",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_vlan_cfg_handler_id_not_in_filter_returns_one",
+          "provenance_case": "fstack-config-source-test_vlan_cfg_handler_id_not_in_filter_returns_one"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_bad_section_returns_zero",
@@ -1612,8 +1649,8 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_vdev_full",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "All six source vdev fields are parsed with final-value precedence and map to original DPDK net_virtio_user arguments. Actual independent vhost/TAP IPv4/IPv6 traffic verifies the supported socket-backend subset, MAC, two-pair capacity,512 descriptors and cleanup. The pinned PMD explicitly rejects the source iface+Unix-socket tuple; no field is silently discarded. The supported kernel-backend path=/dev/vhost-net with explicit iface now has actual IPv4/IPv6 TCP/UDP checksum/TSO, queue geometry and cleanup evidence.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-typed-vdev-config",
@@ -1626,9 +1663,12 @@
         {
           "ctest": "native-fstack-virtio-kernel-offloads",
           "provenance_case": "native-fstack-virtio-kernel-config"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_vdev_full",
+          "provenance_case": "fstack-config-source-test_ff_load_config_vdev_full"
         }
-      ],
-      "remaining": "The literal source fixture combines iface with a Unix socket path, which pinned DPDK explicitly rejects; the supported named vhost-kernel backend is separately qualified. Full F-Stack config structs, combined bond/vdev topology and C allocation-failure/strdup/free/valgrind ABI remain unqualified under issue224. Active kernel-backend queue pairs are not RSS evidence."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_full",
@@ -1669,9 +1709,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_port_cfg_handler_id_over_max_returns_one",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_port_cfg_handler_id_over_max_returns_one",
+          "provenance_case": "fstack-config-source-test_port_cfg_handler_id_over_max_returns_one"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_repeat_keys_no_leak",
@@ -1696,8 +1741,8 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_freebsd_boot_multi_entries",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Ker supports multiple Linux network sysctl settings through INI/CLI and verifies five effective socket defaults in the original kernel.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-network-sysctl",
@@ -1706,23 +1751,36 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-network-sysctl"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries",
+          "provenance_case": "fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries"
         }
-      ],
-      "remaining": "FreeBSD boot hz/physmem/fd_reserve/mem_size/panicstr, FreeBSD sysctl names and boot/sysctl linked-list layout are not implemented; Linux settings are explicit names, not automatic FreeBSD translations."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_inet6_fixture_ignored",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker supports explicit native Linux IPv6 addresses, parent/VLAN IPv6 gateways, VIPs and VLAN addresses with original-kernel TCP/UDP/NDP/DAD evidence. This source case asserts INET6-disabled ignore semantics and remains blocked; multiple defaults within one family, separate FreeBSD VIP interfaces and complete fixture equivalence remain unsupported.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_inet6_fixture_ignored",
+          "provenance_case": "fstack-config-source-test_ff_load_config_inet6_fixture_ignored"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_argv_t_override",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source -t secondary -p0 must load successfully and store secondary/proc_id0. Ker rejects explicit secondary in effective main/aux EAL args before worker execution; real CLI primary-over-INI-secondary acceptance is the reverse override and does not qualify the source assertion. See docs/process-modes.md and issue227.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_argv_t_override",
+          "provenance_case": "fstack-config-source-test_ff_load_config_argv_t_override"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_blank_and_multibit",
@@ -1803,23 +1861,38 @@
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_portid_over_max_skips",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_vlan_cfg_handler_portid_over_max_skips",
+          "provenance_case": "fstack-config-source-test_vlan_cfg_handler_portid_over_max_skips"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_in_range",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source mask0x3 maps proc_id1 through a global process-core table and synthesizes non-NULL proc_mask. Ker original-EAL core masks and per-port RX lcores do not implement that global process-index/table contract. Keep the in-range positive case blocked under issue227; see docs/process-modes.md.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_parse_lcore_mask_proc_id_in_range",
+          "provenance_case": "fstack-config-source-test_parse_lcore_mask_proc_id_in_range"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_over_count_fails",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source proc_id5 with a two-core process table must fail after the same valid mapping permits in-range proc_id1. Ker has no proc_id schema/global mapping; rejecting every unknown field is not this conditional bounds check. Remains blocked under issue227; see docs/process-modes.md.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails",
+          "provenance_case": "fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_reject_ok",
@@ -1880,8 +1953,8 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_extra_keys",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Typed file-prefix and base-virtual-address configuration have real original-EAL runtime evidence: concurrent namespace/primary locks and actual mapped-address regions, with independent host TCP/UDP. The exact source bond timing tuple poll100/up200/down300 now has original-PMD readback, independent Linux LACP, dual-stack ICMP/member-path-loss and zero-buffer runtime evidence.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-eal-file-prefix",
@@ -1898,15 +1971,18 @@
         {
           "ctest": "native-fstack-typed-bond-config",
           "provenance_case": "native-fstack-bond-source-timings"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_dpdk_extra_keys",
+          "provenance_case": "fstack-config-source-test_ff_load_config_dpdk_extra_keys"
         }
-      ],
-      "remaining": "The complete source fixture is not an exact Ker runtime configuration: `[dpdk] allow` and numeric `port_list` are not represented in the typed schema, and its `iface=net_pcap0` plus Unix-socket `path=/tmp/x` tuple is rejected by the pinned DPDK virtio-user PMD. Ker already validates and forwards vdev `cq` to the original DPDK argument and applies bond poll/up/down timing through original PMD setter/getter APIs; both the established poll100/up100/down200 and the exact source poll100/up200/down300 tuples are now read back in real LACP/dual-stack ICMP runs with member-path loss and complete buffer cleanup; precise millisecond failover timing and physical NIC behavior are not qualified. The source F-Stack global config layout is not reproduced. Ker uses the literal file prefix rather than adding container-, and the base-virtual-address option remains an original-EAL hint: exact placement, collision fallback, shared hugepage mapping and secondary use are not claimed."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Exact pinned repeated bond and vdev strings retain final members/primary/MAC/policy/iface/path values. Repeated-invalid-to-valid configuration drives real original DPDK LACP bond and virtio-user/vhost traffic with final settings and complete buffer cleanup. The supported kernel-backend path=/dev/vhost-net with explicit iface now has actual IPv4/IPv6 TCP/UDP checksum/TSO, queue geometry and cleanup evidence. The literal repeated source bond sequence now also has actual mode4 PMD readback for final members0/1, primary1,MACcc:dd:ee:ff:00:11 and l34, independent Linux LACP/dual-stack ICMP and member-path-loss cleanup evidence; source eth0/eth1 are explicitly mapped to TAP ethdev IDs.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-typed-vdev-config",
@@ -1935,16 +2011,24 @@
         {
           "ctest": "native-fstack-typed-bond-config",
           "provenance_case": "native-fstack-bond-source-repeat"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak",
+          "provenance_case": "fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak"
         }
-      ],
-      "remaining": "The literal source fixture combines iface with a Unix socket path, which pinned DPDK explicitly rejects; the supported named vhost-kernel backend is separately qualified. Full F-Stack config structs, combined bond/vdev topology and C allocation-failure/strdup/free/valgrind ABI remain unqualified under issue224. Active kernel-backend queue pairs are not RSS evidence."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_calloc_oom_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The source fails allocation of the global proc_lcore array while parsing the process core mask. Ker forwards lcore_mask to original EAL and does not build that F-Stack process-to-core table. Actual RX queue-owner core-list allocation failures are now rejected before startup for INI/CLI with recovery, but this per-port list is not the source global proc_lcore array; no pass mapping is claimed. Retain issue226 for the actual global scheduling/allocation contract.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_parse_lcore_mask_calloc_oom_returns_error",
+          "provenance_case": "fstack-config-source-test_parse_lcore_mask_calloc_oom_returns_error"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_alloc_port_cfgs_calloc_oom_returns_error",
@@ -2141,29 +2225,44 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_enabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source mode1 derives4threads, collapses nb_procs to1, forces primary and preserves full proc_mask0xf; its fixture describes multi-thread/multi-stack semantics. Existing Ker EAL RX pollers feeding one original Linux instance are not that process/stack table. No no-op thread_mode flag or pass mapping is added. See docs/process-modes.md and issue227.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_thread_mode_enabled",
+          "provenance_case": "fstack-config-source-test_ff_load_config_thread_mode_enabled"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_default_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source absent thread_mode stores0threads and derives4processes from mask0xf. Ker does not launch one native application/kernel stack per mask bit; enabling multiple EAL cores or independent primary instances does not qualify that default multi-process contract. See docs/process-modes.md and issue227.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_thread_mode_default_off",
+          "provenance_case": "fstack-config-source-test_ff_load_config_thread_mode_default_off"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_secondary_conflict",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source mode1 plus secondary is rejected, with mode1/primary as its accepted control. Ker now rejects explicit secondary before EAL for all modes, but has no valid source-style mode1/global stack table. Blanket secondary rejection does not qualify the conditional conflict case. See docs/process-modes.md and issue227.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_thread_mode_secondary_conflict",
+          "provenance_case": "fstack-config-source-test_ff_load_config_thread_mode_secondary_conflict"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_tcp_ecn_default_off",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Ker ECN policy configuration and real original-Linux handshake scenarios; Linux numeric policy values and defaults differ from FreeBSD and are explicitly documented.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-launcher-config",
@@ -2172,9 +2271,12 @@
         {
           "ctest": "native-fstack-tcp-ecn",
           "provenance_case": "native-fstack-tcp-ecn"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_tcp_ecn_default_off",
+          "provenance_case": "fstack-config-source-test_ff_load_config_tcp_ecn_default_off"
         }
-      ],
-      "remaining": "Omission preserves original Linux tcp_ecn=2 (passive acceptance), whereas F-Stack defaults to0/off. Explicit off is supported and tested; the default-off source assertion is intentionally not matched."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_tcp_ecn_enabled",
@@ -2195,44 +2297,74 @@
     {
       "id": "tests/unit/test_ff_config.c::test_graceful_reload_default_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_graceful_reload_default_off",
+          "provenance_case": "fstack-config-source-test_graceful_reload_default_off"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_graceful_reload_parse",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_graceful_reload_parse",
+          "provenance_case": "fstack-config-source-test_graceful_reload_parse"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_graceful_reload_requires_slim",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_graceful_reload_requires_slim",
+          "provenance_case": "fstack-config-source-test_graceful_reload_requires_slim"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_greload_thread_mode_mutex",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_greload_thread_mode_mutex",
+          "provenance_case": "fstack-config-source-test_greload_thread_mode_mutex"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_greload_off_no_new_checks",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_greload_off_no_new_checks",
+          "provenance_case": "fstack-config-source-test_greload_off_no_new_checks"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_greload_bad_value_atoi",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_greload_bad_value_atoi",
+          "provenance_case": "fstack-config-source-test_greload_bad_value_atoi"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_reload_fsm_transitions",
@@ -2301,9 +2433,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_12_generation_mapping",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original names, process/lcore and generation-selection contract through the unchanged caller-side parser, real bound ker::reload state and public ker::ipc formatter. Actual selected-generation observation is consumed by a caller example. No runtime topology or traffic is configured.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-generation-mapping",
+          "provenance_case": "fstack-config-generation-mapping"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_14_reload_msg_serdes",
@@ -2324,9 +2461,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_20_queue_mapping_config",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ut_nr_20_queue_mapping_config",
+          "provenance_case": "fstack-config-source-test_ut_nr_20_queue_mapping_config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_22_heartbeat_and_rx_return",
@@ -2347,9 +2489,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_25_drain_ring_size_config",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ut_nr_25_drain_ring_size_config",
+          "provenance_case": "fstack-config-source-test_ut_nr_25_drain_ring_size_config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_26_rx_handover_markers",
@@ -2610,30 +2757,50 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_enabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source asserts ff_global_cfg.stack.kernel_coexist==1 after loading a fixture. Ker rejects supplied [stack]/kernel_coexist before startup; normal native INET sockets and actual host descriptors coexist by descriptor ownership without that flag. Real same-tuple UDP/mixed epoll traffic is a Ker extension, not evidence of this parsed field. See docs/stack-coexistence.md and issue228.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_stack_coexist_enabled",
+          "provenance_case": "fstack-config-source-test_ff_load_config_stack_coexist_enabled"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_absent_defaults_disabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source asserts absent [stack] defaults a F-Stack global kernel_coexist field to0. Ker accepts no section but has no disabled-mode field: original host/native descriptor coexistence remains active, as real same-tuple UDP traffic demonstrates. Do not infer a parsed false default or count the runtime extension as this source assertion. See docs/stack-coexistence.md and issue228.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_stack_absent_defaults_disabled",
+          "provenance_case": "fstack-config-source-test_ff_load_config_stack_absent_defaults_disabled"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_garbage_defaults_disabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source accepts an unrecognized kernel_coexist value and silently leaves a global field0. Ker deliberately rejects any supplied unsupported [stack] section, including garbage, with status2 before worker/app entry. Explicit rejection is not equivalent to permissive false-default parsing. See docs/stack-coexistence.md and issue228.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_stack_garbage_defaults_disabled",
+          "provenance_case": "fstack-config-source-test_ff_load_config_stack_garbage_defaults_disabled"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_disabled_explicit",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source asserts explicit kernel_coexist=0 produces a F-Stack global field0. Ker rejects supplied [stack] rather than installing a no-op boolean or disabling safe host-fd dispatch. Native/host same-tuple UDP, mixed epoll, flags and independent close lifetimes are qualified separately; no source config-field pass is claimed. See docs/stack-coexistence.md and issue228.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit",
+          "provenance_case": "fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config_pa.c::test_page_array_rejects_graceful_reload",
@@ -2820,22 +2987,32 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_no_cfg",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source table setter declines with -1 when rss_check_cfgs is NULL. An absent Ker table API or rejected INI section is not a demonstrated setter guard. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original NULL-configuration table-setter guard through unchanged table code in the caller-only software classifier. Actual enabled IPv4/IPv6 candidate tables feed public Ker dispatch of128 original ring-PMD fixtures, independent software hash and full pool recovery. No native port allocation or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-no-config",
+          "provenance_case": "fstack-rss-table-no-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_disabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source table setter declines with -1 for enable=0; the surrounding enabled table contract is still required. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_inverted_range",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Ker rejects inverted automatic local-port ranges before launch. Valid ranges reach original Linux ip_local_port_range and are verified through actual TCP/UDP IPv4/IPv6 allocation, exhaustion/reuse and independent DPDK traffic.",
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
       "ker_tests": [
         {
           "ctest": "native-fstack-launcher-config",
@@ -2844,51 +3021,84 @@
         {
           "ctest": "native-fstack-ephemeral-ports",
           "provenance_case": "native-fstack-ephemeral-ports"
+        },
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range"
         }
-      ],
-      "remaining": "Source enabled-table setter rejects first>last. Existing original-Linux ephemeral-range validation is partial evidence only; no Ker RSS candidate table update or queue ownership contract is implemented. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed."
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_no_cfg",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source lookup declines with -1 when configuration is NULL. No corresponding real Ker lookup consumer is qualified. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_no_cfg",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_get_portrange_no_cfg"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_disabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source lookup declines with -1 when configuration is disabled. No matching enabled/disabled candidate-table lifecycle is qualified. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_disabled",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_get_portrange_disabled"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_smoke",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source invokes lookup against uncontrolled table state and discards its return value; the assertion is only that this actual path does not crash, not hit/miss correctness or packet landing. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_hit",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source hit returns0, a non-NULL candidate array and a nonempty index interval; sampled candidates agree with the independent software hash and own-queue check. Ker has no such source-port candidate table. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_hit",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_get_portrange_hit"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_rotation",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Consecutive lookups preserve the same index interval and array pointer; rotation is performed by the caller, and two different candidate ports pass the own-queue check. Lookup must not be described as advancing the cursor itself. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_miss",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "A different source address misses the configured three-tuple, returns -ENOENT and leaves the candidate pointer NULL. No Ker equivalent table/miss path is qualified. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_miss",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_get_portrange_miss"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_null",
@@ -2926,23 +3136,38 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_landing",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source IPv6 own-queue verdicts match an independent software Toeplitz replica over64 destination ports and include at least one hit. Source BSS RETA0 implies mask0xffff; it is not a queried device RETA. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_check6_landing",
+          "provenance_case": "fstack-rss-table-test_ff_rss_check6_landing"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_single_queue",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source own-queue predicate returns1 for a fixed IPv6 tuple with one queue. Ordinary single-queue TCP delivery does not invoke or establish a corresponding Ker predicate ABI. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_check6_single_queue",
+          "provenance_case": "fstack-rss-table-test_ff_rss_check6_single_queue"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl6_set_get",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "IPv6 rule initialization and lookup return a candidate array whose sampled ports pass the source own-queue predicate; missing tuples must miss. Ker has no IPv6 candidate table consumer. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl6_set_get",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl6_set_get"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_guard",

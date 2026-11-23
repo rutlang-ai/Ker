@@ -1,0 +1,21 @@
+{
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "repository": "https://github.com/F-Stack/f-stack",
+  "source": "lib/ff_dpdk_if.c",
+  "source_sha256": "6d8800e5ab069a4ede742ec1ec75dfa8fc08ef05999a7528dda8c95d519e3cbe",
+  "functions": [
+    "toeplitz_hash",
+    "ff_rss_tbl_init",
+    "ff_rss_tbl_set_portrange",
+    "ff_rss_tbl_get_portrange",
+    "ff_rss_check",
+    "ff_in6_is_any",
+    "ff_in6_fold",
+    "ff_rss_check6",
+    "ff_rss_tbl6_init",
+    "ff_rss_tbl6_set_portrange",
+    "ff_rss_tbl6_get_portrange"
+  ],
+  "mode": "Unchanged bounded hash/table excerpts only; caller-side software classification, no FreeBSD stack or Linux PCB allocation hook.",
+  "retained_source": "../fstack-pools/ff_dpdk_if.c"
+}

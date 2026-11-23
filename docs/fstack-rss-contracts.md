@@ -1,11 +1,12 @@
 # Exact RSS source contracts and qualification boundaries
 
 [Issue #220](https://github.com/rutlang-ai/Ker/issues/220) originally tracked31
-source cases at `646a641cfff77f4815e1e29829a09e1ed15a2999`. The two
-standalone IPv4/IPv6 thash equivalence cases are now scenario-adapted;
-29 remain in that issue (one partial,28 blocked). The table below preserves
-all31 exact contracts and identifies those two qualifications. It records
-actual assertions, not promises of future real-machine acceptance.
+source cases at `646a641cfff77f4815e1e29829a09e1ed15a2999`. Two standalone
+IPv4/IPv6 thash equivalence cases were qualified earlier. Three parsed-document
+contracts and12 software table/predicate contracts are now separately qualified
+in caller-side examples;14 optimization/runtime cases remain blocked. The
+matrix preserves the original assertion scope. None of these software
+qualifications establishes a native allocation hook or observed hardware RSS.
 
 ## Three different kinds of evidence
 
@@ -27,8 +28,10 @@ actual assertions, not promises of future real-machine acceptance.
    injects alternating queues and must not be relabeled as RSS evidence.
 
 In particular the source tests' BSS `rss_reta_size[] == 0` is a unit setup,
-not a legitimate runtime capability query. Its software predicate uses the
-resulting mask0xffff. Several adjustment guards run before the branches their
+not a legitimate runtime capability query. The source oracle narrows
+`reta_size - 1` to16 bits (0xffff for zero), while the imported predicates use
+ordinary C integer promotion. The fixed four-queue source cases compare the
+same low two bits; they do not isolate mask width or model a queried device RETA. Several adjustment guards run before the branches their
 names suggest. Their exact assertions are useful, but do not prove those later
 branches. The microbench calls `skip()` on unready context; it supplies no timing
 result on that path. When their EAL initialization succeeds, the IPv4/IPv6
@@ -62,31 +65,32 @@ socket allocation are separate integration requirements.
 
 `test_ff_config.c` and `test_ff_dpdk_if.c` refer to the unchanged retained files
 under [tests/upstream/fstack/tests/unit](../tests/upstream/fstack/tests/unit).
-Every original #220 exact ID appears once below. Only the two explicitly
-qualified equivalence rows have new pass mappings; the existing partial
-range-validation mapping remains partial.
+Every original #220 exact ID appears once below. Qualified rows distinguish parsed-document inspection, software table/helper
+contracts and standalone equivalence. None establishes the native kernel
+allocation hook or hardware RSS landing. The inverted-range row now checks the actual enabled table setter; it does
+not turn Linux range validation into native RSS port steering.
 
 | Source file | Exact case | Assertion and remaining boundary |
 | --- | --- | --- |
-| `test_ff_config.c` | `test_rss_check_cfg_handler_no_port_no_vlan` | Section appears before port configuration; source only asserts rss_check_cfgs stays NULL and discards the loader result. No assertion of successful load or of a particular error code. Ker has no equivalent ordered RSS-table loader contract. |
-| `test_ff_config.c` | `test_rss_tbl_cfg_handler_bad_tuple` | Malformed three-token rule leaves nb_rss_tbl zero if the source RSS block exists; loader result is discarded. Generic unknown-section rejection does not prove rule-parser behavior. |
-| `test_ff_config.c` | `test_rss_check_thash_adjust_off_parses` | Valid source configuration succeeds with RSS enabled and thash_adjust=0. Ker has no corresponding source-port optimization toggle; rejecting the field is not this positive contract. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_no_cfg` | Source table setter declines with -1 when rss_check_cfgs is NULL. An absent Ker table API or rejected INI section is not a demonstrated setter guard. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_disabled` | Source table setter declines with -1 for enable=0; the surrounding enabled table contract is still required. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_inverted_range` | Source enabled-table setter rejects first>last. Existing original-Linux ephemeral-range validation is partial evidence only; no Ker RSS candidate table update or queue ownership contract is implemented. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_no_cfg` | Source lookup declines with -1 when configuration is NULL. No corresponding real Ker lookup consumer is qualified. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_disabled` | Source lookup declines with -1 when configuration is disabled. No matching enabled/disabled candidate-table lifecycle is qualified. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_smoke` | Source invokes lookup against uncontrolled table state and discards its return value; the assertion is only that this actual path does not crash, not hit/miss correctness or packet landing. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_hit` | Source hit returns0, a non-NULL candidate array and a nonempty index interval; sampled candidates agree with the independent software hash and own-queue check. Ker has no such source-port candidate table. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_rotation` | Consecutive lookups preserve the same index interval and array pointer; rotation is performed by the caller, and two different candidate ports pass the own-queue check. Lookup must not be described as advancing the cursor itself. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_miss` | A different source address misses the configured three-tuple, returns -ENOENT and leaves the candidate pointer NULL. No Ker equivalent table/miss path is qualified. |
+| `test_ff_config.c` | `test_rss_check_cfg_handler_no_port_no_vlan` | Section appears before port configuration; the original source only asserts rss_check_cfgs stays NULL and discards the loader result. The caller-side source test now separately confirms the retained `rss_check.enable` callback ran and returned 0 with the NULL port list, while the production inspector still rejects the unsafe document before upstream loading. This proves the original missing-port guard only; Ker has no equivalent ordered RSS-table loader contract. |
+| `test_ff_config.c` | `test_rss_tbl_cfg_handler_bad_tuple` | The source malformed three-token rule leaves nb_rss_tbl zero if the block exists and discards the loader result. Qualified by the actual unchanged rule parser in the caller-side inspector, not generic unknown-section rejection. |
+| `test_ff_config.c` | `test_rss_check_thash_adjust_off_parses` | The source valid configuration succeeds with RSS enabled and thash_adjust=0. The complete original parsed-document assertions are qualified in the caller inspector; no Ker source-port optimization is enabled or disabled by this document inspection. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_no_cfg` | The original table setter declines with -1 for NULL configuration. Qualified by fstack-rss-table-no-config plus an actual enabled caller-side software table consumer; see docs/fstack-rss-table.md. Native Linux port allocation and hardware RSS remain unqualified. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_disabled` | Source setter returns-1 with enable=0. The complete original guard and actual enabled candidate-table lifecycle are qualified in the caller-only software classifier. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_inverted_range` | Source enabled-table setter rejects first>last with-1. This actual setter is now qualified, with an enabled-table consumer; the earlier Linux range test remains listed as related evidence. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_no_cfg` | Source lookup declines with-1 for NULL configuration. The complete original lookup guard and actual enabled table/consumer are qualified. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_disabled` | Source lookup declines with-1 when disabled. The complete original guard and real enabled/disabled software table lifecycle are qualified. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_smoke` | Source invokes lookup against its initial table and discards the result; this actual path is qualified only for no crash. It is not a source hit/miss or hardware landing assertion. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_hit` | Source hit returns0, a non-NULL candidate array and a nonempty interval; up to256 candidates agree with the independent software hash and own-queue predicate. Complete original assertions are qualified. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_rotation` | Consecutive source lookups preserve the index interval and array pointer. Caller-selected distinct candidates pass the predicate. Complete original assertions are qualified; lookup does not advance the cursor. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_miss` | A different source address returns-ENOENT and leaves the candidate pointer NULL. Complete original table/miss assertions are qualified. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_null` | Source rejects NULL softc or output pointer with -1 before dereference. Guarding a different RSS control API does not implement this source-port-selection consumer. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_degraded` | With BSS RETA size0, context initialization succeeds but leaves ports unready; adjustment declines -1 for native/software fallback. This is degraded readiness, not working reverse calculation. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_single_queue` | Source sets one queue but the earlier unready-context guard already returns -1 in this unit environment. It does not isolate the one-queue branch or prove traffic landing. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_thash_equivalence_hitrate` | On a non-skipped run (EAL initialization must succeed), standalone real DPDK thash contexts use RETA128/512 and deterministic seeds for200 IPv4 tuples each. First-candidate rates are reported; adjustment success must be positive and the full retry loop must land200/200 with independent software verification. An EAL-init skip does not reach these assertions. Qualified by `fstack-rss-thash-ipv4` and the repeat/failure controls; see [evidence](fstack-rss-thash.md). This is not observed PMD queue landing. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_check6_landing` | Source IPv6 own-queue verdicts match an independent software Toeplitz replica over64 destination ports and include at least one hit. Source BSS RETA0 implies mask0xffff; it is not a queried device RETA. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_check6_single_queue` | Source own-queue predicate returns1 for a fixed IPv6 tuple with one queue. Ordinary single-queue TCP delivery does not invoke or establish a corresponding Ker predicate ABI. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl6_set_get` | IPv6 rule initialization and lookup return a candidate array whose sampled ports pass the source own-queue predicate; missing tuples must miss. Ker has no IPv6 candidate table consumer. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_check6_landing` | Source IPv6 verdicts match its independent software Toeplitz replica across64 ports and include a hit. Complete original assertions retain BSS RETA0 and the four-queue oracle as unit setup; this is not a device RETA query or observed hardware landing. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_check6_single_queue` | Source IPv6 predicate returns1 for a fixed tuple with one software queue. Its complete original assertion is qualified through the actual predicate, not ordinary TCP delivery. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl6_set_get` | Complete original IPv6 table init/hit/nonempty interval, up to128 candidate predicate checks and different-source miss assertions are qualified. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_guard` | Source IPv6 adjustment rejects NULL softc/output and declines after initialization with RETA0/unready context. Neither disabled device RSS nor zero packet counters proves these guards. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_thash6_equivalence_hitrate` | On a non-skipped run (EAL initialization must succeed), standalone thash contexts use36-byte IPv6 tuples and a16-bit helper at bit256 with RETA128/512; each deterministic200-tuple full loop must land200/200 in independent software verification. An EAL-init skip does not reach these assertions. Qualified by `fstack-rss-thash-ipv6` and the repeat/failure controls; see [evidence](fstack-rss-thash.md). No device RX queue is observed. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_recheck_off` | Source makes100 IPv4 adjustments with recheck=0, all declining at the unready-context guard, and asserts zero wrapped own-queue checks. The recheck branch is not reached. |
@@ -99,7 +103,6 @@ range-validation mapping remains partial.
 | `test_ff_dpdk_if.c` | `test_ff_rss_thash_ctx_init_thash_adjust_off` | Source initialization returns0 when optimization is disabled. This is a deliberate disabled-path result, not evidence that a usable reverse-hash context exists. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_range_params` | Source IPv4 adjustment declines for an inverted range and a two-port sub-RETA range, but RETA0/unready context may reject earlier. The unit does not independently reach ready-context range validation. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_range_params` | Source IPv6 adjustment similarly declines inverted and too-small ranges with the earlier unready guard active. Original Linux range checks alone do not qualify reverse-hash candidate selection. |
-
 ## Next implementation gates
 
 First establish the original Linux allocation extension point and its real
@@ -111,8 +114,8 @@ protocol semantics. Ready-context branch tests must explicitly demonstrate
 readiness before measuring recheck/range behavior or timing. Keep the source's
 weaker guard assertions distinct from this stronger runtime acceptance.
 
-The current catalog is285 scenario-adapted,12 partial,66 blocked,
-15 architecture-specific and55 harness-only out of433. All78 blocked/partial
+The current catalog is334 scenario-adapted,2 partial,27 blocked,
+15 architecture-specific and55 harness-only out of433. All29 blocked/partial
 cases remain unfinished. The two standalone tests already consume DPDK directly
 in the original source; their unchanged arithmetic contracts need no new Ker
 production helper. This qualification does not satisfy the remaining table,
