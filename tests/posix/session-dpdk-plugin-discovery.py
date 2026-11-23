@@ -2,6 +2,7 @@
 """Verify configured and custom-prefix DPDK PMD resolution for session fixtures."""
 import argparse
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -276,6 +277,79 @@ def runner_script_path():
     raise RuntimeError('cannot locate the launcher helper beside this fixture or in its repository parents')
 
 
+def active_consumer_reap_oracle_checks(native, runner):
+    captured_u2 = bytes.fromhex(
+        '024b45520001024b455200020800450000366c7b400040114214c6120002c6120001'
+        'afc8afc9002214154b45522d4130392d48414e444f46462d554450207365713d320a')
+    committed = dict(port=0, queue=0, generation=0, object_index=1, pool_tag=7,
+        tx_lease_id=101, packet_pointer='0x1000', length=len(captured_u2),
+        frame_hex=captured_u2.hex())
+    no_trailing = runner.active_consumer_deferred_counts(committed, [], [], '')
+    require(no_trailing == (0, 1), 'single held U2 did not derive the exact 0/1 baseline')
+    mld = dict(port=0, queue=0, generation=0, object_index=2, pool_tag=7,
+        tx_lease_id=102, packet_pointer='0x2000', length=len(runner.CI_HANDOFF_MLD_FRAME),
+        frame_hex=runner.CI_HANDOFF_MLD_FRAME.hex())
+    output = 'KER_SESSION_FRAME_COMMITTED ' + json.dumps(mld) + '\n'
+    with_trailing = runner.active_consumer_deferred_counts(committed, [], [], output)
+    require(with_trailing == (1, 2), 'post-dequeue committed MLD did not derive the exact 1/2 baseline')
+    trailing_commits = runner.active_consumer_trailing_commits(output)
+    trailing_drain = dict(object_index=mld['object_index'], lease_id=mld['tx_lease_id'],
+        pool_tag=mld['pool_tag'], packet_pointer=mld['packet_pointer'],
+        length=mld['length'], frame_hex=mld['frame_hex'])
+    final_u2_drain = dict(sequence=0, object_index=committed['object_index'],
+        pool_tag=committed['pool_tag'], packet_pointer=committed['packet_pointer'],
+        length=len(captured_u2), frame_hex=captured_u2.hex(), tx_before=1, tx_resume=1,
+        tx_after=0, pool_in_use_before=1, pool_in_use_resume=2,
+        pool_in_use_after=0, unrelated_count=1)
+    require(runner.validate_active_consumer_frame_drain(final_u2_drain, committed,
+        trailing_commits, [trailing_drain], b'KER-A09-HANDOFF-UDP seq=2\n', 1) is final_u2_drain,
+        'exact trailing MLD release was not included in final U2 ring/pool conservation')
+    require(not runner.active_consumer_deferred_counts(committed, [], [],
+        'KER_SESSION_FRAME_COMMITTED {broken json}\n'),
+        'malformed trailing MLD commit escaped the deferred identity oracle')
+    require(runner.active_consumer_deferred_counts(committed, [], [],
+        output + output) is None,
+        'duplicate trailing MLD lease identity escaped the deferred identity oracle')
+    prior = dict(mld, object_index=3, tx_lease_id=103, packet_pointer='0x3000')
+    prior_drain = dict(object_index=3, lease_id=103, pool_tag=7, packet_pointer='0x3000')
+    require(runner.active_consumer_deferred_counts(committed, [prior], [prior_drain], '') == (0, 1),
+        'pre-U2 unrelated frame drained before the held barrier did not derive exact 0/1')
+    require(runner.active_consumer_deferred_counts(committed, [prior], [prior_drain], output) == (1, 2),
+        'late MLD after an exact pre-U2 drain did not derive exact 1/2')
+    duplicate = dict(mld, object_index=1, tx_lease_id=101, packet_pointer='0x1000')
+    require(runner.active_consumer_deferred_counts(committed, [], [],
+        'KER_SESSION_FRAME_COMMITTED ' + json.dumps(duplicate) + '\n') is None,
+        'duplicate physical commit identity was accepted')
+    require(runner.active_consumer_deferred_counts(committed, [prior], [prior_drain, prior_drain], '') is None,
+        'duplicate drained identity was accepted')
+    unmatched_drain = dict(prior_drain, lease_id=104)
+    require(runner.active_consumer_deferred_counts(committed, [prior], [unmatched_drain], '') is None,
+        'drain without the exact committed lease identity was accepted')
+    for field, value in (('generation', 1), ('queue', 1), ('frame_hex', '00')):
+        malformed = dict(mld); malformed[field] = value
+        require(runner.active_consumer_deferred_counts(committed, [], [],
+            'KER_SESSION_FRAME_COMMITTED ' + json.dumps(malformed) + '\n') is None,
+            'invalid trailing commit escaped frame validation: ' + field)
+    require(runner.active_consumer_deferred_counts(committed, [], [],
+        'KER_SESSION_FRAME_COMMITTED {broken json}\n') is None,
+        'malformed trailing commit was ignored')
+    base = dict(status=-errno.EBUSY, full_reap_attempts=0, preflight_only=True,
+        tx_before=1, tx_after=1, pool_before=2, pool_after=2,
+        counters_before=[1, 2, 3, 4, 5], counters_after=[1, 2, 3, 4, 5])
+    require(native.active_consumer_deferred_snapshot_matches(base, dict(tx=1, pool=2)),
+        'exact 1/2 no-mutation preflight was rejected')
+    for field, value in (('tx_after', 0), ('pool_after', 1), ('full_reap_attempts', 1),
+                         ('preflight_only', False), ('counters_after', [1, 2, 3, 4, 6])):
+        mutated = dict(base); mutated[field] = value
+        require(not native.active_consumer_deferred_snapshot_matches(mutated, dict(tx=1, pool=2)),
+            'preflight mutation escaped the held-consumer oracle: ' + field)
+    legacy = dict(base, tx_before=0, tx_after=0, pool_before=1, pool_after=1)
+    require(native.active_consumer_deferred_snapshot_matches(legacy, dict(tx=0, pool=1)),
+        'exact legacy 0/1 no-mutation preflight was rejected')
+    require(not native.active_consumer_deferred_snapshot_matches(legacy, dict(tx=1, pool=2)),
+        'legacy baseline incorrectly accepted the observed 1/2 state')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--configured-dir', type=Path, required=True)
@@ -287,6 +361,7 @@ def main():
     coordinate = load_fixture('coordinate_fixture', Path(__file__).with_name('session-coordinate.py'))
     drain_peer = load_fixture('drain_peer_fixture', Path(__file__).with_name('session-drain-peer.py'))
     runner = load_fixture('ker_session_run_fixture', runner_script_path())
+    active_consumer_reap_oracle_checks(native, runner)
     configured = args.configured_dir.resolve(strict=True)
 
     native_paths = native.resolve_dpdk_plugin_paths(configured, ('mempool_ring',), {})

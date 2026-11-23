@@ -24,7 +24,21 @@ enum ker_socket_broker_kind {
     KER_SOCKET_BROKER_EPOLL = 2,
     KER_SOCKET_BROKER_REUSEPORT_GROUP = 3,
     KER_SOCKET_BROKER_TCP_OBSERVER = 4,
-    KER_SOCKET_BROKER_MEMBER_CENSUS = 5
+    KER_SOCKET_BROKER_MEMBER_CENSUS = 5,
+    KER_SOCKET_BROKER_FF_OWNER = 6,
+    KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN = 7,
+    KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT = 8,
+    KER_SOCKET_BROKER_FF_OWNER_CUTOVER = 9
+};
+
+enum ker_socket_broker_rights {
+    KER_SOCKET_BROKER_READ = 1u << 0,
+    KER_SOCKET_BROKER_WRITE = 1u << 1,
+    KER_SOCKET_BROKER_CONTROL = 1u << 2,
+    KER_SOCKET_BROKER_NAME = 1u << 3,
+    KER_SOCKET_BROKER_OPTION = 1u << 4,
+    KER_SOCKET_BROKER_WAIT = 1u << 5,
+    KER_SOCKET_BROKER_ALL = (1u << 6) - 1
 };
 
 #define KER_SOCKET_BROKER_TCP_STATES 14
@@ -187,17 +201,119 @@ int ker_socket_client_reuseport_group_member(struct ker_socket_client *client,
     int group_cap, unsigned index);
 int ker_socket_client_reuseport_group_select(struct ker_socket_client *client,
     int group_cap, unsigned index);
+/* Deferred owner-aware fixed two-member IPv4 reuseport group. The plan
+ * reserves a tuple but creates no listener until both distinct FF owner
+ * actors claim their one delegated index. Each slot can be issued once and
+ * each claim succeeds once. A successful claim is a reusable, index-scoped
+ * receipt for that actor's member only; it does not grant group selection or
+ * delegation authority. Publish is also one-shot. */
+int ker_socket_client_owner_group_plan(struct ker_socket_client *client,
+    const struct sockaddr_in *address, int backlog, uint32_t group_rights);
+/* Staged groups publish slot 0 as a live serving group before slot 1 exists.
+ * This is a distinct immutable plan mode; the atomic owner_group_plan/publish
+ * contract above remains unchanged. Slot 1 may be claimed before or after
+ * initial publication, but its candidate publish is one-shot. An actual
+ * candidate attempt that reaches preflight is terminal on rejection; missing
+ * claims or an unpublished initial member return EAGAIN without consuming it.
+ * Initial publication requires an unprepared actor. A prepared candidate
+ * retries with EAGAIN until its admission task is READY; once ready, its
+ * listener is registered with that task before listen. Failed or quarantined
+ * tasks consume the candidate attempt and fail closed. */
+int ker_socket_client_owner_group_staged_plan(struct ker_socket_client *client,
+    const struct sockaddr_in *address, int backlog, uint32_t group_rights);
+int ker_socket_client_owner_group_slot(struct ker_socket_client *client,
+    int plan_cap, unsigned index);
+int ker_socket_client_ff_owner_group_claim(struct ker_socket_client *client,
+    int owner_cap, int slot_cap);
+int ker_socket_client_owner_group_publish(struct ker_socket_client *client,
+    int plan_cap);
+int ker_socket_client_owner_group_publish_initial(struct ker_socket_client *client,
+    int plan_cap);
+int ker_socket_client_owner_group_publish_candidate(struct ker_socket_client *client,
+    int plan_cap);
+int ker_socket_client_owner_group_member(struct ker_socket_client *client,
+    int owner_cap, int claimed_slot_cap);
+/* Opt-in initial-listener activation for staged plans. The authenticated owner
+ * receives only its claimed slot's unbound managed socket; bind/listen remain
+ * original-Linux operations enforced by the broker against the reserved
+ * tuple. The coordinator can obtain GROUP control after listen succeeds. */
+int ker_socket_client_owner_group_activate_initial(struct ker_socket_client *client,
+    int owner_cap, int claimed_slot_cap);
+/* Candidate activation is worker-scoped: it returns only the live actor's
+ * claimed slot-1 unbound socket after initial member 0 is published and the
+ * owner's admission task is READY. Bind/listen use the reserved tuple; listen
+ * publishes member 1 without changing selector 0. */
+int ker_socket_client_owner_group_activate_candidate(struct ker_socket_client *client,
+    int owner_cap, int claimed_slot_cap);
+int ker_socket_client_owner_group_control(struct ker_socket_client *client,
+    int plan_cap);
+/* Obtain the coordinator receipt only after the claimed owner is confirmed
+ * exited through its broker-authenticated pidfd. Live owners return EAGAIN. */
+int ker_socket_client_owner_group_control_after_exit(
+    struct ker_socket_client *client, int plan_cap);
+
+/* Bounded first-cutover coordinator for one staged owner group. The broker
+ * derives both member identities and the original-Linux listener from the
+ * plan. begin starts asynchronous gate setup and can return in STARTING; poll
+ * until PREPARED before treating the freeze as armed. Commit or abort only
+ * requests work, which the broker advances incrementally. Poll is nonblocking.
+ * Call commit only after the caller's own READY policy barrier; this API does
+ * not establish application readiness. A group permits only one 0-to-1
+ * attempt. QUARANTINING is unconfirmed; QUARANTINED is kernel-confirmed.
+ * FAILED means setup was proven never armed, not that a rollback succeeded. */
+enum ker_socket_group_cutover_phase {
+    KER_SOCKET_GROUP_CUTOVER_PREPARED = 1,
+    KER_SOCKET_GROUP_CUTOVER_COMMITTING = 2,
+    KER_SOCKET_GROUP_CUTOVER_ABORTING = 3,
+    KER_SOCKET_GROUP_CUTOVER_COMMITTED = 4,
+    KER_SOCKET_GROUP_CUTOVER_ABORTED = 5,
+    KER_SOCKET_GROUP_CUTOVER_QUARANTINED = 6,
+    KER_SOCKET_GROUP_CUTOVER_STARTING = 7,
+    KER_SOCKET_GROUP_CUTOVER_QUARANTINING = 8,
+    KER_SOCKET_GROUP_CUTOVER_FAILED = 9
+};
+struct ker_socket_group_cutover_status {
+    uint64_t lease;
+    uint32_t phase;
+    int32_t result;
+    uint32_t received_packets;
+    uint32_t accepted_packets;
+};
+int ker_socket_client_owner_group_cutover_begin(
+    struct ker_socket_client *client, int plan_cap);
+int ker_socket_client_owner_group_cutover_commit(
+    struct ker_socket_client *client, int cutover_cap);
+int ker_socket_client_owner_group_cutover_abort(
+    struct ker_socket_client *client, int cutover_cap);
+int ker_socket_client_owner_group_cutover_poll(
+    struct ker_socket_client *client, int cutover_cap,
+    struct ker_socket_group_cutover_status *status);
 
 /* A census capability copies immutable group-member metadata, but retains no
  * group or TCP descriptor. Creation and reads require CONTROL and READ rights
  * respectively. The broker requires preexisting NET_ADMIN authority for its
- * private fixed INET_DIAG query; it never elevates credentials. */
+ * private fixed INET_DIAG query; it never elevates credentials. A staged
+ * group's claimed but unpublished member 1 also supports census: its cookie is
+ * zero and snapshots verify the reserved mark has no LISTEN row yet. */
 int ker_socket_client_member_census_create(struct ker_socket_client *client,
     int group_cap, unsigned index);
 int ker_socket_client_member_census_snapshot(struct ker_socket_client *client,
     int census_cap, struct ker_socket_member_census_snapshot *snapshot);
 int ker_socket_client_member_payload_snapshot(struct ker_socket_client *client,
     int census_cap, struct ker_socket_member_payload_snapshot *snapshot);
+
+/* Narrow F-Stack runtime owner context. The broker binds this opaque
+ * capability to the authenticated process; callers cannot select a mark or
+ * process identity. These calls are intended for the FF runtime adapter. */
+int ker_socket_client_ff_owner_create(struct ker_socket_client *client);
+int ker_socket_client_ff_owner_socket(struct ker_socket_client *client,
+    int owner_cap, int domain, int type, int protocol);
+int ker_socket_client_ff_owner_match(struct ker_socket_client *client,
+    int owner_cap, int socket_cap);
+int ker_socket_client_ff_owner_payload_snapshot(struct ker_socket_client *client,
+    int owner_cap, struct ker_socket_member_payload_snapshot *snapshot);
+int ker_socket_client_ff_owner_requests(struct ker_socket_client *client,
+    int owner_cap, uint64_t *request_count);
 
 #ifdef __cplusplus
 }

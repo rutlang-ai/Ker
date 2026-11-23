@@ -27,6 +27,296 @@ def require(value, message):
         raise RuntimeError(message)
 
 
+def finalize_c23_evidence(evidence_path, evidence, phase, success, error=None,
+        artifacts=None, broker=None, stats=None):
+    """Persist the overall C23 result only after runtime cleanup is observed."""
+    if not success:
+        evidence['qualification'] = 'UNQUALIFIED'
+        evidence['finalization'] = {'phase': phase, 'status': 'UNQUALIFIED',
+            'error': repr(error) if error is not None else 'runtime finalization failed'}
+        Path(evidence_path).write_text(json.dumps(evidence, indent=2, sort_keys=True) + '\n')
+    archived = {}
+    archive_errors = {}
+    for label, source in (artifacts or {}).items():
+        try:
+            source = Path(source)
+            if not source.is_file():
+                archive_errors[label] = f'artifact source is unavailable: {source}'
+                continue
+            data = source.read_bytes()
+            destination = Path(evidence_path).parent / label
+            destination.write_bytes(data)
+            archived[label] = {'path': str(destination),
+                'sha256': hashlib.sha256(data).hexdigest()}
+        except BaseException as archive_error:
+            archive_errors[label] = repr(archive_error)
+    evidence['c22_runtime_artifacts'] = archived
+    evidence['artifact_archive_errors'] = archive_errors
+    if stats is not None:
+        evidence['broker_stats'] = stats
+    if broker is not None:
+        output, errors, returncode = broker
+        evidence['broker_stdout'] = output.decode(errors='replace')
+        evidence['broker_stderr'] = errors.decode(errors='replace')
+        evidence['broker_exit_code'] = returncode
+    evidence['finalization'] = {'phase': phase,
+        'status': 'PASS' if success else 'UNQUALIFIED'}
+    if error is not None:
+        evidence['finalization']['error'] = repr(error)
+    evidence['qualification'] = ('PASS' if success and
+        evidence.get('source_probe_qualification') == 'PASS' else 'UNQUALIFIED')
+    if success and archive_errors:
+        raise RuntimeError(f'C23 could not archive all required runtime artifacts: {archive_errors!r}')
+    Path(evidence_path).write_text(json.dumps(evidence, indent=2, sort_keys=True) + '\n')
+    return evidence['qualification'] == 'PASS'
+
+
+def finalize_c23_runtime(evidence_path, evidence, shutdown, broker, stats_path, artifacts):
+    """Run mandatory post-probe cleanup and persist its final qualification."""
+    output = errors = b''
+    try:
+        shutdown()
+        try:
+            output, errors = broker.communicate(timeout=40)
+        except subprocess.TimeoutExpired as error:
+            broker.kill()
+            output, errors = broker.communicate(timeout=10)
+            raise RuntimeError('original-Linux broker did not release nginx descriptors: '
+                f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+        require(broker.returncode == 0 and b'BROKER_DONE' in output,
+            f'broker did not finalize nginx sockets: {output!r} {errors.decode(errors="replace")}')
+        stats = json.loads(Path(stats_path).read_text())
+        require(isinstance(stats, dict), f'C23 broker stats must be a JSON object: {stats!r}')
+        native = stats.get('native', {})
+        require(isinstance(native, dict) and stats.get('tx', 0) > 0 and
+            stats.get('rx', 0) > 0 and stats.get('outstanding') == 0 and
+            native.get('passive_opens', 0) >= 2,
+            f'C23 original-Linux traffic or broker cleanup evidence missing: {stats!r}')
+        qualified = finalize_c23_evidence(evidence_path, evidence, 'complete', True,
+            artifacts=artifacts, broker=(output, errors, broker.returncode), stats=stats)
+        return qualified
+    except BaseException as error:
+        finalize_c23_evidence(evidence_path, evidence, 'runtime_cleanup', False,
+            error, artifacts, (output, errors, getattr(broker, 'returncode', None)))
+        raise
+
+
+def finalize_c23_failure_if_needed(evidence_path, evidence, phase, error, artifacts=None):
+    """Finalize source-probe failures too, without overwriting a completed result."""
+    finalization = evidence.get('finalization', {})
+    if finalization.get('status') == 'UNQUALIFIED':
+        return False
+    return finalize_c23_evidence(evidence_path, evidence, phase, False, error, artifacts)
+
+
+def run_source_reload_probes(args, master, worker, nginx_command, env, logs, runtime_trace,
+        prefix, config):
+    probe_root = args.source_reload_probes.resolve()
+    probe_dir = probe_root / 'common' / 'reload_probes'
+    checker = probe_root / 'common' / 'reload_checks.py'
+    baseline_probe = probe_dir / 'm4_lc.py'
+    outage_probe = probe_dir / 'm4_outage.py'
+    for path in (checker, baseline_probe, outage_probe, probe_dir / 'http_probe.py'):
+        require(path.is_file(), f'unchanged original reload probe is missing: {path}')
+    output = args.source_reload_output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    require(not any(output.iterdir()), f'C23 evidence directory is not empty: {output}')
+
+    def sha256(path):
+        digest = hashlib.sha256()
+        with open(path, 'rb') as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(block)
+        return digest.hexdigest()
+
+    source_files = [baseline_probe, outage_probe, probe_dir / 'http_probe.py', checker,
+        probe_root / 'test_graceful_reload.sh']
+    expected_source_hashes = {
+        'm4_lc.py': 'b6539d6c81cd9fceff3c657493b52d962cd4260e09e2d8dec38ecfe88ecca8ac',
+        'm4_outage.py': '4d57b775a52ceab27b6a64aae6334ad168f6944cf74250054ab8ea6cc2231569',
+        'http_probe.py': '7c19eae3b1dd6eeaa914d12e4d42fbb45d03370aad40232c42c42cfe8c756b31',
+        'reload_checks.py': '686a57c12981af7be78a24f2f8e94e0070e456ee5042fe0f528b200bfc37bb7d',
+        'test_graceful_reload.sh': '7efd3e0d10e584daa57377915da0ba2a9d1f67bebbcd2f512298230d71f35203',
+    }
+    initial_source_hashes = {path.name: sha256(path) for path in source_files}
+    require(initial_source_hashes == expected_source_hashes,
+        f'C23 original probe files differ from their pinned source copies: {initial_source_hashes!r}')
+    evidence = {
+        'schema': 1,
+        'scenario': 'C23 original-source reload probe',
+        'mode': args.source_reload_mode,
+        'qualification': 'PENDING_FINALIZATION',
+        'source_probe_qualification': 'RUNNING',
+        'target': '198.18.0.2:80',
+        'probe_controller_pid': os.getpid(),
+        'nginx_master_pid': master,
+        'nginx_worker_pid': worker,
+        'source_probe_sha256': {str(path): sha256(path) for path in source_files},
+        'source_probe_expected_sha256': expected_source_hashes,
+        'source_probe_revision': '646a641cfff77f4815e1e29829a09e1ed15a2999',
+        'ker_build_manifest': str(args.c23_ker_manifest.resolve()),
+        'ker_build_manifest_sha256': sha256(args.c23_ker_manifest),
+        'artifacts': {},
+        'config_sha256': sha256(config),
+        'nginx_runtime_trace': str(runtime_trace),
+        'nginx_error_log': str(logs / 'error.log'),
+        'baseline': {'status': 'NOT_RUN', 'argv': [sys.executable, str(baseline_probe), '--server', '198.18.0.2',
+            '--conns', '24', '--interval', '0.5', '--duration', '330', '--fresh', '0.5',
+            '--timeout', '2']},
+        'gr0': {'status': 'NOT_RUN', 'argv': [sys.executable, str(outage_probe), '--server', '198.18.0.2',
+            '--duration', '25', '--timeout', '0.5'], 'hup_anchor_seconds': 5},
+    }
+    for label, path in (
+        ('nginx_binary', args.nginx_binary),
+        ('owner_activation_module', args.nginx_owner_activation_module),
+        ('fstack_runtime', args.fstack_runtime),
+        ('worker_shim', args.fstack_worker_shim),
+        ('preload', args.preload_library),
+        ('ker_library', args.library),
+        ('io_worker', args.worker),
+        ('broker', args.broker),
+    ):
+        evidence['artifacts'][label] = {'path': str(path.resolve()), 'sha256': sha256(path)}
+    with open(args.c23_ker_manifest) as stream:
+        manifest = json.load(stream)
+    require(manifest.get('fingerprint') and manifest.get('library_sha256'),
+        'C23 requires a complete installed Ker native-Linux manifest')
+    evidence['ker_native_manifest'] = manifest
+    module_manifest = (Path(args.c23_ker_manifest).resolve().parent.parent /
+        'fstack-nginx-runtime' / 'nginx-owner-activation-build.json')
+    require(module_manifest.is_file(), f'C22 installed module manifest is missing: {module_manifest}')
+    module_build = json.loads(module_manifest.read_text())
+    require(module_build.get('fstackSourceRevision') ==
+        '646a641cfff77f4815e1e29829a09e1ed15a2999' and
+        module_build.get('nginxBinarySha256') == sha256(args.nginx_binary),
+        'installed C22 module manifest does not match the pinned Nginx artifact')
+    evidence['c22_owner_activation_manifest'] = {
+        'path': str(module_manifest), 'sha256': sha256(module_manifest),
+        'contents': module_build}
+    evidence_path = output / 'evidence.json'
+    def save_evidence():
+        evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + '\n')
+    save_evidence()
+    probe_env = os.environ.copy()
+    for key in ('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH', 'KER_FSTACK_RUNTIME_TRACE',
+            'KER_FSTACK_NGINX_INI'):
+        probe_env.pop(key, None)
+
+    baseline_ok = None
+    outage_ok = None
+    if args.source_reload_mode in ('baseline', 'all'):
+        evidence['baseline']['status'] = 'RUNNING'
+        baseline_log = output / 'baseline.log'
+        baseline_argv = evidence['baseline']['argv']
+        baseline_start = time.monotonic()
+        try:
+            with baseline_log.open('wb') as stream:
+                baseline = subprocess.run(baseline_argv, cwd=probe_dir, env=probe_env,
+                    stdout=stream, stderr=subprocess.STDOUT, timeout=345)
+        except BaseException as error:
+            evidence['baseline'].update({'qualification': 'UNQUALIFIED',
+                'error': repr(error), 'output_file': str(baseline_log),
+                'output_sha256': sha256(baseline_log) if baseline_log.exists() else None})
+            evidence['qualification'] = 'UNQUALIFIED'
+            evidence['source_probe_qualification'] = 'UNQUALIFIED'
+            save_evidence()
+            raise
+        baseline_end = time.monotonic()
+        baseline_text = baseline_log.read_text(errors='replace')
+        baseline_summaries = [line for line in baseline_text.splitlines()
+            if line.startswith('LC_SUMMARY ')]
+        baseline_oracle = subprocess.run([sys.executable, str(checker), 'summary', 'lc'],
+            input=baseline_text, text=True, capture_output=True)
+        evidence['baseline'].update({'status': 'COMPLETED',
+            'exit_code': baseline.returncode, 'oracle_exit_code': baseline_oracle.returncode,
+            'summary_lines': baseline_summaries,
+            'oracle_stdout': baseline_oracle.stdout.strip(),
+            'oracle_stderr': baseline_oracle.stderr.strip(),
+            'start_monotonic': baseline_start, 'end_monotonic': baseline_end,
+            'elapsed_seconds': baseline_end - baseline_start,
+            'output_file': str(baseline_log), 'output_sha256': sha256(baseline_log)})
+        baseline_ok = baseline.returncode == 0 and baseline_oracle.returncode == 0
+        evidence['baseline']['qualification'] = 'PASS' if baseline_ok else 'FAIL'
+        evidence['source_probe_qualification'] = 'RUNNING' if baseline_ok else 'UNQUALIFIED'
+        save_evidence()
+
+    if args.source_reload_mode in ('gr0', 'all'):
+        evidence['gr0']['status'] = 'RUNNING'
+        outage_log = output / 'gr0-outage.log'
+        outage_argv = evidence['gr0']['argv']
+        with outage_log.open('wb') as stream:
+            outage = subprocess.Popen(outage_argv, cwd=probe_dir, env=probe_env,
+                stdout=stream, stderr=subprocess.STDOUT)
+        evidence['gr0']['probe_start_monotonic'] = time.monotonic()
+        try:
+            time.sleep(5)
+            require(outage.poll() is None,
+                'unchanged gr0 outage probe exited before the original 5 second HUP anchor')
+            evidence['gr0']['hup_sent_monotonic'] = time.monotonic()
+            evidence['gr0']['hup_argv'] = nginx_command + ['-s', 'reload']
+            reload = subprocess.run(evidence['gr0']['hup_argv'], env=env,
+                capture_output=True, timeout=20)
+            evidence['gr0']['hup_exit_code'] = reload.returncode
+            evidence['gr0']['hup_stdout'] = reload.stdout.decode(errors='replace')
+            evidence['gr0']['hup_stderr'] = reload.stderr.decode(errors='replace')
+            require(reload.returncode == 0,
+                f'original Nginx HUP/reload command failed: {evidence["gr0"]!r}')
+            outage_rc = outage.wait(timeout=35)
+        except BaseException:
+            if outage.poll() is None:
+                outage.terminate()
+                try: outage.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    outage.kill(); outage.wait(timeout=2)
+            evidence['gr0']['qualification'] = 'UNQUALIFIED'
+            evidence['gr0']['output_file'] = str(outage_log)
+            evidence['gr0']['output_sha256'] = sha256(outage_log) if outage_log.exists() else None
+            evidence['source_probe_qualification'] = 'UNQUALIFIED'
+            save_evidence()
+            raise
+        outage_text = outage_log.read_text(errors='replace')
+        outage_summaries = [line for line in outage_text.splitlines()
+            if line.startswith('OUTAGE_SUMMARY ')]
+        outage_oracle = subprocess.run([sys.executable, str(checker), 'summary', 'outage'],
+            input=outage_text, text=True, capture_output=True)
+        error_text = logs.joinpath('error.log').read_text(errors='replace')
+        graceful_lines = [line for line in error_text.splitlines()
+            if re.search(r'graceful reload complete|graceful reload fsm:', line)]
+        evidence['gr0'].update({'status': 'COMPLETED',
+            'exit_code': outage_rc, 'oracle_exit_code': outage_oracle.returncode,
+            'summary_lines': outage_summaries,
+            'oracle_stdout': outage_oracle.stdout.strip(),
+            'oracle_stderr': outage_oracle.stderr.strip(),
+            'output_file': str(outage_log), 'output_sha256': sha256(outage_log),
+            'graceful_reload_log_lines': graceful_lines})
+        outage_ok = outage_rc == 0 and outage_oracle.returncode == 0 and not graceful_lines
+        evidence['gr0']['qualification'] = 'PASS' if outage_ok else 'UNQUALIFIED'
+
+    current_source_hashes = {str(path): sha256(path) for path in source_files}
+    require(current_source_hashes == evidence['source_probe_sha256'],
+        'unchanged source probes changed while the C23 run was active')
+    evidence['source_probe_sha256_after'] = current_source_hashes
+    if args.source_reload_mode == 'baseline':
+        evidence['source_probe_qualification'] = 'PASS' if baseline_ok else 'UNQUALIFIED'
+    elif args.source_reload_mode == 'gr0':
+        evidence['source_probe_qualification'] = 'PASS' if outage_ok else 'UNQUALIFIED'
+    else:
+        evidence['source_probe_qualification'] = 'PASS' if baseline_ok and outage_ok else 'UNQUALIFIED'
+    evidence['runtime_trace_sha256'] = sha256(runtime_trace) if runtime_trace.exists() else None
+    evidence['error_log_sha256'] = sha256(logs / 'error.log')
+    save_evidence()
+    if baseline_ok is not None:
+        print(f'C23_BASELINE exit={baseline.returncode} oracle={baseline_oracle.returncode} '
+            f'log={baseline_log}')
+    if outage_ok is not None:
+        print(f'C23_GR0 exit={outage_rc} oracle={outage_oracle.returncode} '
+            f'log={outage_log} graceful_log_lines={len(graceful_lines)}')
+    evidence['qualification'] = ('PENDING_FINALIZATION'
+        if evidence['source_probe_qualification'] == 'PASS' else 'UNQUALIFIED')
+    save_evidence()
+    return evidence['source_probe_qualification'] == 'PASS'
+
+
 def read_line(stream, timeout, process=None):
     selector = select.poll()
     selector.register(stream, select.POLLIN | select.POLLHUP | select.POLLERR)
@@ -166,15 +456,51 @@ def receive_metadata_fds(connection, expected_tag, expected_index=None, count=2)
     return fds
 
 
-def census_observation(args, rpc_path, census_fds):
+def census_observation(args, rpc_path, census_fds, timeout=10):
     result = subprocess.run([str(args.member_census_client), '--observe', str(rpc_path),
         str(census_fds[0]), str(census_fds[1])], pass_fds=tuple(census_fds),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     require(result.returncode == 0,
         f'metadata census query failed: stdout={result.stdout!r}; stderr={result.stderr!r}')
     lines = result.stdout.decode().splitlines()
     require(len(lines) == 2, f'metadata census emitted malformed results: {lines!r}')
     return [parse_census_line(line) for line in lines]
+
+
+def wait_for_finwait2_census(args, rpc_path, census_fds, expected_cookies, timeout=5.0):
+    """Wait boundedly for both exact closed members to finish their FIN ACK transition."""
+    if (not isinstance(expected_cookies, (list, tuple)) or len(expected_cookies) != 2 or
+            any(type(cookie) is not int or cookie <= 0 for cookie in expected_cookies) or
+            expected_cookies[0] == expected_cookies[1]):
+        raise RuntimeError(f'invalid retained FIN_WAIT2 member cookies: {expected_cookies!r}')
+    deadline = time.monotonic() + timeout
+    observations = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            observations = census_observation(args, rpc_path, census_fds, timeout=remaining)
+        except subprocess.TimeoutExpired:
+            break
+        observed_at = time.monotonic()
+        # A census RPC that started before the deadline but returned after it
+        # cannot turn a missed transition deadline into a successful proof.
+        if observed_at >= deadline:
+            break
+        if (len(observations) == 2 and all(
+                values.get('cookie') == expected_cookies[index] and
+                values.get('total') == 1 and values.get('listen') == 0 and
+                values.get('finwait2') == 1 and values.get('timewait') == 0
+                for index, values in enumerate(observations))):
+            return observations
+        remaining = deadline - observed_at
+        if remaining <= 0:
+            break
+        time.sleep(min(0.01, remaining))
+    raise RuntimeError('original Linux did not reach exact retained FIN_WAIT2 rows before the bounded deadline: '
+        + repr(dict(expected_cookies=list(expected_cookies), observations=observations,
+            timeout_seconds=timeout)))
 
 
 def tcp_observation(args, rpc_path, observer_fd):
@@ -513,6 +839,344 @@ def run_payload_snapshot_wire_probe(args, eal, root):
         capture.close(); listener.close(); sack_listener.close()
 
 
+def run_ff_owner_payload_probe(args, rpc_path, capabilities):
+    ports = (43901, 43902, 43903, 43904)
+    lengths = (1200, 700, 900, 1100)
+    seeds = (3, 19, 31, 47)
+    table = f'ker_ff_owner_{os.getpid()}'
+    listeners = []
+    peers = []
+    processes = []
+    capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+    inbound_capture = None
+    table_created = False
+    try:
+        for port in ports:
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(('198.18.0.1', port)); listener.listen(1); listener.settimeout(20)
+            listeners.append(listener)
+        capture.bind(('kerhost', 0)); capture.settimeout(0.25)
+        census_nft('add', 'table', 'inet', table); table_created = True
+        census_nft('add', 'chain', 'inet', table, 'output', '{', 'type', 'filter',
+            'hook', 'output', 'priority', 'filter;', 'policy', 'accept;', '}')
+        for port in ports:
+            census_nft('add', 'rule', 'inet', table, 'output', 'oifname', 'kerhost',
+                'ip', 'saddr', '198.18.0.1', 'ip', 'daddr', '198.18.0.2',
+                'tcp', 'sport', str(port), 'tcp', 'flags', '&',
+                '(fin', '|', 'syn', '|', 'rst', '|', 'ack)', '==', 'ack', 'counter', 'drop')
+
+        environment = os.environ | {
+            'LD_PRELOAD': f'{args.fstack_runtime.resolve()}:{args.preload_library.resolve()}',
+            'KER_SOCKET_BROKER_PATH': str(rpc_path),
+            'PYTHONDONTWRITEBYTECODE': '1',
+        }
+        legacy = subprocess.run([str(args.ff_owner_payload_client), '--legacy-history'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, timeout=20)
+        require(legacy.returncode == 0 and
+            b'OWNER_BEGIN_REFUSED_AFTER_LEGACY_HISTORY\n' in legacy.stdout,
+            f'owner begin accepted closed legacy socket history: rc={legacy.returncode}; '
+            f'stdout={legacy.stdout!r}; stderr={legacy.stderr!r}')
+        missing_owner = subprocess.run([str(args.ff_owner_payload_client),
+            '--syncache-without-owner'], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, env=environment, timeout=10)
+        require(missing_owner.returncode == -signal.SIGABRT and
+            b'ker fstack request-sock snapshot failed:' in missing_owner.stderr,
+            f'syncache count succeeded without an authenticated owner: '
+            f'rc={missing_owner.returncode}; stderr={missing_owner.stderr!r}')
+        foreign = subprocess.run([str(args.ff_owner_payload_client), '--foreign-history'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, timeout=20)
+        require(foreign.returncode == -signal.SIGABRT and
+            b'ker fstack request-sock snapshot failed:' in foreign.stderr,
+            f'owner request gate accepted closed generic socket history: '
+            f'rc={foreign.returncode}; stdout={foreign.stdout!r}; stderr={foreign.stderr!r}')
+        exec_history = subprocess.run([str(args.ff_owner_payload_client),
+            '--foreign-history-exec'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=environment, timeout=20)
+        require(exec_history.returncode == 0 and
+            b'OWNER_REBEGIN_REFUSED_AFTER_EXEC_HISTORY\n' in exec_history.stdout,
+            f'owner re-begin forgot broker-side history across exec/reconnect: '
+            f'rc={exec_history.returncode}; stdout={exec_history.stdout!r}; '
+            f'stderr={exec_history.stderr!r}')
+        for port, size, seed in zip(ports[:2], lengths[:2], seeds[:2]):
+            process = subprocess.Popen([str(args.ff_owner_payload_client),
+                '--owner-payload', str(port), str(size), str(seed)], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+            processes.append(process)
+        exec_process = subprocess.Popen([str(args.ff_owner_payload_client),
+            '--owner-reexec', str(ports[2]), str(lengths[2]), str(seeds[2])],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=environment, bufsize=0)
+        processes.append(exec_process)
+        legacy_process = subprocess.Popen([str(args.ff_owner_payload_client),
+            '--legacy-payload-reexec', str(ports[3]), str(lengths[3]), str(seeds[3])],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=environment, bufsize=0)
+        processes.append(legacy_process)
+        owner_listener_ports = []
+        for port in ports:
+            listeners[ports.index(port)].settimeout(1)
+            deadline = time.monotonic() + 20
+            while True:
+                try:
+                    peer, _ = listeners[ports.index(port)].accept()
+                    break
+                except TimeoutError:
+                    dead = [process for process in processes if process.poll() is not None]
+                    if dead:
+                        details = []
+                        for process in dead:
+                            output, errors = process.communicate()
+                            details.append((process.returncode, output, errors))
+                        raise RuntimeError(f'FF owner process exited before connect: {details!r}')
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('FF owner process did not connect within 20 seconds')
+            peer.settimeout(10); peers.append(peer)
+        for process in processes[:2]:
+            listener_line = read_line(process.stdout, 30, process)
+            require(listener_line.startswith('OWNER_LISTENER '),
+                f'FF owner did not publish its marked listener: {listener_line!r}')
+            owner_listener_ports.append(int(listener_line.split()[1]))
+            require(read_line(process.stdout, 30, process) == 'OWNER_READY',
+                'FF owner client did not close its last application descriptor')
+        require(read_line(exec_process.stdout, 30, exec_process) == 'OWNER_EXEC_READY',
+            'FF owner exec client did not close its application descriptor before exec')
+        require(read_line(legacy_process.stdout, 30, legacy_process) ==
+            'OWNER_LEGACY_EXEC_READY',
+            'legacy generic client did not close its application descriptor before exec')
+        require(read_line(legacy_process.stdout, 20, legacy_process) ==
+            'OWNER_REBEGIN_REFUSED_AFTER_EXEC_HISTORY',
+            'owner re-begin did not reject legacy payload history after exec')
+        for process in processes[:3]:
+            process.stdin.write(b'Q'); process.stdin.flush()
+        request_counts = []
+        for process in processes[:3]:
+            line = read_line(process.stdout, 15, process)
+            require(line.startswith('OWNER_REQUESTS '),
+                f'unexpected FF owner request-count response: {line!r}')
+            request_counts.append(int(line.split()[1]))
+        require(request_counts == [0, 0, 0],
+            f'authenticated FF owner request counts were not empty before inbound SYNs: {request_counts!r}')
+        owner_listener_port = owner_listener_ports[0]
+        census_nft('add', 'rule', 'inet', table, 'output', 'oifname', 'kerhost',
+            'ip', 'saddr', '198.18.0.1', 'ip', 'daddr', '198.18.0.2',
+            'tcp', 'dport', str(owner_listener_port), 'tcp', 'flags', '&',
+            '(fin', '|', 'syn', '|', 'rst', '|', 'ack)', '==', 'ack', 'counter', 'drop')
+        link = subprocess.run(['ip', '-o', 'link', 'show', 'kerhost'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        require(link.returncode == 0, f'could not read host veth identity: {link.stderr}')
+        host_mac = bytes.fromhex(re.search(r'link/ether ([0-9a-f:]+)', link.stdout)
+            .group(1).replace(':', ''))
+        host_client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        host_client.settimeout(10)
+        inbound_capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+        inbound_capture.bind(('kerhost', 0)); inbound_capture.settimeout(0.25)
+        connect_errors = []
+        def connect_owner_listener():
+            try: host_client.connect(('198.18.0.2', owner_listener_port))
+            except BaseException as error: connect_errors.append(error)
+        connect_thread = threading.Thread(target=connect_owner_listener, daemon=True)
+        connect_thread.start()
+        inbound_syn = inbound_synack = None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and inbound_synack is None:
+            try: frame, _ = inbound_capture.recvfrom(65535)
+            except TimeoutError: continue
+            item = ipv4_tcp_frame(frame)
+            if not item: continue
+            if item['src'] == '198.18.0.1' and item['dst'] == '198.18.0.2' and \
+                    item['dport'] == owner_listener_port and item['flags'] & 0x02:
+                inbound_syn = item
+            if item['src'] == '198.18.0.2' and item['dst'] == '198.18.0.1' and \
+                    item['sport'] == owner_listener_port and item['flags'] & 0x12 == 0x12:
+                inbound_synack = item
+        require(inbound_syn is not None and inbound_synack is not None,
+            f'owner listener did not exchange wire SYN/SYN-ACK: syn={inbound_syn!r} '
+            f'synack={inbound_synack!r}; errors={connect_errors!r}')
+        rule_text = census_nft('-a', 'list', 'chain', 'inet', table, 'output')
+        rule_line = next((line for line in rule_text.splitlines()
+            if f'tcp dport {owner_listener_port}' in line), None)
+        require(rule_line is not None and
+            (counter := re.search(r'counter packets (\d+)', rule_line)) is not None and
+            int(counter.group(1)) > 0,
+            f'host ACK suppression did not drop the owner handshake ACK: {rule_text!r}')
+        query = processes[0]
+        query.stdin.write(b'Q'); query.stdin.flush()
+        request_line = read_line(query.stdout, 15, query)
+        require(request_line == 'OWNER_REQUESTS 1',
+            f'authenticated owner did not report its real marked request_sock: {request_line!r}')
+        isolated_counts = []
+        for process in processes[1:3]:
+            process.stdin.write(b'Q'); process.stdin.flush()
+            line = read_line(process.stdout, 15, process)
+            require(line.startswith('OWNER_REQUESTS '),
+                f'unexpected other-owner request response: {line!r}')
+            isolated_counts.append(int(line.split()[1]))
+        require(isolated_counts == [0, 0],
+            f'one owner request leaked into other process counts: {isolated_counts!r}')
+        ack_socket = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+        ack_socket.bind(('kerhost', 0))
+        ack_socket.send(inject_tcp_ack(inbound_syn, inbound_synack,
+            (inbound_synack['seq'] + 1) & 0xffffffff))
+        handle = re.search(r'# handle (\d+)$', rule_line)
+        require(handle is not None, f'could not identify temporary ACK rule: {rule_line!r}')
+        census_nft('delete', 'rule', 'inet', table, 'output', 'handle', handle.group(1))
+        inbound_capture.close()
+        connect_thread.join(5)
+        require(not connect_thread.is_alive() and not connect_errors,
+            f'host connect did not complete after raw ACK: {connect_errors!r}')
+        request_line = None
+        for _ in range(100):
+            query.stdin.write(b'Q'); query.stdin.flush()
+            request_line = read_line(query.stdout, 15, query)
+            if request_line == 'OWNER_REQUESTS 0': break
+            require(request_line == 'OWNER_REQUESTS 1',
+                f'authenticated owner returned an invalid post-ACK count: {request_line!r}')
+            time.sleep(0.01)
+        require(request_line == 'OWNER_REQUESTS 0',
+            f'authenticated owner request count did not clear after ACK: {request_line!r}')
+        query.stdin.write(b'A'); query.stdin.flush()
+        require(read_line(query.stdout, 15, query) == 'OWNER_ACCEPTED',
+            'FF owner did not accept the completed handshake')
+        ack_socket.close(); host_client.close()
+        for fd in capabilities:
+            os.close(fd)
+        capabilities.clear()
+
+        synacks = {}
+        data_segments = {port: {} for port in ports}
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and any(
+                not synacks.get(port) or sum(len(packet['payload'])
+                    for packet in data_segments[port].values()) < lengths[index]
+                for index, port in enumerate(ports)):
+            try:
+                frame, _ = capture.recvfrom(65535)
+            except TimeoutError:
+                continue
+            packet = ipv4_tcp_frame(frame)
+            if not packet:
+                continue
+            for port in ports:
+                if packet['src'] == '198.18.0.1' and packet['dst'] == '198.18.0.2' and \
+                        packet['sport'] == port and packet['flags'] & 0x12 == 0x12:
+                    synacks[port] = packet
+                if packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
+                        packet['dport'] == port and packet['payload']:
+                    data_segments[port][packet['seq']] = packet
+        for index, port in enumerate(ports):
+            segments = sorted(data_segments[port].values(),
+                key=lambda item: (item['seq'] - synacks[port]['ack']) & 0xffffffff)
+            require(port in synacks and sum(len(packet['payload']) for packet in segments) == lengths[index],
+                f'owner {index} did not emit its complete TCP payload: {segments!r}')
+            observed = b''.join(packet['payload'] for packet in segments)
+            expected = bytes((offset * 17 + seeds[index] * 29 + 3) & 0xff
+                for offset in range(lengths[index]))
+            require(observed == expected, f'owner {index} wire payload differs from source bytes')
+            require(recv_exact(peers[index], lengths[index]) == expected,
+                f'host peer did not receive owner {index} original-Linux stream')
+
+        legacy_output, legacy_errors = legacy_process.communicate(timeout=10)
+        require(legacy_process.returncode == 0,
+            f'legacy payload re-begin failed: rc={legacy_process.returncode}; '
+            f'stdout={legacy_output!r}; stderr={legacy_errors!r}')
+
+        rule_text = census_nft('list', 'chain', 'inet', table, 'output')
+        counters = re.findall(r'counter packets (\d+) bytes (\d+)', rule_text)
+        require(len(counters) == len(ports) and all(int(item[0]) > 0 for item in counters),
+            f'ACK suppression did not count real packets for every owner: {rule_text!r}')
+
+        ack_sockets = []
+        owner_processes = processes[:3]
+        try:
+            for _ in ports:
+                ack = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+                ack.bind(('kerhost', 0)); ack_sockets.append(ack)
+            first = min(data_segments[ports[0]].values(), key=lambda p: (p['seq'] - synacks[ports[0]]['ack']) & 0xffffffff)
+            second = min(data_segments[ports[1]].values(), key=lambda p: (p['seq'] - synacks[ports[1]]['ack']) & 0xffffffff)
+            ack_sockets[0].send(inject_tcp_ack(first, synacks[ports[0]],
+                (first['seq'] + 137) & 0xffffffff))
+            for process in owner_processes:
+                process.stdin.write(b'S'); process.stdin.flush()
+            values = []
+            for process in owner_processes:
+                line = read_line(process.stdout, 15, process)
+                require(line.startswith('OWNER_SNAPSHOT '), f'unexpected owner snapshot response: {line!r}')
+                values.append(int(line.split()[1]))
+            require(values == [lengths[0] - 137, lengths[1], lengths[2]],
+                f'FF owner mark snapshots were not process-isolated after partial ACK: {values!r}')
+
+            ack_sockets[0].send(inject_tcp_ack(first, synacks[ports[0]],
+                (first['seq'] + lengths[0]) & 0xffffffff))
+            for process in owner_processes:
+                process.stdin.write(b'S'); process.stdin.flush()
+            values = [int(read_line(process.stdout, 15, process).split()[1])
+                for process in owner_processes]
+            require(values == [0, lengths[1], lengths[2]],
+                f'first process full ACK changed another process owner snapshot: {values!r}')
+
+            ack_sockets[1].send(inject_tcp_ack(second, synacks[ports[1]],
+                (second['seq'] + lengths[1]) & 0xffffffff))
+            for process in owner_processes:
+                process.stdin.write(b'S'); process.stdin.flush()
+            values = [int(read_line(process.stdout, 15, process).split()[1])
+                for process in owner_processes]
+            require(values == [0, 0, lengths[2]],
+                f'second process full ACK changed exec-owner payload: {values!r}')
+
+            third = min(data_segments[ports[2]].values(),
+                key=lambda p: (p['seq'] - synacks[ports[2]]['ack']) & 0xffffffff)
+            ack_sockets[2].send(inject_tcp_ack(third, synacks[ports[2]],
+                (third['seq'] + 100) & 0xffffffff))
+            for process in owner_processes:
+                process.stdin.write(b'S'); process.stdin.flush()
+            values = [int(read_line(process.stdout, 15, process).split()[1])
+                for process in owner_processes]
+            require(values == [0, 0, lengths[2] - 100],
+                f'owner payload was lost or cross-counted across exec reinitialization: {values!r}')
+            ack_sockets[2].send(inject_tcp_ack(third, synacks[ports[2]],
+                (third['seq'] + lengths[2]) & 0xffffffff))
+            for process in owner_processes:
+                process.stdin.write(b'S'); process.stdin.flush()
+            values = [int(read_line(process.stdout, 15, process).split()[1])
+                for process in owner_processes]
+            require(values == [0, 0, 0],
+                f'full ACK did not clear exec-owner payload after re-begin: {values!r}')
+            legacy_packet = min(data_segments[ports[3]].values(),
+                key=lambda p: (p['seq'] - synacks[ports[3]]['ack']) & 0xffffffff)
+            ack_sockets[3].send(inject_tcp_ack(legacy_packet, synacks[ports[3]],
+                (legacy_packet['seq'] + lengths[3]) & 0xffffffff))
+        finally:
+            for ack in ack_sockets:
+                ack.close()
+
+        for process in owner_processes:
+            process.stdin.write(b'E'); process.stdin.flush()
+        for process in owner_processes:
+            output, errors = process.communicate(timeout=20)
+            require(process.returncode == 0 and b'OWNER_DONE\n' in output,
+                f'FF owner process failed: rc={process.returncode}; stdout={output!r}; stderr={errors!r}')
+        print(f'C13_FF_SYNCACHE_COUNT_OK owner_listener={owner_listener_port} '
+            f'wire_count=1->0 isolated={isolated_counts!r} '
+            f'C12_FF_OWNER_PAYLOAD_OK owner_pids={[p.pid for p in processes]} '
+            f'partial_ack=137 exec_rebegin=true snapshots={values!r} descriptorless=true '
+            f'ack_drop_packets={[item[0] for item in counters]}')
+    finally:
+        if inbound_capture is not None:
+            inbound_capture.close()
+        for process in processes:
+            if process.poll() is None:
+                process.kill(); process.wait()
+        for peer in peers:
+            peer.close()
+        if table_created:
+            try: census_nft('delete', 'table', 'inet', table)
+            except (OSError, subprocess.SubprocessError, RuntimeError): pass
+        capture.close()
+        for listener in listeners:
+            listener.close()
+
+
 def parse_census_line(line):
     fields = {}
     for item in line.split()[2:]:
@@ -662,6 +1326,9 @@ def run_member_census_client(args, rpc_path, broker, capability):
         pending.settimeout(10); fresh.settimeout(10)
         receive_pressure_pattern(pending, sent0)
         receive_pressure_pattern(fresh, sent1)
+        finwait2 = wait_for_finwait2_census(args, rpc_path, census_fds,
+            [values['cookie'] for values in (first_values, second_values)])
+        print(f'MEMBER_CENSUS_FIN_WAIT2 retained_peer=true rows={finwait2!r}', flush=True)
         pending.close(); peers.remove(pending)
         fresh.close(); peers.remove(fresh)
 
@@ -705,12 +1372,101 @@ def run_member_census_client(args, rpc_path, broker, capability):
 
 
 def run_reuseport_group_client(args, rpc_path, broker, capability):
-    client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
-        str(args.inherited_group_probe), str(args.preload_library)],
-        pass_fds=(capability,), stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
-    os.close(capability)
+    staged_capability = os.dup(capability)
+    staged_owner_capability = -1
+    staged_failure_capability = -1
+    staged_death_capability = -1
+    client = None
+    owner_table = f'ker_c18_{os.getpid()}'
+    owner_table_created = False
     try:
+        client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
+            str(args.inherited_group_probe), str(args.preload_library)],
+            pass_fds=(capability,), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        input_capability = capability
+        capability = -1
+        os.close(input_capability)
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_READY_0',
+            'owner group did not select its first claimed listener')
+        first_owner = socket.create_connection(('198.18.0.2', 4100), timeout=10)
+        first_owner.settimeout(10); first_owner.sendall(b'OWNER-00')
+        require(recv_exact(first_owner, 8) == b'WORKER-0',
+            'first claimed owner did not accept and answer real TCP traffic')
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_ACCEPTED_0',
+            'first owner actor did not finish its accepted stream')
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_READY_1',
+            'owner group did not select its second claimed listener')
+        second_owner = socket.create_connection(('198.18.0.2', 4100), timeout=10)
+        second_owner.settimeout(10); second_owner.sendall(b'OWNER-01')
+        require(recv_exact(second_owner, 8) == b'WORKER-1',
+            'second claimed owner did not accept and answer real TCP traffic')
+        second_owner.close()
+        first_owner.sendall(b'OLD-0001')
+        require(recv_exact(first_owner, 8) == b'OLD-ACK1',
+            'accepted member-0 stream stopped working after member-1 served a fresh connection')
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_ACCEPTED_1',
+            'second owner actor or retained member-0 stream did not finish')
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_WAIT_PAYLOAD',
+            'owner actors did not reach the descriptorless payload checkpoint')
+
+        census_nft('add', 'table', 'inet', owner_table); owner_table_created = True
+        census_nft('add', 'chain', 'inet', owner_table, 'output',
+            '{', 'type', 'filter', 'hook', 'output', 'priority', 'filter;', 'policy', 'accept;', '}')
+        peer_port = first_owner.getsockname()[1]
+        census_nft('add', 'rule', 'inet', owner_table, 'output',
+            'oifname', 'kerhost', 'ip', 'saddr', '198.18.0.1', 'ip', 'daddr', '198.18.0.2',
+            'tcp', 'sport', str(peer_port), 'tcp', 'dport', '4100', 'tcp', 'flags', '&',
+            '(fin', '|', 'syn', '|', 'rst', '|', 'ack)', '==', 'ack', 'counter', 'drop')
+        client.stdin.write(b'SEND\n'); client.stdin.flush()
+        pending_line = read_line(client.stdout, 20, client)
+        require(pending_line == 'OWNER_GROUP_DESCRIPTORLESS_PENDING bytes=1200 owner_sockets=1 member_sockets=1',
+            f'owner and member READ authorities disagreed on descriptorless queued payload: {pending_line!r}')
+        rule = census_nft('list', 'chain', 'inet', owner_table, 'output')
+        counter = re.search(r'counter packets (\d+)', rule)
+        require(counter is not None,
+            f'owner-group ACK-drop rule did not report its counter: {rule!r}')
+        data = recv_exact(first_owner, 1200)
+        expected = bytes((index * 17 + 3) & 0xff for index in range(1200))
+        require(data == expected,
+            'descriptorless member-0 stream delivered different TCP payload bytes')
+        rule = census_nft('list', 'chain', 'inet', owner_table, 'output')
+        counter = re.search(r'counter packets (\d+)', rule)
+        require(counter is not None and int(counter.group(1)) > 0,
+            f'owner-group test did not drop a real ACK-only packet: {rule!r}')
+        census_nft('delete', 'table', 'inet', owner_table); owner_table_created = False
+        client.stdin.write(b'DRAIN\n'); client.stdin.flush()
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_DESCRIPTORLESS_DRAINED bytes=0',
+            'owner and member payload snapshots did not drain after real ACK delivery')
+        first_owner.close()
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_TWO_ACTOR_TCP_OK',
+            'owner group did not prove two-actor original-Linux TCP selection and census')
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_HISTORY_FAIL_CLOSED_OK',
+            'owner group did not reject post-claim unowned network history')
+        poisoned_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        poisoned_probe.settimeout(2)
+        try:
+            poisoned_probe.connect(('198.18.0.2', 4101))
+        except OSError as error:
+            require(error.errno == errno.ECONNREFUSED,
+                f'failed owner-group publish left a reachable listener: {error!r}')
+        else:
+            raise RuntimeError('failed owner-group publish created a reachable listener')
+        finally:
+            poisoned_probe.close()
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_DEAD_OWNER_FAIL_CLOSED_OK',
+            'owner-group publish did not reject a claimed actor that exited before materialization')
+        dead_owner_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        dead_owner_probe.settimeout(2)
+        try:
+            dead_owner_probe.connect(('198.18.0.2', 4102))
+        except OSError as error:
+            require(error.errno == errno.ECONNREFUSED,
+                f'dead-owner publish created a reachable listener: {error!r}')
+        else:
+            raise RuntimeError('dead-owner publish created a reachable listener')
+        finally:
+            dead_owner_probe.close()
         require(read_line(client.stdout, 20, client) == 'CENSUS_LIFETIME_OK',
             'member census did not verify live and post-close metadata snapshots')
         census_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -786,10 +1542,218 @@ def run_reuseport_group_client(args, rpc_path, broker, capability):
             f'reuseport group client failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
         print(f'REUSEPORT_GROUP selector0/1/0 delivered exact streams; accepted TCP survived final listener close; '
             f'fresh-connect attempts={attempts}')
-    except BaseException:
+        staged_owner_capability = os.dup(staged_capability)
+        staged_failure_capability = os.dup(staged_capability)
+        staged_death_capability = os.dup(staged_capability)
+        try:
+            run_staged_owner_group(args, rpc_path, staged_owner_capability)
+        finally:
+            capability_to_close = staged_owner_capability
+            staged_owner_capability = -1
+            os.close(capability_to_close)
+        try:
+            run_staged_candidate_failure(args, rpc_path, staged_failure_capability, 'history')
+        finally:
+            capability_to_close = staged_failure_capability
+            staged_failure_capability = -1
+            os.close(capability_to_close)
+        try:
+            run_staged_candidate_failure(args, rpc_path, staged_death_capability, 'death')
+        finally:
+            capability_to_close = staged_death_capability
+            staged_death_capability = -1
+            os.close(capability_to_close)
+        # Keep one broker capability across the empty-owner gap. The explicit
+        # idle interval proves the next client is not winning a startup race
+        # against stop_when_empty or the Unix-socket unlink.
+        time.sleep(0.25)
+        require(broker.poll() is None and os.path.exists(rpc_path),
+            'staged broker stopped despite the retained bootstrap capability')
+        run_staged_activation(args, rpc_path)
+        keeper_to_close = staged_capability
+        staged_capability = -1
+        os.close(keeper_to_close)
+    except BaseException as error:
+        if owner_table_created:
+            try: census_nft('delete', 'table', 'inet', owner_table)
+            except (OSError, subprocess.SubprocessError, RuntimeError): pass
+        if client is not None and client.poll() is None:
+            client.kill(); client.wait()
+        if capability >= 0:
+            input_capability = capability
+            capability = -1
+            try: os.close(input_capability)
+            except OSError: pass
+        extra_capability = staged_owner_capability
+        staged_owner_capability = -1
+        if extra_capability >= 0:
+            try: os.close(extra_capability)
+            except OSError: pass
+        extra_capability = staged_failure_capability
+        staged_failure_capability = -1
+        if extra_capability >= 0:
+            try: os.close(extra_capability)
+            except OSError: pass
+        extra_capability = staged_death_capability
+        staged_death_capability = -1
+        if extra_capability >= 0:
+            try: os.close(extra_capability)
+            except OSError: pass
+        extra_capability = staged_capability
+        staged_capability = -1
+        if extra_capability >= 0:
+            try: os.close(extra_capability)
+            except OSError: pass
+        if client is None:
+            raise
+        if not hasattr(client, 'communicate'):
+            raise
+        output, errors = client.communicate(timeout=5)
+        raise RuntimeError(f'{error}; owner-group client rc={client.returncode}; '
+            f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+
+
+def run_staged_owner_group(args, rpc_path, capability):
+    try:
+        os.fstat(capability)
+    except OSError as error:
+        raise RuntimeError(f'staged bootstrap capability fd {capability} was closed before launch: {error}')
+    try:
+        client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
+            str(args.inherited_group_probe), str(args.preload_library), '--staged'],
+            pass_fds=(capability,), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    except OSError as error:
+        raise RuntimeError(f'staged client launch failed with capability fd {capability}: {error}')
+    first = None
+    try:
+        require(read_line(client.stdout, 20, client) == 'STAGED_INITIAL_READY',
+            'staged owner group did not publish a live initial member before actor 1')
+        first = socket.create_connection(('198.18.0.2', 4103), timeout=10)
+        first.settimeout(10); first.sendall(b'INIT-000')
+        require(recv_exact(first, 8) == b'INIT-ACK',
+            'staged initial member did not serve real TCP before candidate actor existed')
+        require(read_line(client.stdout, 20, client) == 'STAGED_INITIAL_ECHO_OK',
+            'initial staged owner did not complete its first echo')
+        client.stdin.write(b'CANDIDATE\n'); client.stdin.flush()
+        require(read_line(client.stdout, 20, client) == 'STAGED_CANDIDATE_CLAIMED',
+            'later real PID did not claim the candidate slot after initial service')
+        preflip = socket.create_connection(('198.18.0.2', 4103), timeout=10)
+        preflip.settimeout(10); preflip.sendall(b'PRE-FLIP')
+        require(recv_exact(preflip, 8) == b'OLD-ACK!',
+            'candidate publication changed selector before explicit flip from member zero')
+        require(read_line(client.stdout, 20, client) == 'STAGED_PRE_FLIP_ECHO_OK',
+            'member zero did not serve while candidate was published but unselected')
+        require(read_line(client.stdout, 20, client) == 'STAGED_CANDIDATE_SELECTED',
+            'staged client did not explicitly select candidate member one')
+        candidate = socket.create_connection(('198.18.0.2', 4103), timeout=10)
+        candidate.settimeout(10); candidate.sendall(b'CAND-001')
+        require(recv_exact(candidate, 8) == b'CAND-ACK',
+            'explicit selector flip did not route a fresh TCP flow to candidate actor')
+        require(read_line(client.stdout, 20, client) == 'STAGED_CANDIDATE_ECHO_OK',
+            'later candidate actor did not accept and echo its selected flow')
+        first.sendall(b'HELD-OLD')
+        require(recv_exact(first, 8) == b'OLD-ACK!',
+            'held initial-member stream stopped after explicit candidate selection')
+        require(read_line(client.stdout, 20, client) == 'STAGED_OLD_STREAM_SURVIVED',
+            'initial owner did not complete held-stream echo after candidate flip')
+        require(read_line(client.stdout, 20, client) == 'STAGED_OWNER_GROUP_OK',
+            'staged owner group did not finish capability cleanup')
+        output, errors = client.communicate(timeout=20)
+        require(client.returncode == 0,
+            f'staged owner group client failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
+        first.close(); first = None; preflip.close(); candidate.close()
+        print('STAGED_OWNER_GROUP initial-live/later-claim/selector0/explicit-flip/held-stream PASS')
+    except BaseException as error:
+        if first is not None: first.close()
         if client.poll() is None:
             client.kill(); client.wait()
-        raise
+        output, errors = client.communicate(timeout=5)
+        raise RuntimeError(f'{error}; staged owner-group client rc={client.returncode}; '
+            f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+
+
+def run_staged_activation(args, rpc_path):
+    activation_port = 42000 + os.getpid() % 10000
+    client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), '0',
+        str(args.inherited_group_probe), str(args.preload_library), '--staged-activation',
+        str(activation_port)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    peer = None
+    try:
+        require(read_line(client.stdout, 20, client) == 'STAGED_ACTIVATION_READY',
+            'owner-scoped activation did not publish after original-Linux listen')
+        peer = socket.create_connection(('198.18.0.2', activation_port), timeout=10)
+        peer.settimeout(10); peer.sendall(b'ACTV-000')
+        require(recv_exact(peer, 8) == b'ACTV-ACK',
+            'activated original-Linux member did not serve real TCP')
+        require(read_line(client.stdout, 20, client) == 'STAGED_ACTIVATION_ECHO_OK',
+            'activated owner failed its accepted stream exchange')
+        require(read_line(client.stdout, 20, client) == 'STAGED_ACTIVATION_POISON_OK',
+            'unowned socket history did not poison unbound activation and release its reservation')
+        require(read_line(client.stdout, 20, client) == 'STAGED_ACTIVATION_REBOUND_READY',
+            'original tuple could not be rebound and listened after activation capability cleanup')
+        require(read_line(client.stdout, 20, client) == 'STAGED_ACTIVATION_DONE',
+            'activation owner did not close capabilities after stream proof')
+        output, errors = client.communicate(timeout=10)
+        require(client.returncode == 0,
+            f'staged activation client failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
+        peer.close(); peer = None
+        print('STAGED_OWNER_ACTIVATION exact-bind/listen/owner-claim/history-guard/census/real-TCP/port-reuse PASS')
+    except BaseException as error:
+        if peer is not None: peer.close()
+        if client.poll() is None:
+            client.kill(); client.wait()
+        output, errors = client.communicate(timeout=5)
+        raise RuntimeError(f'{error}; staged activation client rc={client.returncode}; '
+            f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+
+
+def run_staged_candidate_failure(args, rpc_path, capability, case):
+    mode = f'--staged-{case}'
+    prefix = f'STAGED_{case.upper()}'
+    client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
+        str(args.inherited_group_probe), str(args.preload_library), mode],
+        pass_fds=(capability,), stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    port = {'history': 4104, 'death': 4105}[case]
+    first = second = None
+    try:
+        require(read_line(client.stdout, 20, client) == f'{prefix}_INITIAL_READY',
+            f'{case} staged plan did not publish its initial owner')
+        first = socket.create_connection(('198.18.0.2', port), timeout=10)
+        first.settimeout(10)
+        initial = {'history': b'HIST-000', 'death': b'DEAD-000'}[case]
+        first.sendall(initial)
+        require(recv_exact(first, 8) == b'FAIL-ACK',
+            f'{case} staged initial owner failed its first TCP exchange')
+        require(read_line(client.stdout, 20, client) == f'{prefix}_FIRST_ECHO_OK',
+            f'{case} initial owner did not finish its first echo')
+        client.stdin.write(b'ATTEMPT\n'); client.stdin.flush()
+        require(read_line(client.stdout, 20, client) == f'{prefix}_FAILURE_RETAINED',
+            f'{case} candidate rejection did not retain the initial listener')
+        second = socket.create_connection(('198.18.0.2', port), timeout=10)
+        second.settimeout(10); second.sendall(b'RETAIN-1')
+        require(recv_exact(second, 8) == b'FAIL-ACK',
+            f'{case} candidate failure stopped real initial-owner service')
+        require(read_line(client.stdout, 20, client) == f'{prefix}_SECOND_ECHO_OK' and
+            read_line(client.stdout, 20, client) == f'{prefix}_DONE',
+            f'{case} candidate failure wire fixture did not finish')
+        output, errors = client.communicate(timeout=20)
+        require(client.returncode == 0,
+            f'{case} staged failure client failed: stdout={output!r}; '
+            f'stderr={errors.decode(errors="replace")}')
+        first.close(); second.close()
+        print(f'STAGED_OWNER_GROUP {case}-rejection retained initial listener PASS')
+    except BaseException as error:
+        if first is not None: first.close()
+        if second is not None: second.close()
+        if client.poll() is None:
+            client.kill(); client.wait()
+        output, errors = client.communicate(timeout=5)
+        raise RuntimeError(f'{case} staged failure client rc={client.returncode}; '
+            f'{error}; stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+
 
 
 GENERATION_MESSAGE = struct.Struct('=IIIIQ')
@@ -1702,6 +2666,12 @@ def run_tcp_observer_frontend(args, rpc_path, broker, cap_fds, root):
 def run_nginx_preloaded(args, rpc_path, capabilities, root, broker):
     binary = args.nginx_binary.resolve()
     fstack_profile = args.fstack_runtime is not None
+    owner_activation = args.nginx_owner_activation_module is not None
+    source_reload = args.source_reload_probes is not None
+    missing_owner_shim_control = args.nginx_owner_activation_missing_helper
+    worker_count = args.nginx_workers or (2 if not fstack_profile else 1)
+    negative_profile = args.nginx_test_negative_profile
+    unsupported_profile_test = bool(args.nginx_test_unsupported_option or negative_profile)
     selected_preload = str(args.preload_library.resolve())
     if fstack_profile:
         selected_preload = f'{args.fstack_runtime.resolve()}:{selected_preload}'
@@ -1721,32 +2691,60 @@ def run_nginx_preloaded(args, rpc_path, capabilities, root, broker):
     large = bytes((index * 17 + 3) & 0xff for index in range(8 * 1024 * 1024))
     (html / 'large.bin').write_bytes(large)
     (html / 'small.txt').write_bytes(b'preload-http-ok\n')
+    if source_reload:
+        # The unchanged source m4_lc/m4_outage probes request `/` (their
+        # --path option is not forwarded in those modes), so provide the same
+        # index contract as the original Nginx configuration.
+        (html / 'index.html').write_bytes(b'ker original-source reload probe\n')
     config = prefix / 'nginx.conf'
     runtime_trace = prefix / 'fstack-runtime.trace'
     fstack_config = prefix / 'fstack.ini'
+    graceful_reload = 1 if negative_profile == 'graceful-one' else 0
     if fstack_profile:
         fstack_config.write_text(f'''[ker_socket_broker]
 version=1
 path={rpc_path}
 
 [dpdk]
-graceful_reload=0
+graceful_reload={graceful_reload}
 ''')
     runtime_config = (f'fstack_conf {fstack_config};\ntimer_resolution 1ms;\nenv KER_FSTACK_RUNTIME_TRACE;\n'
         if fstack_profile else '')
+    if owner_activation:
+        require(fstack_profile and (worker_count == 1 or negative_profile == 'two-workers'),
+            'C22 owner activation requires the single-worker F-Stack runtime profile')
+        runtime_config += 'env KER_FSTACK_NGINX_INI;\n'
     sendfile = 'off' if fstack_profile else 'on'
     reuseport = ' reuseport' if fstack_profile else ''
-    unsupported_listener_option = ' rcvbuf=4096' if args.nginx_test_unsupported_option else ''
-    worker_count = args.nginx_workers or (2 if not fstack_profile else 1)
+    unsupported_listener_option = ''
+    if args.nginx_test_unsupported_option or negative_profile == 'rcvbuf':
+        unsupported_listener_option = ' rcvbuf=4096'
+    elif negative_profile == 'keepalive':
+        unsupported_listener_option = ' so_keepalive=on'
+    listener_lines = ''
+    listener_address = '198.18.0.2:80' if source_reload else '198.18.0.2:4098'
+    if negative_profile == 'ipv6':
+        listener_address = '[::1]:4098'
+    if negative_profile != 'missing-listener':
+        listener_lines = f'        listen {listener_address}{reuseport}{unsupported_listener_option};\n'
+        if negative_profile == 'extra-listener':
+            listener_lines += f'        listen 198.18.0.2:4099{reuseport};\n'
     if args.fstack_worker_shim:
-        require(fstack_profile and worker_count == 2,
-            'the worker ownership shim requires the FF runtime and exactly two Nginx workers')
+        require(fstack_profile and (worker_count == 2 or
+            (owner_activation and worker_count == 1)),
+            'the worker shim requires its two-worker profile or C22 single-worker profile')
     access_log = logs / 'worker-pids.log'
     worker_log_config = (
         f"log_format ker_worker_pid '$pid $request_uri';\n" if args.fstack_worker_shim else '')
     access_log_config = (
         f'access_log {access_log} ker_worker_pid;\n' if args.fstack_worker_shim else '')
-    config.write_text(f'''daemon on;
+    load_module = (f'load_module {args.nginx_owner_activation_module.resolve()};\n'
+        if owner_activation else '')
+    keepalive_config = ('keepalive_timeout 300;\n    keepalive_requests 100000;'
+        if source_reload else 'keepalive_timeout 0;')
+    index_config = ('location / { root ' + str(html) + '; index index.html index.htm; }'
+        if source_reload else '')
+    config.write_text(f'''{load_module}daemon on;
 master_process on;
 worker_processes {worker_count};
 {runtime_config}pid {logs / 'nginx.pid'};
@@ -1758,11 +2756,12 @@ http {{
     {worker_log_config}    access_log off;
     sendfile {sendfile};
     tcp_nopush off;
-    keepalive_timeout 0;
+    {keepalive_config}
     server {{
-        listen 198.18.0.2:4098{reuseport}{unsupported_listener_option};
+{listener_lines.rstrip()}
         server_name ker.test;
         root {html};
+        {index_config}
         {access_log_config}
     }}
 }}
@@ -1770,7 +2769,66 @@ http {{
     env = selected_runtime_env.copy()
     if fstack_profile:
         env['KER_FSTACK_RUNTIME_TRACE'] = str(runtime_trace)
+    if owner_activation:
+        if negative_profile == 'ini-env-mismatch':
+            env_ini = prefix / 'different-fstack.ini'
+            env_ini.write_text(f'''[ker_socket_broker]
+version=1
+path={rpc_path}
+
+[dpdk]
+graceful_reload=0
+''')
+            env['KER_FSTACK_NGINX_INI'] = str(env_ini)
+        else:
+            env['KER_FSTACK_NGINX_INI'] = str(fstack_config)
     command = [str(binary), '-p', str(prefix) + '/', '-c', str(config)]
+    if owner_activation:
+        signal_check = subprocess.run(command + ['-s', 'reload'], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        require(signal_check.returncode != 0,
+            'C22 signal-only command unexpectedly found a running master')
+        require(not runtime_trace.exists() or not any(
+            line.startswith('C22_PLAN ') for line in runtime_trace.read_text().splitlines()),
+            'C22 signal-only command created broker owner-group resources')
+        checked = subprocess.run(command + ['-t'], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        if missing_owner_shim_control:
+            require(checked.returncode != 0 and
+                b'missing pinned worker activation shim' in checked.stderr,
+                f'C22 did not reject missing owner shim before plan creation: '
+                f'{checked.returncode}; {checked.stderr.decode(errors="replace")}')
+            require(not runtime_trace.exists() or not any(
+                line.startswith('C22_PLAN ') for line in runtime_trace.read_text().splitlines()),
+                'C22 missing-shim `nginx -t` created broker owner-group resources')
+            for fd in capabilities:
+                try: os.close(fd)
+                except OSError: pass
+            capabilities.clear()
+            print('C22_NGINX_MISSING_SHIM_REJECTED before_broker_plan=true')
+            return {'master': None}
+        if unsupported_profile_test:
+            expected_profile_error = (b'runtime INI environment differs from fstack_conf'
+                if negative_profile == 'ini-env-mismatch' else
+                b'C22 owner-activation module refuses unsupported Nginx profile')
+            require(checked.returncode != 0 and
+                expected_profile_error in checked.stderr,
+                f'C22 `nginx -t` did not reject the unsupported listener profile: '
+                f'{checked.returncode}; {checked.stderr.decode(errors="replace")}')
+            require(not runtime_trace.exists() or not any(
+                line.startswith('C22_PLAN ') for line in runtime_trace.read_text().splitlines()),
+                'C22 unsupported `nginx -t` created broker owner-group resources')
+            for fd in capabilities:
+                try: os.close(fd)
+                except OSError: pass
+            capabilities.clear()
+            print('C22_NGINX_UNSUPPORTED_PROFILE_REJECTED before_broker_plan=true')
+            return {'master': None}
+        require(checked.returncode == 0,
+            f'C22 nginx -t failed: {checked.stderr.decode(errors="replace")}')
+        require(not runtime_trace.exists() or not any(
+            line.startswith('C22_PLAN ') for line in runtime_trace.read_text().splitlines()),
+            'C22 nginx -t created broker owner-group resources')
     startup = subprocess.run(command, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
     require(startup.returncode == 0,
@@ -1781,7 +2839,7 @@ http {{
     try:
         wait_for_path(pidfile, 20, 'initial nginx pidfile')
         master = int(pidfile.read_text().strip())
-        if args.nginx_test_unsupported_option:
+        if unsupported_profile_test:
             deadline = time.monotonic() + 10
             error_log = logs / 'error.log'
             while time.monotonic() < deadline:
@@ -1817,8 +2875,12 @@ http {{
         first_request_error = None
         while time.monotonic() < deadline:
             try:
-                response = request_static('198.18.0.2', 4098, '/small.txt')
-                require(response[0] == len(b'preload-http-ok\n'), f'small response length differs: {response}')
+                response = request_static('198.18.0.2', 80 if source_reload else 4098,
+                    '/' if source_reload else '/small.txt')
+                expected_first_length = (len(b'ker original-source reload probe\n') if source_reload
+                    else len(b'preload-http-ok\n'))
+                require(response[0] == expected_first_length,
+                    f'small response length differs: {response}')
                 break
             except (OSError, RuntimeError) as error:
                 first_request_error = repr(error)
@@ -1828,10 +2890,224 @@ http {{
             trace = runtime_trace.read_text() if runtime_trace.exists() else '<missing>'
             raise RuntimeError('nginx did not serve its first request through the selected broker caller; '
                 f'last_request_error={first_request_error}; error_log={error_log!r}; runtime_trace={trace!r}')
-        if args.fstack_worker_shim:
+        if args.fstack_worker_shim and not owner_activation:
             prove_nginx_workers_serve(access_log, initial_worker_pids, 'initial startup')
         require(len(capabilities) == 2,
             f'broker bootstrap returned {len(capabilities)} capabilities, expected listener and epoll')
+        if owner_activation:
+            traces = runtime_trace.read_text().splitlines() if runtime_trace.exists() else []
+            listeners = [re.search(r'C22_LISTENER pid=(\d+) fd=(\d+) cookie=(\d+) acceptconn=1$', line)
+                for line in traces]
+            listeners = [match for match in listeners if match]
+            plans = [line for line in traces if line.startswith('C22_PLAN ')]
+            require(len(plans) == 1 and len(listeners) >= 1,
+                f'C22 initial plan/listener identity proof missing: {traces!r}')
+            initial = listeners[0]
+            initial_pid, initial_cookie = int(initial.group(1)), int(initial.group(3))
+            require(initial_cookie > 0,
+                f'C22 listener lacked native cookie identity: {initial.group(0)!r}')
+            wait_for_path(pidfile, 20, 'C22 nginx pidfile')
+            master = int(pidfile.read_text().strip())
+            children_path = Path(f'/proc/{master}/task/{master}/children')
+            deadline = time.monotonic() + 20
+            initial_workers = []
+            while time.monotonic() < deadline:
+                initial_workers = children_path.read_text().split() if children_path.exists() else []
+                if len(initial_workers) == 1: break
+                time.sleep(0.02)
+            require(len(initial_workers) == 1 and int(initial_workers[0]) == initial_pid,
+                f'C22 initial worker identity differs from listener trace: {initial_workers!r}; {initial_pid}')
+            if source_reload:
+                args._c23_artifacts = {
+                    'nginx_runtime_trace': runtime_trace,
+                    'nginx_error_log': logs / 'error.log',
+                    'nginx_config': config,
+                    'fstack_ini': fstack_config,
+                }
+                args._c23_evidence_path = args.source_reload_output.resolve() / 'evidence.json'
+                qualified = run_source_reload_probes(args, master, initial_pid, command, env, logs,
+                    runtime_trace, prefix, config)
+                print(f'C23_SOURCE_RELOAD_PROBES mode={args.source_reload_mode} '
+                    f'qualification={"PASS" if qualified else "UNQUALIFIED"} '
+                    'target=198.18.0.2:80 graceful_reload=0')
+                return {'master': master, 'c23_qualified': qualified,
+                    'c23_evidence_path': args._c23_evidence_path,
+                    'c23_runtime_trace': runtime_trace,
+                    'c23_error_log': logs / 'error.log',
+                    'c23_nginx_config': config,
+                    'c23_fstack_config': fstack_config}
+            response = request_static('198.18.0.2', 4098, '/small.txt')
+            require(response[0] == len(b'preload-http-ok\n'),
+                f'C22 initial original-Linux HTTP response differs: {response!r}')
+            def nginx_socket_fd_count(pid):
+                fd_dir = Path(f'/proc/{pid}/fd')
+                return sum(1 for item in fd_dir.iterdir()
+                    if os.readlink(item).startswith('socket:['))
+            initial_socket_fds = nginx_socket_fd_count(master)
+
+            # This profile intentionally follows Nginx's legacy graceful_reload=0
+            # HUP behavior: old worker exit precedes the replacement cycle, so a
+            # brief connection refusal is expected and no stream continuity is claimed.
+            stage = 'C22 legacy HUP retirement'
+            os.kill(master, signal.SIGHUP)
+            deadline = time.monotonic() + 30
+            replacement_workers = []
+            while time.monotonic() < deadline:
+                replacement_workers = children_path.read_text().split() if children_path.exists() else []
+                if len(replacement_workers) == 1 and replacement_workers[0] != initial_workers[0]:
+                    break
+                time.sleep(0.025)
+            require(len(replacement_workers) == 1 and replacement_workers[0] != initial_workers[0],
+                f'C22 HUP did not replace the original worker: {replacement_workers!r}')
+            deadline = time.monotonic() + 25
+            last_error = None
+            while time.monotonic() < deadline:
+                try:
+                    response = request_static('198.18.0.2', 4098, '/small.txt')
+                    require(response[0] == len(b'preload-http-ok\n'),
+                        f'C22 post-HUP HTTP response differs: {response!r}')
+                    break
+                except (OSError, RuntimeError) as error:
+                    last_error = repr(error)
+                    time.sleep(0.05)
+            else:
+                raise RuntimeError(f'C22 replacement worker did not serve HTTP: {last_error!r}')
+            traces = runtime_trace.read_text().splitlines() if runtime_trace.exists() else []
+            retired = [re.search(r'C22_RETIRED pid=(\d+) cookie=(\d+) total=(\d+) timewait=(\d+) listen=0 payload=0$', line)
+                for line in traces]
+            retired = [match for match in retired if match]
+            listeners = [re.search(r'C22_LISTENER pid=(\d+) fd=(\d+) cookie=(\d+) acceptconn=1$', line)
+                for line in traces]
+            listeners = [match for match in listeners if match]
+            require(any(int(match.group(2)) == initial_cookie and
+                match.group(3) == match.group(4) for match in retired),
+                f'C22 old listener census did not prove its cookie drained: {traces!r}')
+            new_listener = next((match for match in listeners
+                if int(match.group(1)) != initial_pid and int(match.group(3)) != initial_cookie), None)
+            require(new_listener is not None,
+                f'C22 HUP did not allocate a fresh listener cookie: {traces!r}')
+
+            # Repeat legacy HUP to prove the master replaces its broker session
+            # instead of leaking one control socket per cycle.
+            first_replacement_pid = int(new_listener.group(1))
+            first_replacement_cookie = int(new_listener.group(3))
+            require(nginx_socket_fd_count(master) == initial_socket_fds,
+                'C22 master socket descriptor count grew after first HUP')
+            os.kill(master, signal.SIGHUP)
+            deadline = time.monotonic() + 30
+            second_workers = []
+            while time.monotonic() < deadline:
+                second_workers = children_path.read_text().split() if children_path.exists() else []
+                if len(second_workers) == 1 and int(second_workers[0]) != first_replacement_pid:
+                    break
+                time.sleep(0.025)
+            require(len(second_workers) == 1 and
+                int(second_workers[0]) != first_replacement_pid,
+                f'C22 second HUP did not replace its worker: {second_workers!r}')
+            deadline = time.monotonic() + 25
+            last_error = None
+            while time.monotonic() < deadline:
+                try:
+                    response = request_static('198.18.0.2', 4098, '/small.txt')
+                    require(response[0] == len(b'preload-http-ok\n'),
+                        f'C22 second post-HUP HTTP response differs: {response!r}')
+                    break
+                except (OSError, RuntimeError) as error:
+                    last_error = repr(error)
+                    time.sleep(0.05)
+            else:
+                raise RuntimeError(f'C22 second replacement worker did not serve HTTP: {last_error!r}')
+            traces = runtime_trace.read_text().splitlines() if runtime_trace.exists() else []
+            listeners = [re.search(r'C22_LISTENER pid=(\d+) fd=(\d+) cookie=(\d+) acceptconn=1$', line)
+                for line in traces]
+            listeners = [match for match in listeners if match]
+            second_listener = next((match for match in listeners
+                if int(match.group(1)) != first_replacement_pid and
+                int(match.group(3)) not in (initial_cookie, first_replacement_cookie)), None)
+            require(second_listener is not None,
+                f'C22 second HUP did not allocate a third distinct listener: {traces!r}')
+            require(nginx_socket_fd_count(master) == initial_socket_fds,
+                'C22 master socket descriptor count grew after repeated HUP')
+            new_listener = second_listener
+
+            # Ordinary worker respawn reuses the Nginx process slot without
+            # running the cycle init callback. The preload fork adapter must
+            # retire that dead owner's mark and reserve a fresh one first.
+            respawn_cookies = []
+            for crash_index in range(2):
+                previous_pid = int(new_listener.group(1))
+                previous_cookie = int(new_listener.group(3))
+                os.kill(previous_pid, signal.SIGKILL)
+                deadline = time.monotonic() + 35
+                respawn_workers = []
+                while time.monotonic() < deadline:
+                    respawn_workers = children_path.read_text().split() \
+                        if children_path.exists() else []
+                    if len(respawn_workers) == 1 and int(respawn_workers[0]) != previous_pid:
+                        break
+                    time.sleep(0.025)
+                require(len(respawn_workers) == 1 and
+                    int(respawn_workers[0]) != previous_pid,
+                    f'C22 worker crash {crash_index + 1} did not respawn: {respawn_workers!r}')
+                deadline = time.monotonic() + 25
+                last_error = None
+                while time.monotonic() < deadline:
+                    try:
+                        response = request_static('198.18.0.2', 4098, '/small.txt')
+                        require(response[0] == len(b'preload-http-ok\n'),
+                            f'C22 post-crash HTTP response differs: {response!r}')
+                        break
+                    except (OSError, RuntimeError) as error:
+                        last_error = repr(error)
+                        time.sleep(0.05)
+                else:
+                    raise RuntimeError(f'C22 respawn worker did not serve HTTP: {last_error!r}')
+                traces = runtime_trace.read_text().splitlines() \
+                    if runtime_trace.exists() else []
+                listeners = [re.search(
+                    r'C22_LISTENER pid=(\d+) fd=(\d+) cookie=(\d+) acceptconn=1$', line)
+                    for line in traces]
+                listeners = [match for match in listeners if match]
+                replacement = next((match for match in listeners
+                    if int(match.group(1)) == int(respawn_workers[0]) and
+                    int(match.group(3)) != previous_cookie), None)
+                require(replacement is not None,
+                    f'C22 crash respawn reused/staled listener identity: {traces!r}')
+                require(any(line.startswith('C22_RESPAWN_PLAN ') for line in traces),
+                    f'C22 crash respawn did not allocate through the pinned fork hook: {traces!r}')
+                retired = [re.search(
+                    r'C22_RETIRED pid=(\d+) cookie=(\d+) total=(\d+) timewait=(\d+) listen=0 payload=0$',
+                    line) for line in traces]
+                require(any(match and int(match.group(2)) == previous_cookie and
+                    match.group(3) == match.group(4) for match in retired),
+                    f'C22 crash respawn did not prove old listener drain: {traces!r}')
+                respawn_cookies.append(int(replacement.group(3)))
+                new_listener = replacement
+                require(nginx_socket_fd_count(master) == initial_socket_fds,
+                    'C22 master socket descriptor count grew after worker crash')
+
+            os.kill(master, signal.SIGQUIT)
+            reap_frontend_child(master, 20)
+            master = None
+            traces = runtime_trace.read_text().splitlines() if runtime_trace.exists() else []
+            retired_cookies = {int(match.group(2)) for line in traces
+                if (match := re.search(r'C22_RETIRED pid=(\d+) cookie=(\d+) total=(\d+) timewait=(\d+) listen=0 payload=0$', line))
+                and match.group(3) == match.group(4)}
+            require(initial_cookie in retired_cookies and
+                first_replacement_cookie in retired_cookies and
+                int(new_listener.group(3)) in retired_cookies,
+                f'C22 all three cycle marks did not census LISTEN=0 on cleanup: {traces!r}')
+            require(all(cookie in retired_cookies for cookie in respawn_cookies),
+                f'C22 respawn marks did not census LISTEN=0 on cleanup: {traces!r}')
+            for fd in capabilities:
+                try: os.close(fd)
+                except OSError: pass
+            capabilities.clear()
+            print(f'C22_NGINX_OWNER_ACTIVATION_OK initial_pid={initial_pid} '
+                f'initial_cookie={initial_cookie} '
+                f'replacement_pid={new_listener.group(1)} replacement_cookie={new_listener.group(3)} '
+                f'worker_respawns={len(respawn_cookies)} legacy_hup=outage-expected graceful_reload=0')
+            return {'master': None}
         os.close(capabilities[0])
         # Keep the bootstrap epoll capability only in the supervisor. The
         # fixture broker exits when its last object closes; retaining this
@@ -2101,6 +3377,7 @@ def inside(args):
                 environment = os.environ | {
                     'PYTHONDONTWRITEBYTECODE': '1',
                     'RUNTIME_DIRECTORY': str(root),
+                    'TMPDIR': str(root),
                 }
                 broker = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0,
@@ -2124,6 +3401,20 @@ def inside(args):
                         send_host_socket_probe(connection)
                 broker_line = read_line(broker.stdout, 15, broker)
                 require(broker_line == 'BROKER_READY', f'broker failed to enter its request loop: {broker_line}')
+
+                if args.ff_owner_payload_client:
+                    run_ff_owner_payload_probe(args, rpc_path, cap_fds)
+                    cap_fds.clear()
+                    output, errors = broker.communicate(timeout=30)
+                    require(broker.returncode == 0 and b'BROKER_DONE' in output,
+                        f'FF owner broker did not release all metadata: '
+                        f'stdout={output!r}; stderr={errors.decode(errors="replace")}')
+                    stats = json.loads(stats_path.read_text())
+                    require(stats.get('tx', 0) > 0 and stats.get('rx', 0) > 0 and
+                        stats.get('outstanding') == 0 and
+                        stats.get('native', {}).get('active_opens', 0) >= 2,
+                        f'FF owner traffic or cleanup evidence missing: {stats!r}')
+                    return 0
 
                 if args.reuseport_group_client:
                     run_reuseport_group_client(args, rpc_path, broker, cap_fds[0])
@@ -2165,25 +3456,75 @@ def inside(args):
                     return 0
 
                 if args.nginx_binary:
-                    run_nginx_preloaded(args, rpc_path, cap_fds, root, broker)
                     try:
+                        nginx_result = run_nginx_preloaded(args, rpc_path, cap_fds, root, broker)
+                        if args.source_reload_probes:
+                            def shutdown_c23_nginx():
+                                try:
+                                    os.kill(nginx_result['master'], signal.SIGQUIT)
+                                    reap_frontend_child(nginx_result['master'], 20)
+                                finally:
+                                    for fd in cap_fds:
+                                        try: os.close(fd)
+                                        except OSError: pass
+                                    cap_fds.clear()
+                            evidence_path = nginx_result['c23_evidence_path']
+                            evidence = json.loads(evidence_path.read_text())
+                            qualified = finalize_c23_runtime(evidence_path, evidence,
+                                shutdown_c23_nginx, broker, stats_path,
+                                getattr(args, '_c23_artifacts', None))
+                            if not qualified:
+                                print(f'C23_UNQUALIFIED evidence={evidence_path}')
+                                return 1
+                            print(f'C23_QUALIFIED evidence={evidence_path}')
+                            return 0
                         output, errors = broker.communicate(timeout=40)
                     except subprocess.TimeoutExpired as error:
                         broker.kill(); output, errors = broker.communicate(timeout=10)
-                        raise RuntimeError(f'original-Linux broker failed to release nginx descriptors: '
-                            f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
-                    require(broker.returncode == 0 and b'BROKER_DONE' in output,
-                        f'broker did not finalize nginx sockets: {output!r} {errors.decode(errors="replace")}')
-                    stats = json.loads(stats_path.read_text())
+                        failure = RuntimeError(f'original-Linux broker failed to release nginx descriptors: '
+                            f'stdout={output!r}; stderr={errors.decode(errors="replace")}')
+                        if args.source_reload_probes:
+                            evidence_path = getattr(args, '_c23_evidence_path',
+                                args.source_reload_output.resolve() / 'evidence.json')
+                            if evidence_path.is_file():
+                                evidence = json.loads(evidence_path.read_text())
+                                finalize_c23_evidence(evidence_path, evidence, 'broker_communicate',
+                                    False, failure, getattr(args, '_c23_artifacts', None),
+                                    (output, errors, broker.returncode))
+                        raise failure from error
+                    except BaseException as error:
+                        if args.source_reload_probes:
+                            evidence_path = getattr(args, '_c23_evidence_path',
+                                args.source_reload_output.resolve() / 'evidence.json')
+                            if evidence_path.is_file():
+                                evidence = json.loads(evidence_path.read_text())
+                                finalize_c23_failure_if_needed(evidence_path, evidence,
+                                    'nginx_shutdown', error, getattr(args, '_c23_artifacts', None))
+                        raise
+                    try:
+                        require(broker.returncode == 0 and b'BROKER_DONE' in output,
+                            f'broker did not finalize nginx sockets: {output!r} {errors.decode(errors="replace")}')
+                        stats = json.loads(stats_path.read_text())
+                    except BaseException as error:
+                        raise
                     native = stats.get('native', {})
-                    if args.nginx_test_unsupported_option:
+                    if args.nginx_owner_activation_missing_helper:
+                        require(stats.get('outstanding') == 0 and
+                            native.get('active_opens', 0) == 0 and
+                            native.get('passive_opens', 0) == 0,
+                            f'missing C22 activation shim created sockets or traffic: {stats!r}')
+                        print('C22_NGINX_MISSING_SHIM_NO_SOCKET_CREATED')
+                        return 0
+                    if args.nginx_test_unsupported_option or args.nginx_test_negative_profile:
                         require(stats.get('outstanding') == 0 and
                             native.get('active_opens', 0) == 0 and native.get('passive_opens', 0) == 0,
                             f'unsupported listener option reached socket creation: {stats!r}')
                         print('NGINX_FSTACK_UNSUPPORTED_LISTENER_NO_SOCKET_CREATED')
                         return 0
+                    minimum_nginx_opens = 2 if args.nginx_owner_activation_module else 13
                     require(stats.get('tx', 0) > 0 and stats.get('rx', 0) > 0 and
-                        stats.get('outstanding') == 0 and native.get('passive_opens', 0) >= 13,
+                        stats.get('outstanding') == 0 and
+                        native.get('passive_opens', 0) >= minimum_nginx_opens,
                         f'original-Linux TCP/DPDK traffic or cleanup evidence missing: {stats!r}')
                     print(f'NGINX_ORIGINAL_LINUX_STATS tx={stats.get("tx")} rx={stats.get("rx")} '
                         f'passive_opens={native.get("passive_opens")} outstanding={stats.get("outstanding")}')
@@ -2379,14 +3720,24 @@ def main():
     parser.add_argument('--nginx-binary', type=Path)
     parser.add_argument('--fstack-runtime', type=Path)
     parser.add_argument('--fstack-worker-shim', type=Path)
+    parser.add_argument('--nginx-owner-activation-module', type=Path)
+    parser.add_argument('--source-reload-probes', type=Path)
+    parser.add_argument('--source-reload-output', type=Path)
+    parser.add_argument('--source-reload-mode', choices=('baseline', 'gr0', 'all'), default='all')
+    parser.add_argument('--c23-ker-manifest', type=Path)
+    parser.add_argument('--nginx-owner-activation-missing-helper', action='store_true')
     parser.add_argument('--nginx-workers', type=int, choices=(1, 2))
     parser.add_argument('--nginx-test-unsupported-option', action='store_true')
+    parser.add_argument('--nginx-test-negative-profile', choices=(
+        'two-workers', 'extra-listener', 'missing-listener', 'ipv6',
+        'graceful-one', 'rcvbuf', 'keepalive', 'ini-env-mismatch'))
     parser.add_argument('--group-broker', type=Path)
     parser.add_argument('--reuseport-group-client', type=Path)
     parser.add_argument('--inherited-group-probe', type=Path)
     parser.add_argument('--member-census-client', type=Path)
     parser.add_argument('--member-census-runtime-test', type=Path)
     parser.add_argument('--member-census-test-library', type=Path)
+    parser.add_argument('--ff-owner-payload-client', type=Path)
     parser.add_argument('--generation-broker', type=Path)
     parser.add_argument('--generation-worker', type=Path)
     parser.add_argument('--generation-controller', type=Path)
@@ -2401,11 +3752,36 @@ def main():
         parser.error('generation handoff test requires broker factory and SDK controller')
     if args.member_census_runtime_test and not args.member_census_test_library:
         parser.error('member census runtime test requires its noninstalled isolated runtime')
+    if args.ff_owner_payload_client and not (args.fstack_runtime and args.preload_library):
+        parser.error('FF owner payload test requires the F-Stack runtime and preload library')
     if args.fstack_worker_shim and not (args.nginx_binary and args.fstack_runtime and
-        args.preload_library and args.nginx_workers == 2):
-        parser.error('F-Stack worker shim requires nginx, runtime, preload, and --nginx-workers=2')
+        args.preload_library and (args.nginx_workers == 2 or
+        (args.nginx_owner_activation_module and args.nginx_workers == 1))):
+        parser.error('F-Stack worker shim requires its two-worker or C22 one-worker profile')
+    if args.nginx_owner_activation_module and not (args.nginx_binary and
+        args.fstack_runtime and args.preload_library and
+        (args.nginx_workers == 1 or args.nginx_test_negative_profile == 'two-workers') and
+        (args.fstack_worker_shim or args.nginx_owner_activation_missing_helper)):
+        parser.error('C22 owner activation requires nginx, runtime, preload, and its shim')
+    if args.source_reload_probes and not (args.source_reload_output and
+        args.c23_ker_manifest and args.nginx_binary and args.fstack_runtime and
+        args.fstack_worker_shim and args.nginx_owner_activation_module and
+        args.nginx_workers == 1):
+        parser.error('C23 source probes require the installed single-worker C22 profile and evidence paths')
+    if not args.source_reload_probes and (args.source_reload_output or args.c23_ker_manifest):
+        parser.error('C23 evidence arguments require --source-reload-probes')
+    if not args.source_reload_probes and args.source_reload_mode != 'all':
+        parser.error('--source-reload-mode requires --source-reload-probes')
+    if args.source_reload_probes and not args.inside:
+        args.source_reload_output = Path(str(args.source_reload_output.resolve()) +
+            f'-run-{os.getpid()}-{time.time_ns()}')
+    if args.nginx_owner_activation_missing_helper and not args.nginx_owner_activation_module:
+        parser.error('missing-helper control requires the C22 owner-activation module')
     if args.nginx_test_unsupported_option and not args.fstack_worker_shim:
         parser.error('unsupported listener option test requires the F-Stack worker shim')
+    if args.nginx_test_negative_profile and not (args.nginx_owner_activation_module and
+        args.fstack_worker_shim):
+        parser.error('C22 negative profile test requires the owner module and worker shim')
     if args.nginx_workers and not args.nginx_binary:
         parser.error('--nginx-workers requires --nginx-binary')
     if not args.inside:
@@ -2433,10 +3809,22 @@ def main():
             command += ['--fstack-runtime', str(args.fstack_runtime.resolve())]
         if args.fstack_worker_shim:
             command += ['--fstack-worker-shim', str(args.fstack_worker_shim.resolve())]
+        if args.nginx_owner_activation_module:
+            command += ['--nginx-owner-activation-module',
+                str(args.nginx_owner_activation_module.resolve())]
+        if args.source_reload_probes:
+            command += ['--source-reload-probes', str(args.source_reload_probes.resolve()),
+                '--source-reload-output', str(args.source_reload_output.resolve()),
+                '--source-reload-mode', args.source_reload_mode,
+                '--c23-ker-manifest', str(args.c23_ker_manifest.resolve())]
+        if args.nginx_owner_activation_missing_helper:
+            command.append('--nginx-owner-activation-missing-helper')
         if args.nginx_workers:
             command += ['--nginx-workers', str(args.nginx_workers)]
         if args.nginx_test_unsupported_option:
             command.append('--nginx-test-unsupported-option')
+        if args.nginx_test_negative_profile:
+            command += ['--nginx-test-negative-profile', args.nginx_test_negative_profile]
         if args.group_broker:
             command += ['--group-broker', str(args.group_broker.resolve())]
         if args.reuseport_group_client:
@@ -2451,6 +3839,8 @@ def main():
         if args.member_census_test_library:
             command += ['--member-census-test-library',
                 str(args.member_census_test_library.resolve())]
+        if args.ff_owner_payload_client:
+            command += ['--ff-owner-payload-client', str(args.ff_owner_payload_client.resolve())]
         if args.generation_broker:
             command += ['--generation-broker', str(args.generation_broker.resolve())]
         if args.generation_worker:

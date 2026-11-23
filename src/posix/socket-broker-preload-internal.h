@@ -2,6 +2,7 @@
 #define KER_SOCKET_BROKER_PRELOAD_INTERNAL_H
 
 #include <ker/socket-broker.h>
+#include "ff-owner-admission-control.h"
 #include <sys/epoll.h>
 #include <sys/types.h>
 #include <pthread.h>
@@ -25,6 +26,22 @@ int ker_sb_preload_network_fd_locked(int app_fd, int *broker_fd);
 int ker_sb_preload_register_network_locked(int app_fd);
 void ker_sb_preload_remove_network_locked(int app_fd);
 int ker_sb_preload_socket_drain_count(void);
+int ker_sb_preload_ff_owner_begin(void);
+int ker_sb_preload_ff_staged_group_claim(int slot_cap);
+int ker_sb_preload_ff_staged_group_member(int slot_cap);
+int ker_sb_preload_ff_owner_initial_listener_prepare(int slot_cap);
+int ker_sb_preload_ff_owner_candidate_listener_prepare(int slot_cap);
+void ker_sb_preload_trace_initial_listener(int owner_fd);
+bool ker_sb_preload_ff_owner_active_locked(void);
+int ker_sb_preload_ff_owner_capability_locked(void);
+bool ker_sb_preload_ff_owner_managed(void);
+int ker_sb_preload_ff_owner_socket(int domain, int type, int protocol);
+int ker_sb_preload_ff_owner_payload(struct ker_socket_member_payload_snapshot *snapshot);
+int ker_sb_preload_ff_owner_requests(uint64_t *request_count);
+int ker_sb_preload_ff_owner_matches_locked(int owner_cap,
+    struct ker_socket_client *client);
+int ker_sb_preload_network_registry_empty_locked(void);
+void ker_sb_preload_note_unowned_network_locked(void);
 
 /* Composite epoll app descriptors are real host epoll fds. */
 int ker_sb_preload_epoll_fd_locked(int app_fd, int *broker_epoll_fd);
@@ -47,6 +64,19 @@ int ker_sb_preload_epoll_wait_mixed_locked(int fd, struct epoll_event *events,
     int maximum, int timeout, const sigset_t *mask);
 int ker_sb_preload_ff_dispatch_begin(int fd);
 void ker_sb_preload_ff_dispatch_end(void);
+
+/* Private, nonblocking callback used to service the original F-Stack map
+ * from its owning event-loop thread while that thread waits for readiness. */
+typedef int (*ker_sb_preload_owner_pump_fn)(void *context);
+int ker_sb_preload_owner_pump_register(ker_sb_preload_owner_pump_fn pump,
+    void *context);
+void ker_sb_preload_owner_pump_unregister(void);
+int ker_sb_preload_owner_pump(void);
+int ker_sb_preload_owner_wait_check(void);
+bool ker_sb_preload_owner_pump_registered(void);
+int ker_sb_preload_owner_loop_enter(void);
+void ker_sb_preload_owner_loop_leave(void);
+bool ker_sb_preload_owner_loop_active(void);
 
 /* Namespaced caller surface shared with the FF leaf bridge. These functions
  * enter the same descriptor map and broker RPC path as the public preload

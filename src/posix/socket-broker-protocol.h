@@ -28,7 +28,32 @@ enum ker_sb_operation {
     KER_SB_TCP_OBSERVER_SNAPSHOT = 33,
     KER_SB_MEMBER_CENSUS_CREATE = 40,
     KER_SB_MEMBER_CENSUS_SNAPSHOT = 41,
-    KER_SB_MEMBER_PAYLOAD_SNAPSHOT = 42
+    KER_SB_MEMBER_PAYLOAD_SNAPSHOT = 42,
+    KER_SB_FF_OWNER_CREATE = 43,
+    KER_SB_FF_OWNER_SOCKET = 44,
+    KER_SB_FF_OWNER_MATCH = 45,
+    KER_SB_FF_OWNER_PAYLOAD = 46,
+    KER_SB_FF_OWNER_REQUESTS = 47,
+    KER_SB_FF_OWNER_ADMISSION_PREPARE = 48,
+    KER_SB_FF_OWNER_ADMISSION_RETIRE = 49,
+    KER_SB_FF_OWNER_ADMISSION_REARM = 50,
+    KER_SB_FF_OWNER_ADMISSION_STATUS = 51,
+    KER_SB_FF_OWNER_GROUP_PLAN = 52,
+    KER_SB_FF_OWNER_GROUP_SLOT = 53,
+    KER_SB_FF_OWNER_GROUP_CLAIM = 54,
+    KER_SB_FF_OWNER_GROUP_PUBLISH = 55,
+    KER_SB_FF_OWNER_GROUP_MEMBER = 56,
+    KER_SB_FF_OWNER_GROUP_STAGED_PLAN = 57,
+    KER_SB_FF_OWNER_GROUP_PUBLISH_INITIAL = 58,
+    KER_SB_FF_OWNER_GROUP_PUBLISH_CANDIDATE = 59,
+    KER_SB_FF_OWNER_GROUP_ACTIVATE_INITIAL = 60,
+    KER_SB_FF_OWNER_GROUP_CONTROL = 61,
+    KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT = 62,
+    KER_SB_FF_OWNER_GROUP_ACTIVATE_CANDIDATE = 63,
+    KER_SB_FF_OWNER_GROUP_CUTOVER_BEGIN = 64,
+    KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT = 65,
+    KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT = 66,
+    KER_SB_FF_OWNER_GROUP_CUTOVER_POLL = 67
 };
 
 struct ker_sb_header {
@@ -53,6 +78,13 @@ struct ker_sb_describe { int32_t kind, flags; } __attribute__((packed));
 struct ker_sb_io { int32_t flags; uint32_t length; } __attribute__((packed));
 struct ker_sb_reuseport_group_create { unsigned char address[sizeof(struct sockaddr_in)]; int32_t backlog; } __attribute__((packed));
 struct ker_sb_reuseport_group_member { uint32_t index; } __attribute__((packed));
+struct ker_sb_group_cutover_status {
+    uint64_t lease;
+    uint32_t phase;
+    int32_t result;
+    uint32_t received_packets;
+    uint32_t accepted_packets;
+} __attribute__((packed));
 struct ker_sb_tcp_observer_snapshot {
     uint64_t cookie;
     uint32_t receive_queue;
@@ -62,14 +94,44 @@ struct ker_sb_tcp_observer_snapshot {
     uint8_t reserved[2];
 } __attribute__((packed));
 struct ker_sb_member_census_create { uint32_t index; } __attribute__((packed));
+enum ker_sb_member_census_flags {
+    KER_SB_MEMBER_CENSUS_EXPECT_NO_LISTENER = 1u << 0
+};
 struct ker_sb_member_census_snapshot {
     uint64_t total;
     uint64_t state_counts[KER_SOCKET_BROKER_TCP_STATES];
     uint64_t listener_cookie;
+    uint32_t flags;
+    uint32_t reserved;
 } __attribute__((packed));
 struct ker_sb_member_payload_snapshot {
     uint64_t payload_bytes;
     uint64_t sampled_sockets;
+} __attribute__((packed));
+struct ker_sb_ff_owner_requests { uint64_t request_count; } __attribute__((packed));
+/* Private owner-control attachment response. `registration_id` is a one-use
+ * broker registration, not a mark or a caller-selected identity. */
+struct ker_sb_ff_owner_admission_prepare {
+    char endpoint_path[KER_SOCKET_BROKER_PATH_MAX + 1];
+    uint64_t registration_id;
+    uint32_t reserved;
+} __attribute__((packed));
+struct ker_sb_ff_owner_admission_window {
+    uint32_t state;
+    uint32_t reserved;
+    uint64_t queue_lease;
+    uint64_t epoch;
+    int32_t status;
+    uint32_t reserved2;
+} __attribute__((packed));
+struct ker_sb_ff_owner_group_plan {
+    unsigned char address[sizeof(struct sockaddr_in)];
+    int32_t backlog;
+    uint32_t group_rights;
+} __attribute__((packed));
+struct ker_sb_ff_owner_group_slot {
+    uint32_t index;
+    uint32_t reserved;
 } __attribute__((packed));
 #define KER_SB_MAX_REQUEST (KER_SOCKET_BROKER_IO_MAX + sizeof(struct ker_sb_io))
 

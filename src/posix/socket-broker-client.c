@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 #include <ker/socket-broker.h>
 #include "socket-broker-protocol.h"
+#include "ff-owner-admission-control.h"
+#include "ff-admission-task.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stddef.h>
@@ -242,7 +244,22 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_REUSEPORT_GROUP_CREATE ||
         operation == KER_SB_REUSEPORT_GROUP_MEMBER ||
         operation == KER_SB_TCP_OBSERVER_CREATE ||
-        operation == KER_SB_MEMBER_CENSUS_CREATE;
+        operation == KER_SB_MEMBER_CENSUS_CREATE ||
+        operation == KER_SB_FF_OWNER_CREATE ||
+        operation == KER_SB_FF_OWNER_SOCKET ||
+        operation == KER_SB_FF_OWNER_GROUP_PLAN ||
+        operation == KER_SB_FF_OWNER_GROUP_STAGED_PLAN ||
+        operation == KER_SB_FF_OWNER_GROUP_SLOT ||
+        operation == KER_SB_FF_OWNER_GROUP_PUBLISH ||
+        operation == KER_SB_FF_OWNER_GROUP_PUBLISH_INITIAL ||
+        operation == KER_SB_FF_OWNER_GROUP_MEMBER;
+    requires_cap = requires_cap ||
+        operation == KER_SB_FF_OWNER_GROUP_ACTIVATE_INITIAL ||
+        operation == KER_SB_FF_OWNER_GROUP_ACTIVATE_CANDIDATE ||
+        operation == KER_SB_FF_OWNER_GROUP_CONTROL ||
+        operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT;
+    requires_cap = requires_cap ||
+        operation == KER_SB_FF_OWNER_GROUP_CUTOVER_BEGIN;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
         operation == KER_SB_LISTEN || operation == KER_SB_SHUTDOWN ||
         operation == KER_SB_GETSOCKNAME || operation == KER_SB_GETPEERNAME ||
@@ -253,7 +270,14 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
     requires_zero = requires_zero || operation == KER_SB_REUSEPORT_GROUP_SELECT ||
         operation == KER_SB_TCP_OBSERVER_SNAPSHOT ||
         operation == KER_SB_MEMBER_CENSUS_SNAPSHOT ||
-        operation == KER_SB_MEMBER_PAYLOAD_SNAPSHOT;
+        operation == KER_SB_MEMBER_PAYLOAD_SNAPSHOT ||
+        operation == KER_SB_FF_OWNER_PAYLOAD ||
+        operation == KER_SB_FF_OWNER_REQUESTS ||
+        operation == KER_SB_FF_OWNER_GROUP_CLAIM;
+    requires_zero = requires_zero ||
+        operation == KER_SB_FF_OWNER_GROUP_PUBLISH_CANDIDATE ||
+        operation == KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT ||
+        operation == KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT;
     if ((requires_cap && (!new_cap || result != 1)) || (requires_zero && result != 0)) {
         if (reply_rights[0] >= 0) (void)syscall(SYS_close, reply_rights[0]);
         ker_socket_client_close(client);
@@ -462,7 +486,11 @@ int ker_socket_client_describe(struct ker_socket_client *client, int cap_fd,
         (output.kind != KER_SOCKET_BROKER_SOCKET && output.kind != KER_SOCKET_BROKER_EPOLL &&
          output.kind != KER_SOCKET_BROKER_REUSEPORT_GROUP &&
          output.kind != KER_SOCKET_BROKER_TCP_OBSERVER &&
-         output.kind != KER_SOCKET_BROKER_MEMBER_CENSUS))
+         output.kind != KER_SOCKET_BROKER_MEMBER_CENSUS &&
+         output.kind != KER_SOCKET_BROKER_FF_OWNER &&
+         output.kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN &&
+         output.kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT &&
+         output.kind != KER_SOCKET_BROKER_FF_OWNER_CUTOVER))
         return fail(EPROTO);
     *kind = (enum ker_socket_broker_kind)output.kind;
     *status_flags = output.flags;
@@ -634,6 +662,238 @@ int ker_socket_client_reuseport_group_select(struct ker_socket_client *client,
         &input, sizeof(input), NULL, 0, NULL, NULL);
 }
 
+int ker_socket_client_owner_group_plan(struct ker_socket_client *client,
+    const struct sockaddr_in *address, int backlog, uint32_t group_rights)
+{
+    if (!client || !address || address->sin_family != AF_INET ||
+        !address->sin_port || backlog < 0 ||
+        !(group_rights & KER_SOCKET_BROKER_CONTROL) ||
+        (group_rights & ~KER_SOCKET_BROKER_ALL)) return fail(EINVAL);
+    struct ker_sb_ff_owner_group_plan input = {.backlog = backlog,
+        .group_rights = group_rights};
+    memcpy(input.address, address, sizeof(*address));
+    int plan = -1;
+    if (socket_call(client, -1, KER_SB_FF_OWNER_GROUP_PLAN, &input,
+            sizeof(input), NULL, 0, &plan, NULL) < 0) return -1;
+    return plan;
+}
+
+int ker_socket_client_owner_group_staged_plan(struct ker_socket_client *client,
+    const struct sockaddr_in *address, int backlog, uint32_t group_rights)
+{
+    if (!client || !address || address->sin_family != AF_INET ||
+        !address->sin_port || backlog < 0 ||
+        !(group_rights & KER_SOCKET_BROKER_CONTROL) ||
+        (group_rights & ~KER_SOCKET_BROKER_ALL)) return fail(EINVAL);
+    struct ker_sb_ff_owner_group_plan input = {.backlog = backlog,
+        .group_rights = group_rights};
+    memcpy(input.address, address, sizeof(*address));
+    int plan = -1;
+    if (socket_call(client, -1, KER_SB_FF_OWNER_GROUP_STAGED_PLAN, &input,
+            sizeof(input), NULL, 0, &plan, NULL) < 0) return -1;
+    return plan;
+}
+
+int ker_socket_client_owner_group_slot(struct ker_socket_client *client,
+    int plan_cap, unsigned index)
+{
+    if (!client || plan_cap < 0 || index > 1) return fail(EINVAL);
+    struct ker_sb_ff_owner_group_slot input = {.index = index};
+    int slot = -1;
+    if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_SLOT, &input,
+            sizeof(input), NULL, 0, &slot, NULL) < 0) return -1;
+    return slot;
+}
+
+int ker_socket_client_ff_owner_group_claim(struct ker_socket_client *client,
+    int owner_cap, int slot_cap)
+{
+    if (!client || owner_cap < 0 || slot_cap < 0) return fail(EINVAL);
+    int rights[2] = {owner_cap, slot_cap};
+    int64_t result = 0;
+    size_t reply_length = 0;
+    if (rpc(client, KER_SB_FF_OWNER_GROUP_CLAIM, NULL, 0, rights, 2,
+            NULL, 0, 0, NULL, &result, &reply_length)) return -1;
+    if (reply_length) return fail(EPROTO);
+    return finish_int(0, result);
+}
+
+int ker_socket_client_owner_group_publish(struct ker_socket_client *client,
+    int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    int group = -1;
+    if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_PUBLISH,
+            NULL, 0, NULL, 0, &group, NULL) < 0) return -1;
+    return group;
+}
+
+int ker_socket_client_owner_group_publish_initial(struct ker_socket_client *client,
+    int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    int group = -1;
+    if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_PUBLISH_INITIAL,
+            NULL, 0, NULL, 0, &group, NULL) < 0) return -1;
+    return group;
+}
+
+int ker_socket_client_owner_group_publish_candidate(struct ker_socket_client *client,
+    int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    return socket_call(client, plan_cap,
+        KER_SB_FF_OWNER_GROUP_PUBLISH_CANDIDATE, NULL, 0, NULL, 0, NULL, NULL);
+}
+
+int ker_socket_client_owner_group_member(struct ker_socket_client *client,
+    int owner_cap, int claimed_slot_cap)
+{
+    if (!client || owner_cap < 0 || claimed_slot_cap < 0) return fail(EINVAL);
+    int rights[2] = {owner_cap, claimed_slot_cap};
+    int reply_fds[KER_SB_MAX_RIGHTS];
+    for (size_t i = 0; i < KER_SB_MAX_RIGHTS; ++i) reply_fds[i] = -1;
+    int64_t result = 0;
+    size_t reply_length = 0;
+    if (rpc(client, KER_SB_FF_OWNER_GROUP_MEMBER, NULL, 0, rights, 2,
+            NULL, 0, SIZE_MAX, reply_fds, &result, &reply_length)) return -1;
+    if (result < 0) {
+        for (size_t i = 0; i < KER_SB_MAX_RIGHTS; ++i)
+            if (reply_fds[i] >= 0) (void)syscall(SYS_close, reply_fds[i]);
+        return fail(result >= -4095 ? (int)-result : EPROTO);
+    }
+    if (result != 1 || reply_length || reply_fds[0] < 0 ||
+        !valid_capability_fd(reply_fds[0])) {
+        for (size_t i = 0; i < KER_SB_MAX_RIGHTS; ++i)
+            if (reply_fds[i] >= 0) (void)syscall(SYS_close, reply_fds[i]);
+        ker_socket_client_close(client);
+        return fail(EPROTO);
+    }
+    for (size_t i = 1; i < KER_SB_MAX_RIGHTS; ++i) {
+        if (reply_fds[i] >= 0) {
+            for (size_t j = 0; j < KER_SB_MAX_RIGHTS; ++j)
+                if (reply_fds[j] >= 0) (void)syscall(SYS_close, reply_fds[j]);
+            ker_socket_client_close(client);
+            return fail(EPROTO);
+        }
+    }
+    return reply_fds[0];
+}
+
+int ker_socket_client_owner_group_activate_initial(struct ker_socket_client *client,
+    int owner_cap, int claimed_slot_cap)
+{
+    if (!client || owner_cap < 0 || claimed_slot_cap < 0) return fail(EINVAL);
+    int rights[2] = {owner_cap, claimed_slot_cap};
+    int activated = -1;
+    int64_t result = 0;
+    size_t reply_length = 0;
+    if (rpc(client, KER_SB_FF_OWNER_GROUP_ACTIVATE_INITIAL, NULL, 0,
+            rights, 2, NULL, 0, SIZE_MAX, &activated, &result, &reply_length)) return -1;
+    if (result < 0) {
+        if (activated >= 0) (void)syscall(SYS_close, activated);
+        return fail(result >= -4095 ? (int)-result : EPROTO);
+    }
+    if (result != 1 || reply_length || activated < 0 ||
+        !valid_capability_fd(activated)) {
+        if (activated >= 0) (void)syscall(SYS_close, activated);
+        return fail(EPROTO);
+    }
+    return activated;
+}
+
+int ker_socket_client_owner_group_activate_candidate(struct ker_socket_client *client,
+    int owner_cap, int claimed_slot_cap)
+{
+    if (!client || owner_cap < 0 || claimed_slot_cap < 0) return fail(EINVAL);
+    int rights[2] = {owner_cap, claimed_slot_cap};
+    int activated = -1;
+    int64_t result = 0;
+    size_t reply_length = 0;
+    if (rpc(client, KER_SB_FF_OWNER_GROUP_ACTIVATE_CANDIDATE, NULL, 0,
+            rights, 2, NULL, 0, SIZE_MAX, &activated, &result, &reply_length)) return -1;
+    if (result < 0) {
+        if (activated >= 0) (void)syscall(SYS_close, activated);
+        return fail(result >= -4095 ? (int)-result : EPROTO);
+    }
+    if (result != 1 || reply_length || activated < 0 ||
+        !valid_capability_fd(activated)) {
+        if (activated >= 0) (void)syscall(SYS_close, activated);
+        return fail(EPROTO);
+    }
+    return activated;
+}
+
+int ker_socket_client_owner_group_control(struct ker_socket_client *client,
+    int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    int group = -1;
+    if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_CONTROL,
+            NULL, 0, NULL, 0, &group, NULL) < 0) return -1;
+    return group;
+}
+
+int ker_socket_client_owner_group_control_after_exit(
+    struct ker_socket_client *client, int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    int group = -1;
+    if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT,
+            NULL, 0, NULL, 0, &group, NULL) < 0) return -1;
+    return group;
+}
+
+int ker_socket_client_owner_group_cutover_begin(
+    struct ker_socket_client *client, int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    int capability = -1;
+    if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_CUTOVER_BEGIN,
+            NULL, 0, NULL, 0, &capability, NULL) < 0) return -1;
+    return capability;
+}
+
+static int owner_group_cutover_request(struct ker_socket_client *client,
+    int cutover_cap, uint16_t operation)
+{
+    if (!client || cutover_cap < 0) return fail(EINVAL);
+    return socket_call(client, cutover_cap, operation, NULL, 0,
+        NULL, 0, NULL, NULL);
+}
+
+int ker_socket_client_owner_group_cutover_commit(
+    struct ker_socket_client *client, int cutover_cap)
+{
+    return owner_group_cutover_request(client, cutover_cap,
+        KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT);
+}
+
+int ker_socket_client_owner_group_cutover_abort(
+    struct ker_socket_client *client, int cutover_cap)
+{
+    return owner_group_cutover_request(client, cutover_cap,
+        KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT);
+}
+
+int ker_socket_client_owner_group_cutover_poll(
+    struct ker_socket_client *client, int cutover_cap,
+    struct ker_socket_group_cutover_status *status)
+{
+    if (!client || cutover_cap < 0 || !status) return fail(EINVAL);
+    struct ker_sb_group_cutover_status wire = {0};
+    int received = 0;
+    if (socket_call(client, cutover_cap, KER_SB_FF_OWNER_GROUP_CUTOVER_POLL,
+            NULL, 0, &wire, sizeof(wire), NULL, &received) < 0) return -1;
+    if (received != sizeof(wire)) return fail(EPROTO);
+    status->lease = wire.lease;
+    status->phase = wire.phase;
+    status->result = wire.result;
+    status->received_packets = wire.received_packets;
+    status->accepted_packets = wire.accepted_packets;
+    return 0;
+}
+
 int ker_socket_client_member_census_create(struct ker_socket_client *client,
     int group_cap, unsigned index)
 {
@@ -653,7 +913,13 @@ int ker_socket_client_member_census_snapshot(struct ker_socket_client *client,
     int received = 0;
     if (socket_call(client, census_cap, KER_SB_MEMBER_CENSUS_SNAPSHOT, NULL, 0,
             &wire, sizeof(wire), NULL, &received) < 0) return -1;
-    if (received != sizeof(wire) || !wire.listener_cookie || wire.state_counts[0])
+    if (received != sizeof(wire) || wire.reserved ||
+        (wire.flags & ~KER_SB_MEMBER_CENSUS_EXPECT_NO_LISTENER) ||
+        (!!wire.listener_cookie ==
+            !!(wire.flags & KER_SB_MEMBER_CENSUS_EXPECT_NO_LISTENER)) ||
+        wire.state_counts[0] ||
+        ((wire.flags & KER_SB_MEMBER_CENSUS_EXPECT_NO_LISTENER) &&
+            wire.state_counts[KER_SOCKET_TCP_STATE_LISTEN]))
         return fail(EPROTO);
     uint64_t total = 0;
     for (size_t i = 0; i < KER_SOCKET_BROKER_TCP_STATES; ++i) {
@@ -682,4 +948,112 @@ int ker_socket_client_member_payload_snapshot(struct ker_socket_client *client,
         .sampled_sockets = wire.sampled_sockets};
     *snapshot = completed;
     return 0;
+}
+
+int ker_socket_client_ff_owner_create(struct ker_socket_client *client)
+{
+    int owner_cap = -1;
+    if (socket_call(client, -1, KER_SB_FF_OWNER_CREATE, NULL, 0,
+            NULL, 0, &owner_cap, NULL) < 0) return -1;
+    return owner_cap;
+}
+
+int ker_socket_client_ff_owner_socket(struct ker_socket_client *client,
+    int owner_cap, int domain, int type, int protocol)
+{
+    struct ker_sb_socket_args args = {.domain = domain, .type = type, .protocol = protocol};
+    int fd = -1;
+    if (socket_call(client, owner_cap, KER_SB_FF_OWNER_SOCKET, &args,
+            sizeof(args), NULL, 0, &fd, NULL) < 0) return -1;
+    int descriptor_flags = (type & SOCK_CLOEXEC) ? FD_CLOEXEC : 0;
+    if (syscall(SYS_fcntl, fd, F_SETFD, descriptor_flags) < 0) {
+        int error = errno; (void)syscall(SYS_close, fd); return fail(error);
+    }
+    return fd;
+}
+
+int ker_socket_client_ff_owner_match(struct ker_socket_client *client,
+    int owner_cap, int socket_cap)
+{
+    int rights[2] = {owner_cap, socket_cap};
+    int64_t result = 0;
+    size_t reply_length = 0;
+    if (rpc(client, KER_SB_FF_OWNER_MATCH, NULL, 0, rights, 2, NULL, 0, 0,
+            NULL, &result, &reply_length)) return -1;
+    if (reply_length) return fail(EPROTO);
+    if (result < 0) return fail(result >= -4095 ? (int)-result : EPROTO);
+    if (result > 1) return fail(EPROTO);
+    return (int)result;
+}
+
+int ker_socket_client_ff_owner_payload_snapshot(struct ker_socket_client *client,
+    int owner_cap, struct ker_socket_member_payload_snapshot *snapshot)
+{
+    if (!snapshot) return fail(EINVAL);
+    struct ker_sb_member_payload_snapshot wire = {0};
+    int received = 0;
+    if (socket_call(client, owner_cap, KER_SB_FF_OWNER_PAYLOAD, NULL, 0,
+            &wire, sizeof(wire), NULL, &received) < 0) return -1;
+    if (received != sizeof(wire) || wire.sampled_sockets > 4096 ||
+        (wire.payload_bytes && !wire.sampled_sockets)) return fail(EPROTO);
+    struct ker_socket_member_payload_snapshot completed = {
+        .payload_bytes = wire.payload_bytes, .sampled_sockets = wire.sampled_sockets};
+    *snapshot = completed;
+    return 0;
+}
+
+int ker_socket_client_ff_owner_requests(struct ker_socket_client *client,
+    int owner_cap, uint64_t *request_count)
+{
+    if (!request_count) return fail(EINVAL);
+    struct ker_sb_ff_owner_requests wire = {0};
+    int received = 0;
+    if (socket_call(client, owner_cap, KER_SB_FF_OWNER_REQUESTS, NULL, 0,
+            &wire, sizeof(wire), NULL, &received) < 0) return -1;
+    if (received != sizeof(wire)) return fail(EPROTO);
+    *request_count = wire.request_count;
+    return 0;
+}
+
+int ker_socket_client_ff_owner_admission_prepare(
+    struct ker_socket_client *client, int owner_cap,
+    struct ker_ff_owner_admission_registration *registration)
+{
+    if (!registration) return fail(EINVAL);
+    struct ker_sb_ff_owner_admission_prepare wire = {0};
+    int received = 0;
+    if (socket_call(client, owner_cap, KER_SB_FF_OWNER_ADMISSION_PREPARE,
+            NULL, 0, &wire, sizeof(wire), NULL, &received) < 0) return -1;
+    if (received != sizeof(wire) || wire.reserved || !wire.registration_id ||
+        !memchr(wire.endpoint_path, '\0', sizeof(wire.endpoint_path)) ||
+        !wire.endpoint_path[0]) return fail(EPROTO);
+    struct ker_ff_owner_admission_registration completed = {0};
+    memcpy(completed.endpoint_path, wire.endpoint_path,
+        sizeof(completed.endpoint_path));
+    completed.registration_id = wire.registration_id;
+    *registration = completed;
+    return 0;
+}
+
+int ker_socket_client_ff_owner_admission_window(
+	struct ker_socket_client *client, int owner_cap, uint16_t operation,
+	struct ker_ff_owner_admission_window *window)
+{
+	if (!window || (operation != KER_SB_FF_OWNER_ADMISSION_RETIRE &&
+	    operation != KER_SB_FF_OWNER_ADMISSION_REARM &&
+	    operation != KER_SB_FF_OWNER_ADMISSION_STATUS)) return fail(EINVAL);
+	struct ker_sb_ff_owner_admission_window wire = {0};
+	int received = 0;
+	if (socket_call(client, owner_cap, operation, NULL, 0, &wire,
+			sizeof(wire), NULL, &received) < 0) return -1;
+	if (received != sizeof(wire) || wire.reserved || wire.reserved2 ||
+	    wire.state > KER_FF_ADMISSION_TASK_QUARANTINED ||
+	    (wire.state != KER_FF_ADMISSION_TASK_STARTING && !wire.queue_lease) ||
+	    wire.status > 0 || wire.status < -4095)
+		return fail(EPROTO);
+	struct ker_ff_owner_admission_window completed = {
+		.state = wire.state, .reserved = 0, .queue_lease = wire.queue_lease,
+		.epoch = wire.epoch, .status = wire.status, .reserved2 = 0};
+	*window = completed;
+	return 0;
 }

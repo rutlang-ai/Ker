@@ -289,6 +289,13 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
     ker_socket_client_close(&probe);
     runtime_trace("ff_init_stage stage=broker_probe_ready pid=%ld path=%s\n",
         (long)getpid(), plan.config.broker_path);
+    if (ker_sb_preload_ff_owner_begin() != 0) {
+        int saved_errno = errno;
+        runtime_trace("ff_init_stage stage=owner_context_failed pid=%ld errno=%d\n",
+            (long)getpid(), saved_errno);
+        errno = saved_errno;
+        return -1;
+    }
 
     plan.proc_id = proc_id;
     plan.proc_type = proc_type;
@@ -347,8 +354,23 @@ ff_run(loop_func_t loop, void *arg)
         abort();
     }
     runtime_stop = 0;
-    while (!runtime_stop)
+    if (ker_sb_preload_owner_loop_enter() != 0) abort();
+    while (!runtime_stop) {
+        int pump_status = ker_sb_preload_owner_pump();
+        if (pump_status) {
+            runtime_trace("ff_owner_pump failure stage=before-loop errno=%d\n",
+                pump_status < 0 ? -pump_status : EPROTO);
+            abort();
+        }
         (void)loop(arg);
+        pump_status = ker_sb_preload_owner_pump();
+        if (pump_status) {
+            runtime_trace("ff_owner_pump failure stage=after-loop errno=%d\n",
+                pump_status < 0 ? -pump_status : EPROTO);
+            abort();
+        }
+    }
+    ker_sb_preload_owner_loop_leave();
 }
 
 void ff_stop_run(void) { runtime_stop = 1; }
@@ -450,13 +472,22 @@ unsupported_abort(const char *name)
     abort();
 }
 
-void ff_flow_map_open(void) { unsupported_abort("ff_flow_map_open"); }
-void ff_flow_map_close(void) { unsupported_abort("ff_flow_map_close"); }
-int ff_flow_map_lookup(const ff_flow_key_t *key) { (void)key; unsupported_abort("ff_flow_map_lookup"); }
-int ff_flow_map_insert(const ff_flow_key_t *key) { (void)key; unsupported_abort("ff_flow_map_insert"); }
 void ff_regist_packet_dispatcher_context(dispatch_func_context_t callback)
 { (void)callback; unsupported_abort("ff_regist_packet_dispatcher_context"); }
 void ff_unregist_packet_dispatcher_context(void)
 { unsupported_abort("ff_unregist_packet_dispatcher_context"); }
-int ff_syncache_count(void) { unsupported_abort("ff_syncache_count"); }
-int ff_socket_snd_pending(void) { unsupported_abort("ff_socket_snd_pending"); }
+int ff_syncache_count(void)
+{
+    uint64_t count = 0;
+    if (ker_sb_preload_ff_owner_requests(&count) < 0 || count > INT_MAX) {
+        int error = count > INT_MAX ? EOVERFLOW : errno;
+        char message[160];
+        int length = snprintf(message, sizeof(message),
+            "ker fstack request-sock snapshot failed: errno=%d\n", error);
+        if (length > 0)
+            (void)syscall(SYS_write, STDERR_FILENO, message,
+                (size_t)length < sizeof(message) ? (size_t)length : sizeof(message));
+        abort();
+    }
+    return (int)count;
+}

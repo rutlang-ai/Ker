@@ -578,7 +578,7 @@ def validate_unrelated_handoff_drain(record):
 
 
 def validate_active_consumer_frame_drain(drained, committed, unrelated_committed,
-                                         unrelated_drained, payload):
+                                         unrelated_drained, payload, trailing_count=0):
     """Validate the exact U2 lease and bounded MLD releases across producer death."""
     if (not isinstance(drained, dict) or not isinstance(unrelated_committed, list) or
             not isinstance(unrelated_drained, list) or
@@ -605,14 +605,36 @@ def validate_active_consumer_frame_drain(drained, committed, unrelated_committed
     unrelated_count = len(unrelated_committed)
     if (type(drained.get('sequence')) is not int or drained['sequence'] != 0 or
             not frame_matches_expected_u2(frame, payload) or
+            type(drained.get('tx_before')) is not int or drained['tx_before'] < 0 or
+            type(drained.get('pool_in_use_before')) is not int or drained['pool_in_use_before'] < 0 or
             type(drained.get('unrelated_count')) is not int or
             drained['unrelated_count'] != unrelated_count or
-            drained.get('tx_before') != unrelated_count + 1 or drained.get('tx_after') != 0 or
-            type(drained.get('pool_in_use_before')) is not int or
+            type(trailing_count) is not int or trailing_count < 0 or
+            trailing_count > unrelated_count or
+            drained.get('tx_resume') != trailing_count or drained.get('tx_after') != 0 or
+            type(drained.get('pool_in_use_resume')) is not int or
             type(drained.get('pool_in_use_after')) is not int or
-            drained['pool_in_use_after'] + unrelated_count + 1 != drained['pool_in_use_before']):
+            drained['pool_in_use_after'] + trailing_count + 1 != drained['pool_in_use_resume']):
         raise RuntimeError('active consumer did not release the exact U2 packet with bounded MLD accounting')
     return drained
+
+
+def active_consumer_trailing_commits(producer_output):
+    """Return bounded, identity-validated MLD commits made after U2 dequeue."""
+    if not isinstance(producer_output, str):
+        raise RuntimeError('active consumer trailing commit evidence is invalid')
+    trailing = []
+    try:
+        for line in producer_output.splitlines():
+            if line.startswith('KER_SESSION_FRAME_COMMITTED '):
+                record = json.loads(line.removeprefix('KER_SESSION_FRAME_COMMITTED '))
+                validate_unrelated_handoff_commit(record)
+                trailing.append(record)
+                if len(trailing) > 8:
+                    raise RuntimeError('producer emitted too many trailing unrelated frames')
+    except (json.JSONDecodeError, RuntimeError) as error:
+        raise RuntimeError('producer emitted invalid trailing MLD commit evidence') from error
+    return trailing
 
 
 def read_expected_frame_commit(worker, ready, payload, max_unrelated=8):
@@ -630,6 +652,50 @@ def read_expected_frame_commit(worker, ready, payload, max_unrelated=8):
         validate_unrelated_handoff_commit(record)
         unrelated.append(record)
     raise RuntimeError('producer emitted too many unrelated frames before the exact U2 commit')
+
+
+def active_consumer_deferred_counts(committed, unrelated_committed, unrelated_drained,
+                                    producer_output):
+    """Derive the held-consumer TX/pool baseline from exact frame identities."""
+    if (not isinstance(committed, dict) or not isinstance(unrelated_committed, list) or
+            not isinstance(unrelated_drained, list) or not isinstance(producer_output, str)):
+        return None
+    try:
+        trailing = active_consumer_trailing_commits(producer_output)
+    except RuntimeError:
+        return None
+    commits = [committed, *unrelated_committed, *trailing]
+    if (len(unrelated_committed) + len(trailing) > 8 or
+            len(unrelated_drained) != len(unrelated_committed) or
+            any(not isinstance(record, dict) for record in commits)):
+        return None
+    def identity(record, drained=False):
+        lease_field = 'lease_id' if drained else 'tx_lease_id'
+        fields = ('object_index', 'pool_tag', lease_field, 'packet_pointer')
+        if (type(record.get(fields[0])) is not int or record[fields[0]] < 0 or
+                type(record.get(fields[1])) is not int or record[fields[1]] <= 0 or
+                type(record.get(fields[2])) is not int or record[fields[2]] <= 0 or
+                not valid_frame_pointer(record.get('packet_pointer'))):
+            return None
+        physical = tuple(record[field] for field in fields)
+        if drained:
+            return physical
+        if (type(record.get('generation')) is not int or record['generation'] != 0 or
+                type(record.get('queue')) is not int or record['queue'] != 0):
+            return None
+        return (record['generation'], record['queue'], *physical)
+    identities = [identity(record) for record in commits]
+    drained = [identity(record, True) for record in unrelated_drained]
+    if (any(item is None for item in identities + drained) or
+            len(set(identities)) != len(identities) or
+            len(set(drained)) != len(drained) or
+            any(item not in [candidate[2:] for candidate in identities[1:1 + len(unrelated_committed)]
+                if candidate is not None] for item in drained)):
+        return None
+    drained_count = len(drained)
+    # The active consumer has already dequeued U2 and every unrelated frame
+    # recorded before it. Later producer commits remain queued at this barrier.
+    return len(commits) - drained_count - 1, len(commits) - drained_count
 
 
 def valid_frame_pointer(value):
@@ -1928,11 +1994,18 @@ def _run_session_impl(args, api):
                 dead_output,_=worker.communicate(timeout=10)
                 if worker.returncode!=-signal.SIGKILL or not select.select([worker_pidfd],[],[],0)[0]:
                     raise RuntimeError('active-dequeue producer did not die on its captured pidfd')
+                producer_output=dead_output.decode(errors='replace')
+                expected_preflight=active_consumer_deferred_counts(
+                    committed,unrelated_commits,unrelated_drained,producer_output)
+                if expected_preflight is None:
+                    raise RuntimeError('could not derive exact held-consumer preflight counts from committed frame identities')
                 metrics['handoff_frame_death_waiting']=dict(stage='producer-dead-active-consumer',
                     producer_pid=worker.pid,consumer_pid=peer_worker.pid,producer_status=worker.returncode,
                     producer_pidfd_dead=True,consumer_pidfd_dead=False,committed=committed,
-                    unrelated_committed=unrelated_commits,unrelated_drained=unrelated_drained,
-                    producer_output=dead_output.decode(errors='replace'))
+                    unrelated_committed=list(unrelated_commits),
+                    unrelated_drained=list(unrelated_drained),
+                    expected_preflight=dict(tx=expected_preflight[0],pool=expected_preflight[1]),
+                    producer_output=producer_output)
                 publish()
                 deadline=time.monotonic()+10
                 while time.monotonic()<deadline:
@@ -1944,9 +2017,22 @@ def _run_session_impl(args, api):
                     if app.poll() is not None:raise RuntimeError('application exited during active-consumer recovery')
                 else:raise RuntimeError('fixture did not release the active consumer after checking EBUSY')
                 signal.pidfd_send_signal(peer_worker_pidfd,signal.SIGCONT)
+                trailing_commits=active_consumer_trailing_commits(producer_output)
+                for expected_trailing in trailing_commits:
+                    drained_trailing=ready('KER_SESSION_FRAME_UNRELATED_DRAINED',
+                        process=peer_worker)
+                    validate_unrelated_handoff_drain(drained_trailing)
+                    for commit_field,drain_field in (
+                            ('object_index','object_index'),('pool_tag','pool_tag'),
+                            ('packet_pointer','packet_pointer'),('length','length'),
+                            ('tx_lease_id','lease_id'),('frame_hex','frame_hex')):
+                        if expected_trailing.get(commit_field)!=drained_trailing.get(drain_field):
+                            raise RuntimeError('consumer changed trailing MLD commit '+commit_field)
+                    unrelated_commits.append(expected_trailing)
+                    unrelated_drained.append(drained_trailing)
                 drained=ready('KER_SESSION_FRAME_DRAINED',process=peer_worker)
                 validate_active_consumer_frame_drain(drained,committed,unrelated_commits,
-                    unrelated_drained,payload)
+                    unrelated_drained,payload,len(trailing_commits))
                 deadline=time.monotonic()+10
                 while time.monotonic()<deadline:
                     census_connection=api.Connection(args.socket)
@@ -1961,7 +2047,9 @@ def _run_session_impl(args, api):
                     producer_pid=worker.pid,consumer_pid=peer_worker.pid,
                     producer_status=worker.returncode,consumer_status=None,consumer_still_live=peer_worker.poll() is None,
                     producer_pidfd_dead=True,committed=committed,drain=drained,final_census=census,
-                    final_owner=owner,producer_output=dead_output.decode(errors='replace'))
+                    final_owner=owner,producer_output=dead_output.decode(errors='replace'),
+                    unrelated_committed=list(unrelated_commits),
+                    unrelated_drained=list(unrelated_drained))
                 frame_death_complete=True
                 frame_death_worker_expected_code=-signal.SIGKILL
                 metrics['stage']='handoff-complete';publish();return
