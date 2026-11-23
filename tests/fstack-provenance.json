@@ -38,6 +38,16 @@
       "source_case": "test_ff_dpdk_if_send_basic",
       "adaptation": "Verify copied bytes and lifetime; no ethdev send claim."
     },
+    "ethdev-tx": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_raw_packet_send_basic",
+        "test_ff_dpdk_raw_packet_send_multiseg",
+        "test_ff_dpdk_if_send_tcp_csum",
+        "test_ff_dpdk_if_send_udp_csum"
+      ],
+      "adaptation": "The raw-send cases call ff_dpdk_raw_packet_send with 64 bytes and 4096 bytes, the latter forcing its multisegment allocation path. Ker adapts the bounded copied-packet exporter to a borrowed, caller-configured ethdev TX queue; the pinned DPDK net_ring PMD verifies exact bytes, FIFO/full-ring retry, pool exhaustion and driver TX packet statistics. A separate Ker extension, motivated by the upstream TCP/UDP checksum-offload cases, opt-in completes supported CHECKSUM_PARTIAL packets in software and verifies TCP/UDP wire checksums independently, including UDP folded-zero policy. It does not reproduce hardware offload and makes no NIC, F-Stack stack, or application-protocol claim."
+    },
     "multiseg-boundary": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
@@ -349,15 +359,62 @@
         "test_ff_dpdk_if_send_basic",
         "test_ff_dpdk_if_send_multiseg"
       ],
-      "adaptation": "Ker-specific ICMPv4 control extension: generic error events, bounded safe error emission, timestamp and opt-in extended echo, token-bucket limits and independent peer pools with actual RX/TX rings. The source cases motivate packet delivery only; no upstream ICMP suite, sockets, routing, IPv4 reassembly, IPv6 or NIC delivery is claimed. The same real-ring fixture also exercises an opt-in bounded Ker UDP endpoint table: validated local datagrams reach bound callbacks, while lookup misses automatically generate ICMP port-unreachable through the existing neighbor output. This is not native Linux socket lookup or a F-Stack UDP ingress test. Explicit immutable unavailable-protocol declarations additionally drive automatic ICMP protocol-unreachable for validated local IPv4 ingress, with competing-handler suppression. This is a Ker policy adapter, not Linux inet_protos/raw socket/XFRM integration."
+      "adaptation": "Ker-specific ICMPv4 control extension: generic error events, bounded safe error emission, timestamp and opt-in extended echo, token-bucket limits and independent peer pools with actual RX/TX rings. The source cases motivate packet delivery only; no upstream ICMP suite, sockets, routing, IPv4 reassembly, IPv6 or NIC delivery is claimed. The same real-ring fixture also exercises an opt-in bounded Ker UDP endpoint table: validated local datagrams reach bound callbacks, while lookup misses automatically generate ICMP port-unreachable through the existing neighbor output. This is not native Linux socket lookup or a F-Stack UDP ingress test. Explicit immutable unavailable-protocol declarations additionally drive automatic ICMP protocol-unreachable for validated local IPv4 ingress, with competing-handler suppression. This is a Ker policy adapter, not Linux inet_protos/raw socket/XFRM integration. Connected endpoint regressions extend the Ker-specific UDP adapter with generation-scoped handles and exact peer filtering; these are not upstream F-Stack socket tests."
     },
-    "icmpv4-pmtu": {
+    "flow-icmpv4": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_multiseg",
+      "adaptation": "Ker-specific UDP control-flow steering extension: ICMPv4 errors quote an outbound UDP tuple which must resolve to the same flow owner as its response. Real segmented DPDK chains cover every header split, truncated quotes, declared lengths, Ethernet padding, unsupported options/fragments/protocols, wrong quoted local address and ingress-only direction. Steering does not authenticate ICMP or validate checksums; those remain the owner receiver and sent-evidence tracker responsibilities. This is not a F-Stack upstream ICMP test, NIC/RSS, TCP or IPv6 control-plane implementation."
+    },
+    "ethdev-rx": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_main_loop_one_iteration_then_stop",
+      "adaptation": "Ker-specific borrowed ethdev RX extension around the existing worker receive path. A real pinned DPDK net_ring PMD injects Ethernet frames and segmented mbuf chains; the test checks one-packet worker budgets, FIFO classification/dispatch, pool-pressure retry, cancellation, and RX binding exclusion. Opt-in immutable shared-reference profiles test direct shared segments, actual rte_pktmbuf_clone chains, and attached external-buffer chains, including caller/sibling lifetime, extbuf callbacks and allocation retry. The upstream case only motivates one worker-loop iteration and stop; pinned free/fanout scenarios do not test indirect-clone or external-buffer RX. No NIC, RSS, socket, or full-stack behavior is claimed."
+    },
+    "ethdev-rebind": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_register_deregister_roundtrip",
+      "adaptation": "Ker-specific borrowed ethdev RX lifecycle extension. A real started net_ring port keeps a queued successor behind a pending frame across adapter/device/runtime teardown; a fresh callback generation rebinds the same queue and consumes it first. The test covers pending-packet cleanup exclusion, exact cancellation, invalid rebind rollback, FIFO delivery and pool reclamation. The upstream registration roundtrip motivates lifecycle testing only; PMD queues are caller-owned and are not implicitly flushed, and this does not implement full F-Stack device registration."
+    },
+    "ethdev-duplex": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": [
-        "test_ff_dpdk_if_send_basic",
-        "test_ff_dpdk_if_send_multiseg"
+        "test_main_loop_one_iteration_then_stop",
+        "test_ff_dpdk_if_send_tcp_csum",
+        "test_ff_dpdk_if_send_udp_csum"
       ],
-      "adaptation": "Ker-specific path-MTU extension: require a sent-packet confirmation callback before lowering one peer cache, apply legacy plateaus and expiry, and reject actual oversized neighbor output without taking packet ownership. This is not a F-Stack PMTU test and does not add routing, sockets, retransmission, segmentation or IPv6."
+      "adaptation": "Ker-specific composition test: two actual pinned DPDK net_ring ethdev ports cross-connect bounded TX/RX queues; each Ker worker polls the existing ethdev TX and RX adapters through its shared worker callback argument. Distinct source/destination pools carry multisegment software-checksummed TCP and UDP packets through the original Ethernet classifier and transport views. Independent checksum verification, FIFO, full-ring retry, destination-pool pressure retention, callback drop, ownership, and pool reclamation are checked. The F-Stack cases motivate the worker/send/checksum boundaries only; this is not an F-Stack stack, hardware-offload, NIC, or application-protocol test."
+    },
+    "ethdev-multiqueue": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": "test_ut_nr_19_drain_ring_sp_sc",
+      "adaptation": "Ker-specific multi-EAL ethdev queue-isolation extension motivated by the upstream SP/SC drain scenario. Two owner workers on distinct EAL lcores use independent bounded net_ring ethdev queues, contexts, pools, and existing TX/RX adapters. The test checks real worker dispatch, queue-0 backpressure while queue 1 progresses, recovery, checksum/payload identity, and wrong-owner rejection. It does not test upstream ring reload, RSS, multiprocess operation, physical NICs, or full F-Stack."
+    },
+    "ethdev-rx-metadata": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_tcp_csum",
+        "test_ff_dpdk_if_send_udp_csum"
+      ],
+      "adaptation": "Ker-specific RX trust-boundary extension: a real net_ring PMD feeds TCP/UDP frames through ethdev RX, the worker, the original Ethernet classifier and existing transport packet views. GOOD/BAD/UNKNOWN checksum hints never bypass software wire validation; NONE and transformed metadata are rejected. The pinned F-Stack cases are TX checksum-offload scenarios and do not cover this RX path or hardware/NIC checksum behavior."
+    },
+    "ethdev-external-lifetime": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_pktmbuf_free_basic",
+      "adaptation": "Ker-specific final-reference RX lifetime extension motivated by the upstream basic mbuf release case. A real net_ring ethdev feeds mixed external/direct/external chains into the existing copy/classify/dispatch adapter. No parent or sibling reference is retained. Actual DPDK external-buffer callbacks poison and quarantine released storage; retained owned skbs are checked before and after physical source deallocation. Repeated allocation failure, partial-budget FIFO recovery, cancellation transfer, transformed-metadata drop, exact callback counts, PMD receive counts and full source/destination pool reclamation are verified. The pinned upstream case only frees one basic mbuf and does not test external-buffer RX, deferred skb ownership, NICs, hardware offload or protocol behavior."
+    },
+    "ethdev-rx-capacity": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_multiseg",
+      "adaptation": "Ker-specific RX linear-copy capacity extension motivated by the pinned multisegment TX case. Real net_ring RX carries small source-pool segments into an independently sized destination pool. Capacity-minus-one, exact capacity and capacity-plus-one are checked with three headrooms and a non-cache-line-aligned destination room size. With the destination pool exhausted, permanently oversized frames are consumed as ENOSPC drops before a fitting successor becomes ENOMEM pending; releasing one backing permits exact FIFO recovery. Direct allocation error precedence, byte preservation, Linux shared-info reservation, PMD packet counts and both pool baselines are verified. Payloads are opaque: no IPv4/TCP/UDP protocol processing, jumbo MTU negotiation, NIC, nonlinear skb or F-Stack RX support is claimed."
+    },
+    "ethdev-rx-fanout": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_main_loop_one_iteration_then_stop",
+        "test_ff_dpdk_pktmbuf_free_basic"
+      ],
+      "adaptation": "Ker-specific Linux packet_type fanout and ownership extension. Real net_ring RX supplies segmented opaque Ethernet frames through the actual worker, original Ethernet classification and imported Linux ptype delivery. Global-before-device ordering, per-callback descriptor references, final-handler status, explicit invalid-status reporting, no-handler drop, retained skb lifetime, cloned backing, COW ENOMEM rollback/recovery, independent header/payload mutation, both release orders and full pool reclamation are checked. The pinned F-Stack cases motivate worker iteration and basic ownership only; they do not test Linux ptype fanout or COW. No F-Stack RX, NIC, IP/transport processing or application-protocol behavior is claimed."
     }
   }
 }
