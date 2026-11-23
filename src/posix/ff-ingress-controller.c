@@ -511,15 +511,18 @@ int ker_posix_ff_ingress_controller_quarantine(
 int ker_posix_ff_ingress_controller_close(
     struct ker_posix_ff_ingress_controller *controller)
 {
+    return ker_posix_ff_ingress_controller_close_before(controller, 0);
+}
+
+int ker_posix_ff_ingress_controller_close_before(
+    struct ker_posix_ff_ingress_controller *controller, uint64_t control_deadline_ns)
+{
     if (!controller) return -EINVAL;
     int entered = controller_operation_begin(controller, true);
     if (entered) return entered;
-    int status = ker_ff_ingress_freeze_queue_close(controller->queue);
+    int status = controller_join_bounded(controller);
+    if (!status) status = ker_ff_ingress_freeze_queue_close(controller->queue, control_deadline_ns);
     if (status) { controller_operation_end(controller); return status; }
-    if (controller->worker_started && !controller->worker_joined) {
-        int joined = controller_join_bounded(controller);
-        if (joined) { controller_operation_end(controller); return joined; }
-    }
     controller->queue = NULL;
     controller_operation_end(controller);
     controller_release(controller);

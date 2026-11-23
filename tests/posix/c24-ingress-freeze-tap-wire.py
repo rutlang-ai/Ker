@@ -365,7 +365,7 @@ def run_probe(args, eal, root, native):
         run_case(args, eal, root, native, mode='disarm-abort'),
         run_case(args, eal, root, native, mode='overflow')]
     evidence = {'schema': 1, 'qualification': 'primitive-only',
-        'native_fingerprint': '22813a0c8cdd737a714a131d519098a62cb3df90a63d50c3eb4fc7f29b737327',
+        'native_fingerprint': os.environ.get('KER_C24_NATIVE_FINGERPRINT'),
         'cases': cases,
         'limits': ['raw original-Linux reuseport cBPF selector only',
             'q87/q88 queue coexistence uses raw q87 SYNACK verdict, not F-Stack map admission',

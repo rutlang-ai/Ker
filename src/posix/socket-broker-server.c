@@ -3644,10 +3644,10 @@ static void group_cutover_advance(struct ker_socket_broker_server *server,
         if (group_cutover_control_expired(group)) return;
         return;
     }
-    status = ker_posix_ff_ingress_controller_close(cutover->controller);
+    status = ker_posix_ff_ingress_controller_close_before(cutover->controller,
+        cutover->control_deadline_ns);
     if (status) { group_cutover_quarantine(group, status); return; }
     cutover->controller = NULL;
-    if (group_cutover_control_expired(group)) return;
     cutover->phase = cutover->selector_changed ?
         KER_SOCKET_GROUP_CUTOVER_COMMITTED : KER_SOCKET_GROUP_CUTOVER_ABORTED;
     cutover->result = 0;
