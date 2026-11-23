@@ -771,8 +771,41 @@ static int exec_mode(int listener, int accepted)
     return 0;
 }
 
+static int collected_event_after_disconnect(const char *empty_dir)
+{
+    int ep = epoll_create1(EPOLL_CLOEXEC);
+    int event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    CHECK(ep >= 0 && event_fd >= 0);
+    struct epoll_event interest = {.events = EPOLLIN | EPOLLONESHOT, .data.fd = event_fd};
+    struct epoll_event events[2];
+    CHECK(epoll_ctl(ep, EPOLL_CTL_ADD, event_fd, &interest) == 0);
+    /* The first empty wait polls the broker first, so the next wait takes
+     * host readiness before trying to fill the second slot from the broker. */
+    CHECK(epoll_wait(ep, events, 2, 0) == 0);
+    CHECK(eventfd_write(event_fd, 1) == 0);
+    pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        /* A forked client opens a new session at the configured relative path. */
+        CHECK(chdir(empty_dir) == 0);
+        CHECK(epoll_wait(ep, events, 2, 0) == 1);
+        CHECK(events[0].data.fd == event_fd && events[0].events == EPOLLIN);
+        /* The one-shot was consumed. Either polling order now reports ENOENT. */
+        CHECK(epoll_wait(ep, events, 2, 0) == -1 && errno == ENOENT);
+        CHECK(epoll_wait(ep, events, 2, 0) == -1 && errno == ENOENT);
+        _exit(0);
+    }
+    int status;
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    CHECK(close(event_fd) == 0 && close(ep) == 0);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "--broker-unavailable"))
+        return collected_event_after_disconnect(argv[2]);
     if (argc == 4 && !strcmp(argv[1], "exec"))
         return exec_mode(parse_fd(argv[2]), parse_fd(argv[3]));
     if (argc != 3) { fprintf(stderr, "usage: preload-client <listener-fd> <epoll-fd>\n"); return 2; }
