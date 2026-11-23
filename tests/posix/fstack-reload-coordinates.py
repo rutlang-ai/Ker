@@ -68,7 +68,7 @@ def main():
                     # EALs reach the attach call boundary. Without adapter
                     # serialization they would attach and notify the broker.
                     runtime_dir=root/'dpdk'/('coordinates-'+nonce)
-                    lock_path=runtime_dir/'ker-reload-gendir-register.lock'
+                    lock_path=runtime_dir/'ker-reload-gendir-attach.lock'
                     held_lock=lock_path.open('a+b')
                     lock_stat=os.fstat(held_lock.fileno())
                     try:
