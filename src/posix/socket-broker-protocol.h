@@ -11,6 +11,9 @@
 #define KER_SB_OBJECTS 256
 #define KER_SB_PATH_MAX 107
 
+/* Return the received capability with its MSG_CMSG_CLOEXEC flag intact. */
+int ker_sb_client_dup_cloexec(struct ker_socket_client *client, int cap_fd);
+
 enum ker_sb_operation {
     KER_SB_SOCKET = 1, KER_SB_BIND, KER_SB_CONNECT, KER_SB_LISTEN,
     KER_SB_ACCEPT4, KER_SB_READ, KER_SB_WRITE, KER_SB_SHUTDOWN,

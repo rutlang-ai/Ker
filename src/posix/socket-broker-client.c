@@ -416,8 +416,9 @@ int ker_socket_client_epoll_create1(struct ker_socket_client *client, int flags)
 int ker_socket_client_epoll_ctl(struct ker_socket_client *client, int epoll_cap,
     int operation, int socket_cap, const struct epoll_event *event)
 {
-    struct ker_sb_epoll_ctl input = {.operation = operation, .has_event = event != NULL};
-    if (event) input.event = *event;
+    struct ker_sb_epoll_ctl input = {.operation = operation,
+        .has_event = operation != EPOLL_CTL_DEL && event != NULL};
+    if (input.has_event) input.event = *event;
     int rights[2] = {epoll_cap, socket_cap};
     int64_t result = 0;
     if (rpc(client, KER_SB_EPOLL_CTL, &input, sizeof(input), rights, 2,
@@ -457,11 +458,18 @@ int ker_socket_client_describe(struct ker_socket_client *client, int cap_fd,
     return 0;
 }
 
-int ker_socket_client_dup(struct ker_socket_client *client, int cap_fd)
+int ker_sb_client_dup_cloexec(struct ker_socket_client *client, int cap_fd)
 {
     int duplicate = -1;
     if (socket_call(client, cap_fd, KER_SB_DUP, NULL, 0, NULL, 0,
             &duplicate, NULL) < 0) return -1;
+    return duplicate;
+}
+
+int ker_socket_client_dup(struct ker_socket_client *client, int cap_fd)
+{
+    int duplicate = ker_sb_client_dup_cloexec(client, cap_fd);
+    if (duplicate < 0) return -1;
     if (syscall(SYS_fcntl, duplicate, F_SETFD, 0) < 0) {
         int error = errno;
         (void)syscall(SYS_close, duplicate);
