@@ -7,7 +7,11 @@ The importer verifies complete source hashes before emitting output and records
 verbatim block provenance. Linux and DPDK dependency files are unchanged.
 
 This is a bounded reachability monitor for an administrator-provided IPv4/MAC
-mapping. It does not implement automatic address resolution. Configure an empty
+mapping. Its default profile does not resolve addresses. The opt-in
+[known-peer resolver](linux-neighbor-resolution.md) adds bounded native
+re-resolution after an existing monitored peer fails. The separate
+[discovery initializer](linux-neighbor-discovery.md) starts an explicitly
+selected peer in NUD_NONE without a supplied MAC. Configure an empty
 neighbor table with `ker_neighbor_configure`, add a permanent mapping, then bind
 stable, zero-initialized monitor storage to that entry and its worker clock.
 Initialization marks the configured mapping REACHABLE and arms its native timer.
@@ -55,14 +59,19 @@ snapshot and inspect its state.
 Cleanup cancels the timer, drops its reference, detaches the timer-list adapter,
 restores the administrator's PERMANENT mapping and releases the monitor's pin.
 It is a return to static configuration, not a statement that probing succeeded.
-The entry can then be removed or monitored again. The clock and table cannot be
-destroyed while monitoring is active.
+The entry can then be removed or monitored again. A monitor created through
+the discovery initializer instead removes its owned entry on cleanup. The clock
+and table cannot be destroyed while monitoring is active.
 
-Unresolved packet queues, skb cloning in probing, error packet delivery, proxy
-neighbors, application probes, external validation flags, garbage collection,
-ARP learning and packet output are unsupported. Queues must remain empty;
-unsupported native paths fail closed. Native output callbacks return ENOTSUP
-without consuming a packet. Probe callbacks may use the bounded
+In the default monitor profile, unresolved packet queues and probe clones
+remain disabled. The opt-in resolver admits its bounded queue and scoped probe
+clones; failure consumes pending packets without generating ICMP errors. Proxy
+neighbors, application probes, external validation flags, garbage collection
+and general ARP learning remain unsupported; other native paths fail closed. The monitor's default native output
+callbacks return ENOTSUP without consuming a packet. The separate
+[`ker_neighbor_monitor_output`](linux-neighbor-output.md) operation admits a
+resolved IPv4 packet explicitly and runs native `neigh_resolve_output` into a
+bounded TX exporter; it does not enable unresolved queues. Probe callbacks may use the bounded
 [native ARP probe adapter](linux-arp-probes.md), which captures the original
 Linux request constructor as a caller-owned skb. It does not add NIC
 transmission or a complete ARP resolution service. Public capability bits
@@ -81,10 +90,12 @@ write unlock and `local_bh_enable`, matching the imported lock boundary.
 
 `ker_neighbor_monitor_update` imports pinned Linux `neigh_update` and its
 native state, timer, output, timestamp, and link-address logic. It accepts only
-an existing monitored entry in DELAY or PROBE, an unicast Ethernet MAC, and
+an existing monitored entry in DELAY or PROBE (also INCOMPLETE with the
+resolver enabled), an unicast Ethernet MAC, and
 flags 0 or `NEIGH_UPDATE_F_OVERRIDE`; the requested state is REACHABLE. The
 entry must have its native timer reference pending, no extra lookup references,
-empty skb queue, empty header cache, and no header-cache update callback.
+an empty skb queue unless the resolver owns it, empty header cache, and no
+header-cache update callback.
 Update runs on the owning worker through the timer-list scope and rejects a
 deadline that cannot be represented before entering Linux.
 
@@ -95,7 +106,7 @@ event after the entry lock is released, as in the timer adapter; this event
 boundary does not provide netlink or generic kernel notifier services. Cleanup
 restores the administrator-installed permanent MAC and saved timestamps.
 Administrative, router, managed/external-validation flags, invalid states,
-unmonitored table updates, packet queues, GC/managed-list changes, and header
+unmonitored table updates, queues outside the opt-in resolver, GC/managed-list changes, and header
 cache updates remain unsupported and fail closed. The
 `neighbor-update-import` test validates imported function and flag provenance.
 
