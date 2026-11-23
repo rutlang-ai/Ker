@@ -205,11 +205,18 @@ fail:
 }
 int ker_fd_close(int fd)
 {
+    /* Host close may interrupt a native operation holding the table mutex.
+     * The caller must synchronize reusing this same fd number (including
+     * as a dup2/dup3 target) with closing it. */
+    if (fd < 0 || fd >= KER_FD_LIMIT ||
+        !atomic_load_explicit(&entries[fd], memory_order_relaxed))
+        return (int)syscall(SYS_close, fd);
+
     pthread_mutex_lock(&mutex);
-    struct ker_fd *entry = fd >= 0 && fd < KER_FD_LIMIT ? entries[fd] : NULL;
-    if (entry) entries[fd] = NULL;
+    struct ker_fd *entry = entries[fd];
     long host = syscall(SYS_close, fd);
     int saved = errno;
+    entries[fd] = NULL;
     pthread_mutex_unlock(&mutex);
     long native = ker_fd_put(entry);
     if (host < 0) { errno = saved; return -1; }
