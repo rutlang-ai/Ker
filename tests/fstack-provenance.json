@@ -66,6 +66,11 @@
       ],
       "adaptation": "Ker explicitly rejects checksum-partial and GSO metadata it cannot export, preserves the skb and output slot, then succeeds after metadata is cleared. No offload execution claim."
     },
+    "software-checksum-completion": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_ip_csum",
+      "adaptation": "Ker-specific software completion extension motivated by this upstream checksum-offload case: copy a linear Internet-checksum CHECKSUM_PARTIAL skb and complete its seeded transport checksum using Linux checksum primitives before export. CRC32C is rejected when the imported skb layout exposes csum_not_inet; GSO and the existing ordinary CHECKSUM_PARTIAL export remain rejected, and the copy carries no DPDK TX offload flags. This does not claim F-Stack's NIC/hardware offload behavior."
+    },
     "headroom-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_basic",
@@ -85,6 +90,24 @@
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
       "adaptation": "Ker-specific integration extension of the upstream multisegment geometry scenario: split a valid Ethernet ARP reply across a real DPDK chain, linearize and classify it, then exercise the existing ARP decoder and scoped native neighbor feedback from an actual worker RX poll. Verify rejection boundaries, timer/reference preservation, source-chain release and pool recovery. The ARP feedback scenario is not an upstream F-Stack test and does not claim NIC traffic or general ARP learning."
+    },
+    "ipv4-ingress-validation": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_multiseg",
+        "test_ff_dpdk_if_send_ip_csum"
+      ],
+      "adaptation": "Ker-specific ingress/header-validation extension. At pinned F-Stack revision 646a641cfff77f4815e1e29829a09e1ed15a2999 both named cases exercise ff_dpdk_if_send, not IPv4 ingress. Ker uses real segmented DPDK input and its copy/classify path, then validates IPv4 header/options, length, padding and native ip_fast_csum. No ip_rcv, routing, fragment reassembly, transport/socket or NIC delivery claim."
+    },
+    "udp-ingress-validation": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_udp_csum",
+      "adaptation": "Ker-specific ingress extension motivated by the pinned UDP checksum TX case. The F-Stack source only sets UDP TX offload metadata and calls ff_dpdk_if_send; it does not test UDP ingress. Ker validates an unfragmented IPv4 UDP datagram using the original Linux pseudoheader checksum primitives. This does not claim socket delivery, routing, reassembly, ICMP, NIC or TX offload support."
+    },
+    "udp-minimal-boundaries": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_udp_csum",
+      "adaptation": "Additional Ker-specific UDP ingress regression for the minimum eight-byte header with zero and valid nonzero checksums, zero-valued ports, even payload length and Ethernet padding exclusion. The upstream case is still TX-only and does not cover these receive semantics."
     }
   }
 }

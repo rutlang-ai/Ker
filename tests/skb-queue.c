@@ -1,6 +1,8 @@
 #include "check.h"
 #include "eal.h"
 #include "runtime/skb-queue.h"
+#include "runtime/ipv4-packet-view.h"
+#include "runtime/udp-packet-view.h"
 #include "runtime/memory.h"
 #include "runtime/worker.h"
 #include <pthread.h>
@@ -32,6 +34,18 @@ static void blocked(struct sk_buff *alias)
     CHECK(ker_skb_pull(alias, 1) == -EBUSY && ker_skb_trim(alias, 1) == -EBUSY);
     struct sk_buff *duplicate = alias;
     CHECK(ker_skb_queue_push(&other, &duplicate) == -EBUSY && duplicate == alias);
+    struct ker_ipv4_packet_view view = {(const unsigned char *)(uintptr_t)1, 11, 12, 13, 14};
+    CHECK(ker_ipv4_packet_view_init(&context, alias, &view) == -EBUSY);
+    CHECK(view.header == (const unsigned char *)(uintptr_t)1 && view.header_length == 11 &&
+        view.packet_length == 12 && view.payload_length == 13 && view.frag_off == 14);
+    struct ker_udp_packet_view udp = {
+        (const unsigned char *)(uintptr_t)1, (const unsigned char *)(uintptr_t)2,
+        0x1234, 0x5678, 0x9abc, 0x1234, 0x5678
+    };
+    CHECK(ker_udp_packet_view_init(&context, alias, &udp) == -EBUSY);
+    CHECK(udp.header == (const unsigned char *)(uintptr_t)1 && udp.payload == (const unsigned char *)(uintptr_t)2 &&
+        udp.source_port == 0x1234 && udp.destination_port == 0x5678 && udp.checksum == 0x9abc &&
+        udp.udp_length == 0x1234 && udp.payload_length == 0x5678);
 }
 static void *wrong_worker(void *arg)
 {
