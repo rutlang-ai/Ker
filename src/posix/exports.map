@@ -1,6 +1,6 @@
 {
     global:
-        ker_posix_capabilities; ker_posix_kernel_release; ker_posix_get_current_time;
+        ker_posix_capabilities; ker_posix_descriptor_kind; ker_posix_kernel_release; ker_posix_get_current_time;
         ker_posix_run; ker_posix_stop_run;
         ker_posix_buffer_alloc; ker_posix_buffer_free; ker_posix_buffer_realloc; ker_posix_buffer_write;
         ker_posix_buffer_writer_create; ker_posix_buffer_writer_create_segmented; ker_posix_buffer_writer_segment; ker_posix_buffer_writer_append;

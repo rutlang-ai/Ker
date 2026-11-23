@@ -1,8 +1,18 @@
 {
   "repository": "https://github.com/F-Stack/f-stack",
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
-  "mode": "Unmodified full header and shared full ff_dpdk_if.c; only original address-callback declarations and dispatch compiled. No FreeBSD protocol code.",
+  "mode": "Unmodified ff_api.h plus its exact ff_event.h and ff_errno.h dependencies, and shared full ff_dpdk_if.c; only original address-callback declarations and dispatch compiled. No FreeBSD protocol code.",
   "files": {
+    "ff_errno.h": {
+      "source_file": "lib/ff_errno.h",
+      "sha256": "adf4518fe6525f4c469fdf5e592aa89e8b113eee7557bd0f5f0963f79a6ea812",
+      "git_blob": "3130dad4607b434aa89108e3abb054a640a4a4af"
+    },
+    "ff_event.h": {
+      "source_file": "lib/ff_event.h",
+      "sha256": "e54920468209c9226df58a518ecccc3257089afd9bd229a743c9b95c29dd7c90",
+      "git_blob": "15daf95845cefea12e08185f060f5aeae330d4e6"
+    },
     "ff_api.h": {
       "source_file": "lib/ff_api.h",
       "sha256": "46f538fa416450410d3a603220ac8d77b38b5fb5716fff599cba2b9c43fec15c",
