@@ -32,7 +32,7 @@ int __real_pthread_mutex_lock(pthread_mutex_t *mutex);
 int __wrap_pthread_mutex_lock(pthread_mutex_t *mutex)
 {
     if (in_signal_handler) {
-        static const char message[] = "Host fd lookup tried to lock in a signal handler\n";
+        static const char message[] = "Host fd operation tried to lock in a signal handler\n";
         (void)write(STDERR_FILENO, message, sizeof(message) - 1);
         _exit(2);
     }
@@ -49,7 +49,8 @@ static void notify_pipe(int signal_number)
     (void)signal_number;
     int saved = errno;
     in_signal_handler = 1;
-    if (ker_fd_get(signal_pipe) != NULL || write(signal_pipe, "s", 1) != 1)
+    if (ker_fd_get(signal_pipe) != NULL || write(signal_pipe, "s", 1) != 1 ||
+        ker_fd_close(signal_pipe) < 0)
         _exit(3);
     in_signal_handler = 0;
     errno = saved;
@@ -69,9 +70,10 @@ static void host_pipe_during_native_lookup(int app)
     CHECK(!interrupt_next_lock && entry && ker_fd_put(entry) == 0);
     char byte = 0;
     CHECK(read(pipe_fds[0], &byte, 1) == 1 && byte == 's');
+    CHECK(read(pipe_fds[0], &byte, 1) == 0);
 
     CHECK(sigaction(SIGUSR1, &previous, NULL) == 0);
-    CHECK(close(pipe_fds[0]) == 0 && close(pipe_fds[1]) == 0);
+    CHECK(close(pipe_fds[0]) == 0);
 }
 
 static int native_socket(int type)
