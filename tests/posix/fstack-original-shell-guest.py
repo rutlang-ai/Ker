@@ -104,7 +104,7 @@ def ephemeral_filesystems(readonly_inputs=(), writable_inputs=()):
     for _, _, fd in preserved:
         os.close(fd)
 
-    WORKSPACE.mkdir()
+    WORKSPACE.mkdir(exist_ok=True)
     for path, mode in (("/run/sshd", 0o755), ("/run/dpdk", 0o700), ("/tmp", 0o700)):
         target = Path(path)
         target.mkdir(exist_ok=True)
