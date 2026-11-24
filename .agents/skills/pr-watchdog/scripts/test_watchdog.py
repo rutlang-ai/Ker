@@ -167,6 +167,28 @@ class DiscoveryTest(unittest.TestCase):
             kill.assert_not_called()
             popen.assert_not_called()
 
+    def test_start_rejects_single_unhooked_poller_when_thread_requested(self):
+        command = ['/usr/bin/python3', '/repo/scripts/poll_prs.py', 'owner/repo#1',
+                   '--state-file', '/state/poll.json']
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                mock.patch.object(sys, 'argv', [
+                    'watchdog.py', 'start', 'owner/repo#1', '--thread', 'thread-abc',
+                ]),
+                mock.patch.object(watchdog.Path, 'home', return_value=Path(temporary)),
+                mock.patch.object(watchdog, 'validate_state_path',
+                                  return_value=Path(temporary) / 'state.json'),
+                mock.patch.object(watchdog, 'discover_pollers', return_value=[(41, command)]),
+                mock.patch.object(watchdog.os, 'kill') as kill,
+                mock.patch.object(watchdog.subprocess, 'Popen') as popen,
+                mock.patch.object(watchdog.subprocess, 'run') as run,
+            ):
+                with self.assertRaisesRegex(RuntimeError, 'stop it, then start again'):
+                    watchdog.main()
+            kill.assert_not_called()
+            popen.assert_not_called()
+            run.assert_not_called()
+
     def test_restart_preserves_retired_fingerprint_and_clears_active_stale_error(self):
         state = {'prs': {
             'owner/repo#1': {'terminal': True, 'fingerprint': 'done',

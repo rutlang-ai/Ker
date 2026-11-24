@@ -203,6 +203,10 @@ def main():
             if len(pids) > 1 and not args.thread:
                 raise RuntimeError(
                     'multiple pollers are running; provide --thread to reconcile them safely')
+            if len(pids) == 1 and args.thread and not manifest.get('thread'):
+                raise RuntimeError(
+                    'the existing poller has no recognized Codex coordinator hook; '
+                    'stop it, then start again with --thread')
             if (args.thread and manifest and manifest.get('thread')
                     and manifest['thread'] != args.thread and pids):
                 parser.error('watch is already attached to another session; stop it before switching')
