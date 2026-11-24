@@ -164,38 +164,80 @@ static void simple_copy_cases(void)
     ker_packet_free(out);
 }
 
+static void allocation_sweep(
+    int (*export_chain)(struct sk_buff *, unsigned int, struct rte_mbuf **),
+    unsigned int limit)
+{
+    const unsigned int headroom = 64;
+    const bool partial = export_chain != ker_skb_to_mbuf_chain_copy;
+    uint8_t original[15], expected[15];
+    struct sk_buff *skb = make(sizeof(original), headroom);
+    if (partial) {
+        /* Two words sum to 0xffff, with the checksum field starting at byte 3. */
+        memset(skb->data, 0, skb->len);
+        skb->data[1] = 0x12;
+        skb->data[2] = 0x34;
+        skb->data[3] = 0xed;
+        skb->data[4] = 0xcb;
+        skb->ip_summed = CHECKSUM_PARTIAL;
+        skb->csum_start = headroom + 1;
+        skb->csum_offset = 2;
+    }
+    memcpy(original, skb->data, sizeof(original));
+    memcpy(expected, original, sizeof(expected));
+    if (partial) {
+        const uint8_t folded = export_chain == ker_skb_to_mbuf_chain_software_checksum_exact ?
+            0 : UINT8_MAX;
+        expected[3] = expected[4] = folded;
+    }
+
+    const unsigned int required = (sizeof(original) + limit - 1) / limit;
+    const unsigned int charge = skb->truesize;
+    struct rte_mbuf *held[63];
+    unsigned int held_count = 0;
+    while (held_count < RTE_DIM(held) && (held[held_count] = ker_packet_alloc(&pool)))
+        ++held_count;
+    CHECK(held_count >= required && !rte_mempool_avail_count(pool.mbufs));
+
+    struct rte_mbuf *sentinel = (void *)(uintptr_t)1;
+    struct rte_mbuf *out = sentinel;
+    for (unsigned int available = 0; available < required; ++available) {
+        for (unsigned int attempt = 0; attempt < 2; ++attempt) {
+            CHECK(export_chain(skb, limit, &out) == -ENOMEM && out == sentinel);
+            CHECK(rte_mempool_avail_count(pool.mbufs) == available);
+            CHECK(context.live == 1 && refcount_read(&skb->users) == 1);
+            CHECK(skb_headroom(skb) == headroom && skb->len == sizeof(original) &&
+                skb->truesize == charge && !memcmp(skb->data, original, sizeof(original)));
+            CHECK(skb->ip_summed == (partial ? CHECKSUM_PARTIAL : CHECKSUM_NONE));
+            if (partial)
+                CHECK(skb->csum_start == headroom + 1 && skb->csum_offset == 2);
+        }
+        ker_packet_free(held[--held_count]);
+    }
+
+    CHECK(rte_mempool_avail_count(pool.mbufs) == required);
+    CHECK(export_chain(skb, limit, &out) == 0 && out->nb_segs == required);
+    CHECK(!rte_mempool_avail_count(pool.mbufs) && context.live == 1);
+    CHECK(!memcmp(skb->data, original, sizeof(original)));
+    CHECK(ker_skb_free(skb) == 0 && !context.live);
+    verify_chain(out, expected, sizeof(expected), limit, headroom);
+    ker_packet_free(out);
+    while (held_count)
+        ker_packet_free(held[--held_count]);
+    CHECK(rte_mempool_avail_count(pool.mbufs) == RTE_DIM(held));
+}
+
 static void allocation_rollback(void)
 {
-    struct sk_buff *skb = make(100, 64);
-    uint8_t before[100]; memcpy(before, skb->data, sizeof(before));
-    struct rte_mbuf *held[63]; unsigned int held_count = 0;
-    while (held_count < 63 && (held[held_count] = ker_packet_alloc(&pool)) != NULL)
-        ++held_count;
-    CHECK(held_count > 0);
-    struct rte_mbuf *out = (void *)(uintptr_t)1;
-    const unsigned int available_before_failure[] = {0, 1, 9};
-    for (size_t attempt = 0; attempt < sizeof(available_before_failure) / sizeof(available_before_failure[0]); ++attempt) {
-        unsigned int count = available_before_failure[attempt];
-        for (unsigned int i = 0; i < count; ++i)
-            ker_packet_free(held[--held_count]);
-        CHECK(ker_skb_to_mbuf_chain_copy(skb, 10, &out) == -ENOMEM);
-        CHECK(out == (void *)(uintptr_t)1 && context.live == 1);
-        CHECK(!memcmp(skb->data, before, sizeof(before)));
-        struct rte_mbuf *probe[10];
-        for (unsigned int i = 0; i < count; ++i) {
-            probe[i] = ker_packet_alloc(&pool);
-            CHECK(probe[i]);
-        }
-        CHECK(!ker_packet_alloc(&pool));
-        while (count)
-            held[held_count++] = probe[--count];
-    }
-    while (held_count) ker_packet_free(held[--held_count]);
-    CHECK(ker_skb_to_mbuf_chain_copy(skb, 10, &out) == 0);
-    verify_chain(out, before, sizeof(before), 10, 64);
-    CHECK(ker_skb_free(skb) == 0);
-    ker_packet_free(out);
-    CHECK(context.live == 0 && rte_mempool_avail_count(pool.mbufs) == 63);
+    static int (*const modes[])(struct sk_buff *, unsigned int, struct rte_mbuf **) = {
+        ker_skb_to_mbuf_chain_copy,
+        ker_skb_to_mbuf_chain_software_checksum,
+        ker_skb_to_mbuf_chain_software_checksum_exact,
+    };
+    const unsigned int limits[] = {1, 2, 7, 15};
+    for (unsigned int i = 0; i < RTE_DIM(modes); ++i)
+        for (unsigned int j = 0; j < RTE_DIM(limits); ++j)
+            allocation_sweep(modes[i], limits[j]);
 }
 
 static void unsupported_boundaries(void)
