@@ -230,6 +230,15 @@ class DiscoveryTest(unittest.TestCase):
         records = {'owner/repo#1': {'terminal': True}}
         self.assertTrue(watchdog.startup_ready(records, ['owner/repo#1'], 100))
         self.assertTrue(watchdog.watch_healthy(records, ['owner/repo#1']))
+        active = {'owner/repo#1': {
+            'fingerprint': 'old', 'last_polled_at': 200,
+            'last_dispatch_error': 'changed: queue unavailable',
+        }}
+        self.assertFalse(watchdog.startup_ready(active, ['owner/repo#1'], 100))
+        self.assertFalse(watchdog.watch_healthy(active, ['owner/repo#1']))
+        active['owner/repo#1'].pop('last_dispatch_error')
+        self.assertTrue(watchdog.startup_ready(active, ['owner/repo#1'], 100))
+        self.assertTrue(watchdog.watch_healthy(active, ['owner/repo#1']))
         self.assertFalse(watchdog.watch_healthy(
             {'owner/repo#1': {'last_error': 'query failed'}}, ['owner/repo#1']))
 

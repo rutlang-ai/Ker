@@ -142,7 +142,8 @@ def reset_restart_fingerprints(data, targets):
 def startup_ready(records, targets, started_at):
     return all(records.get(pr, {}).get('terminal') or
                (records.get(pr, {}).get('fingerprint') and
-                records[pr].get('last_polled_at', 0) >= started_at)
+                records[pr].get('last_polled_at', 0) >= started_at and
+                not records[pr].get('last_dispatch_error'))
                for pr in targets)
 
 
@@ -150,7 +151,8 @@ def watch_healthy(records, targets):
     return all(
         records.get(pr, {}).get('terminal') or
         (records.get(pr, {}).get('fingerprint') and
-         not records.get(pr, {}).get('last_error'))
+         not records.get(pr, {}).get('last_error') and
+         not records.get(pr, {}).get('last_dispatch_error'))
         for pr in targets
     )
 

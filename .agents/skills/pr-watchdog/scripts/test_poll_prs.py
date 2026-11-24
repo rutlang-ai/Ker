@@ -114,6 +114,112 @@ class PollingLifecycleTest(unittest.TestCase):
             saved = poll_prs.load_state(state_path)["prs"]["owner/repository#7"]
             self.assertFalse(saved["terminal"])
             self.assertIsNone(saved["fingerprint"])
+            self.assertIn("queue unavailable", saved["last_dispatch_error"])
+
+    def test_dispatch_failure_survives_old_fingerprint_and_clears_after_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / "poll-state.json"
+            key = "owner/repository#7"
+            poll_prs.save_state(state_path, {"prs": {key: {"fingerprint": "old-fingerprint"}}})
+            with (
+                mock.patch.object(sys, "argv", [
+                    "poll_prs.py", key, "--once", "--state-file", str(state_path),
+                    "--on-change-command", "coordinator",
+                ]),
+                mock.patch.object(poll_prs, "validate_state_path", return_value=state_path),
+                mock.patch.object(poll_prs, "query_pr", return_value=object()),
+                mock.patch.object(poll_prs, "summary", return_value={"state": "OPEN"}),
+                mock.patch.object(poll_prs, "dispatch_event",
+                                  side_effect=RuntimeError("queue unavailable")),
+            ):
+                self.assertEqual(poll_prs.main(), 1)
+            failed = poll_prs.load_state(state_path)["prs"][key]
+            self.assertEqual(failed["fingerprint"], "old-fingerprint")
+            self.assertIn("queue unavailable", failed["last_dispatch_error"])
+
+            with (
+                mock.patch.object(sys, "argv", [
+                    "poll_prs.py", key, "--once", "--state-file", str(state_path),
+                    "--on-change-command", "coordinator",
+                ]),
+                mock.patch.object(poll_prs, "validate_state_path", return_value=state_path),
+                mock.patch.object(poll_prs, "query_pr", return_value=object()),
+                mock.patch.object(poll_prs, "summary", return_value={"state": "OPEN"}),
+                mock.patch.object(poll_prs, "dispatch_event"),
+            ):
+                self.assertEqual(poll_prs.main(), 0)
+            recovered = poll_prs.load_state(state_path)["prs"][key]
+            self.assertNotIn("last_dispatch_error", recovered)
+            self.assertNotIn("dispatch_errors", recovered)
+
+    def test_changed_dispatch_retries_after_metadata_reverts_to_saved_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / "poll-state.json"
+            key = "owner/repository#7"
+            reverted = {"state": "OPEN", "head_sha": "original"}
+            changed = {"state": "OPEN", "head_sha": "transient"}
+            saved_fingerprint = poll_prs.fingerprint(reverted)
+            poll_prs.save_state(state_path, {"prs": {key: {"fingerprint": saved_fingerprint}}})
+            common_args = ["poll_prs.py", key, "--once", "--state-file", str(state_path),
+                           "--on-change-command", "coordinator"]
+            with (
+                mock.patch.object(sys, "argv", common_args),
+                mock.patch.object(poll_prs, "validate_state_path", return_value=state_path),
+                mock.patch.object(poll_prs, "query_pr", return_value=object()),
+                mock.patch.object(poll_prs, "summary", return_value=changed),
+                mock.patch.object(poll_prs, "dispatch_event",
+                                  side_effect=RuntimeError("queue unavailable")),
+            ):
+                self.assertEqual(poll_prs.main(), 1)
+            failed = poll_prs.load_state(state_path)["prs"][key]
+            self.assertEqual(failed["fingerprint"], saved_fingerprint)
+            self.assertIn("changed", failed["dispatch_errors"])
+
+            dispatched = []
+            with (
+                mock.patch.object(sys, "argv", common_args),
+                mock.patch.object(poll_prs, "validate_state_path", return_value=state_path),
+                mock.patch.object(poll_prs, "query_pr", return_value=object()),
+                mock.patch.object(poll_prs, "summary", return_value=reverted),
+                mock.patch.object(poll_prs, "dispatch_event",
+                                  side_effect=lambda _command, event: dispatched.append(event)),
+            ):
+                self.assertEqual(poll_prs.main(), 0)
+            self.assertEqual([event["event"] for event in dispatched], ["changed"])
+            recovered = poll_prs.load_state(state_path)["prs"][key]
+            self.assertNotIn("last_dispatch_error", recovered)
+            self.assertNotIn("dispatch_errors", recovered)
+
+    def test_successful_poll_clears_old_poll_error_when_changed_handoff_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / "poll-state.json"
+            key = "owner/repository#7"
+            with (
+                mock.patch.object(sys, "argv", [
+                    "poll_prs.py", key, "--once", "--state-file", str(state_path),
+                    "--on-change-command", "coordinator",
+                ]),
+                mock.patch.object(poll_prs, "validate_state_path", return_value=state_path),
+                mock.patch.object(poll_prs, "query_pr", side_effect=[
+                    RuntimeError("query unavailable"), object(), object(),
+                ]),
+                mock.patch.object(poll_prs, "summary", return_value={"state": "OPEN"}),
+                mock.patch.object(poll_prs, "dispatch_event", side_effect=[
+                    RuntimeError("poll queue unavailable"),
+                    RuntimeError("changed queue unavailable"),
+                    None,
+                ]),
+            ):
+                self.assertEqual(poll_prs.main(), 1)
+                failed_poll = poll_prs.load_state(state_path)["prs"][key]
+                self.assertIn("poll_error", failed_poll["dispatch_errors"])
+                self.assertEqual(poll_prs.main(), 1)
+                failed_change = poll_prs.load_state(state_path)["prs"][key]
+                self.assertNotIn("poll_error", failed_change["dispatch_errors"])
+                self.assertIn("changed", failed_change["dispatch_errors"])
+                self.assertEqual(poll_prs.main(), 0)
+            recovered = poll_prs.load_state(state_path)["prs"][key]
+            self.assertNotIn("last_dispatch_error", recovered)
 
     def test_restart_skips_previously_retired_pr(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -211,6 +317,7 @@ class PollingLifecycleTest(unittest.TestCase):
         completed = completed_review_summary()
         merged = dict(completed, state="MERGED")
         dispatched = []
+        snapshots = []
 
         def dispatch(_command, event):
             dispatched.append(event)
@@ -221,6 +328,12 @@ class PollingLifecycleTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             state_path = Path(temporary) / "poll-state.json"
+            original_save_state = poll_prs.save_state
+
+            def capture_state(path, state):
+                snapshots.append({key: dict(record) for key, record in state["prs"].items()})
+                original_save_state(path, state)
+
             with (
                 mock.patch.object(sys, "argv", [
                     "poll_prs.py", "owner/repository#7", "--interval", "0.01",
@@ -232,6 +345,7 @@ class PollingLifecycleTest(unittest.TestCase):
                     poll_prs, "summary", side_effect=[completed, completed, completed, merged],
                 ),
                 mock.patch.object(poll_prs, "dispatch_event", side_effect=dispatch),
+                mock.patch.object(poll_prs, "save_state", side_effect=capture_state),
                 mock.patch.object(poll_prs.time, "sleep"),
             ):
                 self.assertEqual(poll_prs.main(), 0)
@@ -240,6 +354,9 @@ class PollingLifecycleTest(unittest.TestCase):
             [event["event"] for event in dispatched],
             ["changed", "review_completion_audit", "review_completion_audit", "changed"],
         )
+        key = "owner/repository#7"
+        self.assertIn("queue unavailable", snapshots[1][key]["last_dispatch_error"])
+        self.assertNotIn("last_dispatch_error", snapshots[2][key])
 
     def test_terminal_pr_waits_for_completion_audit_before_retirement(self) -> None:
         terminal = dict(completed_review_summary(), state="MERGED")

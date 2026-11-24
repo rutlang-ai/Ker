@@ -353,6 +353,18 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def update_dispatch_errors(record: dict[str, Any], errors: dict[str, str]) -> None:
+    """Persist dispatch failures independently from poll errors and fingerprints."""
+    if errors:
+        record["dispatch_errors"] = errors
+        record["last_dispatch_error"] = "; ".join(
+            f"{kind}: {message}" for kind, message in sorted(errors.items())
+        )
+    else:
+        record.pop("dispatch_errors", None)
+        record.pop("last_dispatch_error", None)
+
+
 def dispatch_event(command: str, event: dict[str, Any]) -> None:
     """Invoke the configured coordinator hook with one JSON event on stdin.
 
@@ -420,6 +432,8 @@ def main() -> int:
                 previous = state["prs"].get(key, {})
                 if previous.get("last_error"):
                     previous = dict(previous, fingerprint=None)
+                dispatch_errors = dict(previous.get("dispatch_errors", {}))
+                dispatch_errors.pop("poll_error", None)
                 audit = previous.get("review_completion_audit")
                 completion = codex_review_completion(value)
                 head_sha = value.get("head_sha")
@@ -442,14 +456,17 @@ def main() -> int:
                     }
                     audit_scheduled = True
                 change_dispatch_succeeded = True
-                if previous.get("fingerprint") != digest:
+                if (previous.get("fingerprint") != digest
+                        or "changed" in dispatch_errors):
                     event = {"event": "changed", "pr": key, "data": value}
                     print(json.dumps(event, ensure_ascii=False), flush=True)
                     if args.on_change_command:
                         try:
                             dispatch_event(args.on_change_command, event)
+                            dispatch_errors.pop("changed", None)
                         except RuntimeError as error:
                             poll_errors = True
+                            dispatch_errors["changed"] = str(error)
                             print(json.dumps({
                                 "event": "dispatch_error", "pr": key, "error": str(error),
                             }, ensure_ascii=False), flush=True)
@@ -468,8 +485,10 @@ def main() -> int:
                     if args.on_change_command:
                         try:
                             dispatch_event(args.on_change_command, event)
+                            dispatch_errors.pop("review_completion_audit", None)
                         except RuntimeError as error:
                             poll_errors = True
+                            dispatch_errors["review_completion_audit"] = str(error)
                             print(json.dumps({
                                 "event": "dispatch_error", "pr": key, "error": str(error),
                             }, ensure_ascii=False), flush=True)
@@ -488,7 +507,7 @@ def main() -> int:
                 )
                 if terminal:
                     audit = None
-                state["prs"][key] = {
+                record = {
                     # Keep the old fingerprint after a failed hand-off so the
                     # next cycle retries the coordinator trigger.
                     "fingerprint": (
@@ -499,12 +518,15 @@ def main() -> int:
                     "terminal_state": value["state"] if terminal else None,
                     "review_completion_audit": audit,
                 }
+                update_dispatch_errors(record, dispatch_errors)
+                state["prs"][key] = record
                 if not terminal:
                     next_targets.append((repo, number))
             except Exception as error:  # Keep other PRs alive if one becomes inaccessible.
                 poll_errors = True
                 message = str(error)
                 previous = state["prs"].get(key, {})
+                dispatch_errors = dict(previous.get("dispatch_errors", {}))
                 dispatched = previous.get("last_error") == message and previous.get("error_dispatched", False)
                 if not dispatched:
                     event = {"event": "poll_error", "pr": key, "error": message}
@@ -513,11 +535,15 @@ def main() -> int:
                         try:
                             dispatch_event(args.on_change_command, event)
                             dispatched = True
+                            dispatch_errors.pop("poll_error", None)
                         except RuntimeError as dispatch_error:
+                            dispatch_errors["poll_error"] = str(dispatch_error)
                             print(json.dumps({"event": "dispatch_error", "pr": key,
                                               "error": str(dispatch_error)}, ensure_ascii=False), flush=True)
-                state["prs"][key] = dict(previous, last_error=message,
-                                        last_attempt_at=time.time(), error_dispatched=dispatched)
+                record = dict(previous, last_error=message,
+                              last_attempt_at=time.time(), error_dispatched=dispatched)
+                update_dispatch_errors(record, dispatch_errors)
+                state["prs"][key] = record
                 next_targets.append((repo, number))
         save_state(state_path, state)
         if args.once:
