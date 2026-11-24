@@ -161,6 +161,129 @@ static void check_chain(struct rte_mbuf *chain)
     CHECK(offset == expected_length && count == chain->nb_segs);
 }
 
+enum { ROLLBACK_PACKETS = 3, ROLLBACK_LENGTH = 15 };
+
+struct rollback_sink {
+    struct rte_mbuf *accepted;
+    unsigned int completed;
+    uint8_t expected[ROLLBACK_PACKETS][ROLLBACK_LENGTH];
+};
+
+static int retain_rollback_copy(struct rte_mbuf *copy, void *arg)
+{
+    struct rollback_sink *state = arg;
+    uint8_t buffer[ROLLBACK_LENGTH];
+    CHECK(!state->accepted && state->completed < ROLLBACK_PACKETS);
+    CHECK(copy->pkt_len == sizeof(buffer));
+    const void *bytes = rte_pktmbuf_read(copy, 0, sizeof(buffer), buffer);
+    CHECK(bytes && !memcmp(bytes, state->expected[state->completed], sizeof(buffer)));
+    state->accepted = copy;
+    ++state->completed;
+    return 0;
+}
+
+static void tx_allocation_sweep(
+    int (*init)(struct ker_tx_export *, struct ker_skb_context *, unsigned int,
+        size_t, unsigned int, ker_tx_export_sink_fn, void *),
+    bool partial, uint8_t folded_zero)
+{
+    const unsigned int headroom = 64, limit = 2;
+    const unsigned int required = (ROLLBACK_LENGTH + limit - 1) / limit;
+    struct rollback_sink state = {0};
+    struct sk_buff *original[ROLLBACK_PACKETS];
+    uint8_t source[ROLLBACK_PACKETS][ROLLBACK_LENGTH] = {0};
+    unsigned int charge[ROLLBACK_PACKETS];
+    size_t bytes = 0;
+    CHECK(init(&tx, &context, ROLLBACK_PACKETS, SIZE_MAX, limit,
+        retain_rollback_copy, &state) == 0);
+    for (unsigned int i = 0; i < ROLLBACK_PACKETS; ++i) {
+        struct sk_buff *skb = NULL;
+        uint8_t *data = NULL;
+        CHECK(ker_skb_alloc(&context, ROLLBACK_LENGTH, headroom, &skb) == 0);
+        CHECK(ker_skb_put(skb, ROLLBACK_LENGTH, &data) == 0);
+        source[i][0] = (uint8_t)(i + 1);
+        if (partial) {
+            /* Checksum starts at byte 1, beyond the FIFO identity byte. */
+            source[i][1] = 0x12;
+            source[i][2] = 0x34;
+            source[i][3] = 0xed;
+            source[i][4] = 0xcb;
+            skb->ip_summed = CHECKSUM_PARTIAL;
+            skb->csum_start = headroom + 1;
+            skb->csum_offset = 2;
+        }
+        memcpy(data, source[i], ROLLBACK_LENGTH);
+        memcpy(state.expected[i], source[i], ROLLBACK_LENGTH);
+        if (partial)
+            state.expected[i][3] = state.expected[i][4] = folded_zero;
+        original[i] = skb;
+        charge[i] = skb->truesize;
+        bytes += charge[i];
+        CHECK(ker_tx_export_enqueue(&tx, &skb) == 0 && !skb);
+    }
+
+    struct rte_mbuf *held[31];
+    unsigned int held_count = 0;
+    while (held_count < RTE_DIM(held) && (held[held_count] = ker_packet_alloc(&pool)))
+        ++held_count;
+    CHECK(held_count >= required && !rte_mempool_avail_count(pool.mbufs));
+
+    for (unsigned int available = 0; available < required; ++available) {
+        for (unsigned int attempt = 0; attempt < 2; ++attempt) {
+            CHECK(ker_tx_export_poll(&tx, ROLLBACK_PACKETS) == -ENOMEM);
+            CHECK(!tx.last_completed && tx.last_error == -ENOMEM && !state.completed);
+            CHECK(tx.pending == original[0] && tx.pending_charge == charge[0]);
+            CHECK(tx.packets == ROLLBACK_PACKETS && tx.bytes == bytes &&
+                context.live == ROLLBACK_PACKETS);
+            CHECK(rte_mempool_avail_count(pool.mbufs) == available);
+        }
+        ker_packet_free(held[--held_count]);
+    }
+
+    /* The retained first copy consumes every available segment. Its source
+     * frees one mbuf, leaving the next packet short of a complete chain. */
+    CHECK(ker_tx_export_poll(&tx, ROLLBACK_PACKETS) == 1);
+    CHECK(tx.last_completed == 1 && tx.last_error == -ENOMEM && state.completed == 1);
+    CHECK(tx.pending == original[1] && tx.pending_charge == charge[1]);
+    CHECK(tx.packets == ROLLBACK_PACKETS - 1 && tx.bytes == bytes - charge[0]);
+    CHECK(rte_mempool_avail_count(pool.mbufs) == 1 && context.live == ROLLBACK_PACKETS - 1);
+
+    for (unsigned int i = 1; i < ROLLBACK_PACKETS; ++i) {
+        struct sk_buff *returned = NULL;
+        CHECK(ker_tx_export_cancel(&tx, &returned) == 1 && returned == original[i]);
+        CHECK(returned->truesize == charge[i] && returned->len == ROLLBACK_LENGTH &&
+            refcount_read(&returned->users) == 1 &&
+            !memcmp(returned->data, source[i], ROLLBACK_LENGTH));
+        CHECK(returned->ip_summed == (partial ? CHECKSUM_PARTIAL : CHECKSUM_NONE));
+        if (partial)
+            CHECK(returned->csum_start == headroom + 1 && returned->csum_offset == 2);
+    }
+    CHECK(!tx.packets && !tx.bytes && !tx.pending && !tx.pending_charge);
+    ker_packet_free(state.accepted);
+    state.accepted = NULL;
+    while (held_count)
+        ker_packet_free(held[--held_count]);
+
+    for (unsigned int i = 1; i < ROLLBACK_PACKETS; ++i)
+        CHECK(ker_tx_export_enqueue(&tx, &original[i]) == 0 && !original[i]);
+    for (unsigned int i = 1; i < ROLLBACK_PACKETS; ++i) {
+        CHECK(ker_tx_export_poll(&tx, 1) == 1);
+        CHECK(!tx.last_error && tx.last_completed == 1 && state.completed == i + 1);
+        ker_packet_free(state.accepted);
+        state.accepted = NULL;
+    }
+    CHECK(!tx.packets && !tx.bytes && !context.live);
+    CHECK(ker_tx_export_cleanup(&tx) == 0 && !context.queue_live);
+    CHECK(rte_mempool_avail_count(pool.mbufs) == RTE_DIM(held));
+}
+
+static void tx_allocation_rollback(void)
+{
+    tx_allocation_sweep(ker_tx_export_init_chain, false, 0);
+    tx_allocation_sweep(ker_tx_export_init_chain_software_checksum, true, UINT8_MAX);
+    tx_allocation_sweep(ker_tx_export_init_chain_software_checksum_exact, true, 0);
+}
+
 int main(void)
 {
     ker_test_eal_init();
@@ -254,6 +377,7 @@ int main(void)
     CHECK(ker_transport_receiver_unregister(&receiver) == 0);
     CHECK(ker_receive_runtime_cleanup(&runtime) == 0);
     CHECK(ker_eth_device_cleanup(&device) == 0);
+    tx_allocation_rollback();
     CHECK(ker_skb_context_cleanup(&context) == 0);
     CHECK(ker_packet_pool_cleanup(&pool) == 0);
     CHECK(calls == 6 && rx_calls == 2);

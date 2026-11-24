@@ -885,6 +885,18 @@
         "fstack-chain-export"
       ]
     },
+    "fstack-chain-allocation-rollback": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_multiseg",
+        "test_ff_dpdk_if_send_copydata_fail"
+      ],
+      "adaptation": "Ker extensions use a real DPDK mempool to check every incomplete allocation prefix in plain copy and both software checksum modes. The TX FIFO test retains an accepted copy, observes failure of the next packet in the same poll, and checks cancellation and re-enqueue in FIFO order. The upstream cases motivate the segmentation and copy failure scenarios.",
+      "ker_ctests": [
+        "fstack-chain-export",
+        "tx-export-chain"
+      ]
+    },
     "tx-chain-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
