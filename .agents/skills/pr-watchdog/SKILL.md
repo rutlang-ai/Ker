@@ -50,7 +50,7 @@ Continuous monitoring is the default behavior. A bare invocation containing only
 
 使用协调代理、Sol 审查者及受限的 Luna 工作者：
 
-- 先启动一个长驻 `gpt-5.6-sol`。Sol 只检查轮询事件、诊断、每个修复 diff 和测试证据，并决定批次是否可推送；不得编辑文件或推送。
+- 先启动一个长驻 `gpt-5.6-sol`。若当前部署未提供该模型，则根据运行时可用的协作模型选择 Sol 审查者，例如 `gpt-6.1-sol` 或 `gpt-6-sol`。Sol 只检查轮询事件、诊断、每个修复 diff 和测试证据，并决定批次是否可推送。Sol 不得编辑文件或推送。
 - 对可行动 PR 只启动 `gpt-6-luna` 工作代理。Luna 在自己独立 checkout 中完成调查、反馈验证、改代码、格式化、测试、提交和解决 rebase 冲突；同一 head 同时只能有一个 Luna 修改。
 - 协调代理拥有脚本生命周期、事件分发、GitHub 写操作、调度和最终报告。把完整 watch 集摘要交给 Sol；Luna 只接收自己的 PR、checkout、仓库规则和当前证据。Sol 未审阅实际 diff 与验证结果前，不得推送。
 - Respect the available agent-slot limit. Keep monitoring every PR even when there are fewer worker slots than actionable PRs; queue repair batches fairly and expose which PRs are queued. Sol reviews ready batches sequentially when necessary.
