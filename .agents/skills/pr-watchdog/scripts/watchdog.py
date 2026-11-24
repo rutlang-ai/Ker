@@ -53,6 +53,47 @@ def discover_pollers(targets, state):
     return matches
 
 
+def poller_thread(command):
+    """Return a coordinator thread only for the known Codex dispatch hook."""
+    try:
+        hook = shlex.split(command[command.index('--on-change-command') + 1])
+        entrypoint = (hook[0] if hook else None)
+        if len(hook) > 1 and Path(hook[0]).name.startswith('python'):
+            entrypoint = hook[1]
+        if not entrypoint or Path(entrypoint).name != 'dispatch_codex.py':
+            return None
+        thread = hook[hook.index('--thread') + 1]
+        return thread if thread and not thread.startswith('-') else None
+    except (ValueError, IndexError):
+        return None
+
+
+def reset_restart_fingerprints(data, targets):
+    """Force fresh snapshots for active PRs while retaining retired records."""
+    for target in targets:
+        record = data['prs'].get(target, {})
+        if not record.get('terminal'):
+            record.pop('fingerprint', None)
+            record.pop('error_dispatched', None)
+        data['prs'][target] = record
+
+
+def startup_ready(records, targets, started_at):
+    return all(records.get(pr, {}).get('terminal') or
+               (records.get(pr, {}).get('fingerprint') and
+                records[pr].get('last_polled_at', 0) >= started_at)
+               for pr in targets)
+
+
+def watch_healthy(records, targets):
+    return all(
+        records.get(pr, {}).get('terminal') or
+        (records.get(pr, {}).get('fingerprint') and
+         not records.get(pr, {}).get('last_error'))
+        for pr in targets
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['start', 'status', 'stop'])
@@ -78,8 +119,7 @@ def main():
         found = discover_pollers(targets, state)
         if found:
             command = found[0][1]
-            hook = shlex.split(command[command.index('--on-change-command') + 1])
-            thread = hook[hook.index('--thread') + 1]
+            thread = poller_thread(command)
             manifest = {'prs': targets, 'thread': thread, 'command': command,
                         'started_at': (manifest or {}).get('started_at', 0),
                         'log': str(root / 'poll.log')}
@@ -97,11 +137,15 @@ def main():
             print(json.dumps({'status': 'stopped', 'pids': pids, 'directory': str(root)}))
             return 0
         if args.action == 'start':
-            if not args.thread:
+            if not args.thread and not pids:
                 parser.error('provide --thread or run within a Codex session')
-            if manifest and manifest['thread'] != args.thread and pids:
+            if len(pids) > 1 and not args.thread:
+                raise RuntimeError(
+                    'multiple pollers are running; provide --thread to reconcile them safely')
+            if (args.thread and manifest and manifest.get('thread')
+                    and manifest['thread'] != args.thread and pids):
                 parser.error('watch is already attached to another session; stop it before switching')
-            if len(pids) > 1:
+            if len(pids) > 1 and args.thread:
                 for pid in pids:
                     os.kill(pid, signal.SIGTERM)
                 deadline = time.monotonic() + 5
@@ -122,11 +166,7 @@ def main():
                 # Each new process must hand off a fresh initial snapshot, even
                 # if metadata is unchanged or the previous session disappeared.
                 data = load_state(state)
-                for target in targets:
-                    record = data['prs'].get(target, {})
-                    record.pop('fingerprint', None)
-                    record.pop('error_dispatched', None)
-                    data['prs'][target] = record
+                reset_restart_fingerprints(data, targets)
                 save_state(state, data)
                 manifest = {'prs': targets, 'thread': args.thread, 'command': command,
                             'started_at': time.time(), 'log': str(root / 'poll.log')}
@@ -146,19 +186,16 @@ def main():
                     if state.exists():
                         data = load_state(state)
                         records = data.get('prs', {})
-                        if all(records.get(p, {}).get('fingerprint') and
-                               records[p].get('last_polled_at', 0) >= manifest['started_at']
-                               for p in targets):
+                        if startup_ready(records, targets, manifest['started_at']):
                             break
                     time.sleep(.2)
                 pids = matching_processes(command)
         data = load_state(state) if state.exists() else {}
         print(json.dumps({'status': 'running' if pids else 'stopped', 'pids': pids,
-                          'prs': targets, 'thread': manifest['thread'] if manifest else None,
+                          'prs': targets, 'thread': manifest.get('thread') if manifest else None,
                           'directory': str(root), 'poll_state': data}, ensure_ascii=False))
         terminal = all(data.get('prs', {}).get(p, {}).get('terminal') for p in targets)
-        healthy = all(data.get('prs', {}).get(p, {}).get('fingerprint') and
-                      not data['prs'][p].get('last_error') for p in targets)
+        healthy = watch_healthy(data.get('prs', {}), targets)
         return 0 if terminal or (pids and healthy) else 1
 
 

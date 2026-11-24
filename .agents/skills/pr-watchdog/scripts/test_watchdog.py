@@ -35,6 +35,130 @@ class DiscoveryTest(unittest.TestCase):
                 watchdog.discover_pollers(['owner/repo#1'], Path('/other/poll.json'))
             self.assertEqual(watchdog.discover_pollers(['owner/repo#3'], Path('/state/poll.json')), [])
 
+    def test_optional_hook_metadata_is_defensive(self):
+        self.assertIsNone(watchdog.poller_thread([
+            'python', 'poll_prs.py', 'owner/repo#1', '--state-file', '/state.json',
+        ]))
+        self.assertIsNone(watchdog.poller_thread([
+            'python', 'poll_prs.py', '--on-change-command', 'custom-hook --thread custom',
+        ]))
+        self.assertIsNone(watchdog.poller_thread([
+            'python', 'poll_prs.py', '--on-change-command', 'dispatch_codex.py --thread',
+        ]))
+        self.assertIsNone(watchdog.poller_thread([
+            'python', 'poll_prs.py', '--on-change-command',
+            'custom-hook --config /tmp/dispatch_codex.py --thread value',
+        ]))
+        self.assertEqual(watchdog.poller_thread([
+            'python', 'poll_prs.py', '--on-change-command',
+            'python /scripts/dispatch_codex.py --thread abc',
+        ]), 'abc')
+
+    def test_status_and_stop_accept_a_running_direct_poller(self):
+        command = ['/usr/bin/python3', '/repo/scripts/poll_prs.py', 'owner/repo#1',
+                   '--state-file', '/state/poll.json']
+        for action in ('status', 'stop'):
+            output = io.StringIO()
+            with tempfile.TemporaryDirectory() as temporary:
+                state_path = Path(temporary) / 'state.json'
+                poll_prs.save_state(state_path, {'prs': {
+                    'owner/repo#1': {'fingerprint': 'current'},
+                }})
+                with (
+                    mock.patch.object(sys, 'argv', ['watchdog.py', action, 'owner/repo#1']),
+                    mock.patch.object(watchdog.Path, 'home', return_value=Path(temporary)),
+                    mock.patch.object(watchdog, 'validate_state_path',
+                                      return_value=state_path),
+                    mock.patch.object(watchdog, 'discover_pollers', return_value=[(42, command)]),
+                    mock.patch.object(watchdog, 'remaining_processes', return_value=[]),
+                    mock.patch.object(watchdog.os, 'kill') as kill,
+                    redirect_stdout(output),
+                ):
+                    self.assertEqual(watchdog.main(), 0)
+                self.assertEqual(json.loads(output.getvalue())['status'],
+                                 'stopped' if action == 'stop' else 'running')
+                self.assertEqual(kill.call_count, 1 if action == 'stop' else 0)
+
+    def test_start_reconciles_duplicate_unhooked_pollers_with_explicit_thread(self):
+        command = ['/usr/bin/python3', '/repo/scripts/poll_prs.py', 'owner/repo#1',
+                   '--state-file', '/state/poll.json']
+        found = [(41, command), (42, command)]
+        child = mock.Mock()
+        child.poll.return_value = 0
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / 'state.json'
+            state_path.touch()
+            with (
+                mock.patch.object(sys, 'argv', [
+                    'watchdog.py', 'start', 'owner/repo#1', '--thread', 'thread-abc',
+                ]),
+                mock.patch.object(watchdog.Path, 'home', return_value=Path(temporary)),
+                mock.patch.object(watchdog, 'validate_state_path', return_value=state_path),
+                mock.patch.object(watchdog, 'discover_pollers', return_value=found),
+                mock.patch.object(watchdog, 'remaining_processes', return_value=[]),
+                mock.patch.object(watchdog, 'matching_processes', return_value=[99]),
+                mock.patch.object(watchdog, 'load_state', side_effect=[
+                    {'prs': {'owner/repo#1': {'fingerprint': 'old'}}},
+                    {'prs': {'owner/repo#1': {'fingerprint': 'fresh'}}},
+                ]),
+                mock.patch.object(watchdog, 'save_state'),
+                mock.patch.object(watchdog.subprocess, 'run'),
+                mock.patch.object(watchdog.subprocess, 'Popen', return_value=child) as popen,
+                mock.patch.object(watchdog.os, 'kill') as kill,
+                redirect_stdout(output),
+            ):
+                self.assertEqual(watchdog.main(), 0)
+            self.assertEqual(kill.call_args_list, [
+                mock.call(41, watchdog.signal.SIGTERM),
+                mock.call(42, watchdog.signal.SIGTERM),
+            ])
+            self.assertEqual(popen.call_count, 1)
+            launch_command = popen.call_args.args[0]
+            hook = launch_command[launch_command.index('--on-change-command') + 1]
+            self.assertIn('--thread thread-abc', hook)
+            self.assertEqual(json.loads(output.getvalue())['thread'], 'thread-abc')
+
+    def test_start_rejects_duplicate_unhooked_pollers_without_thread(self):
+        command = ['/usr/bin/python3', '/repo/scripts/poll_prs.py', 'owner/repo#1',
+                   '--state-file', '/state/poll.json']
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                mock.patch.object(sys, 'argv', ['watchdog.py', 'start', 'owner/repo#1']),
+                mock.patch.dict(watchdog.os.environ, {'CODEX_THREAD_ID': ''}),
+                mock.patch.object(watchdog.Path, 'home', return_value=Path(temporary)),
+                mock.patch.object(watchdog, 'validate_state_path',
+                                  return_value=Path(temporary) / 'state.json'),
+                mock.patch.object(watchdog, 'discover_pollers',
+                                  return_value=[(41, command), (42, command)]),
+                mock.patch.object(watchdog.os, 'kill') as kill,
+                mock.patch.object(watchdog.subprocess, 'Popen') as popen,
+            ):
+                with self.assertRaisesRegex(RuntimeError, 'provide --thread'):
+                    watchdog.main()
+            kill.assert_not_called()
+            popen.assert_not_called()
+
+    def test_restart_preserves_retired_fingerprint_and_clears_active_stale_error(self):
+        state = {'prs': {
+            'owner/repo#1': {'terminal': True, 'fingerprint': 'done',
+                             'last_error': 'old error', 'error_dispatched': True},
+            'owner/repo#2': {'terminal': False, 'fingerprint': 'old',
+                             'error_dispatched': True},
+        }}
+        watchdog.reset_restart_fingerprints(state, ['owner/repo#1', 'owner/repo#2'])
+        self.assertEqual(state['prs']['owner/repo#1']['fingerprint'], 'done')
+        self.assertTrue(state['prs']['owner/repo#1']['error_dispatched'])
+        self.assertNotIn('fingerprint', state['prs']['owner/repo#2'])
+        self.assertNotIn('error_dispatched', state['prs']['owner/repo#2'])
+
+    def test_terminal_records_satisfy_startup_and_health(self):
+        records = {'owner/repo#1': {'terminal': True}}
+        self.assertTrue(watchdog.startup_ready(records, ['owner/repo#1'], 100))
+        self.assertTrue(watchdog.watch_healthy(records, ['owner/repo#1']))
+        self.assertFalse(watchdog.watch_healthy(
+            {'owner/repo#1': {'last_error': 'query failed'}}, ['owner/repo#1']))
+
 
 class ErrorDeliveryTest(unittest.TestCase):
     def run_cycle(self, state, error=None, fail_dispatch=False):
