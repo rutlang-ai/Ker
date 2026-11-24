@@ -35,6 +35,34 @@ class DiscoveryTest(unittest.TestCase):
                 watchdog.discover_pollers(['owner/repo#1'], Path('/other/poll.json'))
             self.assertEqual(watchdog.discover_pollers(['owner/repo#3'], Path('/state/poll.json')), [])
 
+    def test_discovers_canonical_url_and_skips_option_values(self):
+        command = ['/usr/bin/python3', '/repo/scripts/poll_prs.py',
+                   'https://github.com/owner/repo/pull/1', '--state-file',
+                   '/state/poll.json', '--on-change-command', 'owner/repo#999']
+        path = mock.Mock()
+        path.parent.name = '123'
+        path.read_bytes.return_value = b'\0'.join(x.encode() for x in command) + b'\0'
+        with mock.patch.object(Path, 'glob', return_value=[path]):
+            self.assertEqual(watchdog.discover_pollers(['owner/repo#1'], Path('/state/poll.json')),
+                             [(123, command)])
+            with self.assertRaisesRegex(RuntimeError, 'overlapping PR watch'):
+                watchdog.discover_pollers(
+                    ['owner/repo#1', 'owner/repo#2'], Path('/state/poll.json'))
+
+    def test_discovers_numeric_identifier_in_poller_repository(self):
+        command = ['/usr/bin/python3', '/repo/scripts/poll_prs.py', '7',
+                   '--state-file', '/state/poll.json', '--interval', 'owner/other#8']
+        path = mock.Mock()
+        path.parent.name = '321'
+        path.read_bytes.return_value = b'\0'.join(x.encode() for x in command) + b'\0'
+        with (
+            mock.patch.object(Path, 'glob', return_value=[path]),
+            mock.patch.object(watchdog, 'process_repo', return_value='owner/repo') as process_repo,
+        ):
+            self.assertEqual(watchdog.discover_pollers(['owner/repo#7'], Path('/state/poll.json')),
+                             [(321, command)])
+        process_repo.assert_called_once_with(321)
+
     def test_optional_hook_metadata_is_defensive(self):
         self.assertIsNone(watchdog.poller_thread([
             'python', 'poll_prs.py', 'owner/repo#1', '--state-file', '/state.json',

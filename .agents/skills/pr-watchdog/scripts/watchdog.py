@@ -33,6 +33,47 @@ def remaining_processes(found):
     return [pid for pid, command in found if pid in matching_processes(command)]
 
 
+def poller_arguments(command):
+    """Extract positional PR identifiers and state path from poll_prs argv."""
+    prs = []
+    state = None
+    value_options = {'--state-file', '--interval', '--on-change-command'}
+    arguments = command[2:]
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument in value_options:
+            if index + 1 >= len(arguments):
+                raise ValueError(f'missing value for {argument}')
+            value = arguments[index + 1]
+            if argument == '--state-file':
+                state = value
+            index += 2
+        elif argument.startswith('--'):
+            if argument.startswith('--state-file='):
+                state = argument.partition('=')[2]
+            index += 1
+        else:
+            prs.append(argument)
+            index += 1
+    return prs, state
+
+
+def process_repo(pid):
+    """Resolve numeric poller arguments against that process's git cwd."""
+    cwd = Path(f'/proc/{pid}/cwd').resolve(strict=True)
+    result = subprocess.run(
+        ['gh', 'repo', 'view', '--json', 'nameWithOwner'], cwd=cwd,
+        text=True, capture_output=True, check=False, timeout=30,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or f'cannot resolve repository for poller PID {pid}')
+    try:
+        return json.loads(result.stdout)['nameWithOwner']
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise RuntimeError(f'cannot resolve repository for poller PID {pid}') from error
+
+
 def discover_pollers(targets, state):
     matches = []
     for path in Path('/proc').glob('[0-9]*/cmdline'):
@@ -40,14 +81,34 @@ def discover_pollers(targets, state):
             command = [os.fsdecode(x) for x in path.read_bytes().split(b'\0') if x]
             if len(command) < 2 or Path(command[1]).name != 'poll_prs.py':
                 continue
-            found = [x for x in command[2:] if '#' in x and not x.startswith('--')
-                     and ' ' not in x]
+            pid = int(path.parent.name)
+            identifiers, state_argument = poller_arguments(command)
+            target_numbers = {int(target.rsplit('#', 1)[-1]) for target in targets}
+            numeric_identifiers = [x for x in identifiers if x.isdigit()]
+            relevant_numbers = [x for x in numeric_identifiers
+                                if int(x) in target_numbers]
+            default_repo = process_repo(pid) if relevant_numbers else None
+            found = []
+            unresolved_numeric = False
+            for identifier in identifiers:
+                if identifier.isdigit() and not default_repo:
+                    unresolved_numeric = True
+                    continue
+                owner, number = canonicalize(identifier, default_repo)
+                found.append(f'{owner}#{number}')
+            found.sort()
             if not set(found).intersection(targets):
                 continue
-            if (sorted(found) != targets or '--state-file' not in command
-                    or Path(command[command.index('--state-file') + 1]).resolve() != state):
+            if unresolved_numeric or found != targets:
+                raise RuntimeError('an overlapping PR watch has unresolved numeric identifiers; inspect PID '
+                                   + path.parent.name)
+            process_state = Path(state_argument) if state_argument else None
+            if process_state is not None and not process_state.is_absolute():
+                process_cwd = Path(f'/proc/{pid}/cwd').resolve(strict=True)
+                process_state = process_cwd / process_state
+            if (found != targets or process_state is None or process_state.resolve() != state):
                 raise RuntimeError('an overlapping PR watch is running; inspect PID ' + path.parent.name)
-            matches.append((int(path.parent.name), command))
+            matches.append((pid, command))
         except (OSError, ValueError, IndexError):
             continue
     return matches
