@@ -68,6 +68,15 @@ class StatePathValidationTest(unittest.TestCase):
             self.assertEqual(poll_prs.validate_state_path(state, [worktree]), state.resolve())
 
 
+class CanonicalizeTest(unittest.TestCase):
+    def test_repository_case_and_numeric_forms_share_one_key(self) -> None:
+        expected = ("owner/repo", 7)
+        self.assertEqual(poll_prs.canonicalize(
+            "https://github.com/OWNER/Repo/pull/7", None), expected)
+        self.assertEqual(poll_prs.canonicalize("OWNER/Repo#7", None), expected)
+        self.assertEqual(poll_prs.canonicalize("7", "OWNER/Repo"), expected)
+
+
 class PollingLifecycleTest(unittest.TestCase):
     def test_dispatch_event_sends_json_to_coordinator(self) -> None:
         event = {"event": "changed", "pr": "owner/repository#7", "data": {"head_sha": "abc"}}

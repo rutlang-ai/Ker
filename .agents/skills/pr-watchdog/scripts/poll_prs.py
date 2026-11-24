@@ -145,12 +145,12 @@ def current_repo() -> str:
 def canonicalize(value: str, default_repo: str | None) -> tuple[str, int]:
     match = re.fullmatch(r"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)/?", value)
     if match:
-        return f"{match.group(1)}/{match.group(2)}", int(match.group(3))
+        return f"{match.group(1)}/{match.group(2)}".lower(), int(match.group(3))
     match = re.fullmatch(r"([^/]+)/([^#]+)#(\d+)", value)
     if match:
-        return f"{match.group(1)}/{match.group(2)}", int(match.group(3))
+        return f"{match.group(1)}/{match.group(2)}".lower(), int(match.group(3))
     if value.isdigit() and default_repo:
-        return default_repo, int(value)
+        return default_repo.lower(), int(value)
     raise ValueError(f"unsupported PR identifier: {value}")
 
 

@@ -49,6 +49,30 @@ class DiscoveryTest(unittest.TestCase):
                 watchdog.discover_pollers(
                     ['owner/repo#1', 'owner/repo#2'], Path('/state/poll.json'))
 
+    def test_discovery_matches_mixed_case_identifiers_to_lowercase_watch_key(self):
+        commands = [
+            (['/usr/bin/python3', '/repo/scripts/poll_prs.py',
+              'https://github.com/OWNER/Repo/pull/1', '--state-file', '/state/poll.json'], False),
+            (['/usr/bin/python3', '/repo/scripts/poll_prs.py',
+              'OWNER/Repo#1', '--state-file', '/state/poll.json'], False),
+            (['/usr/bin/python3', '/repo/scripts/poll_prs.py',
+              '1', '--state-file', '/state/poll.json'], True),
+        ]
+        for pid, (command, numeric) in enumerate(commands, 201):
+            path = mock.Mock()
+            path.parent.name = str(pid)
+            path.read_bytes.return_value = b'\0'.join(x.encode() for x in command) + b'\0'
+            with (
+                mock.patch.object(Path, 'glob', return_value=[path]),
+                mock.patch.object(watchdog, 'process_repo', return_value='OWNER/Repo') as process_repo,
+            ):
+                found = watchdog.discover_pollers(['owner/repo#1'], Path('/state/poll.json'))
+            self.assertEqual(found, [(pid, command)])
+            if numeric:
+                process_repo.assert_called_once_with(pid)
+            else:
+                process_repo.assert_not_called()
+
     def test_discovers_numeric_identifier_in_poller_repository(self):
         command = ['/usr/bin/python3', '/repo/scripts/poll_prs.py', '7',
                    '--state-file', '/state/poll.json', '--interval', 'owner/other#8']
