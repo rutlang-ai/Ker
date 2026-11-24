@@ -358,6 +358,38 @@ class PollingLifecycleTest(unittest.TestCase):
         self.assertIn("queue unavailable", snapshots[1][key]["last_dispatch_error"])
         self.assertNotIn("last_dispatch_error", snapshots[2][key])
 
+    def test_new_head_clears_obsolete_audit_dispatch_error(self) -> None:
+        old = completed_review_summary()
+        key = "owner/repository#7"
+        new_head = {"state": "OPEN", "head_sha": "new-head", "comments": []}
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / "poll-state.json"
+            poll_prs.save_state(state_path, {"prs": {key: {
+                "fingerprint": poll_prs.fingerprint(old),
+                "review_completion_audit": {
+                    "head_sha": old["head_sha"], "summary_comment_id": "summary-comment",
+                    "summary_updated_at": "2026-08-30T17:10:33Z", "pending": True,
+                },
+                "dispatch_errors": {"review_completion_audit": "queue unavailable"},
+                "last_dispatch_error": "review_completion_audit: queue unavailable",
+            }}})
+            with (
+                mock.patch.object(sys, "argv", [
+                    "poll_prs.py", key, "--once", "--state-file", str(state_path),
+                    "--on-change-command", "coordinator",
+                ]),
+                mock.patch.object(poll_prs, "validate_state_path", return_value=state_path),
+                mock.patch.object(poll_prs, "query_pr", return_value=object()),
+                mock.patch.object(poll_prs, "summary", return_value=new_head),
+                mock.patch.object(poll_prs, "dispatch_event") as dispatch,
+            ):
+                self.assertEqual(poll_prs.main(), 0)
+            dispatch.assert_called_once()
+            saved = poll_prs.load_state(state_path)["prs"][key]
+            self.assertIsNone(saved["review_completion_audit"])
+            self.assertNotIn("last_dispatch_error", saved)
+            self.assertNotIn("dispatch_errors", saved)
+
     def test_terminal_pr_waits_for_completion_audit_before_retirement(self) -> None:
         terminal = dict(completed_review_summary(), state="MERGED")
         dispatched = []

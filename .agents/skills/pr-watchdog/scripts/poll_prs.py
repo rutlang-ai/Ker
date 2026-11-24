@@ -437,13 +437,15 @@ def main() -> int:
                 audit = previous.get("review_completion_audit")
                 completion = codex_review_completion(value)
                 head_sha = value.get("head_sha")
-                if (
-                    not isinstance(audit, dict)
-                    or audit.get("head_sha") != head_sha
-                    or not completion
-                    or audit.get("summary_comment_id") != completion["comment_id"]
-                    or audit.get("summary_updated_at") != completion["updated_at"]
-                ):
+                audit_matches_current = (
+                    isinstance(audit, dict)
+                    and completion is not None
+                    and audit.get("head_sha") == head_sha
+                    and audit.get("summary_comment_id") == completion["comment_id"]
+                    and audit.get("summary_updated_at") == completion["updated_at"]
+                )
+                if not audit_matches_current:
+                    dispatch_errors.pop("review_completion_audit", None)
                     audit = None
                 audit_scheduled = False
                 if completion and audit is None:
